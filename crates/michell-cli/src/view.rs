@@ -28,7 +28,7 @@ use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
 use michell::float::{solve_equilibrium_bodies, LoadCase};
-use michell::iges::HullPose;
+use michell::iges::{HullPose, Platform};
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -64,6 +64,10 @@ struct ViewHull {
     x0: f64,
     x1: f64,
     field: Field,
+    /// True when the last re-float lifted this hull entirely out of the water
+    /// (a light load can raise slender outriggers clear): it then makes no
+    /// wake and contributes no resistance.
+    dry: bool,
 }
 
 struct ViewState {
@@ -228,6 +232,7 @@ fn build_view_hull(m: &Member, body: Option<Body>) -> ViewHull {
             ny: 0,
             zeta: Vec::new(),
         },
+        dry: false,
     }
 }
 
@@ -264,6 +269,10 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
         .hulls
         .iter()
         .map(|vh| {
+            if vh.dry {
+                // Out of the water: no field (sampling an empty grid is zero).
+                return Field { lx0: 0.0, lx1: 0.0, ly0: 0.0, ly1: 0.0, nx: 0, ny: 0, zeta: Vec::new() };
+            }
             let lx0 = vx0 - vh.home.x - margin;
             let lx1 = vx1 - vh.home.x + margin;
             let ly0 = vy0 - vh.home.y - margin;
@@ -339,7 +348,7 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
     let mut viscous_total = 0.0;
     let mut wetted_surface = 0.0;
     let mut solo_wave_total = 0.0;
-    for vh in &state.hulls {
+    for vh in state.hulls.iter().filter(|h| !h.dry) {
         viscous_total += michell::viscous_resistance(&vh.hull, &cond)
             .map(|v| v.resistance)
             .unwrap_or(0.0);
@@ -449,41 +458,59 @@ fn sample_field(f: &Field, x: f64, y: f64) -> f64 {
 /// the wetted hulls, then recompute fields. Members without a retained body
 /// keep their design geometry.
 fn set_displacement(state: &mut ViewState, mass: f64) -> Result<(), String> {
-    let bodies: Vec<&Body> = state.hulls.iter().filter_map(|h| h.body.as_ref()).collect();
-    if bodies.is_empty() {
-        return Err("no re-floatable bodies in this fleet (displacement is fixed)".into());
-    }
-    let poses = vec![HullPose::default(); bodies.len()];
-    let eq = solve_equilibrium_bodies(
-        &bodies,
-        0.0,
-        &poses,
-        &LoadCase { mass, lcg: None },
-        state.cond.fluid.density,
-        &state.body_opts,
-    )
-    .map_err(|e| format!("equilibrium solve failed: {e}"))?;
+    let opts = state.body_opts;
+    let density = state.cond.fluid.density;
 
-    // Map solved members back onto the re-floatable hulls, in order.
-    let mut solved = eq.fleet.members.into_iter();
-    for vh in state.hulls.iter_mut() {
-        if vh.body.is_none() {
-            continue;
+    // Solve the assembly's common flotation for this total mass.
+    let (sinkage, trim) = {
+        let bodies: Vec<&Body> = state.hulls.iter().filter_map(|h| h.body.as_ref()).collect();
+        if bodies.is_empty() {
+            return Err("no re-floatable bodies in this fleet (displacement is fixed)".into());
         }
-        let (hull, _placement) = solved
-            .next()
-            .ok_or("equilibrium returned fewer hulls than bodies")?;
-        let (x0, x1) = hull.surface().x_domain();
-        let n = vh.beam.len();
-        vh.beam = (0..n)
-            .map(|i| {
-                let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
-                (x, hull.surface().eval(x, 0.0).max(0.0))
-            })
-            .collect();
-        vh.x0 = x0;
-        vh.x1 = x1;
-        vh.hull = hull;
+        let poses = vec![HullPose::default(); bodies.len()];
+        let eq = solve_equilibrium_bodies(
+            &bodies,
+            0.0,
+            &poses,
+            &LoadCase { mass, lcg: None },
+            density,
+            &opts,
+        )
+        .map_err(|e| format!("{e}"))?;
+        (eq.sinkage, eq.trim)
+    };
+
+    // Re-loft each body at the solved platform state. A body that comes back
+    // dry (lifted clear at a light load) is flagged, not an error.
+    let platform = Platform {
+        sinkage,
+        trim,
+        pivot_x: 0.0,
+    };
+    for vh in state.hulls.iter_mut() {
+        let situated = match &vh.body {
+            Some(body) => body
+                .situate(0.0, &HullPose::default(), &platform, &opts)
+                .map_err(|e| format!("{e}"))?,
+            None => continue, // not re-floatable: leave as loaded
+        };
+        match situated {
+            Some(sb) => {
+                let (x0, x1) = sb.hull.surface().x_domain();
+                let n = vh.beam.len();
+                vh.beam = (0..n)
+                    .map(|i| {
+                        let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
+                        (x, sb.hull.surface().eval(x, 0.0).max(0.0))
+                    })
+                    .collect();
+                vh.x0 = x0;
+                vh.x1 = x1;
+                vh.hull = sb.hull;
+                vh.dry = false;
+            }
+            None => vh.dry = true,
+        }
     }
     state.mass = mass;
     recompute_fields(state)
@@ -623,8 +650,14 @@ fn resistance_json(s: &ViewState, places: &[Placement]) -> Result<String, String
         .hulls
         .iter()
         .zip(places)
+        .filter(|(vh, _)| !vh.dry)
         .map(|(vh, &p)| (&vh.hull, p))
         .collect();
+    if members.is_empty() {
+        return Ok("{\"total\":null,\"wave\":null,\"viscous\":null,\"interference\":null,\
+                   \"cw\":null,\"ct\":null,\"effective_power\":null,\"froude\":null}"
+            .to_string());
+    }
     // Only the combined wave resistance depends on placement; integrate it on
     // the fixed grid (fast regardless of separation). Viscous, wetted surface,
     // and the solo-wave total are precomputed for the current speed/mass.
@@ -689,7 +722,7 @@ fn state_json(s: &ViewState) -> String {
         let f = &vh.field;
         out.push_str(&format!(
             "{{\"id\":{i},\"name\":\"{}\",\"homeX\":{},\"homeY\":{},\"x0\":{},\"x1\":{},\
-             \"canFloat\":{},\"field\":{{\"lx0\":{},\"lx1\":{},\"ly0\":{},\"ly1\":{},\
+             \"canFloat\":{},\"dry\":{},\"field\":{{\"lx0\":{},\"lx1\":{},\"ly0\":{},\"ly1\":{},\
              \"nx\":{},\"ny\":{}}},\"beam\":[",
             json_escape(&vh.name),
             vh.home.x,
@@ -697,6 +730,7 @@ fn state_json(s: &ViewState) -> String {
             vh.x0,
             vh.x1,
             vh.body.is_some(),
+            vh.dry,
             f.lx0,
             f.lx1,
             f.ly0,

@@ -71,7 +71,7 @@
     </div>
     <div class="ctl">
       <label>displacement <b><span id="dispVal">—</span></b></label>
-      <input type="range" id="disp" min="40" max="160" value="100" step="2">
+      <input type="range" id="disp" min="20" max="300" value="100" step="5">
       <div class="hintline" id="dispHint">drag, then release to re-float</div>
     </div>
 
@@ -141,8 +141,10 @@ function sample(f, x, y){
 
 // ---- geometry / coordinate mapping ----
 function viewDims(){ const v=S.view; return {w:v.x1-v.x0, h:v.y1-v.y0}; }
-function aftmostStern(){ // most-astern (min) stern x over the fleet
-  let m=Infinity; for (let i=0;i<S.hulls.length;i++) m=Math.min(m, place[i].x + S.hulls[i].x0); return m;
+function aftmostStern(){ // most-astern (min) stern x over the wet fleet
+  let m=Infinity;
+  for (let i=0;i<S.hulls.length;i++){ if (S.hulls[i].dry) continue; m=Math.min(m, place[i].x + S.hulls[i].x0); }
+  return isFinite(m) ? m : (S.view.x1); // all dry: nothing physical
 }
 
 let dispW=0, dispH=0;   // css pixel size of canvas
@@ -218,9 +220,15 @@ function drawHulls(){
     for (let j=0;j<beam.length;j++){ const [x,b]=beam[j]; const [cx,cy]=w2c(x+p.x, b+p.y); if (j===0) ctx.moveTo(cx,cy); else ctx.lineTo(cx,cy); }
     for (let j=beam.length-1;j>=0;j--){ const [x,b]=beam[j]; const [cx,cy]=w2c(x+p.x, -b+p.y); ctx.lineTo(cx,cy); }
     ctx.closePath();
-    ctx.fillStyle = dragging===i ? "rgba(90,110,140,.95)" : "rgba(82,81,78,.92)";
-    ctx.fill();
-    ctx.lineWidth=1.2; ctx.strokeStyle="rgba(230,232,236,.55)"; ctx.stroke();
+    // A dry hull (lifted clear at a light load) is drawn hollow/dashed.
+    if (hu.dry){
+      ctx.fillStyle="rgba(82,81,78,.28)"; ctx.fill();
+      ctx.setLineDash([4,3]); ctx.lineWidth=1; ctx.strokeStyle="rgba(230,232,236,.4)"; ctx.stroke(); ctx.setLineDash([]);
+    } else {
+      ctx.fillStyle = dragging===i ? "rgba(90,110,140,.95)" : "rgba(82,81,78,.92)";
+      ctx.fill();
+      ctx.lineWidth=1.2; ctx.strokeStyle="rgba(230,232,236,.55)"; ctx.stroke();
+    }
     // bow tick (high x)
     const [bx,by]=w2c(hu.x1+p.x, p.y);
     ctx.fillStyle="rgba(255,255,255,.8)"; ctx.beginPath(); ctx.arc(bx,by,2.5,0,7); ctx.fill();
@@ -348,12 +356,13 @@ async function applySpeed(u){
   finally { setBusy(false); }
 }
 async function applyDisp(m){
+  const prevPct = Math.round(S.mass/S.designMass*100);
   setBusy(true, "re-floating & recomputing…");
   try {
     const res=await fetch("/api/displacement?mass="+m);
-    if (!res.ok){ showErr(await res.text()); return; }
+    if (!res.ok){ showErr(await res.text()); dispEl.value=prevPct; refreshStats(); return; }
     await adopt(await res.json());
-  } catch(e){ showErr(""+e); }
+  } catch(e){ showErr(""+e); dispEl.value=prevPct; }
   finally { setBusy(false); }
 }
 
