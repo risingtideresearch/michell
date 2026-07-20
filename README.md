@@ -19,8 +19,9 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
 
 ## Geometry contract
 
-The hull is port/starboard symmetric, given by its half-beam `y = f(x, z) ≥ 0`
-as a B-spline surface:
+The hull is, by default, port/starboard symmetric, given by its half-beam
+`y = f(x, z) ≥ 0` as a B-spline surface (asymmetric hulls — port ≠ starboard —
+are supported too; see [Asymmetric hulls](#asymmetric-hulls) below):
 
 - `x` runs along the hull (arbitrary origin), **`z` runs vertically downward**
   from the undisturbed waterline; domain `z ∈ [0, T]`. SI units throughout.
@@ -65,11 +66,42 @@ at longitudinal offset `Δx_j` and transverse position `y_j` contributes
 wave interference is exact within the theory (for a catamaran this reduces to
 the classical `4cos²(½νsλ√(λ²−1))` factor). Viscous resistance sums per
 member. `multihull_resistance` also reports the interference factor
-(combined R_w / Σ standalone R_w). Demihulls must each be symmetric about
-their own centerplane.
+(combined R_w / Σ standalone R_w). Demihulls may individually be asymmetric
+(see below); their dipole systems superpose with the source systems.
 
 Performance: a full 21-speed Wigley resistance curve at the default 1e-5
 tolerance runs in ~20 ms (release build).
+
+### Asymmetric hulls
+
+A hull whose two sides differ — starboard `y = +f₊(x, z)`, port `y = −f₋(x, z)`
+— is built with `Hull::new_asymmetric(port, starboard)`. It is split into a
+**symmetric thickness** part `f_sym = (f₊ + f₋)/2` and an **antisymmetric
+camber** part `f_a = (f₊ − f₋)/2` on a shared parametrisation (the two surfaces
+must share degrees and knot vectors; only their control nets differ):
+
+```
+R_w = R_source(f_sym) + R_dipole(f_a)
+```
+
+The thickness part is the classical Michell **source** system. The camber part
+adds a centreplane **y-dipole** (normal-doublet) system: the same inner
+integral over `∂f_a/∂x`, weighted by the transverse wavenumber factor
+`√(λ²−1)`. Because the source amplitude is even in the wave angle θ and the
+dipole amplitude is odd, their cross term integrates to zero over the Kelvin
+fan — the two resistances add with no interference, and a symmetric hull
+(`f_a ≡ 0`) reproduces classical Michell to full floating-point precision.
+
+> **Caveat on the dipole magnitude.** The camber part is a *lifting* problem:
+> a doublet sheet's density is fixed by the *mean* of the two-sided normal
+> velocities, which is a hypersingular (non-local) integral of the density —
+> unlike the source strength, which the boundary condition fixes pointwise.
+> The rigorous density solves a hypersingular Fredholm equation of the first
+> kind (Kaklis & Papanikolaou; 21st Symp. Naval Hydrodynamics, App. A). This
+> crate uses the crude *prescribed strip closure* `μ = 2U f_a`, so the dipole
+> *structure* (weight, θ-parity, additive separation) is exact but its overall
+> *magnitude* is a leading-order estimate to be read qualitatively until
+> validated against a reference. The symmetric/source path is unaffected.
 
 ## Validation
 
@@ -351,4 +383,8 @@ optional `centerplane`.
 - J. Dambrine, M. Pierre, G. Rousseaux, *A theoretical and numerical
   determination of optimal ship forms based on Michell's wave resistance*,
   ESAIM: COCV (2016), arXiv:1410.2800.
+- P. D. Kaklis & A. Papanikolaou et al., *Hydrodynamic optimization of
+  fast-displacement catamarans*, 21st Symposium on Naval Hydrodynamics (1997),
+  Appendix A — thin-ship theory for asymmetric demihulls via centreplane
+  source + normal-dipole distributions (the asymmetric-hull extension here).
 - ITTC — Recommended Procedures: *1957 ITTC Performance Prediction Method*.

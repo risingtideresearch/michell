@@ -16,6 +16,25 @@
 //! numerical error lives in the smooth outer θ-integral, which is integrated
 //! with Gauss–Legendre panels sized to the local oscillation rate and then
 //! refined until the requested tolerance is met.
+//!
+//! ## Asymmetric hulls
+//!
+//! A hull built with [`Hull::new_asymmetric`] is split into a symmetric
+//! thickness part `f_sym = (f₊ + f₋)/2` and an antisymmetric camber part
+//! `f_a = (f₊ − f₋)/2`. The thickness part is the classical **source** system
+//! above; the camber part adds a centreplane **y-dipole** system whose
+//! free-wave amplitude is the same inner integral over `∂f_a/∂x` weighted by
+//! the transverse wavenumber (see [`dipole_weight`]). Because the source
+//! amplitude is even in θ and the dipole amplitude is odd, their cross term
+//! integrates to zero over the Kelvin fan, so
+//!
+//! ```text
+//! R_w = R_source(f_sym) + R_dipole(f_a)
+//! ```
+//!
+//! with the symmetric hull (`f_a ≡ 0`) recovering classical Michell exactly.
+//! The dipole *magnitude* uses an approximate closure and should be read
+//! qualitatively — see [`DIPOLE_WEIGHT_C`] for the caveat.
 
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
@@ -101,8 +120,12 @@ pub fn multihull_wave_resistance(
 /// two identical hulls separated by `s` this reduces to the classical
 /// catamaran interference factor `4 cos²(½ ν s λ √(λ²−1))`.
 ///
-/// Each member hull must itself be symmetric about its own centerplane (the
-/// crate's geometry contract); asymmetric demihulls are not modelled.
+/// A member built with [`Hull::new_asymmetric`] additionally contributes a
+/// centreplane y-dipole wave system from its antisymmetric half-beam `f_a`
+/// (weighted by `dipole_weight`); this superposes on the source system exactly
+/// like any other free-wave amplitude, so demihull asymmetry and demihull
+/// interference are handled together. The dipole *magnitude* rests on an
+/// approximate strip closure — see the `DIPOLE_WEIGHT_C` constant.
 pub fn multihull_wave_resistance_with(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
@@ -161,15 +184,25 @@ pub fn multihull_wave_resistance_with(
     let mut amp_sq = |lambda: f64| -> f64 {
         let kx = nu * lambda;
         let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+        // Dipole spectral weight: a y-normal centreplane doublet radiates the
+        // source integral scaled by the transverse wavenumber (see
+        // [`dipole_weight`]). It is *odd* in θ — the +θ wave system carries
+        // −w·G and the −θ system +w·G — so the ½(|A₊|² + |A₋|²) average cancels
+        // the source–dipole cross term, leaving R_w = R_source + R_dipole
+        // additively (the θ-parity argument confirmed in the module docs).
+        let w = dipole_weight(lambda);
         let mut plus = C64::ZERO;
         let mut minus = C64::ZERO;
         for (inner, dx, dy) in inners.iter_mut() {
-            let f = inner.eval(lambda);
-            if f == C64::ZERO {
+            let (f, g) = inner.eval_pair(lambda);
+            let wg = g.map_or(C64::ZERO, |g| g.scale(w));
+            if f == C64::ZERO && wg == C64::ZERO {
                 continue;
             }
-            plus = plus + f * C64::cis(kx * *dx + ky * *dy);
-            minus = minus + f * C64::cis(kx * *dx - ky * *dy);
+            let a_plus = f - wg;
+            let a_minus = f + wg;
+            plus = plus + a_plus * C64::cis(kx * *dx + ky * *dy);
+            minus = minus + a_minus * C64::cis(kx * *dx - ky * *dy);
         }
         0.5 * (plus.abs_sq() + minus.abs_sq())
     };
@@ -220,6 +253,51 @@ pub fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f
     let mut inner = InnerIntegral::new(hull, nu);
     let f = inner.eval(lambda);
     Ok((f.re, f.im))
+}
+
+/// Closure constant for the antisymmetric (dipole) free-wave amplitude — see
+/// [`dipole_weight`]. `1.0` is the value self-consistent with this crate's
+/// source normalisation *under the prescribed strip closure* `μ = 2U f_a` (the
+/// naive antisymmetric analogue of Michell's `σ = 2U ∂f_sym/∂x`).
+///
+/// **This magnitude is approximate.** Unlike the source strength — which the
+/// boundary condition fixes *pointwise*, because a source sheet's normal-
+/// velocity *jump* equals its local strength — the dipole density is fixed by
+/// the *mean* of the two-sided normal velocities, and a doublet sheet's mean
+/// normal velocity is a hypersingular (finite-part) integral of `μ`. So `μ` is
+/// genuinely **non-local** in `∂f_a/∂x`; no exact pointwise closure exists, and
+/// the rigorous density solves a hypersingular Fredholm equation of the first
+/// kind (Kaklis & Papanikolaou; 21st Symp. Naval Hydro., Appendix A). `μ = 2U
+/// f_a` is the crudest strip estimate of that solve — the *structure* below
+/// (weight, θ-parity, additive separation) is exact, but the overall constant
+/// should be validated against a reference before the dipole magnitude is
+/// trusted quantitatively.
+const DIPOLE_WEIGHT_C: f64 = 1.0;
+
+/// Real spectral weight relating the antisymmetric dipole amplitude to the
+/// companion source integral `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz`.
+///
+/// A y-normal centreplane doublet of density `μ(x,z)` radiates a free wave
+/// carrying one extra factor of the **transverse wavenumber**
+/// `k_y = νλ√(λ²−1)` relative to a source:
+/// `A_d(θ) = i k_y ∬ μ e^{−κz} e^{iνλx} dx dz`. With the prescribed closure
+/// `μ = 2U f_a`, `f_a` closing at bow and stern, integration by parts in `x`
+/// rewrites `∬ f_a e^{iνλx} = (i/νλ) G`, and the two factors of `i` collapse to
+/// a **real** weight on `G` in this crate's normalisation:
+///
+/// ```text
+/// A_d(λ) = i · k_y · (2U) · (i/νλ) G(λ) / (2U)   (÷2U → crate amplitude units)
+///        = −√(λ²−1) · DIPOLE_WEIGHT_C · G(λ).
+/// ```
+///
+/// The sign is carried in [`multihull_wave_resistance_with`] (the +θ system
+/// gets `−w·G`); this function returns the magnitude `w = √(λ²−1)·C`. It
+/// vanishes as `λ → 1` (θ → 0): a wave running dead ahead carries no transverse
+/// wavenumber and is blind to side-to-side asymmetry, so `R_dipole` is fed
+/// entirely by the diverging (large-λ) part of the spectrum.
+#[inline]
+fn dipole_weight(lambda: f64) -> f64 {
+    DIPOLE_WEIGHT_C * (lambda * lambda - 1.0).max(0.0).sqrt()
 }
 
 /// Geometry-derived phase-rate parameters for the outer quadrature.
@@ -347,21 +425,41 @@ impl<'h> InnerIntegral<'h> {
         }
     }
 
-    /// I + iJ at λ = sec θ. Phases use x relative to the hull midpoint (a pure
-    /// phase factor on I + iJ that leaves |I + iJ|² unchanged, but keeps the
-    /// oscillatory arguments as small as possible).
+    /// Source free-wave amplitude `I + iJ` at λ = sec θ. Phases use x relative
+    /// to the hull midpoint (a pure phase factor on I + iJ that leaves
+    /// |I + iJ|² unchanged, but keeps the oscillatory arguments as small as
+    /// possible).
     pub(crate) fn eval(&mut self, lambda: f64) -> C64 {
-        let nu = self.nu;
-        let kx = nu * lambda;
-        let kappa = nu * lambda * lambda;
-        let (p, q) = (self.p, self.q);
-        let spans_z = self.hull.spans_z();
-        let spans_x = self.hull.spans_x();
-        let nsz = spans_z.len();
+        self.eval_pair(lambda).0
+    }
 
-        // z-moments per span, shifted by the decay to the span start.
+    /// The source amplitude `F(λ)` and, for an asymmetric hull, the companion
+    /// **dipole** amplitude `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz` from the
+    /// antisymmetric half-beam. `G` is `None` for a symmetric hull. Both share
+    /// the single z-moment pass; only the x-span accumulation is repeated with
+    /// the second coefficient array, so an asymmetric evaluation costs little
+    /// more than a symmetric one.
+    pub(crate) fn eval_pair(&mut self, lambda: f64) -> (C64, Option<C64>) {
+        let hull = self.hull;
+        let kx = self.nu * lambda;
+        let kappa = self.nu * lambda * lambda;
+        if !self.fill_zm(kappa) {
+            return (C64::ZERO, hull.fx_a_coeff().map(|_| C64::ZERO));
+        }
+        let f = self.accumulate(kx, hull.fx_coeff());
+        let g = hull.fx_a_coeff().map(|c| self.accumulate(kx, c));
+        (f, g)
+    }
+
+    /// Fill the per-span z-moments (shifted by the decay to each span start) at
+    /// decay rate `kappa = ν λ²`. Returns `false` if every span has underflowed
+    /// (the whole hull is below the exponential's support), in which case the
+    /// amplitudes are zero.
+    fn fill_zm(&mut self, kappa: f64) -> bool {
+        let hull = self.hull;
+        let q = self.q;
         let mut any = false;
-        for (t, sz) in spans_z.iter().enumerate() {
+        for (t, sz) in hull.spans_z().iter().enumerate() {
             let decay = (-kappa * sz.start).exp();
             if decay == 0.0 {
                 for b in 0..=q {
@@ -375,14 +473,21 @@ impl<'h> InnerIntegral<'h> {
                 self.zm[t * (q + 1) + b] = decay * self.zm_raw[b];
             }
         }
-        if !any {
-            return C64::ZERO;
-        }
+        any
+    }
 
-        let coeff = self.hull.fx_coeff();
-        let x_center = self.hull.x_center();
+    /// Accumulate `∬ (Σ coeff·XᵃZᵇ) e^{−κz} e^{iνλx} dx dz` over all span pairs
+    /// using the already-filled z-moments and the per-span x-oscillation
+    /// moments. `coeff` is either the source `∂f/∂x` net or the antisymmetric
+    /// `∂f_a/∂x` net (identical layout), so source and dipole amplitudes reuse
+    /// this one kernel.
+    fn accumulate(&mut self, kx: f64, coeff: &[f64]) -> C64 {
+        let hull = self.hull;
+        let (p, q) = (self.p, self.q);
+        let nsz = hull.spans_z().len();
+        let x_center = hull.x_center();
         let mut f = C64::ZERO;
-        for (s, sx) in spans_x.iter().enumerate() {
+        for (s, sx) in hull.spans_x().iter().enumerate() {
             osc_moments(kx, sx.len, p - 1, &mut self.xm);
             let phase = C64::cis(kx * (sx.start - x_center));
             let mut span_sum = C64::ZERO;
