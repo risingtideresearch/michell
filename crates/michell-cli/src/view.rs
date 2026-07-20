@@ -301,6 +301,11 @@ fn build_view_hull(m: &Member, body: Option<Body>) -> ViewHull {
 /// Decompose a single IGES file into per-hull full-band bodies (as `michell
 /// loft` does), so displacement can re-float them via the fast body path.
 /// `None` unless the input is exactly one IGES file with no `@` suffix.
+/// Minimum band reserved above the design waterline [m] — enough to keep the
+/// waterline within modelled geometry across the ama-immersion slider (±0.4 m)
+/// and moderate displacement sinkage. Clamped per hull to available geometry.
+const BAND_ABOVE_WL: f64 = 0.55;
+
 fn bodies_from_iges(
     positional: &[String],
     settings: &crate::formats::LoadSettings,
@@ -338,8 +343,15 @@ fn bodies_from_iges(
         if draft_est <= 0.0 {
             return None;
         }
-        // Band from keel to half a draft above the design waterline (as loft).
-        let band_top = (design_wl + 0.5 * draft_est).min(top);
+        // Band above the waterline: `michell loft` uses half a draft (enough
+        // for its purposes and safely below the deck), but that is far too
+        // shallow for slender amas — immersing them even a little would push
+        // the waterline above the modelled band, where the half-beam is taken
+        // as zero and the waterplane collapses. Reserve enough band to cover
+        // the immersion controls (displacement sinkage + the ama slider),
+        // clamped to whatever geometry the file actually models.
+        let margin = (0.5 * draft_est).max(BAND_ABOVE_WL).min(top - design_wl);
+        let band_top = design_wl + margin;
         let mut hull_opts = opts;
         if hull_opts.centerplane.is_none() {
             // Detect the centerplane at the design waterline (coarse).
