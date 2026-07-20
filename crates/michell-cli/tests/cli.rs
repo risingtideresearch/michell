@@ -223,9 +223,9 @@ fn catamaran_fleet_matches_library() {
     assert!(table.contains("IF"), "missing IF column:\n{table}");
 }
 
-/// Full-shell Wigley (L=10, B=1, T0=0.625) in metres, z up, DWL at z=0.7,
-/// centred at y=0: 4 untrimmed biquadratic patches.
-fn wigley_shell_iges() -> String {
+/// Full-shell Wigley (L=10, B=1, T0=0.625) in metres, z up, DWL at z=0.7:
+/// 4 untrimmed biquadratic patches per shell, one shell per y offset.
+fn wigley_shells_iges(y0s: &[f64]) -> String {
     fn line(content: &str, section: char, seq: usize) -> String {
         format!("{content:<72}{section}{seq:>7}\n")
     }
@@ -234,25 +234,27 @@ fn wigley_shell_iges() -> String {
     let (xs_f, xs_a) = ([0.0, 2.5, 5.0], [5.0, 7.5, 10.0]);
     let hv = [1.0, 1.0, 0.0];
     let zs = [0.7, 0.7 - 0.3125, 0.7 - 0.625];
-    for (xs, gx) in [(xs_f, gx_f), (xs_a, gx_a)] {
-        for side in [1.0f64, -1.0] {
-            let mut b = String::from("128,2,2,2,2,0,0,1,0,0");
-            for _ in 0..2 {
-                for k in ["0.0", "0.0", "0.0", "1.0", "1.0", "1.0"] {
-                    b.push_str(&format!(",{k}"));
+    for &y0 in y0s {
+        for (xs, gx) in [(xs_f, gx_f), (xs_a, gx_a)] {
+            for side in [1.0f64, -1.0] {
+                let mut b = String::from("128,2,2,2,2,0,0,1,0,0");
+                for _ in 0..2 {
+                    for k in ["0.0", "0.0", "0.0", "1.0", "1.0", "1.0"] {
+                        b.push_str(&format!(",{k}"));
+                    }
                 }
-            }
-            for _ in 0..9 {
-                b.push_str(",1.0");
-            }
-            for j in 0..3usize {
-                for i in 0..3usize {
-                    let y = side * 0.5 * gx[i] * hv[j];
-                    b.push_str(&format!(",{:.6},{y:.6},{:.6}", xs[i], zs[j]));
+                for _ in 0..9 {
+                    b.push_str(",1.0");
                 }
+                for j in 0..3usize {
+                    for i in 0..3usize {
+                        let y = side * 0.5 * gx[i] * hv[j] + y0;
+                        b.push_str(&format!(",{:.6},{y:.6},{:.6}", xs[i], zs[j]));
+                    }
+                }
+                b.push_str(",0.0,1.0,0.0,1.0;");
+                bodies.push(b);
             }
-            b.push_str(",0.0,1.0,0.0,1.0;");
-            bodies.push(b);
         }
     }
     let mut s = String::new();
@@ -312,6 +314,10 @@ fn wigley_shell_iges() -> String {
     }
     s.push_str(&line("S      1G      2D      8P     99", 'T', 1));
     s
+}
+
+fn wigley_shell_iges() -> String {
+    wigley_shells_iges(&[0.0])
 }
 
 fn csv_col(csv: &str, col: &str) -> Vec<f64> {
@@ -395,6 +401,89 @@ fn sweep_raw_waterline_and_trim_axes() {
     assert!(deep > shallow, "{vols:?}");
     // Trim symmetry within each waterline.
     assert!((vols[0] - vols[2]).abs() < 1e-3 * vols[0], "{vols:?}");
+}
+
+#[test]
+fn loft_decomposes_and_manifest_sweeps() {
+    // Trimaran: shells at y = 0, +7, -7 in one IGES file.
+    let iges_path = tmp("tri.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[0.0, 7.0, -7.0])).unwrap();
+
+    // Decompose to semantic full-band bodies.
+    let prefix = tmp("tri");
+    let out = run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.7",
+        "-o",
+        prefix.to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+    for name in ["port", "center", "starboard"] {
+        let f = tmp(&format!("tri-{name}.hull"));
+        assert!(f.exists(), "missing {f:?}\n{out}");
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert!(text.contains("\nwaterline "), "no waterline key in {name}");
+        assert!(text.contains("\ncenterplane "), "no centerplane key in {name}");
+    }
+    // Ports and starboards at the right sides.
+    let port = std::fs::read_to_string(tmp("tri-port.hull")).unwrap();
+    let cp: f64 = port
+        .lines()
+        .find_map(|l| l.strip_prefix("centerplane "))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!((cp + 7.0).abs() < 1e-3, "port centerplane {cp}");
+
+    // Manifest: equilibrium weight sweep x ama spread.
+    let manifest = r#"{
+  "name": "cli test study",
+  "fluid": "seawater",
+  "hulls": [
+    { "id": "vaka",  "file": "tri-center.hull" },
+    { "id": "ama_s", "file": "tri-starboard.hull" },
+    { "id": "ama_p", "file": "tri-port.hull" }
+  ],
+  "sweep": [
+    { "target": "speed", "unit": "ms", "value": 3.0 },
+    { "target": "weight", "range": [3000, 6000], "step": 3000 },
+    { "target": "lcg", "value": 5.0 },
+    { "target": ["ama_s", "ama_p"], "param": "spread", "values": [0, 0.5] }
+  ],
+  "output": { "format": "csv", "file": "study.csv" },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+}"#;
+    let man_path = tmp("study.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let csv = std::fs::read_to_string(tmp("study.csv")).unwrap();
+    let vols = csv_col(&csv, "volume");
+    assert_eq!(vols.len(), 4, "{csv}");
+    // Rows: (3000,spread 0), (3000,0.5), (6000,0), (6000,0.5).
+    for (v, mass) in vols.iter().zip([3000.0, 3000.0, 6000.0, 6000.0]) {
+        let want = mass / 1025.9;
+        assert!(
+            (v - want).abs() < 0.005 * want,
+            "volume {v} vs target {want}"
+        );
+    }
+    // Spread must change the interference but not the displacement.
+    let iff = csv_col(&csv, "interference");
+    assert!(
+        (iff[0] - iff[1]).abs() > 1e-4,
+        "spread had no effect on interference: {iff:?}"
+    );
+    let rws = csv_col(&csv, "rw");
+    assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
 }
 
 #[test]

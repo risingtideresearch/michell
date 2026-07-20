@@ -1,0 +1,355 @@
+//! Full-band hull bodies: a half-breadth spline over the hull's entire
+//! modelled height, re-situatable (waterline, immersion, trim, position)
+//! without the source CAD file.
+//!
+//! ## Frames
+//!
+//! A body stores `Y(x, z_b)` with `z_b` measured **downward from the top of
+//! the modelled band** (`z_b = 0` at the sheer/deck, `z_b = depth` at the
+//! keel), plus the depth of the **design waterline** below the band top.
+//! Fleets assemble on the *design floatplane*: every body is aligned so its
+//! design waterline sits at assembly height 0, and poses/sinkage move it from
+//! there (positive z is down / deeper throughout).
+//!
+//! ## Why bodies are fast
+//!
+//! Situating never needs Newton inversion: pitch rotation of a height field
+//! `y = f(x, z)` leaves y untouched, so the rotated surface is exactly
+//! `f(R⁻¹(x, z))` — a domain lookup. Sampling the wetted band and re-lofting
+//! is the whole job.
+
+use crate::bspline::BSplineSurface;
+use crate::error::{Error, Result};
+use crate::fit::{fit_offsets, FitOptions, FitReport};
+use crate::hull::Hull;
+use crate::iges::{HullPose, Platform};
+use crate::michell::Placement;
+
+/// Sampling / loft options for situating a body.
+#[derive(Debug, Clone, Copy)]
+pub struct BodyOptions {
+    pub stations: usize,
+    pub waterlines: usize,
+    pub fit: FitOptions,
+}
+
+impl Default for BodyOptions {
+    fn default() -> Self {
+        BodyOptions {
+            stations: 121,
+            waterlines: 33,
+            fit: FitOptions {
+                degree_x: 3,
+                degree_z: 3,
+                n_ctrl_x: 20,
+                n_ctrl_z: 12,
+            },
+        }
+    }
+}
+
+/// A body situated into the water.
+#[derive(Debug)]
+pub struct SituatedBody {
+    pub hull: Hull,
+    pub placement: Placement,
+    pub fit: FitReport,
+    /// Wetted samples that mapped **above** the stored band (the water rose
+    /// past the modelled sheer): their geometry is unknown and was taken as
+    /// zero. A non-zero count means the pose exceeds what the file covers.
+    pub band_exceeded: usize,
+}
+
+/// A full-band hull body.
+#[derive(Debug, Clone)]
+pub struct Body {
+    surface: BSplineSurface,
+    waterline: f64,
+    centerplane: f64,
+}
+
+impl Body {
+    /// `surface` is the half-breadth over the full band with the z domain
+    /// starting at 0 (band top); `waterline` is the design waterline's depth
+    /// below the band top; `centerplane` the hull's transverse position.
+    pub fn new(surface: BSplineSurface, waterline: f64, centerplane: f64) -> Result<Body> {
+        let (z0, z1) = surface.z_domain();
+        if z0 != 0.0 {
+            return Err(Error::InvalidGeometry(format!(
+                "a body's z domain must start at 0 (the band top); got {z0}"
+            )));
+        }
+        if !(waterline.is_finite() && (0.0..=z1).contains(&waterline)) {
+            return Err(Error::InvalidGeometry(format!(
+                "design waterline {waterline} outside the body's band [0, {z1}]"
+            )));
+        }
+        if !centerplane.is_finite() {
+            return Err(Error::InvalidGeometry("centerplane must be finite".into()));
+        }
+        let scale = surface.control().iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+        if surface
+            .control()
+            .iter()
+            .any(|&v| v < -1e-12 * scale.max(1.0))
+        {
+            return Err(Error::InvalidGeometry(
+                "body control net contains negative half-beam values".into(),
+            ));
+        }
+        Ok(Body {
+            surface,
+            waterline,
+            centerplane,
+        })
+    }
+
+    pub fn surface(&self) -> &BSplineSurface {
+        &self.surface
+    }
+
+    /// Depth of the design waterline below the band top [m].
+    pub fn waterline(&self) -> f64 {
+        self.waterline
+    }
+
+    /// Transverse position of the hull's centerplane [m].
+    pub fn centerplane(&self) -> f64 {
+        self.centerplane
+    }
+
+    /// Situate the body: apply the design pose and platform state, clip at
+    /// the water surface `water_offset + platform.sinkage` below the design
+    /// floatplane, and loft the wetted part. `Ok(None)` means the body is
+    /// entirely dry at this pose.
+    pub fn situate(
+        &self,
+        water_offset: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &BodyOptions,
+    ) -> Result<Option<SituatedBody>> {
+        if opts.stations < 8 || opts.waterlines < 6 {
+            return Err(Error::InvalidInput(
+                "need at least 8 stations and 6 waterlines to sample".into(),
+            ));
+        }
+        // Water surface position in assembly coordinates (down-positive):
+        // sinking the platform (positive) puts the water ABOVE the design
+        // floatplane, i.e. at negative z_a.
+        let zw = -(water_offset + platform.sinkage);
+        let (x0, x1) = self.surface.x_domain();
+        let (_, depth) = self.surface.z_domain();
+        let px = pose.pivot_x.unwrap_or(0.5 * (x0 + x1));
+        let map = FrameMap {
+            waterline: self.waterline,
+            pose: *pose,
+            pose_pivot_x: px,
+            platform: *platform,
+            zw,
+        };
+
+        // Forward-scan the body to find the wetted extents in the water frame.
+        const SCAN: usize = 97;
+        let mut draft = 0.0f64;
+        let (mut wx_lo, mut wx_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut any_wet = false;
+        for i in 0..SCAN {
+            let xb = x0 + (x1 - x0) * i as f64 / (SCAN - 1) as f64;
+            for j in 0..SCAN {
+                let zb = depth * j as f64 / (SCAN - 1) as f64;
+                let (xw, zw) = map.body_to_water(xb, zb);
+                if zw >= -1e-12 {
+                    any_wet = true;
+                    draft = draft.max(zw);
+                    wx_lo = wx_lo.min(xw);
+                    wx_hi = wx_hi.max(xw);
+                }
+            }
+        }
+        if !any_wet || !(draft > 0.0 && wx_hi > wx_lo) {
+            return Ok(None);
+        }
+
+        // Water-frame sample grid: cosine stations, uniform waterlines.
+        let ns = opts.stations;
+        let nw = opts.waterlines;
+        let stations: Vec<f64> = (0..ns)
+            .map(|i| {
+                let c = (std::f64::consts::PI * i as f64 / (ns - 1) as f64).cos();
+                wx_lo + (wx_hi - wx_lo) * (1.0 - c) / 2.0
+            })
+            .collect();
+        let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
+        let mut grid = vec![0.0f64; ns * nw];
+        let mut band_exceeded = 0usize;
+        for (i, &xw) in stations.iter().enumerate() {
+            for (j, &zw) in waterlines.iter().enumerate() {
+                let (xb, zb) = map.water_to_body(xw, zw);
+                if xb < x0 || xb > x1 {
+                    continue; // beyond the ends: no hull
+                }
+                if zb > depth {
+                    continue; // below the keel
+                }
+                if zb < 0.0 {
+                    // Above the modelled band while under water: unknown
+                    // geometry (allow a whisker of tolerance at the edge).
+                    if zb < -1e-9 * depth {
+                        band_exceeded += 1;
+                    }
+                    continue;
+                }
+                grid[i * nw + j] = self.surface.eval(xb, zb).max(0.0);
+            }
+        }
+
+        let (hull, fit) = fit_offsets(&stations, &waterlines, &grid, &opts.fit)?;
+        Ok(Some(SituatedBody {
+            hull,
+            placement: Placement {
+                x: 0.0,
+                y: self.centerplane + pose.dy,
+            },
+            fit,
+            band_exceeded,
+        }))
+    }
+}
+
+/// The body → water frame map (z positive down everywhere):
+/// 1. align design waterlines: `z_a = z_b - waterline`;
+/// 2. design trim about `(pose_pivot_x, z_a = 0)`, then `+dx`, `+dz`;
+/// 3. platform trim about `(platform.pivot_x, z_a = zw)` — a point on the
+///    water surface;
+/// 4. depth below water: `z' = z_a - zw`.
+struct FrameMap {
+    waterline: f64,
+    pose: HullPose,
+    pose_pivot_x: f64,
+    platform: Platform,
+    /// Water surface in assembly coordinates: `-(water_offset + sinkage)`.
+    zw: f64,
+}
+
+/// Rotation in down-positive coordinates; positive angle raises the +x side.
+#[inline]
+fn rot_down(x: f64, zd: f64, px: f64, pzd: f64, sin: f64, cos: f64) -> (f64, f64) {
+    let (dx, dz) = (x - px, zd - pzd);
+    (px + dx * cos + dz * sin, pzd + dz * cos - dx * sin)
+}
+
+impl FrameMap {
+    fn body_to_water(&self, xb: f64, zb: f64) -> (f64, f64) {
+        let mut x = xb;
+        let mut z = zb - self.waterline;
+        if self.pose.trim != 0.0 {
+            let (s, c) = self.pose.trim.sin_cos();
+            (x, z) = rot_down(x, z, self.pose_pivot_x, 0.0, s, c);
+        }
+        x += self.pose.dx;
+        z += self.pose.dz;
+        if self.platform.trim != 0.0 {
+            let (s, c) = self.platform.trim.sin_cos();
+            (x, z) = rot_down(x, z, self.platform.pivot_x, self.zw, s, c);
+        }
+        (x, z - self.zw)
+    }
+
+    fn water_to_body(&self, xw: f64, zdepth: f64) -> (f64, f64) {
+        let mut x = xw;
+        let mut z = zdepth + self.zw;
+        if self.platform.trim != 0.0 {
+            let (s, c) = (-self.platform.trim).sin_cos();
+            (x, z) = rot_down(x, z, self.platform.pivot_x, self.zw, s, c);
+        }
+        x -= self.pose.dx;
+        z -= self.pose.dz;
+        if self.pose.trim != 0.0 {
+            let (s, c) = (-self.pose.trim).sin_cos();
+            (x, z) = rot_down(x, z, self.pose_pivot_x, 0.0, s, c);
+        }
+        (x, z + self.waterline)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_map_roundtrips() {
+        let map = FrameMap {
+            waterline: 0.4,
+            pose: HullPose {
+                dx: 1.2,
+                dy: 0.0,
+                dz: -0.07,
+                trim: 0.03,
+                pivot_x: Some(3.0),
+            },
+            pose_pivot_x: 3.0,
+            platform: Platform {
+                sinkage: 0.05,
+                trim: -0.02,
+                pivot_x: 5.5,
+            },
+            zw: -0.11,
+        };
+        for &(xb, zb) in &[(0.0, 0.0), (2.7, 0.31), (10.0, 0.65), (-4.0, 1.0)] {
+            let (xw, zw) = map.body_to_water(xb, zb);
+            let (xb2, zb2) = map.water_to_body(xw, zw);
+            assert!((xb - xb2).abs() < 1e-12 && (zb - zb2).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn positive_trim_raises_the_positive_x_end() {
+        let map = FrameMap {
+            waterline: 0.0,
+            pose: HullPose {
+                trim: 0.1,
+                ..Default::default()
+            },
+            pose_pivot_x: 0.0,
+            platform: Platform::default(),
+            zw: 0.0,
+        };
+        // A point forward of the pivot at the waterline must move up
+        // (smaller depth) under positive trim.
+        let (_, z) = map.body_to_water(5.0, 0.0);
+        assert!(z < 0.0, "z {z}");
+    }
+
+    #[test]
+    fn platform_sinkage_equals_pose_dz() {
+        // Sinking the platform by s must immerse a hull exactly like
+        // lowering it by dz = s.
+        let sunk = FrameMap {
+            waterline: 0.3,
+            pose: HullPose::default(),
+            pose_pivot_x: 0.0,
+            platform: Platform {
+                sinkage: 0.17,
+                trim: 0.0,
+                pivot_x: 0.0,
+            },
+            zw: -0.17,
+        };
+        let lowered = FrameMap {
+            waterline: 0.3,
+            pose: HullPose {
+                dz: 0.17,
+                ..Default::default()
+            },
+            pose_pivot_x: 0.0,
+            platform: Platform::default(),
+            zw: 0.0,
+        };
+        for &(xb, zb) in &[(0.0, 0.0), (4.0, 0.5)] {
+            let a = sunk.body_to_water(xb, zb);
+            let b = lowered.body_to_water(xb, zb);
+            assert!((a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+        }
+    }
+}

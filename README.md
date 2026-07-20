@@ -129,18 +129,66 @@ michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
 ```
 
-**Sweeps** (`michell sweep`, IGES inputs): long-form CSV/JSON over the
-Cartesian product of design and load axes. `--axis waterline=…` sweeps the
-raw waterline; `--axis stem:dz|dx|dy|spread|trim=…` sweeps a hull's mount
-pose (trim in degrees rotates the control nets exactly — affine); and
-`--float weight=… [--float lcg=…]` switches to **equilibrium mode**: for
-each load the platform's sinkage (and pitch) are solved by a Newton
-iteration whose Jacobian comes from the waterplane properties, so
-counterfactuals like "what if the boat were heavier / the CG further
-forward" are directly sweepable at physically consistent attitudes. Every
-record carries the solved state, displacement, LCB, and the resistance
-breakdown. Hulls that fly dry at a pose contribute zero and are counted,
-not errored. All poses are hydrostatic (no speed-dependent squat).
+**Sweeps** (`michell sweep study.json`): long-form CSV/JSON over the
+Cartesian product of axes — every varying quantity (speed, weight, lcg,
+waterline, hull poses) is an axis, with fixed values as single-valued axes.
+A `weight` axis switches to **equilibrium mode**: each point's platform
+sinkage (and pitch, with `lcg`) is solved by a Newton iteration whose
+Jacobian comes from the waterplane properties, so counterfactuals like
+"what if the boat were heavier / the CG further forward" are swept at
+physically consistent attitudes. Every record carries the solved state,
+displacement, LCB, dry-hull count, and the resistance breakdown. All poses
+are hydrostatic (no speed-dependent squat).
+
+```json
+{
+  "name": "ama placement study",
+  "fluid": "seawater",
+  "hulls": [
+    { "id": "vaka",  "file": "boat-center.hull" },
+    { "id": "ama_s", "file": "boat-starboard.hull" },
+    { "id": "ama_p", "file": "boat-port.hull", "pose": { "trim": 0.5 } }
+  ],
+  "sweep": [
+    { "target": "speed", "unit": "knots", "range": [4, 10], "step": 0.5 },
+    { "target": "weight", "range": [1800, 2600], "step": 200 },
+    { "target": "lcg", "value": -5.8 },
+    { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
+    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] }
+  ],
+  "output": { "format": "csv", "file": "study.csv" },
+  "options": { "rel_tol": 1e-5, "form_factor": 0.05 }
+}
+```
+
+Axis values: `range: [start, stop]` with optional `step` (default: a fifth
+of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
+(`ms` | `knots` | `froude`). Pose params: `dx`, `dy`, `dz` (+down),
+`spread` (outboard, sign follows each hull's side), `trim` (degrees,
++ raises the +x end); a target list moves several hulls as one coupled
+axis. Hull files load relative to the manifest. A flag-based sweep over raw
+IGES (`--axis`, `--float`) remains for one-liners.
+
+**Bodies**: sweep manifests reference **full-band** `.hull` files — the
+half-breadth spline over the hull's band from keel to above the design
+waterline, written by `michell loft`:
+
+```text
+michell loft boat.igs --waterline 0.42 -o boat
+  -> boat-port.hull  boat-center.hull  boat-starboard.hull
+```
+
+Each body records `waterline` (design WL depth below its band top) and
+`centerplane` (detected transverse position, its default placement); hulls
+are named by role when the layout is recognizable. The band reaches
+`--band` metres above the design WL (default: half the design draft) — decks
+are deliberately excluded, since a deck is a cliff for a height-field loft;
+poses that rise past the band are reported per record (`band_exceeded`).
+Re-situating a body needs no Newton inversion (pitch rotation of a height
+field is an exact domain reparametrization), so equilibrium points run
+seconds-fast; the loft itself defaults to a dense net (28x32 at 241x97)
+because wave resistance is sensitive to loft resolution near the keel
+rocker and the body is fit once, reused thousands of times.
 
 Hydrostatics on every hull: displaced volume, LCB, waterplane area and
 moments, LCF — exact spline integrals.
@@ -180,10 +228,13 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
   `Placement` — fleets with exact wave interference.
 - `iges::import_fleet` — every hull in a file, with detected placements;
   `iges::import_hull` — exactly one (errors on multihull files).
-- `iges::source_fleet` + `SourceFleet::situate(waterline, poses, platform)` —
-  re-situate hulls repeatedly (immersion, mount trim, position) for sweeps.
-- `float::solve_equilibrium(fleet, waterline, poses, load, ρ)` — hydrostatic
-  sinkage/pitch balance for a mass + LCG load case.
+- `iges::source_fleet` + `SourceFleet::situate[_one](waterline, poses,
+  platform)` — re-situate hulls repeatedly (immersion, mount trim, position).
+- `body::Body` — full-band half-breadth spline; `situate` via exact
+  reparametrization (no Newton), fast enough for solver inner loops.
+- `float::solve_equilibrium[_bodies|_with]` — hydrostatic sinkage/pitch
+  balance for a mass + LCG load case, over IGES fleets, body assemblies, or
+  any custom situate closure.
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `hulls::wigley(l, b, t)` — exact reference hull.
 

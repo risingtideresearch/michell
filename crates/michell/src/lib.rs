@@ -53,6 +53,7 @@
 //! assert!(r.total > r.wave.resistance);
 //! ```
 
+pub mod body;
 mod bspline;
 mod conditions;
 mod error;

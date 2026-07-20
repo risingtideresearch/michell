@@ -1,4 +1,4 @@
 /target
 
-# CAD test data (local only)
-/ama.igs
+# local hull data and studies (user geometry)
+/ama*

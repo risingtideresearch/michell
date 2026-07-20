@@ -622,7 +622,7 @@ fn equilibrium_matches_analytic_wigley() {
     );
     assert!(eq.volume_residual < 5e-4, "vol residual {}", eq.volume_residual);
     assert_eq!(eq.trim, 0.0);
-    assert!(eq.fleet.dry.is_empty());
+    assert_eq!(eq.fleet.dry, 0);
 
     // The shell spans x in [0, 10], so its symmetry plane is x = 5: with lcg
     // there the trim must stay ~0.
@@ -676,6 +676,74 @@ fn equilibrium_matches_analytic_wigley() {
         format!("{err}").contains("unreachable"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn body_situate_matches_iges_situate() {
+    use michell::body::{Body, BodyOptions};
+    use michell::iges::{HullPose, Platform};
+    // Loft the shell over its full band (this generator's hull tops out at
+    // the DWL, so the band top is z_cad = 0.7 and the design waterline sits
+    // at depth 0 below it), build a Body, and compare re-situating through
+    // the body against re-situating through the IGES source.
+    let text = iges_file_meters(&wigley_shell_bodies(0.0));
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    let opts = import_opts();
+    let full = src
+        .situate_one(0, 0.7, &HullPose::default(), &Platform::default(), &opts)
+        .unwrap()
+        .expect("wet");
+    let body = Body::new(full.hull.surface().clone(), 0.0, full.report.centerplane).unwrap();
+    let bopts = BodyOptions {
+        stations: opts.stations,
+        waterlines: opts.waterlines,
+        fit: opts.fit,
+    };
+
+    // dz: raise by 0.1 — body vs IGES at the equivalent lowered waterline.
+    let pose = HullPose {
+        dz: -0.1,
+        ..Default::default()
+    };
+    let via_body = body
+        .situate(0.0, &pose, &Platform::default(), &bopts)
+        .unwrap()
+        .expect("wet");
+    let via_iges = src
+        .situate_one(0, 0.6, &HullPose::default(), &Platform::default(), &opts)
+        .unwrap()
+        .expect("wet");
+    let (vb, vi) = (
+        via_body.hull.displaced_volume(),
+        via_iges.hull.displaced_volume(),
+    );
+    assert!((vb - vi).abs() < 1e-6 * vi, "dz: vol {vb} vs {vi}");
+    let cond = Conditions::seawater(3.0);
+    let rwb = michell::wave_resistance(&via_body.hull, &cond).unwrap().resistance;
+    let rwi = michell::wave_resistance(&via_iges.hull, &cond).unwrap().resistance;
+    assert!((rwb - rwi).abs() < 1e-4 * rwi, "dz: Rw {rwb} vs {rwi}");
+    assert_eq!(via_body.band_exceeded, 0);
+
+    // trim: 2 degrees through both paths.
+    let pose = HullPose {
+        trim: 2.0f64.to_radians(),
+        ..Default::default()
+    };
+    let via_body = body
+        .situate(0.0, &pose, &Platform::default(), &bopts)
+        .unwrap()
+        .expect("wet");
+    let via_iges = src
+        .situate_one(0, 0.7, &pose, &Platform::default(), &opts)
+        .unwrap()
+        .expect("wet");
+    let (vb, vi) = (
+        via_body.hull.displaced_volume(),
+        via_iges.hull.displaced_volume(),
+    );
+    assert!((vb - vi).abs() < 1e-3 * vi, "trim: vol {vb} vs {vi}");
+    let (db, di) = (via_body.hull.draft(), via_iges.hull.draft());
+    assert!((db - di).abs() < 1e-3 * di, "trim: draft {db} vs {di}");
 }
 
 #[test]

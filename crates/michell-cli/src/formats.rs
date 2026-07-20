@@ -26,15 +26,18 @@
 //! IGES files (`.igs`/`.iges`, or sniffed by the section letter in column
 //! 73) are imported via `michell::iges`.
 
+use michell::body::{Body, BodyOptions};
 use michell::fit::{fit_offsets, FitOptions, FitReport};
-use michell::iges::{self, ImportOptions, ImportReport};
+use michell::iges::{self, HullPose, ImportOptions, ImportReport, Platform};
 use michell::{BSplineSurface, Hull, Placement};
 
 /// Where a hull came from, with any conversion diagnostics.
 #[derive(Clone)]
 pub enum Source {
-    /// Native control-net file: exact, no fit involved.
+    /// Native wetted control-net file: exact, no fit involved.
     Native,
+    /// A full-band body file, situated at its design waterline.
+    Body(FitReport),
     /// Lofted from an offsets table.
     Offsets(FitReport),
     /// Imported from IGES.
@@ -78,8 +81,28 @@ pub fn load_hulls(
         .unwrap_or("")
         .trim_end();
     if first.starts_with("michell-hull") {
-        let hull = parse_hull_file(&text)?;
-        return Ok(vec![(hull, Placement::default(), Source::Native)]);
+        let data = parse_hull_data(&text)?;
+        let y = data.centerplane.unwrap_or(0.0);
+        return match data.waterline {
+            // Full-band body: situate at its design waterline.
+            Some(wl) => {
+                let body = Body::new(data.surface, wl, y).map_err(|e| format!("{e}"))?;
+                let bopts = body_options(settings);
+                let situated = body
+                    .situate(0.0, &HullPose::default(), &Platform::default(), &bopts)
+                    .map_err(|e| format!("{e}"))?
+                    .ok_or_else(|| format!("{path}: body is dry at its design waterline"))?;
+                Ok(vec![(situated.hull, situated.placement, Source::Body(situated.fit))])
+            }
+            None => {
+                let hull = Hull::new(data.surface).map_err(|e| format!("{e}"))?;
+                Ok(vec![(
+                    hull,
+                    Placement { x: 0.0, y },
+                    Source::Native,
+                )])
+            }
+        };
     }
     if first.starts_with("michell-offsets") {
         let (st, wl, y) = parse_offsets_file(&text)?;
@@ -141,11 +164,21 @@ fn parse_floats(s: &str, what: &str) -> Result<Vec<f64>, String> {
         .collect()
 }
 
-pub fn parse_hull_file(text: &str) -> Result<Hull, String> {
+/// Contents of a `.hull` file: the spline plus optional body metadata.
+pub struct HullFileData {
+    pub surface: BSplineSurface,
+    /// Present = full-band body: depth of the design WL below the band top.
+    pub waterline: Option<f64>,
+    pub centerplane: Option<f64>,
+}
+
+pub fn parse_hull_data(text: &str) -> Result<HullFileData, String> {
     let mut degree_x: Option<usize> = None;
     let mut degree_z: Option<usize> = None;
     let mut knots_x: Option<Vec<f64>> = None;
     let mut knots_z: Option<Vec<f64>> = None;
+    let mut waterline: Option<f64> = None;
+    let mut centerplane: Option<f64> = None;
     let mut rows: Vec<Vec<f64>> = Vec::new();
     let mut saw_header = false;
     for (ln, raw) in text.lines().enumerate() {
@@ -166,6 +199,8 @@ pub fn parse_hull_file(text: &str) -> Result<Hull, String> {
             "degree-z" => degree_z = Some(parse_usize(rest).map_err(&at)?),
             "knots-x" => knots_x = Some(parse_floats(rest, "knots-x").map_err(&at)?),
             "knots-z" => knots_z = Some(parse_floats(rest, "knots-z").map_err(&at)?),
+            "waterline" => waterline = Some(parse_f64(rest).map_err(&at)?),
+            "centerplane" => centerplane = Some(parse_f64(rest).map_err(&at)?),
             "row" => rows.push(parse_floats(rest, "row").map_err(&at)?),
             other => return Err(at(format!("unknown key {other:?}"))),
         }
@@ -197,7 +232,43 @@ pub fn parse_hull_file(text: &str) -> Result<Hull, String> {
     }
     let surface =
         BSplineSurface::new(px, pz, kx, kz, control).map_err(|e| format!("{e}"))?;
-    Hull::new(surface).map_err(|e| format!("{e}"))
+    Ok(HullFileData {
+        surface,
+        waterline,
+        centerplane,
+    })
+}
+
+/// Load a full-band body from a `.hull` file (requires the `waterline` key).
+pub fn load_body(path: &str) -> Result<Body, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let data = parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?;
+    let wl = data.waterline.ok_or_else(|| {
+        format!(
+            "{path} is a wetted-only hull (no `waterline` key); re-run \
+             `michell loft` on the source geometry to produce a full-band body"
+        )
+    })?;
+    Body::new(data.surface, wl, data.centerplane.unwrap_or(0.0)).map_err(|e| format!("{path}: {e}"))
+}
+
+/// Body sampling options derived from the CLI load settings.
+pub fn body_options(settings: &LoadSettings) -> BodyOptions {
+    BodyOptions {
+        stations: settings.samples.0,
+        waterlines: settings.samples.1,
+        fit: if settings.fit_explicit {
+            settings.fit
+        } else {
+            BodyOptions::default().fit
+        },
+    }
+}
+
+fn parse_f64(s: &str) -> Result<f64, String> {
+    s.trim()
+        .parse::<f64>()
+        .map_err(|_| format!("cannot parse number {:?}", s.trim()))
 }
 
 fn parse_usize(s: &str) -> Result<usize, String> {
@@ -207,7 +278,20 @@ fn parse_usize(s: &str) -> Result<usize, String> {
 }
 
 pub fn write_hull_file(hull: &Hull) -> String {
-    let s = hull.surface();
+    write_spline_file(hull.surface(), None, None)
+}
+
+/// Write a full-band body file (`waterline` = design WL depth below the band
+/// top, `centerplane` = transverse position).
+pub fn write_body_file(surface: &BSplineSurface, waterline: f64, centerplane: f64) -> String {
+    write_spline_file(surface, Some(waterline), Some(centerplane))
+}
+
+fn write_spline_file(
+    s: &BSplineSurface,
+    waterline: Option<f64>,
+    centerplane: Option<f64>,
+) -> String {
     let join = |v: &[f64]| {
         v.iter()
             .map(|x| format!("{x}"))
@@ -215,6 +299,12 @@ pub fn write_hull_file(hull: &Hull) -> String {
             .join(" ")
     };
     let mut out = String::from("michell-hull v1\n");
+    if let Some(w) = waterline {
+        out.push_str(&format!("waterline {w}\n"));
+    }
+    if let Some(c) = centerplane {
+        out.push_str(&format!("centerplane {c}\n"));
+    }
     out.push_str(&format!("degree-x {}\n", s.degree_x()));
     out.push_str(&format!("degree-z {}\n", s.degree_z()));
     out.push_str(&format!("knots-x {}\n", join(s.knots_x())));

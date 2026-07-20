@@ -13,17 +13,28 @@
 //!
 //! All of this is *hydrostatic*: no speed-dependent (dynamic) sinkage/trim.
 
+use crate::body::{Body, BodyOptions};
 use crate::error::{Error, Result};
-use crate::iges::{HullPose, ImportOptions, Platform, SituatedFleet, SourceFleet};
+use crate::hull::Hull;
+use crate::iges::{HullPose, ImportOptions, Platform, SourceFleet};
+use crate::michell::Placement;
 
 /// What the platform must carry.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadCase {
     /// Total mass [kg].
     pub mass: f64,
-    /// Longitudinal centre of gravity [m], in the file's x coordinates.
+    /// Longitudinal centre of gravity [m], in the fleet's x coordinates.
     /// `None` locks the platform pitch at zero and balances weight only.
     pub lcg: Option<f64>,
+}
+
+/// The wetted fleet at some state: what the solver (and resistance) consume.
+#[derive(Debug)]
+pub struct FleetState {
+    pub members: Vec<(Hull, Placement)>,
+    /// Number of source hulls entirely above the water.
+    pub dry: usize,
 }
 
 /// A solved floating condition.
@@ -35,7 +46,7 @@ pub struct Equilibrium {
     /// Solved platform pitch [rad]; positive raises the +x end.
     pub trim: f64,
     /// The fleet situated at the solution, at full requested resolution.
-    pub fleet: SituatedFleet,
+    pub fleet: FleetState,
     /// Achieved displaced volume [m³].
     pub volume: f64,
     /// Achieved longitudinal centre of buoyancy [m].
@@ -59,7 +70,7 @@ struct Totals {
     draft: f64,
 }
 
-fn totals(fleet: &SituatedFleet) -> Totals {
+fn totals(fleet: &FleetState) -> Totals {
     let mut t = Totals {
         volume: 0.0,
         moment_x: 0.0,
@@ -68,28 +79,26 @@ fn totals(fleet: &SituatedFleet) -> Totals {
         wp_second: 0.0,
         draft: 0.0,
     };
-    for m in &fleet.members {
-        let v = m.hull.displaced_volume();
+    for (hull, place) in &fleet.members {
+        let v = hull.displaced_volume();
         t.volume += v;
-        t.moment_x += m.hull.lcb_x() * v;
-        t.wp_area += m.hull.waterplane_area();
-        t.wp_moment += m.hull.waterplane_moment();
-        t.wp_second += m.hull.waterplane_second_moment();
-        t.draft = t.draft.max(m.hull.draft());
+        t.moment_x += (hull.lcb_x() + place.x) * v;
+        t.wp_area += hull.waterplane_area();
+        t.wp_moment += hull.waterplane_moment() + place.x * hull.waterplane_area();
+        t.wp_second += hull.waterplane_second_moment()
+            + 2.0 * place.x * hull.waterplane_moment()
+            + place.x * place.x * hull.waterplane_area();
+        t.draft = t.draft.max(hull.draft());
     }
     t
 }
 
-/// Solve for the platform sinkage (and pitch, when `lcg` is given) that
-/// floats `load` at the given design poses. `waterline_z` is the base
-/// waterline the sinkage is measured from.
-pub fn solve_equilibrium(
-    src: &SourceFleet,
-    waterline_z: f64,
-    poses: &[HullPose],
+/// Generic equilibrium core. `situate(sinkage, trim, coarse)` produces the
+/// fleet at a platform state (coarse = reduced sampling for iterations).
+pub fn solve_equilibrium_with(
+    mut situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
     load: &LoadCase,
     density: f64,
-    opts: &ImportOptions,
 ) -> Result<Equilibrium> {
     if !(load.mass.is_finite() && load.mass > 0.0) {
         return Err(Error::InvalidConditions(format!(
@@ -109,32 +118,15 @@ pub fn solve_equilibrium(
     let z_guess = v_target.cbrt().max(1e-3);
     let pivot_x = load.lcg.unwrap_or(0.0);
 
-    // Coarse options for the iterations; the final answer is re-situated at
-    // the caller's resolution.
-    let mut coarse = *opts;
-    coarse.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
-    coarse.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
-    coarse.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
-    coarse.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
-
     let mut s = 0.0f64;
     let mut tau = 0.0f64;
     let mut iterations = 0usize;
 
-    for (phase_opts, max_iters, tol_v) in [(&coarse, 25usize, 1e-3f64), (opts, 8, 2e-4)] {
+    for (coarse, max_iters, tol_v) in [(true, 25usize, 1e-3f64), (false, 8, 2e-4)] {
         let mut converged = false;
         for _ in 0..max_iters {
             iterations += 1;
-            let fleet = src.situate(
-                waterline_z,
-                poses,
-                &Platform {
-                    sinkage: s,
-                    trim: tau,
-                    pivot_x,
-                },
-                phase_opts,
-            )?;
+            let fleet = situate(s, tau, coarse)?;
             if fleet.members.is_empty() {
                 // Everything dry: sink until something gets wet.
                 s += 0.5 * z_guess;
@@ -145,7 +137,7 @@ pub fn solve_equilibrium(
             let l_scale = fleet
                 .members
                 .iter()
-                .map(|m| m.hull.length())
+                .map(|(h, _)| h.length())
                 .fold(0.0f64, f64::max)
                 .max(1e-6);
             let r1 = t.volume - v_target;
@@ -224,16 +216,7 @@ pub fn solve_equilibrium(
     }
 
     // Final state at full resolution.
-    let fleet = src.situate(
-        waterline_z,
-        poses,
-        &Platform {
-            sinkage: s,
-            trim: tau,
-            pivot_x,
-        },
-        opts,
-    )?;
+    let fleet = situate(s, tau, false)?;
     let t = totals(&fleet);
     let lcb = if t.volume > 0.0 {
         t.moment_x / t.volume
@@ -251,4 +234,94 @@ pub fn solve_equilibrium(
         lcb_residual: load.lcg.map_or(0.0, |l| (lcb - l).abs()),
         fleet,
     })
+}
+
+/// Equilibrium of an IGES source fleet at design poses (see
+/// [`SourceFleet::situate`]). `waterline_z` is the base waterline the sinkage
+/// is measured from.
+pub fn solve_equilibrium(
+    src: &SourceFleet,
+    waterline_z: f64,
+    poses: &[HullPose],
+    load: &LoadCase,
+    density: f64,
+    opts: &ImportOptions,
+) -> Result<Equilibrium> {
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    let mut coarse_opts = *opts;
+    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
+    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
+    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
+    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
+    solve_equilibrium_with(
+        |s, tau, coarse| {
+            let fl = src.situate(
+                waterline_z,
+                poses,
+                &Platform {
+                    sinkage: s,
+                    trim: tau,
+                    pivot_x,
+                },
+                if coarse { &coarse_opts } else { opts },
+            )?;
+            Ok(FleetState {
+                dry: fl.dry.len(),
+                members: fl
+                    .members
+                    .into_iter()
+                    .map(|m| (m.hull, m.placement))
+                    .collect(),
+            })
+        },
+        load,
+        density,
+    )
+}
+
+/// Equilibrium of an assembly of full-band bodies at design poses.
+/// `water_offset` is the base water position below the design floatplane
+/// (normally 0) that the solved sinkage is measured from.
+pub fn solve_equilibrium_bodies(
+    bodies: &[&Body],
+    water_offset: f64,
+    poses: &[HullPose],
+    load: &LoadCase,
+    density: f64,
+    opts: &BodyOptions,
+) -> Result<Equilibrium> {
+    if bodies.len() != poses.len() {
+        return Err(Error::InvalidInput(format!(
+            "{} poses supplied for {} bodies",
+            poses.len(),
+            bodies.len()
+        )));
+    }
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    let mut coarse_opts = *opts;
+    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
+    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
+    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
+    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
+    solve_equilibrium_with(
+        |s, tau, coarse| {
+            let platform = Platform {
+                sinkage: s,
+                trim: tau,
+                pivot_x,
+            };
+            let o = if coarse { &coarse_opts } else { opts };
+            let mut members = Vec::new();
+            let mut dry = 0usize;
+            for (body, pose) in bodies.iter().zip(poses) {
+                match body.situate(water_offset, pose, &platform, o)? {
+                    Some(sb) => members.push((sb.hull, sb.placement)),
+                    None => dry += 1,
+                }
+            }
+            Ok(FleetState { members, dry })
+        },
+        load,
+        density,
+    )
 }

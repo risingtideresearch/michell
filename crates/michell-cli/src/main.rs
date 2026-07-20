@@ -1,6 +1,8 @@
 //! `michell` — thin-ship wave resistance from hull files.
 
 mod formats;
+mod json;
+mod manifest;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
@@ -19,7 +21,19 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("resistance") => cmd_resistance(&args[1..]),
-        Some("sweep") => cmd_sweep(&args[1..]),
+        Some("sweep") => {
+            // A JSON manifest is the preferred sweep interface.
+            if let Some(path) = args.get(1).filter(|a| a.ends_with(".json")) {
+                if args.len() > 2 {
+                    return Err("manifest sweeps take no further arguments; put \
+                                everything in the JSON file"
+                        .into());
+                }
+                manifest::run(path)
+            } else {
+                cmd_sweep(&args[1..])
+            }
+        }
         Some("info") => cmd_info(&args[1..]),
         Some("loft") => cmd_loft(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
@@ -81,7 +95,17 @@ PHYSICS OPTIONS
   --form-factor K       viscous form factor (1+k), default 0
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
 
-SWEEPS (IGES inputs only; hulls modelled in position)
+SWEEPS
+  michell sweep study.json      preferred: a JSON manifest referencing
+                                full-band .hull bodies (from `michell loft`),
+                                with speed/weight/lcg/waterline/pose axes —
+                                see the README for the schema
+  michell loft boat.igs --waterline Z -o boat
+                                decompose an IGES multihull into full-band
+                                body files (boat-port.hull, ...); --wetted
+                                keeps the old single-hull wetted output
+
+SWEEPS (flag form, IGES inputs; hulls modelled in position)
   michell sweep boat.igs --speeds 3:8:1 [axes...]         long-form CSV/JSON
   --axis waterline=A:B:S        raw waterline sweep
   --axis SEL:PARAM=A[:B:S]      design-pose sweep; SEL = file stem, or
@@ -114,7 +138,7 @@ struct Parsed {
     switches: Vec<String>,
 }
 
-const SWITCHES: &[&str] = &["--json", "--knots", "--csv"];
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--wetted"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {
@@ -316,6 +340,11 @@ fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Vec<Member>, 
 fn describe_source(source: &Source) -> Vec<String> {
     match source {
         Source::Native => vec!["source: native control net (exact)".into()],
+        Source::Body(r) => vec![format!(
+            "source: full-band body, situated at its design waterline \
+             (loft max residual {:.3e} m, rms {:.3e} m)",
+            r.max_residual, r.rms_residual
+        )],
         Source::Offsets(r) => vec![format!(
             "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
             r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
@@ -894,7 +923,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         }
 
         // Situate (raw) or solve (float).
-        let mut fleets = Vec::new();
+        let mut fleets: Vec<michell::float::FleetState> = Vec::new();
         let (sinkage, trim_deg, volume, lcb, dry) = if let Some(mass) = weight {
             let eq = solve_equilibrium(
                 &files[0].src,
@@ -910,7 +939,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 eq.trim.to_degrees(),
                 eq.volume,
                 eq.lcb,
-                eq.fleet.dry.len(),
+                eq.fleet.dry,
             );
             fleets.push(eq.fleet);
             out
@@ -924,18 +953,20 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                     .situate(waterline, fp, &Platform::default(), &opts)
                     .map_err(|e| format!("point {}: {e}", point + 1))?;
                 dry += fl.dry.len();
-                for m in &fl.members {
+                let mut members = Vec::new();
+                for m in fl.members {
                     volume += m.hull.displaced_volume();
                     moment += m.hull.lcb_x() * m.hull.displaced_volume();
+                    members.push((m.hull, m.placement));
                 }
-                fleets.push(fl);
+                fleets.push(michell::float::FleetState { members, dry: 0 });
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (0.0, 0.0, volume, lcb, dry)
         };
         let members: Vec<(&Hull, Placement)> = fleets
             .iter()
-            .flat_map(|fl| fl.members.iter().map(|m| (&m.hull, m.placement)))
+            .flat_map(|fl| fl.members.iter().map(|(h, p)| (h, *p)))
             .collect();
 
         for &u in &speeds {
@@ -1023,25 +1054,148 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
     };
     let out_path = p
         .flag("output")
-        .ok_or("loft requires an output path: -o OUT.hull")?;
-    let mut hulls = load_hulls(path, &p.load_settings()?)?;
-    if hulls.len() > 1 {
-        return Err(format!(
-            "{path} contains {} hulls; a control-net file holds one — export \
-             hulls separately to loft them individually",
-            hulls.len()
-        ));
+        .ok_or("loft requires an output path: -o PREFIX (or OUT.hull)")?;
+    let settings = p.load_settings()?;
+
+    // IGES files loft to full-band bodies by default, decomposing multihull
+    // files into one body per hull. --wetted keeps the old single-hull
+    // wetted-only output; offsets tables always loft wetted.
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let first = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim_end();
+    let lower = path.to_ascii_lowercase();
+    let is_iges = lower.ends_with(".igs")
+        || lower.ends_with(".iges")
+        || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G');
+
+    if !is_iges || p.switch("--wetted") {
+        let mut hulls = load_hulls(path, &settings)?;
+        if hulls.len() > 1 {
+            return Err(format!(
+                "{path} contains {} hulls; --wetted lofts exactly one — drop \
+                 --wetted to decompose into full-band bodies",
+                hulls.len()
+            ));
+        }
+        let (hull, _, source) = hulls.pop().expect("one hull");
+        if matches!(source, Source::Native | Source::Body(_)) {
+            return Err(format!("{path} is already a control-net file"));
+        }
+        std::fs::write(out_path, write_hull_file(&hull))
+            .map_err(|e| format!("cannot write {out_path}: {e}"))?;
+        for line in describe_source(&source) {
+            println!("{line}");
+        }
+        println!("wrote {out_path}");
+        return Ok(());
     }
-    let (hull, _, source) = hulls.pop().expect("one hull");
-    if matches!(source, Source::Native) {
-        return Err(format!("{path} is already a control-net file"));
+
+    // Full-band decomposition. A body is lofted once and re-situated many
+    // times, so default to a much denser sampling and control net than the
+    // one-shot import path — wave resistance is sensitive to loft resolution
+    // near support boundaries (keel rocker, stem), and the band is taller
+    // than the wetted zone.
+    use michell::iges::{self, HullPose, ImportOptions, Platform};
+    let design_wl = settings.waterline_z;
+    let opts = ImportOptions {
+        waterline_z: design_wl,
+        stations: if p.flag("samples").is_some() {
+            settings.samples.0
+        } else {
+            241
+        },
+        waterlines: if p.flag("samples").is_some() {
+            settings.samples.1
+        } else {
+            97
+        },
+        fit: if settings.fit_explicit {
+            settings.fit
+        } else {
+            michell::fit::FitOptions {
+                degree_x: 3,
+                degree_z: 3,
+                n_ctrl_x: 28,
+                n_ctrl_z: 32,
+            }
+        },
+        centerplane: settings.centerplane,
+    };
+    let src = iges::source_fleet(&text, design_wl).map_err(|e| format!("{path}: {e}"))?;
+    let n = src.len();
+    // The band reaches from the keel to `--band` metres above the design
+    // waterline (default: half the design draft). Including the deck in the
+    // fit would distort the wetted geometry — a deck is a cliff for a
+    // height-field loft — so the band should stay below it; a sweep that
+    // rises past the band is reported per-pose as band_exceeded.
+    let band_flag = p.f64_flag("band")?;
+    let mut lofted = Vec::new();
+    for idx in 0..n {
+        let top = src.hull_z_top(idx);
+        let bottom = src.hull_z_bottom(idx);
+        let draft_est = design_wl - bottom;
+        if draft_est <= 0.0 {
+            return Err(format!(
+                "{path} hull {idx}: design waterline (z = {design_wl}) is below \
+                 the hull (keel bound z = {bottom:.3})"
+            ));
+        }
+        let margin = band_flag.unwrap_or(0.5 * draft_est).max(0.0);
+        let band_top = (design_wl + margin).min(top);
+        let m = src
+            .situate_one(
+                idx,
+                band_top,
+                &HullPose::default(),
+                &Platform::default(),
+                &opts,
+            )
+            .map_err(|e| format!("{path} hull {idx}: {e}"))?
+            .ok_or_else(|| format!("{path} hull {idx}: nothing below the band top?"))?;
+        let wl_depth = band_top - design_wl;
+        lofted.push((m, wl_depth));
     }
-    std::fs::write(out_path, write_hull_file(&hull))
-        .map_err(|e| format!("cannot write {out_path}: {e}"))?;
-    for line in describe_source(&source) {
-        println!("{line}");
+    let ys: Vec<f64> = lofted.iter().map(|(m, _)| m.report.centerplane).collect();
+    let span = ys.last().unwrap_or(&0.0) - ys.first().unwrap_or(&0.0);
+    let names: Vec<String> = if n == 1 {
+        vec![String::new()]
+    } else if n == 2 && (ys[0] + ys[1]).abs() < 0.1 * span {
+        vec!["port".into(), "starboard".into()]
+    } else if n == 3
+        && (ys[0] + ys[2]).abs() < 0.1 * span
+        && (ys[1] - (ys[0] + ys[2]) / 2.0).abs() < 0.25 * span
+    {
+        vec!["port".into(), "center".into(), "starboard".into()]
+    } else {
+        (0..n).map(|i| i.to_string()).collect()
+    };
+    let prefix = out_path.strip_suffix(".hull").unwrap_or(out_path);
+    println!(
+        "{:<28} {:>12} {:>9} {:>9} {:>11} {:>18}",
+        "file", "centerplane", "band[m]", "WL depth", "residual", "at (x, z)"
+    );
+    for ((m, wl_depth), name) in lofted.iter().zip(&names) {
+        let file = if name.is_empty() {
+            format!("{prefix}.hull")
+        } else {
+            format!("{prefix}-{name}.hull")
+        };
+        let body_text =
+            formats::write_body_file(m.hull.surface(), *wl_depth, m.report.centerplane);
+        std::fs::write(&file, body_text).map_err(|e| format!("cannot write {file}: {e}"))?;
+        println!(
+            "{file:<28} {:>12.4} {:>9.4} {:>9.4} {:>11.3e} {:>9.3},{:>7.3}",
+            m.report.centerplane,
+            m.hull.draft(),
+            wl_depth,
+            m.report.fit.max_residual,
+            m.report.fit.max_residual_at.0,
+            m.report.fit.max_residual_at.1,
+        );
     }
-    println!("wrote {out_path}");
     Ok(())
 }
 

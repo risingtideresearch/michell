@@ -748,56 +748,105 @@ impl SourceFleet {
                 "need at least 8 stations and 6 waterlines to sample".into(),
             ));
         }
-        let wl = waterline_z + platform.sinkage;
         let mut members = Vec::new();
         let mut dry = Vec::new();
-        for (hi, surfs) in self.hulls.iter().enumerate() {
-            let pose = &poses[hi];
-            let mut moved = surfs.clone();
-            // Design trim about (pivot_x, base waterline), then shifts.
-            if pose.trim != 0.0 {
-                let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
-                let (sin, cos) = pose.trim.sin_cos();
-                for s in &mut moved {
-                    for p in s.ctrl.iter_mut() {
-                        rotate_xz(p, px, waterline_z, cos, sin);
-                    }
-                }
+        for (hi, pose) in poses.iter().enumerate() {
+            match self.situate_hull(hi, waterline_z, pose, platform, opts)? {
+                Some(m) => members.push(m),
+                None => dry.push(hi),
             }
-            if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
-                for s in &mut moved {
-                    for p in s.ctrl.iter_mut() {
-                        p[0] += pose.dx;
-                        p[1] += pose.dy;
-                        p[2] -= pose.dz;
-                    }
-                }
-            }
-            // Platform pitch about (pivot_x, effective waterline).
-            if platform.trim != 0.0 {
-                let (sin, cos) = platform.trim.sin_cos();
-                for s in &mut moved {
-                    for p in s.ctrl.iter_mut() {
-                        rotate_xz(p, platform.pivot_x, wl, cos, sin);
-                    }
-                }
-            }
-            let patches = presample_surfaces(&moved, wl);
-            if patches.iter().all(|p| p.wet_box.is_none()) {
-                dry.push(hi);
-                continue;
-            }
-            let (hull, report) = import_cluster(patches, opts, self.units_scale)?;
-            members.push(ImportedHull {
-                placement: Placement {
-                    x: 0.0,
-                    y: report.centerplane,
-                },
-                hull,
-                report,
-            });
         }
         Ok(SituatedFleet { members, dry })
+    }
+
+    /// Situate a single hull of the fleet; `Ok(None)` when it is dry.
+    pub fn situate_one(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &ImportOptions,
+    ) -> Result<Option<ImportedHull>> {
+        if idx >= self.hulls.len() {
+            return Err(Error::InvalidInput(format!(
+                "hull index {idx} out of range ({} hulls)",
+                self.hulls.len()
+            )));
+        }
+        self.situate_hull(idx, waterline_z, pose, platform, opts)
+    }
+
+    /// Highest z (CAD frame, up) of a hull's control net — an upper bound on
+    /// its geometry, used to loft full bands.
+    pub fn hull_z_top(&self, idx: usize) -> f64 {
+        self.hulls[idx]
+            .iter()
+            .flat_map(|s| s.ctrl.iter())
+            .fold(f64::NEG_INFINITY, |m, p| m.max(p[2]))
+    }
+
+    /// Lowest z (CAD frame, up) of a hull's control net — a lower bound on
+    /// its keel.
+    pub fn hull_z_bottom(&self, idx: usize) -> f64 {
+        self.hulls[idx]
+            .iter()
+            .flat_map(|s| s.ctrl.iter())
+            .fold(f64::INFINITY, |m, p| m.min(p[2]))
+    }
+
+    fn situate_hull(
+        &self,
+        hi: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &ImportOptions,
+    ) -> Result<Option<ImportedHull>> {
+        let surfs = &self.hulls[hi];
+        let wl = waterline_z + platform.sinkage;
+        let mut moved = surfs.clone();
+        // Design trim about (pivot_x, base waterline), then shifts.
+        if pose.trim != 0.0 {
+            let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+            let (sin, cos) = pose.trim.sin_cos();
+            for s in &mut moved {
+                for p in s.ctrl.iter_mut() {
+                    rotate_xz(p, px, waterline_z, cos, sin);
+                }
+            }
+        }
+        if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
+            for s in &mut moved {
+                for p in s.ctrl.iter_mut() {
+                    p[0] += pose.dx;
+                    p[1] += pose.dy;
+                    p[2] -= pose.dz;
+                }
+            }
+        }
+        // Platform pitch about (pivot_x, effective waterline).
+        if platform.trim != 0.0 {
+            let (sin, cos) = platform.trim.sin_cos();
+            for s in &mut moved {
+                for p in s.ctrl.iter_mut() {
+                    rotate_xz(p, platform.pivot_x, wl, cos, sin);
+                }
+            }
+        }
+        let patches = presample_surfaces(&moved, wl);
+        if patches.iter().all(|p| p.wet_box.is_none()) {
+            return Ok(None);
+        }
+        let (hull, report) = import_cluster(patches, opts, self.units_scale)?;
+        Ok(Some(ImportedHull {
+            placement: Placement {
+                x: 0.0,
+                y: report.centerplane,
+            },
+            hull,
+            report,
+        }))
     }
 }
 
