@@ -3,6 +3,7 @@
 mod formats;
 mod json;
 mod manifest;
+mod png;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
@@ -35,6 +36,8 @@ fn run() -> Result<(), String> {
             }
         }
         Some("info") => cmd_info(&args[1..]),
+        Some("spectrum") => cmd_spectrum(&args[1..]),
+        Some("wake") => cmd_wake(&args[1..]),
         Some("loft") => cmd_loft(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
         Some("help") | Some("-h") | Some("--help") | None => {
@@ -51,6 +54,8 @@ michell — thin-ship wave resistance (Michell's integral) + ITTC-57 friction
 USAGE
   michell resistance <hull>... --speeds A[:B:STEP] [options]  resistance curve
   michell info <hull>... [options]                            geometry & diagnostics
+  michell spectrum <hull>... --speed U [options]              free-wave spectrum
+  michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
   michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
@@ -101,6 +106,27 @@ PHYSICS OPTIONS
   --gravity G           override g [m/s2]
   --form-factor K       viscous form factor (1+k), default 0
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
+
+WAVE FIELD (spectrum, wake)
+  Both take one speed: --speed U (m/s; knots with --knots) or --froude F.
+  The ship advances toward +x (the bow is the high-x end of the hull file).
+
+  spectrum: the far-field free-wave spectrum by propagation angle theta —
+  where the wave energy goes. CSV to stdout (or --json): amplitude density
+  |A| [m/rad], phase, dRw/dtheta [N/rad], cumulative resistance fraction;
+  integrating dRw/dtheta recovers Rw (cross-check on stderr).
+    --points N          theta samples (default 721)
+
+  wake: the Kelvin wave pattern zeta(x, y) reconstructed from the spectrum.
+    -o OUT.png|.csv|.json  output (default wake.png); the PNG is a heatmap
+                        (blue trough, red crest, gray hull waterplanes)
+    --region X0:X1:Y0:Y1   window in fleet coordinates [m]
+                        (default: ~3 hull lengths of wake, auto width)
+    --size WxH          grid points (default 900 wide, aspect-matched)
+    --zmax M            color saturation elevation [m] (default: 99.5th
+                        percentile of |zeta|)
+  The pattern is the far-field free-wave part of the linear solution: it is
+  physical astern of each hull, not on or ahead of it.
 
 SWEEPS
   michell sweep study.json      preferred: a JSON manifest referencing
@@ -1080,6 +1106,351 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     } else {
         print!("{out}");
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Wave field
+// ---------------------------------------------------------------------------
+
+/// One `--speed U` or `--froude F` (with `--knots` applying to `--speed`).
+fn single_speed(p: &Parsed, l_ref: f64) -> Result<f64, String> {
+    let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
+    match (p.f64_flag("speed")?, p.f64_flag("froude")?) {
+        (Some(_), Some(_)) => Err("give either --speed or --froude, not both".into()),
+        (Some(u), None) => Ok(if p.switch("--knots") { u * KNOT } else { u }),
+        (None, Some(f)) => Ok(f * (g * l_ref).sqrt()),
+        (None, None) => Err("select a speed with --speed U or --froude F".into()),
+    }
+}
+
+fn parse_region(s: &str) -> Result<[f64; 4], String> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let [x0, x1, y0, y1] = parts.as_slice() else {
+        return Err(format!("--region {s:?}: expected X0:X1:Y0:Y1"));
+    };
+    let mut out = [0.0; 4];
+    for (slot, v) in out.iter_mut().zip([x0, x1, y0, y1]) {
+        *slot = v
+            .trim()
+            .parse::<f64>()
+            .map_err(|_| format!("--region: cannot parse number {v:?}"))?;
+    }
+    Ok(out)
+}
+
+fn cmd_spectrum(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err("usage: michell spectrum <hull>... --speed U [options]".into());
+    }
+    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    let members: Vec<(&Hull, Placement)> =
+        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let l_ref = members
+        .iter()
+        .map(|(h, _)| h.length())
+        .fold(0.0f64, f64::max);
+    let u = single_speed(&p, l_ref)?;
+    let cond = p.conditions(u)?;
+    let n = match p.flag("points") {
+        None => 721,
+        Some(v) => v
+            .parse::<usize>()
+            .map_err(|_| format!("--points: cannot parse {v:?}"))?
+            .max(9),
+    };
+
+    let mut spec =
+        michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+
+    // Significant angular range: where dRw/dθ still matters.
+    let lim = 89.5f64.to_radians();
+    let scan = 4096;
+    let mut peak = 0.0f64;
+    let mut theta_max = 0.0f64;
+    for i in 0..=scan {
+        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
+        let d = spec.resistance_density(theta);
+        if d > peak {
+            peak = d;
+        }
+    }
+    for i in 0..=scan {
+        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
+        if spec.resistance_density(theta) > 1e-5 * peak {
+            theta_max = theta_max.max(theta.abs());
+        }
+    }
+    let theta_max = (theta_max * 1.05).min(lim).max(1e-3);
+
+    // Sample the output rows and the cumulative resistance integral.
+    let mut rows = Vec::with_capacity(n);
+    let h = 2.0 * theta_max / (n - 1) as f64;
+    let mut cum = Vec::with_capacity(n);
+    let mut total = 0.0f64;
+    let mut prev_d = 0.0f64;
+    for i in 0..n {
+        let theta = -theta_max + h * i as f64;
+        let a = spec.amplitude(theta);
+        let d = spec.resistance_density(theta);
+        if i > 0 {
+            total += 0.5 * (prev_d + d) * h;
+        }
+        prev_d = d;
+        cum.push(total);
+        rows.push((theta, a, d));
+    }
+    let rw_spectrum = total;
+    let rw = michell::multihull_wave_resistance(&members, &cond)
+        .map_err(|e| format!("{e}"))?
+        .resistance;
+    eprintln!(
+        "U = {u:.3} m/s (Fn {:.3}): Rw = {rw:.4} N (spectrum integral {rw_spectrum:.4} N), \
+         transverse wavelength {:.3} m, theta range +-{:.2} deg",
+        cond.froude_number(l_ref),
+        spec.transverse_wavelength(),
+        theta_max.to_degrees()
+    );
+
+    if p.switch("--json") {
+        let mut out = String::from("{");
+        out.push_str(&format!(
+            "\"speed\":{u},\"froude\":{},\"k0\":{},\"transverse_wavelength\":{},\
+             \"rw_michell\":{rw},\"rw_spectrum\":{rw_spectrum},\"points\":[",
+            cond.froude_number(l_ref),
+            spec.wavenumber(),
+            spec.transverse_wavelength()
+        ));
+        for (i, (theta, a, d)) in rows.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!(
+                "{{\"theta_deg\":{},\"lambda\":{},\"wavelength\":{},\"amp_re\":{},\
+                 \"amp_im\":{},\"amp_abs\":{},\"drw_dtheta\":{},\"cum_fraction\":{}}}",
+                theta.to_degrees(),
+                1.0 / theta.cos(),
+                spec.transverse_wavelength() * theta.cos() * theta.cos(),
+                a.re,
+                a.im,
+                a.abs(),
+                d,
+                if rw_spectrum > 0.0 { cum[i] / rw_spectrum } else { 0.0 }
+            ));
+        }
+        out.push_str("]}");
+        println!("{out}");
+        return Ok(());
+    }
+
+    println!("theta_deg,lambda,wavelength_m,amp_re,amp_im,amp_abs,drw_dtheta,cum_fraction");
+    for (i, (theta, a, d)) in rows.iter().enumerate() {
+        println!(
+            "{},{},{},{},{},{},{},{}",
+            theta.to_degrees(),
+            1.0 / theta.cos(),
+            spec.transverse_wavelength() * theta.cos() * theta.cos(),
+            a.re,
+            a.im,
+            a.abs(),
+            d,
+            if rw_spectrum > 0.0 { cum[i] / rw_spectrum } else { 0.0 }
+        );
+    }
+    Ok(())
+}
+
+fn cmd_wake(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err(
+            "usage: michell wake <hull>... --speed U [-o wake.png] [options]".into(),
+        );
+    }
+    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    let members: Vec<(&Hull, Placement)> =
+        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let l_ref = members
+        .iter()
+        .map(|(h, _)| h.length())
+        .fold(0.0f64, f64::max);
+    let u = single_speed(&p, l_ref)?;
+    let cond = p.conditions(u)?;
+
+    // Fleet extents in fleet coordinates.
+    let mut x_lo = f64::INFINITY;
+    let mut x_hi = f64::NEG_INFINITY;
+    let mut y_abs = 0.0f64;
+    for m in &loaded {
+        let (h0, h1) = m.hull.surface().x_domain();
+        x_lo = x_lo.min(h0 + m.placement.x);
+        x_hi = x_hi.max(h1 + m.placement.x);
+        y_abs = y_abs.max(m.placement.y.abs());
+    }
+
+    let [x0, x1, y0, y1] = match p.flag("region") {
+        Some(s) => parse_region(s)?,
+        None => {
+            let x1 = x_hi + 0.35 * l_ref;
+            let x0 = x_lo - 3.0 * l_ref;
+            let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
+            [x0, x1, -yh, yh]
+        }
+    };
+    let (nx, ny) = match p.flag("size") {
+        Some(s) => parse_pair(s)?,
+        None => {
+            let nx = 900usize;
+            let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round() as usize;
+            (nx, ny.clamp(64, 1200))
+        }
+    };
+    if nx < 2 || ny < 2 {
+        return Err("--size: need at least 2x2 grid points".into());
+    }
+
+    let mut spec =
+        michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let grid = spec
+        .elevation_grid(x0, x1, y0, y1, nx, ny)
+        .map_err(|e| format!("{e}"))?;
+
+    let out_path = p.flag("output").cloned().unwrap_or_else(|| {
+        if p.switch("--json") || p.switch("--csv") {
+            String::new()
+        } else {
+            "wake.png".to_string()
+        }
+    });
+
+    let mut lo = 0.0f64;
+    let mut hi = 0.0f64;
+    for &v in &grid.zeta {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let summary = format!(
+        "wake: {nx}x{ny} over x {x0:.2}..{x1:.2} m, y {y0:.2}..{y1:.2} m at U = {u:.3} m/s \
+         (Fn {:.3})\nzeta {:.4}..{:.4} m, transverse wavelength {:.3} m, max lambda {:.1}{}\n\
+         ship advances toward +x; the pattern is physical astern of each hull",
+        cond.froude_number(l_ref),
+        lo,
+        hi,
+        spec.transverse_wavelength(),
+        grid.max_lambda,
+        if grid.resolution_limited {
+            " (grid-resolution limited; finer --size reveals shorter diverging waves)"
+        } else {
+            ""
+        }
+    );
+
+    // Data outputs.
+    let json_out = out_path.ends_with(".json") || (out_path.is_empty() && p.switch("--json"));
+    let csv_out = out_path.ends_with(".csv") || (out_path.is_empty() && p.switch("--csv"));
+    if json_out || csv_out {
+        let mut out = String::new();
+        if json_out {
+            out.push_str(&format!(
+                "{{\"speed\":{u},\"x0\":{x0},\"x1\":{x1},\"y0\":{y0},\"y1\":{y1},\
+                 \"nx\":{nx},\"ny\":{ny},\"transverse_wavelength\":{},\"max_lambda\":{},\
+                 \"resolution_limited\":{},\"zeta\":[",
+                spec.transverse_wavelength(),
+                grid.max_lambda,
+                grid.resolution_limited
+            ));
+            for iy in 0..ny {
+                if iy > 0 {
+                    out.push(',');
+                }
+                out.push('[');
+                for ix in 0..nx {
+                    if ix > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&format!("{}", grid.get(ix, iy)));
+                }
+                out.push(']');
+            }
+            out.push_str("]}");
+        } else {
+            out.push_str("x,y,zeta\n");
+            for iy in 0..ny {
+                for ix in 0..nx {
+                    out.push_str(&format!(
+                        "{},{},{}\n",
+                        grid.x(ix),
+                        grid.y(iy),
+                        grid.get(ix, iy)
+                    ));
+                }
+            }
+        }
+        eprintln!("{summary}");
+        if out_path.is_empty() {
+            print!("{out}");
+            if json_out {
+                println!();
+            }
+        } else {
+            std::fs::write(&out_path, out)
+                .map_err(|e| format!("cannot write {out_path}: {e}"))?;
+            println!("wrote {out_path}");
+        }
+        return Ok(());
+    }
+    if !out_path.ends_with(".png") {
+        return Err(format!(
+            "wake output {out_path:?}: expected a .png, .csv, or .json path"
+        ));
+    }
+
+    // Color scale: saturate at the 99.5th percentile of |zeta| so a single
+    // extreme pixel does not wash out the pattern.
+    let vmax = match p.f64_flag("zmax")? {
+        Some(v) if v > 0.0 => v,
+        Some(v) => return Err(format!("--zmax must be positive, got {v}")),
+        None => {
+            let mut abs: Vec<f64> = grid.zeta.iter().map(|v| v.abs()).collect();
+            abs.sort_by(|a, b| a.total_cmp(b));
+            abs[((abs.len() - 1) as f64 * 0.995) as usize].max(1e-12)
+        }
+    };
+
+    let mut rgb = vec![0u8; 3 * nx * ny];
+    for iy in 0..ny {
+        // PNG row 0 is the top of the image = the +y edge.
+        let row = ny - 1 - iy;
+        for ix in 0..nx {
+            let t = grid.get(ix, iy) / vmax;
+            let c = png::diverging(t);
+            rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3].copy_from_slice(&c);
+        }
+    }
+    // Hull waterplane footprints in neutral dark gray.
+    const HULL_GRAY: [u8; 3] = [0x52, 0x51, 0x4e];
+    for m in &loaded {
+        let (h0, h1) = m.hull.surface().x_domain();
+        for ix in 0..nx {
+            let x = grid.x(ix) - m.placement.x;
+            if x < h0 || x > h1 {
+                continue;
+            }
+            let half_beam = m.hull.surface().eval(x, 0.0);
+            for iy in 0..ny {
+                if (grid.y(iy) - m.placement.y).abs() <= half_beam {
+                    let row = ny - 1 - iy;
+                    rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3]
+                        .copy_from_slice(&HULL_GRAY);
+                }
+            }
+        }
+    }
+    std::fs::write(&out_path, png::encode_rgb(nx, ny, &rgb))
+        .map_err(|e| format!("cannot write {out_path}: {e}"))?;
+    println!("{summary}");
+    println!("color scale: +-{vmax:.4} m; wrote {out_path}");
     Ok(())
 }
 

@@ -135,7 +135,31 @@ michell resistance wigley.hull --froude 0.2:0.5:0.05
 michell resistance hull.igs --waterline 2.6 --speeds 4:9:0.5 --knots --json
 michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
+michell spectrum wigley.hull --speed 3              # free-wave spectrum (CSV)
+michell wake boat-*.hull --speed 8 --knots -o wake.png   # Kelvin wake heatmap
 ```
+
+**Wave field** (`spectrum`, `wake`; one speed via `--speed` or `--froude`):
+the far-field wave pattern is reconstructed from the same exactly-evaluated
+amplitude function `F = I + iJ` the resistance uses. `spectrum` tabulates the
+free-wave spectrum by propagation angle θ — elevation amplitude density |A(θ)|
+[m/rad], phase, and the angular resistance density dR_w/dθ, whose integral
+reproduces R_w (cross-checked on stderr) — showing where the wave energy goes
+(transverse θ ≈ 0 vs diverging θ → ±90°) and which angles a multihull's
+interference cancels. `wake` evaluates the Kelvin pattern
+
+```text
+ζ(x, y) = Re ∫ A(θ) e^{iν secθ (x + y tanθ)} dθ,   A = −(2ν/π) sec³θ conj(F)
+```
+
+on a grid and renders a PNG heatmap (blue trough / red crest, hull
+waterplanes in gray), or emits CSV/JSON for other tooling. Conventions: the
+ship advances toward +x, so the wake trails toward −x; the reconstruction is
+the far-field free-wave part of the linear solution, physical astern of each
+hull (not on or ahead of it). Grids too coarse for the shortest diverging
+waves are smoothly band-limited and flagged. The magnitude of A is pinned by
+the deep-water free-wave resistance identity R_w = ½πρU² ∫|A|²cos³θ dθ; the
+phase follows Tuck, Scullen & Lazauskas mapped to these conventions.
 
 **Sweeps** (`michell sweep study.json`): long-form CSV/JSON over the
 Cartesian product of axes — every varying quantity (speed, weight, lcg,
@@ -244,6 +268,9 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
   balance for a mass + LCG load case, over IGES fleets, body assemblies, or
   any custom situate closure.
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
+- `FreeWaveSpectrum::new(&members, &cond)` — far-field spectrum of a fleet:
+  `amplitude(θ)`, `resistance_density(θ)` (dR_w/dθ), and Kelvin-wake
+  reconstruction via `elevation_at(x, y)` / `elevation_grid(...)`.
 - `hulls::wigley(l, b, t)` — exact reference hull.
 
 ## Roadmap
@@ -251,13 +278,19 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 1. Parallel sweep evaluation (each equilibrium point is independent).
 2. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
    path.
-3. Transom closure, wave spectrum output, Python bindings.
+3. Transom closure, Python bindings.
+4. Longitudinal wave cuts against published Wigley measurements; wake
+   animation over a speed range.
 
 ## References
 
 - E. O. Tuck, *The wave resistance formula of J.H. Michell (1898) and its
   significance to recent research in ship hydrodynamics*, J. Austral. Math.
   Soc. B 30 (1989).
+- E. O. Tuck, D. C. Scullen & L. Lazauskas, *Ship-wave patterns in the
+  spirit of Michell*, IUTAM Symposium (2001); *Wave patterns and minimum
+  wave resistance for high-speed vessels*, 24th Symp. Naval Hydrodynamics
+  (2002) — far-field free-wave spectrum and wave-pattern evaluation.
 - J. Dambrine, M. Pierre, G. Rousseaux, *A theoretical and numerical
   determination of optimal ship forms based on Michell's wave resistance*,
   ESAIM: COCV (2016), arXiv:1410.2800.
