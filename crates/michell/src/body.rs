@@ -199,29 +199,33 @@ impl Body {
         let mut fx = vec![f64::NAN; ns * nw];
         let mut fz = vec![f64::NAN; ns * nw];
         let mut band_exceeded = 0usize;
+        // The forward scan and this inverse map round-trip through the same
+        // rotations, so grid rows meant to land exactly on a domain edge (the
+        // keel row, the end stations) can overshoot by roundoff; clamp a
+        // whisker rather than silently zeroing them.
+        let xtol = 1e-9 * (x1 - x0);
+        let ztol = 1e-9 * depth;
         for (i, &xw) in stations.iter().enumerate() {
             for (j, &zw) in waterlines.iter().enumerate() {
-                let (xb, mut zb) = map.water_to_body(xw, zw);
+                let (xb, zb) = map.water_to_body(xw, zw);
                 let s = i * nw + j;
-                if xb < x0 || xb > x1 {
+                if xb < x0 - xtol || xb > x1 + xtol {
                     continue; // beyond the ends: no hull, half-beam 0 is data
                 }
-                if zb > depth {
+                if zb > depth + ztol {
                     continue; // below the keel
                 }
-                if zb < 0.0 {
-                    if zb < -1e-9 * depth {
-                        // Above the modelled band while under water: unknown
-                        // geometry, taken as zero so the loft still covers
-                        // the wetted rectangle (excluding the whole wedge
-                        // would leave control points unconstrained); the
-                        // slope stays unconstrained and the count reports
-                        // that the pose exceeds what the file models.
-                        band_exceeded += 1;
-                        continue;
-                    }
-                    zb = 0.0; // whisker of tolerance at the band edge
+                if zb < -ztol {
+                    // Above the modelled band while under water: unknown
+                    // geometry, taken as zero so the loft still covers the
+                    // wetted rectangle (excluding the whole wedge would
+                    // leave control points unconstrained); the slope stays
+                    // unconstrained and the count reports that the pose
+                    // exceeds what the file models.
+                    band_exceeded += 1;
+                    continue;
                 }
+                let (xb, zb) = (xb.clamp(x0, x1), zb.clamp(0.0, depth));
                 grid[s] = self.surface.eval(xb, zb).max(0.0);
                 let fxb = self.surface.eval_deriv(xb, zb, 1, 0);
                 let fzb = self.surface.eval_deriv(xb, zb, 0, 1);

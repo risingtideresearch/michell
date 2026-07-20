@@ -191,6 +191,30 @@ of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
 axis. Hull files load relative to the manifest. A flag-based sweep over raw
 IGES (`--axis`, `--float`) remains for one-liners.
 
+**GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
+platform rigidly about the centerline at the design floatplane and re-solves
+the equilibrium at every angle, so the displaced volume is held while
+buoyancy transfers between hulls — the windward hull flying shows up in the
+`dry` column, and resistance is computed on the heeled fleet. It requires a
+`weight` axis and a `vcg` axis (centre of gravity in metres above the design
+floatplane — itself sweepable for KG studies); with `vcg` present every row
+carries `gz` (righting arm, m; positive rights the boat) and `rm` (righting
+moment, N·m). The inter-hull buoyancy transfer — the dominant multihull
+mechanism — is exact; each hull's *own* heel cannot be represented by a
+symmetric half-breadth surface and enters metacentrically, as
+`sin φ·(I_T/∇ − KB)` per hull, so a single slender monohull reduces to
+`GZ = GM_T·sin φ` and hard-chine form stability at large heel is
+underestimated.
+
+```json
+  "sweep": [
+    { "target": "speed", "unit": "knots", "value": 8 },
+    { "target": "weight", "value": 2200 },
+    { "target": "vcg", "value": 1.1 },
+    { "target": "heel", "range": [-15, 15], "step": 1 }
+  ]
+```
+
 **Bodies**: sweep manifests reference **full-band** `.hull` files — the
 half-breadth spline over the hull's band from keel to above the design
 waterline, written by `michell loft`:
@@ -212,8 +236,8 @@ seconds-fast; the loft itself defaults to a dense net (28x32 at 241x97)
 because wave resistance is sensitive to loft resolution near the keel
 rocker and the body is fit once, reused thousands of times.
 
-Hydrostatics on every hull: displaced volume, LCB, waterplane area and
-moments, LCF — exact spline integrals.
+Hydrostatics on every hull: displaced volume, LCB, KB, waterplane area and
+moments (longitudinal and transverse), LCF — exact spline integrals.
 
 Multihulls: list several hulls, each with an optional placement suffix —
 `@y=Y` places a (single-hull file's) centerplane absolutely, `@dy=S` shifts
@@ -268,6 +292,9 @@ optional `centerplane`.
 - `float::solve_equilibrium[_bodies|_with]` — hydrostatic sinkage/pitch
   balance for a mass + LCG load case, over IGES fleets, body assemblies, or
   any custom situate closure.
+- `float::heel_poses` + `float::righting_arm` — rigid platform heel and the
+  GZ of the re-solved fleet (exact inter-hull transfer, metacentric per-hull
+  term).
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `hulls::wigley(l, b, t)` — exact reference hull.
 

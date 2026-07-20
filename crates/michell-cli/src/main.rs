@@ -114,7 +114,9 @@ SWEEPS
   michell sweep study.json      preferred: a JSON manifest referencing
                                 full-band .hull bodies (from `michell loft`),
                                 with speed/weight/lcg/waterline/pose axes —
-                                see the README for the schema
+                                see the README for the schema; a heel axis
+                                (with weight + vcg) re-solves the equilibrium
+                                at each angle and emits gz/rm (GZ curves)
   michell loft boat.igs --waterline Z -o boat
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
@@ -1292,13 +1294,35 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         }
         let margin = band_flag.unwrap_or(0.5 * draft_est).max(0.0);
         let band_top = (design_wl + margin).min(top);
+        // Detect the centerplane at the *design* waterline, where the hull is
+        // symmetric and the fold physically matters — band-top probes sample
+        // topsides, where fittings can skew the detection — then hold it
+        // fixed for the band loft.
+        let mut detect_opts = opts;
+        detect_opts.stations = 61;
+        detect_opts.waterlines = 17;
+        detect_opts.fit.n_ctrl_x = detect_opts.fit.n_ctrl_x.min(10);
+        detect_opts.fit.n_ctrl_z = detect_opts.fit.n_ctrl_z.min(7);
+        let mut hull_opts = opts;
+        if hull_opts.centerplane.is_none() {
+            hull_opts.centerplane = src
+                .situate_one(
+                    idx,
+                    design_wl,
+                    &HullPose::default(),
+                    &Platform::default(),
+                    &detect_opts,
+                )
+                .map_err(|e| format!("{path} hull {idx}: {e}"))?
+                .map(|m| m.report.centerplane);
+        }
         let m = src
             .situate_one(
                 idx,
                 band_top,
                 &HullPose::default(),
                 &Platform::default(),
-                &opts,
+                &hull_opts,
             )
             .map_err(|e| format!("{path} hull {idx}: {e}"))?
             .ok_or_else(|| format!("{path} hull {idx}: nothing below the band top?"))?;
