@@ -33,8 +33,14 @@
 //! ```
 //!
 //! with the symmetric hull (`f_a ≡ 0`) recovering classical Michell exactly.
-//! The dipole *magnitude* uses an approximate closure and should be read
-//! qualitatively — see [`DIPOLE_WEIGHT_C`] for the caveat.
+//!
+//! The [`multihull_wave_resistance_with`] path fixes the dipole *magnitude* with
+//! the crude prescribed strip closure `μ = 2U f_a` (read qualitatively — see
+//! [`DIPOLE_WEIGHT_C`]). [`asymmetric_wave_resistance_lifting`] instead *solves*
+//! the centreplane lifting-surface problem ([`crate::centerplane`]) for the
+//! doublet density and forms the same dipole from the solved `μ` — the
+//! physically grounded magnitude, sharing this term's normalisation exactly (the
+//! strip closure is what it reduces to when `μ = 2U f_a`).
 
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
@@ -205,6 +211,128 @@ pub fn multihull_wave_resistance_with(
             minus = minus + a_minus * C64::cis(kx * *dx - ky * *dy);
         }
         0.5 * (plus.abs_sq() + minus.abs_sq())
+    };
+
+    let mut evals_total = 0usize;
+    let mut frac = 1.0;
+    let mut evals = 0usize;
+    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
+    evals_total += evals;
+    let mut est_rel = f64::INFINITY;
+    for _ in 0..opts.max_refinements {
+        frac *= 0.5;
+        let mut evals = 0usize;
+        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
+        evals_total += evals;
+        let scale = refined.abs().max(f64::MIN_POSITIVE);
+        est_rel = (refined - integral).abs() / scale;
+        integral = refined;
+        max_lambda = ml;
+        if est_rel <= opts.rel_tol {
+            break;
+        }
+    }
+
+    let coeff = 4.0 * rho * g * g / (PI * u * u);
+    Ok(WaveResistance {
+        resistance: coeff * integral,
+        est_rel_error: est_rel,
+        inner_evaluations: evals_total,
+        max_lambda,
+    })
+}
+
+/// Grid resolution for the centreplane lifting solve behind
+/// [`asymmetric_wave_resistance_lifting`]: `nx` streamwise panels along the
+/// hull, `nz` vertical panels over the draft (physical half).
+#[derive(Debug, Clone, Copy)]
+pub struct LiftingGrid {
+    pub nx: usize,
+    pub nz: usize,
+}
+
+impl Default for LiftingGrid {
+    fn default() -> Self {
+        LiftingGrid { nx: 48, nz: 16 }
+    }
+}
+
+/// Wave resistance of a single **asymmetric** hull with the camber (dipole)
+/// system taken from a *solved* centreplane lifting distribution rather than
+/// the prescribed strip closure `μ = 2U f_a` that
+/// [`multihull_wave_resistance_with`] uses.
+///
+/// The symmetric thickness part is the usual Michell source integral. The
+/// antisymmetric part runs the [`crate::centerplane`] vortex-lattice solve for
+/// the doublet density `μ(x, z)` and forms the dipole free-wave amplitude
+///
+/// ```text
+/// A_d(λ) = i · νλ√(λ²−1) · ½ · G(λ),   G(λ) = ∬ (μ/U) e^{−νλ²z} e^{iνλx} dx dz.
+/// ```
+///
+/// Substituting the strip closure `μ/U = 2 f_a` into this (via integration by
+/// parts in x) reproduces the `dipole_weight` term exactly, so the two paths
+/// share one normalisation; the solved `μ` has a different chordwise/vertical
+/// shape than `2 f_a`, giving a physically grounded dipole of the same order
+/// (their ratio is speed-dependent; for a 2-D flat plate `μ_lift/μ_strip =
+/// π/2`). The source amplitude is even in θ and the dipole odd, so they add with
+/// no cross term: `R_w = R_source(f_sym) + R_dipole(μ)`.
+///
+/// Errors if `hull` is symmetric (use [`wave_resistance`] instead). Single hull
+/// only — the solved-dipole multihull case is not yet wired.
+pub fn asymmetric_wave_resistance_lifting(
+    hull: &Hull,
+    cond: &Conditions,
+    opts: &WaveOptions,
+    grid: LiftingGrid,
+) -> Result<WaveResistance> {
+    cond.validate()?;
+    if !hull.is_asymmetric() {
+        return Err(Error::InvalidGeometry(
+            "asymmetric_wave_resistance_lifting requires a hull built with \
+             Hull::new_asymmetric"
+                .into(),
+        ));
+    }
+    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
+        return Err(Error::InvalidConditions(
+            "rel_tol must be finite and positive".into(),
+        ));
+    }
+    if grid.nx == 0 || grid.nz == 0 {
+        return Err(Error::InvalidConditions(
+            "lifting grid must have at least one panel each way".into(),
+        ));
+    }
+    let u = cond.speed;
+    let g = cond.gravity;
+    let nu = g / (u * u);
+    let rho = cond.fluid.density;
+
+    // Solve the centreplane lifting problem once for the doublet density μ(x,z).
+    let x0 = hull.surface().x_domain().0;
+    let sol = crate::centerplane::solve_centerplane(
+        hull.length(),
+        hull.draft(),
+        |xl, z| hull.eval_fx_a(x0 + xl, z),
+        grid.nx,
+        grid.nz,
+    );
+
+    let params = OuterParams {
+        nu,
+        x_half: hull.x_half_extent(),
+        y_half: 0.0,
+        t_max: hull.draft(),
+    };
+    let mut inner = InnerIntegral::new(hull, nu);
+    let mut amp_sq = |lambda: f64| -> f64 {
+        // Source (thickness) amplitude — closed form, per span.
+        let f = inner.eval(lambda);
+        // Dipole (camber) amplitude from the solved μ: |A_d|² = ¼ ν²λ²(λ²−1)|G|².
+        let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
+        let wd = 0.5 * nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+        f.abs_sq() + wd * wd * (gre * gre + gim * gim)
     };
 
     let mut evals_total = 0usize;
