@@ -14,6 +14,12 @@
 //!   surface domain is `z ∈ [0, T]` with `T` the draft;
 //! - all quantities are SI.
 //!
+//! **Asymmetric hulls** (port ≠ starboard) are supported via
+//! [`Hull::new_asymmetric`], which takes the two half-breadth surfaces and
+//! adds a centreplane-dipole wave system for the camber part on top of the
+//! source system; a symmetric hull recovers classical Michell exactly. The
+//! dipole magnitude uses an approximate closure — see the `michell` module.
+//!
 //! ## Theory
 //!
 //! With `ν = g/U²` (Tuck 1989; Dambrine, Pierre & Rousseaux 2016):
