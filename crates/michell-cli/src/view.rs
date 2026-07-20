@@ -11,8 +11,10 @@
 //! client-side recomposite at interactive rates with no physics re-run.
 //!
 //! Only speed and displacement changes force a native recompute (ν changes, or
-//! the wetted hull is re-floated): both are parallelised across hulls and take
-//! a fraction of a second, driven from debounced sliders.
+//! the wetted hull is re-floated): both are parallelised across hulls. These
+//! are explicit, one-shot actions in the UI (a speed dropdown; a displacement
+//! slider that re-floats on release) with a spinner while they run, since each
+//! blocks the single-threaded server for a fraction of a second up to ~2 s.
 //!
 //! Endpoints (all GET; this is a single-user local tool):
 //!   /                         the page
@@ -242,6 +244,7 @@ fn hull_name(path: &str) -> String {
 /// fleet field at the home placements.
 fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
     let cond = state.cond;
+    let l_ref = state.l_ref;
     let [vx0, vx1, vy0, vy1] = state.view;
     let margin = state.margin;
     let base_px = state.base_px;
@@ -332,6 +335,7 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
     // Placement-independent resistance pieces (viscous, wetted surface, and
     // each hull's standalone wave resistance) — recomputed here so the live
     // readout only redoes the combined wave integral.
+    let (sec_cap, n_theta) = resistance_grid(&cond, l_ref);
     let mut viscous_total = 0.0;
     let mut wetted_surface = 0.0;
     let mut solo_wave_total = 0.0;
@@ -342,7 +346,7 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
         wetted_surface += vh.hull.wetted_surface();
         let mut solo = FreeWaveSpectrum::new(&[(&vh.hull, Placement { x: 0.0, y: 0.0 })], &cond)
             .map_err(|e| format!("{e}"))?;
-        solo_wave_total += fast_wave_resistance(&mut solo);
+        solo_wave_total += fast_wave_resistance(&mut solo, sec_cap, n_theta);
     }
     state.viscous_total = viscous_total;
     state.wetted_surface = wetted_surface;
@@ -353,16 +357,19 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
 }
 
 /// Fixed-grid estimate of wave resistance R_w = ∫ (dR_w/dθ) dθ over
-/// (−θ_max, θ_max), where sec θ_max = 15 (the viewer's spectral cap). Simpson
-/// on a uniform θ grid: unlike the library's adaptive integrator its cost is
-/// independent of hull separation, so the live readout stays responsive when
-/// hulls are dragged far apart (where the interference integrand oscillates
-/// fast and the exact integrator slows to ~a second). Accurate to display
-/// precision; the CLI `resistance` command remains the reference.
-fn fast_wave_resistance(spec: &mut FreeWaveSpectrum) -> f64 {
-    const MAX_SEC: f64 = 15.0;
-    let theta_max = (1.0 / MAX_SEC).acos();
-    let n = 4000usize; // even, for Simpson
+/// (−θ_max, θ_max). Simpson on a uniform θ grid: unlike the library's adaptive
+/// integrator its cost is independent of hull separation, so the live readout
+/// stays responsive when hulls are dragged far apart (where the interference
+/// integrand oscillates fast and the exact integrator slows to ~a second).
+///
+/// The diverging-wave tail (θ → ±π/2, λ = sec θ → ∞) decays only slowly, and
+/// carries more of the resistance at high speed (small ν), so `sec_cap` — how
+/// far toward π/2 to integrate — is raised with speed rather than fixed at the
+/// renderer's cap of 15. This matches the CLI `resistance` figure to display
+/// precision across the speed range; that command remains the reference.
+fn fast_wave_resistance(spec: &mut FreeWaveSpectrum, sec_cap: f64, n: usize) -> f64 {
+    let theta_max = (1.0 / sec_cap).acos();
+    let n = n & !1; // force even for Simpson
     let h = 2.0 * theta_max / n as f64;
     let mut sum = spec.resistance_density(-theta_max) + spec.resistance_density(theta_max);
     for i in 1..n {
@@ -371,6 +378,22 @@ fn fast_wave_resistance(spec: &mut FreeWaveSpectrum) -> f64 {
         sum += w * spec.resistance_density(th);
     }
     sum * h / 3.0
+}
+
+/// Integration cap (largest sec θ = λ) and node count for the wave-resistance
+/// estimate at the current speed. Higher speed ⇒ slower spectral decay ⇒
+/// integrate further toward π/2, with proportionally more nodes to keep the
+/// diverging-wave sliver resolved.
+fn resistance_grid(cond: &Conditions, l_ref: f64) -> (f64, usize) {
+    // The spectral tail reaches to larger λ = sec θ at higher Froude number
+    // (the exp(−νλ²z) decay is slower when ν = g/U² is small), so scale the
+    // integration cap with Fn. Calibrated against the CLI `resistance` figure.
+    let fn_ = cond.froude_number(l_ref.max(1e-6));
+    let sec_cap = (15.0 + 60.0 * fn_).clamp(15.0, 90.0);
+    // The dR_w/dθ envelope is smooth, so accuracy is set by the cap, not node
+    // density; a modest count keeps the call fast (tens of ms).
+    let n = ((sec_cap * 120.0) as usize).clamp(4000, 12000);
+    (sec_cap, n)
 }
 
 /// y coordinate of row `i` of an inclusive `n`-point grid over [a, b] — the
@@ -606,7 +629,8 @@ fn resistance_json(s: &ViewState, places: &[Placement]) -> Result<String, String
     // the fixed grid (fast regardless of separation). Viscous, wetted surface,
     // and the solo-wave total are precomputed for the current speed/mass.
     let mut spec = FreeWaveSpectrum::new(&members, &s.cond).map_err(|e| format!("{e}"))?;
-    let wave = fast_wave_resistance(&mut spec);
+    let (sec_cap, n_theta) = resistance_grid(&s.cond, s.l_ref);
+    let wave = fast_wave_resistance(&mut spec, sec_cap, n_theta);
     let total = wave + s.viscous_total;
     let u = s.cond.speed;
     let q = 0.5 * s.cond.fluid.density * u * u * s.wetted_surface;
