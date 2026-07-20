@@ -1,0 +1,469 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\Rw}{R_{\mathrm{w}}}
+\DeclareMathOperator{\sech}{sech}
+
+\title{Michell's Wave-Resistance Integral and the Free-Wave\\
+Amplitude Grid from a B-spline Control Net}
+\author{\texttt{michell}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note documents the core numerical calculation performed by the
+\texttt{michell} crate: given a ship hull represented as a tensor-product
+B-spline half-breadth surface, it computes the thin-ship (Michell) wave
+resistance and the far-field free-wave elevation pattern. The distinguishing
+feature of the implementation is that the inner Michell integrals are evaluated
+\emph{exactly} --- in closed form per knot span --- because a polynomial
+B-spline hull makes the integrand a polynomial multiplied by an oscillatory /
+exponentially decaying kernel on each span. The only numerical error lives in a
+single smooth one-dimensional outer quadrature. Section references point at the
+Rust source so the formulae and the code can be read side by side.
+\end{abstract}
+
+\tableofcontents
+
+\section{Geometry, conventions, and constants}
+\label{sec:conventions}
+
+The hull is a slender body symmetric about its centerplane. Its starboard
+surface is given as a single-valued \emph{half-breadth} (half-beam) function
+\begin{equation}
+  y = f(x, z) \ge 0,
+\end{equation}
+where
+\begin{itemize}
+  \item $x$ runs along the hull, with the ship advancing toward $+x$ (the bow is
+        the high-$x$ end of the hull file; the wake trails toward $-x$);
+  \item $z$ is measured \emph{downward} from the undisturbed waterline, so the
+        wetted surface occupies $z \in [0, T]$ with $T$ the draft;
+  \item $y$ is the transverse (port/starboard) coordinate.
+\end{itemize}
+The surface domain is $x \in [x_0, x_1]$ (length $L = x_1 - x_0$) and
+$z \in [0, T]$. Only the polynomial (non-rational) B-spline surface of
+Section~\ref{sec:bspline} is admitted; rational NURBS weights are deliberately
+excluded, because it is precisely the piecewise-polynomial structure that makes
+the inner integrals closed-form.
+
+\paragraph{Operating conditions and constants.}
+Table~\ref{tab:constants} lists the physical inputs. The single derived quantity
+that governs the whole calculation is the \emph{fundamental wavenumber}
+\begin{equation}
+  \boxed{\;\nu \;=\; \frac{g}{U^{2}}\;}
+  \qquad\text{(\texttt{nu} in the source),}
+  \label{eq:nu}
+\end{equation}
+the wavenumber of the transverse ($\theta = 0$) waves of a steadily advancing
+ship in deep water. Its reciprocal length scale is the transverse wavelength
+$\lambda_{\mathrm{tr}} = 2\pi/\nu = 2\pi U^{2}/g$. The length Froude number
+$\mathrm{Fr} = U/\sqrt{gL}$ is the usual dimensionless speed.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{llll}
+    \toprule
+    Symbol & Meaning & Units & Source \\
+    \midrule
+    $U$   & ship speed                 & \si{m/s}       & \texttt{Conditions::speed} \\
+    $g$   & gravitational acceleration & \si{m/s^2}     & \texttt{9.80665} \\
+    $\rho$& fluid density              & \si{kg/m^3}    & \texttt{Fluid::density} ($\approx 1025.9$ seawater) \\
+    $\nu$ & fundamental wavenumber $g/U^2$ & \si{1/m}   & derived, Eq.~\eqref{eq:nu} \\
+    $L$   & waterline length           & \si{m}         & $x_1 - x_0$ \\
+    $T$   & draft                      & \si{m}         & $z$-domain upper bound \\
+    \bottomrule
+  \end{tabular}
+  \caption{Physical inputs (\texttt{conditions.rs}). Gravity and density carry
+  the ITTC 15\,\si{\celsius} default values.}
+  \label{tab:constants}
+\end{table}
+
+\section{The B-spline control-net representation}
+\label{sec:bspline}
+
+The half-breadth surface is a clamped tensor-product B-spline of degree $p$ in
+$x$ and $q$ in $z$:
+\begin{equation}
+  f(x, z) \;=\; \sum_{i=0}^{n_x-1}\sum_{j=0}^{n_z-1}
+     P_{ij}\, N_{i,p}(x)\, N_{j,q}(z),
+  \label{eq:surface}
+\end{equation}
+where $P_{ij} \in \mathbb{R}$ is the \emph{control net} of half-beam values
+(stored row-major with the $z$ index fastest, \texttt{control[i*n\_ctrl\_z + j]}),
+and $N_{i,p}$, $N_{j,q}$ are the B-spline basis functions built from the knot
+vectors $\{\xi_k\}$ (in $x$) and $\{\zeta_k\}$ (in $z$). Both knot vectors are
+\emph{clamped}: the first and last knots each repeat $p+1$ (resp.\ $q+1$) times,
+so the surface interpolates the corner control points and the parametric
+coordinate coincides with the physical coordinate. An interior knot of
+multiplicity up to $p$ is allowed --- multiplicity $p$ drops the surface to
+$C^{0}$ and is exactly how a \emph{chine} (hard crease) is represented.
+
+Because the control net is non-negative (a sufficient condition for
+$f \ge 0$ by the convex-hull property) and $z_0 = 0$ (the domain starts at the
+waterline), the object is a valid hull. Basis functions and their derivatives
+are evaluated with the standard Piegl--Tiller recurrences
+(\texttt{bspline.rs}, \texttt{ders\_basis}).
+
+\subsection{From control net to per-span polynomial}
+\label{sec:spanpoly}
+
+The knot vectors partition the domain into a grid of non-empty rectangular
+\emph{knot spans}. On a single span
+$[\xi_{s}, \xi_{s+1}] \times [\zeta_{t}, \zeta_{t+1}]$ the surface
+\eqref{eq:surface} is an ordinary bivariate polynomial of degree $(p, q)$. The
+crate materialises that polynomial once, from the mixed partial derivatives
+evaluated at the span's lower-left corner $(x_0, z_0) = (\xi_s, \zeta_t)$:
+\begin{equation}
+  D_{ab} \;=\; \left.\frac{\partial^{\,a+b} f}{\partial x^{a}\,\partial z^{b}}
+    \right|_{(x_0, z_0)},
+  \qquad 0 \le a \le p,\; 0 \le b \le q,
+  \label{eq:corner}
+\end{equation}
+(\texttt{BSplineSurface::corner\_partials}). Taylor's theorem then reconstructs
+the surface exactly on the span,
+\begin{equation}
+  f(x, z) \;=\; \sum_{a=0}^{p}\sum_{b=0}^{q}
+    \frac{D_{ab}}{a!\,b!}\,(x - x_0)^{a}(z - z_0)^{b}.
+  \label{eq:taylor}
+\end{equation}
+
+Michell's integral needs the longitudinal slope $\partial f/\partial x$.
+Differentiating \eqref{eq:taylor} and reindexing gives, on each span, the
+polynomial
+\begin{equation}
+  \boxed{\;
+  f_x(x, z) \;\equiv\; \frac{\partial f}{\partial x}
+    \;=\; \sum_{a=0}^{p-1}\sum_{b=0}^{q}
+      c_{ab}\,(x - x_0)^{a}(z - z_0)^{b},
+  \qquad
+  c_{ab} = \frac{D_{a+1,\,b}}{a!\,b!}. \;}
+  \label{eq:fxcoeff}
+\end{equation}
+These coefficients $c_{ab}$ are precomputed for every span pair and stored
+flattened as \texttt{fx\_coeff} (\texttt{hull.rs}), indexed
+$[((s_x\, n_z + s_z)\,p + a)(q+1) + b]$. This array is the sole geometric input
+to the wave calculation: the entire hull enters Michell's integral through the
+per-span slope polynomials \eqref{eq:fxcoeff}.
+
+\section{Michell's wave-resistance integral}
+\label{sec:michell}
+
+\subsection{The classical form}
+
+For a thin ship in steady forward motion in calm, deep water, Michell's integral
+gives the wave-making resistance as
+\begin{equation}
+  \Rw \;=\; \frac{4\rho g^{2}}{\pi U^{2}}
+    \int_{1}^{\infty} \bigl(I(\lambda)^{2} + J(\lambda)^{2}\bigr)\,
+      \frac{\lambda^{2}}{\sqrt{\lambda^{2}-1}}\dd\lambda,
+  \label{eq:michell-lambda}
+\end{equation}
+where the real functions $I$ and $J$ are the cosine and sine parts of the
+complex \emph{free-wave amplitude function}
+\begin{equation}
+  I(\lambda) + \ii\,J(\lambda)
+    \;=\; \iint_{\text{hull}}
+      \frac{\partial f}{\partial x}\,
+      e^{-\nu\lambda^{2} z}\,
+      e^{\,\ii\,\nu\lambda x}
+      \dd x \dd z.
+  \label{eq:innerdef}
+\end{equation}
+Here the integration variable $\lambda \ge 1$ is the secant of the wave
+propagation angle $\theta$; each $\lambda$ selects one plane-wave component of
+the ship's Kelvin pattern. The kernel of \eqref{eq:innerdef} has the two
+signatures of linear ship-wave theory:
+\begin{itemize}
+  \item a horizontal oscillation $e^{\,\ii\,\nu\lambda x}$ with wavenumber
+        $k_x = \nu\lambda$ along the track, and
+  \item a vertical decay $e^{-\nu\lambda^{2} z}$ with rate
+        $\kappa = \nu\lambda^{2}$, the deep-water statement that shorter,
+        more-oblique waves are confined nearer the surface.
+\end{itemize}
+(See \texttt{michell.rs} module docs; cf.\ Tuck 1989; Dambrine, Pierre \&
+Rousseaux 2016.)
+
+\subsection{Secant substitution}
+
+The integrand of \eqref{eq:michell-lambda} has an integrable singularity at
+$\lambda = 1$. Substituting $\lambda = \sec\theta$
+($\dd\lambda = \sec\theta\tan\theta\dd\theta$,
+$\sqrt{\lambda^2-1} = \tan\theta$) sends
+$\lambda^2/\sqrt{\lambda^2-1}\dd\lambda \to \sec^{3}\theta\dd\theta$ and removes
+the singularity, giving the form the code actually integrates:
+\begin{equation}
+  \boxed{\;
+  \Rw \;=\; \frac{4\rho g^{2}}{\pi U^{2}}
+    \int_{0}^{\pi/2}
+      \bigl|F(\sec\theta)\bigr|^{2}\,\sec^{3}\theta \dd\theta,
+  \qquad
+  F(\lambda) \equiv I(\lambda) + \ii\,J(\lambda). \;}
+  \label{eq:michell-theta}
+\end{equation}
+The prefactor $4\rho g^{2}/(\pi U^{2})$ is \texttt{coeff} in
+\texttt{multihull\_wave\_resistance\_with}; the integral is accumulated in
+\texttt{integrate\_outer}. This outer integral is smooth, and is the
+\emph{only} place numerical quadrature error enters.
+
+\subsection{Exact evaluation of the inner integral}
+\label{sec:inner}
+
+Substitute the per-span slope polynomial \eqref{eq:fxcoeff} into the definition
+\eqref{eq:innerdef}. Because $f_x$ is piecewise polynomial and the kernel
+separates in $x$ and $z$, the double integral factorises span-by-span into a
+sum of products of one-dimensional \emph{moment integrals}. With
+$k_x = \nu\lambda$ and $\kappa = \nu\lambda^{2}$, define on a span of lengths
+$h_x, h_z$ (local coordinates $X = x-x_0 \in [0,h_x]$, $Z = z-z_0 \in [0,h_z]$)
+the oscillatory and exponential moments
+\begin{align}
+  M_a(k_x, h_x) &= \int_{0}^{h_x} X^{a}\, e^{\,\ii k_x X}\dd X,
+    &  a &= 0,\dots,p-1, \label{eq:Mdef}\\
+  N_b(\kappa, h_z) &= \int_{0}^{h_z} Z^{b}\, e^{-\kappa Z}\dd Z,
+    &  b &= 0,\dots,q. \label{eq:Ndef}
+\end{align}
+Then the contribution of a single hull to the amplitude function is the exact
+finite sum
+\begin{equation}
+  \boxed{\;
+  F(\lambda) \;=\;
+    \sum_{s\in\text{spans}_x}
+      e^{\,\ii k_x (\xi_{s} - x_c)}
+      \sum_{a=0}^{p-1} M_a(k_x, h_x^{(s)})
+      \underbrace{\sum_{t\in\text{spans}_z}\sum_{b=0}^{q}
+        c_{ab}^{(s,t)}\;
+        e^{-\kappa\,\zeta_{t}}\, N_b(\kappa, h_z^{(t)})}_{\textstyle g_a^{(s)}}.
+  \;}
+  \label{eq:Fexact}
+\end{equation}
+This is exactly the double loop in \texttt{InnerIntegral::eval}: the inner
+bracket $g_a^{(s)}$ contracts the slope coefficients $c_{ab}$ against the
+decay-shifted $z$-moments $e^{-\kappa\zeta_t} N_b$ (precomputed once per
+$\lambda$ across all $z$-spans, array \texttt{zm}); the outer sum weights them by
+the $x$-moments $M_a$ and the per-span phase factor. The reference phase
+$x_c = \tfrac12(x_0 + x_1)$ is the hull midpoint; shifting it multiplies $F$ by a
+unit-modulus factor and leaves $|F|^{2}$ --- hence $\Rw$ --- invariant.
+
+The upshot: for a polynomial hull, $I$ and $J$ carry \emph{no} discretisation
+error. Every span integral is a closed form (Section~\ref{sec:moments}). The
+number of inner evaluations equals (\#$x$-spans)$\times$(\#$z$-spans)$\times
+p\times(q{+}1)$ complex operations per $\lambda$.
+
+\subsection{Closed-form span moments}
+\label{sec:moments}
+
+The moments \eqref{eq:Mdef}--\eqref{eq:Ndef} are computed in \texttt{moments.rs}.
+Each has a stable large-argument recurrence obtained by integration by parts,
+and a small-argument power series used to avoid catastrophic cancellation
+(switch-over at $|k_x h_x|,\,\kappa h_z = 4$).
+
+\paragraph{Oscillatory moments.} Integration by parts of \eqref{eq:Mdef} gives
+the upward recurrence
+\begin{equation}
+  M_0 = \frac{e^{\,\ii k_x h_x} - 1}{\ii k_x},
+  \qquad
+  M_a = \frac{h_x^{a}\,e^{\,\ii k_x h_x} - a\,M_{a-1}}{\ii k_x},
+  \label{eq:Mrec}
+\end{equation}
+and for small $|k_x h_x|$ the series
+\begin{equation}
+  M_a = h_x^{a+1}\sum_{m\ge 0}
+    \frac{(\ii k_x h_x)^{m}}{m!\,(a+m+1)}.
+  \label{eq:Mseries}
+\end{equation}
+
+\paragraph{Exponential moments.} Likewise for \eqref{eq:Ndef} with $\kappa \ge 0$,
+\begin{equation}
+  N_0 = \frac{1 - e^{-\kappa h_z}}{\kappa},
+  \qquad
+  N_b = \frac{b\,N_{b-1} - h_z^{b}\,e^{-\kappa h_z}}{\kappa},
+  \label{eq:Nrec}
+\end{equation}
+and for small $\kappa h_z$,
+\begin{equation}
+  N_b = h_z^{b+1}\sum_{m\ge 0}
+    \frac{(-\kappa h_z)^{m}}{m!\,(b+m+1)}.
+  \label{eq:Nseries}
+\end{equation}
+As $\kappa \to \infty$ (deeply oblique waves) $N_b \to b!/\kappa^{b+1} \to 0$,
+so deep parts of the hull decouple gracefully; the code short-circuits a span
+once $e^{-\kappa\zeta_t}$ underflows.
+
+\subsection{Outer quadrature}
+\label{sec:outer}
+
+The smooth $\theta$-integral \eqref{eq:michell-theta} is evaluated by marching
+adaptive Gauss--Legendre panels (16 nodes each). The panel width is set to a
+fixed fraction of one local oscillation period of the integrand,
+\begin{equation}
+  \Delta\theta \;\lesssim\; \frac{2\pi}{r(\theta)},
+  \qquad
+  r(\theta) = 2\nu\sec\theta\tan\theta\,(x_{1/2} + T\sec\theta) + \dots,
+\end{equation}
+where $r(\theta)$ is the analytic phase rate of $|F|^{2}\sec^{3}\theta$
+(dominated near the track by the longitudinal bandwidth $x_{1/2}$ and the decay
+depth $T$). The pass is repeated with the panels halved until the change between
+successive passes drops below the requested relative tolerance
+(\texttt{rel\_tol}, default $10^{-5}$). The tail in $\lambda = \sec\theta$ is
+truncated once a full multi-period window of the oscillatory integrand
+contributes negligibly, giving the reported \texttt{max\_lambda}.
+
+\subsection{Fleets and interference}
+\label{sec:multihull}
+
+For a multihull / fleet, the far-field free-wave amplitudes superpose linearly.
+A member hull $j$ at longitudinal offset $\Delta x_j$ and transverse position
+$y_j$ contributes
+$F_j(\lambda)\,\exp[\ii\nu(\lambda\,\Delta x_j \pm \lambda\sqrt{\lambda^2-1}\,y_j)]$
+to the wave system propagating at $\pm\theta$ off the track. Writing
+$k_x = \nu\lambda$ and $k_y = \nu\lambda\sqrt{\lambda^2-1}$, the resistance
+integrand replaces $|F|^2$ in \eqref{eq:michell-theta} by the mean of the two
+signed systems,
+\begin{equation}
+  |A(\lambda)|^{2} \;=\;
+    \tfrac12\Bigl(
+      \bigl|\textstyle\sum_j F_j\, e^{\,\ii(k_x\Delta x_j + k_y y_j)}\bigr|^{2}
+    + \bigl|\textstyle\sum_j F_j\, e^{\,\ii(k_x\Delta x_j - k_y y_j)}\bigr|^{2}
+    \Bigr),
+  \label{eq:multi}
+\end{equation}
+which is \texttt{amp\_sq} in the source. The two halves differ only for fleets
+that are not mirror-symmetric about their mean centerplane (e.g.\ staggered
+pairs). For two identical hulls a transverse separation $s$ apart this reduces to
+the classical catamaran interference factor
+$4\cos^{2}\!\bigl(\tfrac12\nu s\,\lambda\sqrt{\lambda^2-1}\bigr)$.
+
+\section{The free-wave amplitude and elevation grid}
+\label{sec:spectrum}
+
+The same amplitude functions $F_j$ that produce the resistance also produce the
+visible wave pattern (the "wake"). This is handled in \texttt{spectrum.rs}.
+
+\subsection{Free-wave spectrum}
+
+Far behind the hull the disturbance is a superposition of free plane waves, one
+per propagation angle $\theta \in (-\tfrac\pi2, \tfrac\pi2)$ measured from the
+track. Deep-water dispersion pins each component's wavenumber and wavevector at
+\begin{equation}
+  k(\theta) = \nu\sec^{2}\theta,
+  \qquad
+  \mathbf{k}(\theta) = \nu\sec\theta\,(1, \tan\theta),
+\end{equation}
+and the complex amplitude \emph{density} is
+\begin{equation}
+  \boxed{\;
+  A(\theta) \;=\; -\frac{2\nu}{\pi}\,\sec^{3}\theta
+    \sum_{j} \overline{F_j(\sec\theta)}\;
+      \exp\!\bigl[-\ii\,\nu\sec\theta\,(x_j + y_j\tan\theta)\bigr],
+  \;}
+  \label{eq:Adef}
+\end{equation}
+with $\overline{(\cdot)}$ the complex conjugate and $(x_j, y_j)$ hull $j$'s
+midpoint in fleet coordinates (\texttt{FreeWaveSpectrum::amp\_pair}). The
+conjugate-and-$-\tfrac{2\nu}\pi\sec^3\theta$ prefactor fixes both magnitude and
+phase: it follows Tuck, Scullen \& Lazauskas (2001, 2002) mapped to this crate's
+conventions, and reproduces the classical Havelock point-source phase (a bow
+source's transverse system trails a crest first). Its magnitude is pinned by the
+free-wave resistance identity, which reproduces \eqref{eq:michell-theta} term for
+term:
+\begin{equation}
+  \Rw \;=\; \tfrac12\,\pi\rho U^{2}
+    \int_{-\pi/2}^{\pi/2} |A(\theta)|^{2}\cos^{3}\theta \dd\theta .
+  \label{eq:Rspec}
+\end{equation}
+The integrand $\tfrac12\pi\rho U^{2}|A(\theta)|^{2}\cos^{3}\theta$ is the angular
+resistance density $\dd\Rw/\dd\theta$ (\texttt{resistance\_density}).
+
+\subsection{Elevation grid}
+
+The surface elevation is the real part of the inverse angular transform
+\begin{equation}
+  \zeta(x, y) \;=\; \operatorname{Re}
+    \int_{-\pi/2}^{\pi/2} A(\theta)\,
+      \exp\!\bigl[\ii\,\nu\sec\theta\,(x + y\tan\theta)\bigr]\dd\theta .
+  \label{eq:zeta}
+\end{equation}
+This is sampled on an inclusive rectangular grid of $n_x \times n_y$ points
+spanning $[x_0, x_1] \times [y_0, y_1]$, stored row-major over $y$
+(\texttt{WaveGrid.zeta[iy*nx + ix]}); a longitudinal or transverse cut is the
+$n_y = 1$ or $n_x = 1$ special case. The evaluation exploits three structures:
+
+\begin{enumerate}
+  \item \textbf{$\pm\theta$ pairing.} $F_j$ depends only on $\sec\theta$, so the
+        two signed systems $A(+\theta)$ and $A(-\theta)$ share their inner-integral
+        evaluations; only the transverse placement phase $e^{\pm\ii k_y y_j}$
+        flips. For each $|\theta|$ the row contribution is
+        $A(+\theta)e^{\ii k_y y} + A(-\theta)e^{-\ii k_y y}$.
+  \item \textbf{Phasor recurrence in $x$.} Along a grid row the longitudinal
+        phase $e^{\ii k_x x}$ (with $k_x = \nu\sec\theta$) advances by the constant
+        factor $e^{\ii k_x h_x}$ per column, so each column phasor is obtained
+        from the previous by one complex multiply.
+  \item \textbf{Same panel marcher as the resistance.} The $\theta$-integral
+        \eqref{eq:zeta} is integrated with oscillation-rate-sized Gauss--Legendre
+        panels and truncated once the amplitude has decayed
+        (Section~\ref{sec:outer}).
+\end{enumerate}
+
+\paragraph{Resolution and spectral limits.} Two cutoffs keep the grid physical
+and alias-free:
+\begin{itemize}
+  \item \emph{Resolution cutoff.} A grid of spacing $(h_x, h_y)$ can only render
+        components with $\nu\sec\theta\,h_x < \pi$ and
+        $\nu\sec\theta\tan\theta\,h_y < \pi$ (at least $\sim$2 points per
+        wavelength). The largest resolvable $\theta$ is found by bisection, and
+        the last $30\%$ (in $\sec^2\theta$) before it is cosine-tapered to zero to
+        suppress aliasing. If even the transverse wavelength $2\pi/\nu$ is
+        unresolved, the grid is rejected. Grids limited by this cutoff report
+        \texttt{resolution\_limited = true}.
+  \item \emph{Spectral cap.} Components beyond $\sec\theta = 15$ (wavelength below
+        $\lambda_{\mathrm{tr}}/225$) are always dropped: for wall-sided hulls
+        $|A|$ decays only algebraically toward the track, so the diverging system
+        carries ever-shorter ripple that viscosity would destroy in reality (cf.\
+        the eddy-viscosity factor of Tuck, Scullen \& Lazauskas 2002).
+\end{itemize}
+
+\paragraph{Validity.} Equation~\eqref{eq:zeta} is the far-field \emph{free-wave}
+part of the linear solution. It omits the local (non-radiating) near-field
+disturbance, so it is the complete linear answer only aft of the stern; on,
+abreast of, or ahead of the hull it is not physical. Being linear, it also
+cannot break: steep bow systems are indicative only.
+
+\section{Data flow summary}
+\label{sec:dataflow}
+
+\begin{center}
+\begin{tabular}{r c l}
+  \toprule
+  \multicolumn{3}{c}{\textbf{Resistance}} \\
+  \midrule
+  control net $P_{ij}$, knots & $\longrightarrow$ & B-spline surface $f$ (Eq.~\ref{eq:surface}) \\
+  per span: corner partials $D_{ab}$ & $\longrightarrow$ & slope coeffs $c_{ab}$ (Eq.~\ref{eq:fxcoeff}, \texttt{fx\_coeff}) \\
+  $c_{ab}$, moments $M_a, N_b$ & $\longrightarrow$ & amplitude $F(\lambda) = I + \ii J$ (Eq.~\ref{eq:Fexact}, exact) \\
+  $|F|^2$ (or $|A|^2$ for fleets) & $\longrightarrow$ & outer $\theta$-quadrature (Eq.~\ref{eq:michell-theta}) \\
+  & $\longrightarrow$ & wave resistance $\Rw$ \\
+  \midrule
+  \multicolumn{3}{c}{\textbf{Wave pattern}} \\
+  \midrule
+  $F_j(\sec\theta)$, placements & $\longrightarrow$ & amplitude density $A(\theta)$ (Eq.~\ref{eq:Adef}) \\
+  $A(\theta)$, grid $(x,y)$ & $\longrightarrow$ & inverse transform $\zeta(x,y)$ (Eq.~\ref{eq:zeta}) \\
+  & $\longrightarrow$ & elevation grid \texttt{WaveGrid} \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The two branches share the amplitude functions $F_j$: the resistance
+integrates $|F|^2\sec^3\theta$ over angle, while the wave pattern inverse-transforms
+$A \propto \overline{F}\sec^3\theta$ back to physical space. Both are exact in the
+geometry; the only approximation is the one-dimensional angular quadrature.
+
+\end{document}
