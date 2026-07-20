@@ -152,6 +152,7 @@ michell loft table.offsets -o hull.hull             # offsets -> control net
 michell spectrum wigley.hull --speed 3              # free-wave spectrum (CSV)
 michell wake boat-*.hull --speed 8 --knots -o wake.png   # Kelvin wake heatmap
 michell render boat-*.hull --speed 8 --knots -o shot.png # 3D shot in the wake
+michell view boat-*.hull --speed 8                       # interactive fleet viewer
 ```
 
 **Wave field** (`spectrum`, `wake`, `render`; one speed via `--speed` or `--froude`):
@@ -179,6 +180,31 @@ static waterline (no dynamic sinkage or trim). Grids too coarse for the
 shortest diverging waves are smoothly band-limited and flagged. The magnitude of A is pinned by
 the deep-water free-wave resistance identity R_w = ½πρU² ∫|A|²cos³θ dθ; the
 phase follows Tuck, Scullen & Lazauskas mapped to these conventions.
+
+**Interactive viewer** (`michell view <hull>... --speed U`): serves a local
+web page (default `http://127.0.0.1:8737`, `--port` to change) where the fleet
+wave field is shown live and hulls can be **dragged** to reposition them
+relative to one another. This exploits the superposition structure directly:
+the fleet field is the exact sum of each hull's *standalone* field translated
+to its placement (thin-ship amplitudes superpose, each carrying only a
+placement phase), so each hull's field is computed once on a local grid, native
+and parallel, and the browser recomposites the fleet by translate-and-sum as
+you drag — no physics re-run, so dragging is instant. Re-running the solver is
+reserved for the explicit controls (each an on-release action with a spinner):
+**speed** rebuilds the per-hull fields (ν changes; a fraction of a second,
+parallelised across hulls and row-bands), while **displacement**, **heel**, and
+**ama immersion** re-float the assembly (full-band bodies; an IGES fleet is
+decomposed to bodies once on load) and re-loft the wetted hulls. Heel is a rigid
+platform rotation — the demihulls change immersion and shift transversely (an
+ama digs in as the other lifts clear, going dry) while each half-breadth hull
+stays upright about its own centreplane, so the superposition still holds. Wave
+and total resistance, the interference factor, effective power, and — with a
+**vcg** control — the righting arm GZ and moment update live (GZ carries a
+first-order metacentric correction for the hull-local tilt the half-breadth
+model can't rotate). Same physicality caveat as `wake`: the field is faded ahead
+of the aft-most stern. The server is dependency-free, in the spirit of the rest
+of the crate. Build with `--release`; a debug build runs the integrals ~40×
+slower and the viewer warns about it.
 
 **Sweeps** (`michell sweep study.json`): long-form CSV/JSON over the
 Cartesian product of axes — every varying quantity (speed, weight, lcg,

@@ -6,6 +6,7 @@ mod json;
 mod manifest;
 mod png;
 mod render;
+mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
@@ -41,6 +42,7 @@ fn run() -> Result<(), String> {
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
         Some("render") => cmd_render(&args[1..]),
+        Some("view") => view::cmd_view(&args[1..]),
         Some("loft") => cmd_loft(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
         Some("help") | Some("-h") | Some("--help") | None => {
@@ -59,6 +61,7 @@ USAGE
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
+  michell view <hull>... --speed U [--port N] [options]       interactive fleet viewer
   michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
