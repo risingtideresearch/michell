@@ -850,10 +850,10 @@ impl SourceFleet {
     }
 }
 
-/// Pitch rotation of a control point in the x–z plane about `(px, pz)`;
+/// Pitch rotation of a point in the x–z plane about `(px, pz)` (z up);
 /// positive angle raises the +x side.
 #[inline]
-fn rotate_xz(p: &mut [f64; 3], px: f64, pz: f64, cos: f64, sin: f64) {
+pub(crate) fn rotate_xz(p: &mut [f64; 3], px: f64, pz: f64, cos: f64, sin: f64) {
     let (dx, dz) = (p[0] - px, p[2] - pz);
     p[0] = px + dx * cos - dz * sin;
     p[2] = pz + dz * cos + dx * sin;

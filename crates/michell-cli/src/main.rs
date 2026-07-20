@@ -55,9 +55,13 @@ USAGE
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
 HULL INPUTS (sniffed by header / extension)
-  *.hull            canonical B-spline control net (exact)
+  *.hull            canonical B-spline control net (exact); with a
+                    `waterline` key, a re-situatable full-band body
   offsets table     `michell-offsets v1` station x waterline half-beams (lofted)
   *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted)
+  *.stl             triangle mesh, binary or ASCII (ray-sampled and lofted);
+                    requires --units; quality tracks the export's chord
+                    tolerance — use fine tessellations
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
@@ -84,7 +88,10 @@ IMPORT / LOFT OPTIONS (offsets and IGES inputs)
   --centerplane Y       IGES: transverse position of the hull centerplane
                         (default: auto-detect; full shells fold about their
                         midplane, half hulls measure from y = 0)
-  --samples NxM         IGES: sample grid, stations x waterlines (default 121x33)
+  --units U             STL: scale to metres (mm|cm|m|in|ft or a number);
+                        required for STL, which has no units field
+  --samples NxM         IGES/STL: sample grid, stations x waterlines
+                        (default 121x33)
   --fit-degree PxQ      spline degrees for the loft (default 3x3)
   --fit-control NxM     loft control net (default: 12x8 offsets, 20x12 IGES)
 
@@ -210,6 +217,9 @@ impl Parsed {
             s.waterline_z = w;
         }
         s.centerplane = self.f64_flag("centerplane")?;
+        if let Some(u) = self.flag("units") {
+            s.units = Some(formats::parse_units(u)?);
+        }
         if let Some(v) = self.flag("samples") {
             s.samples = parse_pair(v)?;
         }
@@ -349,6 +359,32 @@ fn describe_source(source: &Source) -> Vec<String> {
             "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
             r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
         )],
+        Source::Stl(r) => {
+            let sides = if r.two_sided {
+                format!("full shell folded about y = {:.4} m", r.centerplane)
+            } else {
+                format!("one-sided about y = {:.4} m", r.centerplane)
+            };
+            vec![
+                format!(
+                    "source: STL mesh ({} triangles, units scale {}, {sides})",
+                    r.patches, r.units_scale
+                ),
+                format!(
+                    "geometry: draft {:.4} m, x {:.4}..{:.4} m, fold asymmetry {:.3e} m",
+                    r.draft, r.x_range.0, r.x_range.1, r.max_asymmetry
+                ),
+                format!(
+                    "loft: max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m, \
+                     {} ambiguous samples",
+                    r.fit.max_residual,
+                    r.fit.max_residual_at.0,
+                    r.fit.max_residual_at.1,
+                    r.fit.rms_residual,
+                    r.ambiguous_samples
+                ),
+            ]
+        }
         Source::Iges(r) => {
             let sides = if r.two_sided {
                 format!("full shell folded about y = {:.4} m", r.centerplane)
@@ -1057,21 +1093,29 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         .ok_or("loft requires an output path: -o PREFIX (or OUT.hull)")?;
     let settings = p.load_settings()?;
 
-    // IGES files loft to full-band bodies by default, decomposing multihull
-    // files into one body per hull. --wetted keeps the old single-hull
-    // wetted-only output; offsets tables always loft wetted.
-    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let first = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim_end();
+    // IGES and STL files loft to full-band bodies by default, decomposing
+    // multihull files into one body per hull. --wetted keeps the old
+    // single-hull wetted-only output; offsets tables always loft wetted.
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let lower = path.to_ascii_lowercase();
-    let is_iges = lower.ends_with(".igs")
-        || lower.ends_with(".iges")
-        || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G');
+    let is_text = std::str::from_utf8(&bytes).is_ok();
+    let is_stl = lower.ends_with(".stl") || formats::looks_binary_stl(&bytes) || !is_text;
+    let first = if is_stl {
+        ""
+    } else {
+        std::str::from_utf8(&bytes)
+            .expect("checked utf8")
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim_end()
+    };
+    let is_iges = !is_stl
+        && (lower.ends_with(".igs")
+            || lower.ends_with(".iges")
+            || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G'));
 
-    if !is_iges || p.switch("--wetted") {
+    if !(is_iges || is_stl) || p.switch("--wetted") {
         let mut hulls = load_hulls(path, &settings)?;
         if hulls.len() > 1 {
             return Err(format!(
@@ -1124,7 +1168,58 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         },
         centerplane: settings.centerplane,
     };
-    let src = iges::source_fleet(&text, design_wl).map_err(|e| format!("{path}: {e}"))?;
+    enum LoftSrc {
+        Iges(michell::iges::SourceFleet),
+        Mesh(michell::stl::MeshFleet),
+    }
+    impl LoftSrc {
+        fn len(&self) -> usize {
+            match self {
+                LoftSrc::Iges(s) => s.len(),
+                LoftSrc::Mesh(s) => s.len(),
+            }
+        }
+        fn hull_z_top(&self, i: usize) -> f64 {
+            match self {
+                LoftSrc::Iges(s) => s.hull_z_top(i),
+                LoftSrc::Mesh(s) => s.hull_z_top(i),
+            }
+        }
+        fn hull_z_bottom(&self, i: usize) -> f64 {
+            match self {
+                LoftSrc::Iges(s) => s.hull_z_bottom(i),
+                LoftSrc::Mesh(s) => s.hull_z_bottom(i),
+            }
+        }
+        fn situate_one(
+            &self,
+            i: usize,
+            wl: f64,
+            pose: &HullPose,
+            platform: &Platform,
+            opts: &ImportOptions,
+        ) -> Result<Option<michell::iges::ImportedHull>, michell::Error> {
+            match self {
+                LoftSrc::Iges(s) => s.situate_one(i, wl, pose, platform, opts),
+                LoftSrc::Mesh(s) => s.situate_one(i, wl, pose, platform, opts),
+            }
+        }
+    }
+    let src = if is_stl {
+        let scale = settings.units.ok_or_else(|| {
+            format!(
+                "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
+                 (or a scale to metres)"
+            )
+        })?;
+        LoftSrc::Mesh(
+            michell::stl::mesh_fleet(&bytes, scale, design_wl)
+                .map_err(|e| format!("{path}: {e}"))?,
+        )
+    } else {
+        let text = std::str::from_utf8(&bytes).expect("checked utf8");
+        LoftSrc::Iges(iges::source_fleet(text, design_wl).map_err(|e| format!("{path}: {e}"))?)
+    };
     let n = src.len();
     // The band reaches from the keel to `--band` metres above the design
     // waterline (default: half the design draft). Including the deck in the

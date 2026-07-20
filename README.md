@@ -100,6 +100,14 @@ reported so you can judge fit quality).
 
 - **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
   the human-authorable path: a station × waterline table of half-beams.
+- **STL**: `stl::mesh_fleet(bytes, units_scale, waterline)` — binary or ASCII
+  triangle meshes. Half-beams are extracted by transverse **ray casting**
+  (exact, no Newton iteration; empty results are the footprint), hulls
+  cluster by shared vertices + wetted proximity, and everything downstream
+  (folding, bodies, sweeps) is shared with IGES. STL has no units field, so
+  `--units mm|cm|m|in|ft` is required. Quality tracks the export's chord
+  tolerance: fine CAD tessellations match IGES; decimated meshes add
+  geometry noise that wave resistance is sensitive to.
 - **IGES**: `iges::import_hull(text, opts)` — reads **one or many untrimmed**
   NURBS patches (entity 128, unit weights; 124 transforms and unit conversion
   handled; naturally-bounded 143/141 wrappers, as produced by SubD → NURBS
@@ -241,7 +249,8 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 ## Roadmap
 
 1. Parallel sweep evaluation (each equilibrium point is independent).
-2. STEP reader feeding the same sample-and-loft pipeline.
+2. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
+   path.
 3. Transom closure, wave spectrum output, Python bindings.
 
 ## References

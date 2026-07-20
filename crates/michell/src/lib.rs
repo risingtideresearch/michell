@@ -66,6 +66,7 @@ pub mod iges;
 mod michell;
 mod moments;
 mod quadrature;
+pub mod stl;
 
 pub use bspline::BSplineSurface;
 pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};

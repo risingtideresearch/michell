@@ -29,6 +29,7 @@
 use michell::body::{Body, BodyOptions};
 use michell::fit::{fit_offsets, FitOptions, FitReport};
 use michell::iges::{self, HullPose, ImportOptions, ImportReport, Platform};
+use michell::stl;
 use michell::{BSplineSurface, Hull, Placement};
 
 /// Where a hull came from, with any conversion diagnostics.
@@ -42,6 +43,8 @@ pub enum Source {
     Offsets(FitReport),
     /// Imported from IGES.
     Iges(ImportReport),
+    /// Sampled from an STL mesh.
+    Stl(ImportReport),
 }
 
 /// Import/loft settings shared by every command that reads a hull.
@@ -53,6 +56,8 @@ pub struct LoadSettings {
     /// True when the user set fit options explicitly (otherwise offsets
     /// lofting adapts the control count to the grid).
     pub fit_explicit: bool,
+    /// Scale to metres for unitless formats (STL).
+    pub units: Option<f64>,
 }
 
 impl Default for LoadSettings {
@@ -63,7 +68,32 @@ impl Default for LoadSettings {
             samples: (121, 33),
             fit: FitOptions::default(),
             fit_explicit: false,
+            units: None,
         }
+    }
+}
+
+/// Parse a units name (or raw scale) to metres-per-unit.
+pub fn parse_units(s: &str) -> Result<f64, String> {
+    match s.trim() {
+        "mm" => Ok(0.001),
+        "cm" => Ok(0.01),
+        "m" => Ok(1.0),
+        "in" => Ok(0.0254),
+        "ft" => Ok(0.3048),
+        other => other
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .ok_or_else(|| format!("--units {other:?}: expected mm|cm|m|in|ft or a scale")),
+    }
+}
+
+/// Binary-STL detection: exact size match on the triangle count.
+pub fn looks_binary_stl(bytes: &[u8]) -> bool {
+    bytes.len() >= 84 && {
+        let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
+        bytes.len() == 84 + 50 * n
     }
 }
 
@@ -74,7 +104,43 @@ pub fn load_hulls(
     path: &str,
     settings: &LoadSettings,
 ) -> Result<Vec<(Hull, Placement, Source)>, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let lower = path.to_ascii_lowercase();
+
+    // STL: by extension or binary layout (binary STL is not UTF-8).
+    let is_text = std::str::from_utf8(&bytes).is_ok();
+    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || !is_text {
+        let scale = settings.units.ok_or_else(|| {
+            format!(
+                "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
+                 (or a scale to metres)"
+            )
+        })?;
+        let mf = stl::mesh_fleet(&bytes, scale, settings.waterline_z)
+            .map_err(|e| format!("STL import failed: {e}"))?;
+        let opts = ImportOptions {
+            waterline_z: settings.waterline_z,
+            stations: settings.samples.0,
+            waterlines: settings.samples.1,
+            fit: if settings.fit_explicit {
+                settings.fit
+            } else {
+                ImportOptions::default().fit
+            },
+            centerplane: settings.centerplane,
+        };
+        let poses = vec![HullPose::default(); mf.len()];
+        let fl = mf
+            .situate(settings.waterline_z, &poses, &Platform::default(), &opts)
+            .map_err(|e| format!("STL import failed: {e}"))?;
+        return Ok(fl
+            .members
+            .into_iter()
+            .map(|m| (m.hull, m.placement, Source::Stl(m.report)))
+            .collect());
+    }
+
+    let text = String::from_utf8(bytes).expect("checked utf8");
     let first = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -117,7 +183,6 @@ pub fn load_hulls(
             fit_offsets(&st, &wl, &y, &fit).map_err(|e| format!("loft failed: {e}"))?;
         return Ok(vec![(hull, Placement::default(), Source::Offsets(report))]);
     }
-    let lower = path.to_ascii_lowercase();
     let looks_iges = lower.ends_with(".igs")
         || lower.ends_with(".iges")
         || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G');

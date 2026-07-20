@@ -486,6 +486,108 @@ fn loft_decomposes_and_manifest_sweeps() {
     assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
 }
 
+/// Tessellated Wigley full shell (ASCII STL, metres, DWL at z = 0.7).
+fn wigley_stl(nx: usize, nz: usize) -> String {
+    let f = |x: f64, zp: f64| {
+        0.5 * (4.0 * (x / 10.0) * (1.0 - x / 10.0)) * (1.0 - (zp / 0.625f64).powi(2))
+    };
+    let mut s = String::from("solid wigley\n");
+    for side in [1.0f64, -1.0] {
+        for i in 0..nx {
+            for j in 0..nz {
+                let (x0, x1) = (10.0 * i as f64 / nx as f64, 10.0 * (i + 1) as f64 / nx as f64);
+                let (z0, z1) = (
+                    0.625 * j as f64 / nz as f64,
+                    0.625 * (j + 1) as f64 / nz as f64,
+                );
+                let p = |x: f64, zp: f64| [x, side * f(x, zp), 0.7 - zp];
+                for tri in [
+                    [p(x0, z0), p(x1, z0), p(x1, z1)],
+                    [p(x0, z0), p(x1, z1), p(x0, z1)],
+                ] {
+                    s.push_str(" facet normal 0 0 0\n  outer loop\n");
+                    for v in tri {
+                        s.push_str(&format!("   vertex {} {} {}\n", v[0], v[1], v[2]));
+                    }
+                    s.push_str("  endloop\n endfacet\n");
+                }
+            }
+        }
+    }
+    s.push_str("endsolid wigley\n");
+    s
+}
+
+#[test]
+fn stl_resistance_and_loft() {
+    let stl_path = tmp("wigley_mesh.stl");
+    std::fs::write(&stl_path, wigley_stl(120, 40)).unwrap();
+
+    // Missing units must fail with advice.
+    let out = bin()
+        .args(["info", stl_path.to_str().unwrap(), "--waterline", "0.7"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--units"));
+
+    // Direct resistance from the mesh matches the reference Wigley.
+    let out = run_ok(bin().args([
+        "resistance",
+        stl_path.to_str().unwrap(),
+        "--units",
+        "m",
+        "--waterline",
+        "0.7",
+        "--speeds",
+        "3.0",
+        "--fluid",
+        "seawater",
+        "--json",
+    ]));
+    let reference = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let want = michell::resistance(&reference, &michell::Conditions::seawater(3.0)).unwrap();
+    let rw = json_num(&out, "rw");
+    assert!(
+        (rw - want.wave.resistance).abs() < 0.02 * want.wave.resistance,
+        "rw {rw} vs {}",
+        want.wave.resistance
+    );
+
+    // Loft to a full-band body and use it.
+    let body_path = tmp("wigley_mesh_body");
+    run_ok(bin().args([
+        "loft",
+        stl_path.to_str().unwrap(),
+        "--units",
+        "m",
+        "--waterline",
+        "0.7",
+        "-o",
+        body_path.to_str().unwrap(),
+        "--samples",
+        "121x49",
+        "--fit-control",
+        "16x12",
+    ]));
+    let body_file = tmp("wigley_mesh_body.hull");
+    let text = std::fs::read_to_string(&body_file).unwrap();
+    assert!(text.contains("\nwaterline "), "not a body file");
+    let out = run_ok(bin().args([
+        "resistance",
+        body_file.to_str().unwrap(),
+        "--speeds",
+        "3.0",
+        "--json",
+    ]));
+    let rw_body = json_num(&out, "rw");
+    assert!(
+        (rw_body - want.wave.resistance).abs() < 0.03 * want.wave.resistance,
+        "body rw {rw_body} vs {}",
+        want.wave.resistance
+    );
+}
+
 #[test]
 fn errors_are_clean() {
     // Unknown file format.

@@ -746,6 +746,93 @@ fn body_situate_matches_iges_situate() {
     assert!((db - di).abs() < 1e-3 * di, "trim: draft {db} vs {di}");
 }
 
+/// Tessellate Wigley full shells (L=10, B=1, T=0.625, DWL at z_cad = 0.7)
+/// into ASCII STL, one shell per y offset.
+fn wigley_stl_ascii(y0s: &[f64], nx: usize, nz: usize) -> String {
+    let f = |x: f64, zp: f64| {
+        0.5 * (4.0 * (x / 10.0) * (1.0 - x / 10.0)) * (1.0 - (zp / 0.625f64).powi(2))
+    };
+    let mut s = String::from("solid wigley\n");
+    let mut tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        s.push_str(" facet normal 0 0 0\n  outer loop\n");
+        for v in [a, b, c] {
+            s.push_str(&format!("   vertex {} {} {}\n", v[0], v[1], v[2]));
+        }
+        s.push_str("  endloop\n endfacet\n");
+    };
+    for &y0 in y0s {
+        for side in [1.0f64, -1.0] {
+            for i in 0..nx {
+                for j in 0..nz {
+                    let (x0, x1) = (
+                        10.0 * i as f64 / nx as f64,
+                        10.0 * (i + 1) as f64 / nx as f64,
+                    );
+                    let (z0, z1) = (
+                        0.625 * j as f64 / nz as f64,
+                        0.625 * (j + 1) as f64 / nz as f64,
+                    );
+                    let p = |x: f64, zp: f64| [x, side * f(x, zp) + y0, 0.7 - zp];
+                    tri(p(x0, z0), p(x1, z0), p(x1, z1));
+                    tri(p(x0, z0), p(x1, z1), p(x0, z1));
+                }
+            }
+        }
+    }
+    s.push_str("endsolid wigley\n");
+    s
+}
+
+#[test]
+fn stl_import_matches_reference_wigley() {
+    use michell::iges::{HullPose, Platform};
+    let stl = wigley_stl_ascii(&[0.0], 160, 48);
+    let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
+    assert_eq!(mf.len(), 1, "one hull expected");
+    let opts = import_opts();
+    let fl = mf
+        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
+        .unwrap();
+    let m = &fl.members[0];
+    assert!(m.report.two_sided);
+    assert!(m.report.centerplane.abs() < 1e-6);
+    assert!((m.report.draft - 0.625).abs() < 1e-9);
+    assert!(m.report.max_asymmetry < 1e-9);
+
+    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let (v, vr) = (m.hull.displaced_volume(), reference.displaced_volume());
+    assert!((v - vr).abs() < 1e-3 * vr, "volume {v} vs {vr}");
+    let cond = Conditions::seawater(3.0);
+    let rw = michell::wave_resistance(&m.hull, &cond).unwrap().resistance;
+    let rw_ref = michell::wave_resistance(&reference, &cond)
+        .unwrap()
+        .resistance;
+    assert!(
+        (rw - rw_ref).abs() < 1e-2 * rw_ref,
+        "Rw {rw} vs {rw_ref}"
+    );
+}
+
+#[test]
+fn stl_catamaran_clusters_into_two_hulls() {
+    use michell::iges::{HullPose, Platform};
+    let stl = wigley_stl_ascii(&[3.0, -3.0], 60, 20);
+    let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
+    assert_eq!(mf.len(), 2, "two hulls expected");
+    let opts = import_opts();
+    let fl = mf
+        .situate(
+            0.7,
+            &[HullPose::default(), HullPose::default()],
+            &Platform::default(),
+            &opts,
+        )
+        .unwrap();
+    assert_eq!(fl.members.len(), 2);
+    assert!((fl.members[0].placement.y + 3.0).abs() < 1e-3);
+    assert!((fl.members[1].placement.y - 3.0).abs() < 1e-3);
+}
+
 #[test]
 fn parse_reports_inventory() {
     let text = wigley_iges("", 1.0);

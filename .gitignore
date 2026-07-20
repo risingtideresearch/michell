@@ -1,4 +1,10 @@
 /target
+/.claude/
 
-# local hull data and studies (user geometry)
-/ama*
+# hull data and studies live beside the repo but are not source
+/*.igs
+/*.iges
+/*.stl
+/*.hull
+/*.csv
+/*.json
