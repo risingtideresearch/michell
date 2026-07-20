@@ -129,10 +129,13 @@ michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
 ```
 
-Multihulls: list several hulls, each with an optional `@x=DX,y=Y` placement
-(`y` positions the centerplane, `x` adds to the file's own x coordinates).
-The `IF` column / `interference` JSON field reports combined R_w over the sum
-of standalone R_w.
+Multihulls: list several hulls, each with an optional placement suffix —
+`@y=Y` places a (single-hull file's) centerplane absolutely, `@dy=S` shifts
+transversely, `@x=DX`/`@dx=DX` shifts longitudinally. An IGES file holding a
+whole multihull imports as a fleet automatically: hulls are detected by
+clustering wetted patches, each at its detected centerplane, and dry
+structure (beams, decks) is dropped. The `IF` column / `interference` JSON
+field reports combined R_w over the sum of standalone R_w.
 
 All three input kinds are accepted everywhere (sniffed by header/extension):
 the canonical `.hull` control net, a `michell-offsets v1` station × waterline
@@ -157,6 +160,10 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 - `wave_resistance[_with]`, `viscous_resistance[_with]`,
   `resistance[_with]` → forces, effective power P_E = R_t·U, coefficients,
   quadrature diagnostics.
+- `multihull_resistance[_with]`, `multihull_wave_resistance[_with]`,
+  `Placement` — fleets with exact wave interference.
+- `iges::import_fleet` — every hull in a file, with detected placements;
+  `iges::import_hull` — exactly one (errors on multihull files).
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `hulls::wigley(l, b, t)` — exact reference hull.
 

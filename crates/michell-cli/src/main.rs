@@ -2,7 +2,7 @@
 
 mod formats;
 
-use formats::{load_hull, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
+use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
 
@@ -45,14 +45,18 @@ HULL INPUTS (sniffed by header / extension)
   *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted)
 
 MULTIHULLS
-  Pass several hulls; each may carry a placement suffix `@x=DX,y=Y`:
+  Pass several hulls; each may carry a placement suffix:
       michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
-  y positions the hull's centerplane; x is added to the hull file's own x
-  coordinates (0 keeps them, so hulls modelled in position line up).
-  Wave interference is computed exactly (thin-ship superposition); the IF
-  column reports combined Rw / sum of standalone Rw. Froude numbers use the
-  longest hull's length. Demihulls are assumed symmetric about their own
-  centerplanes.
+  Suffix keys: y=Y  places the hull's centerplane absolutely (single-hull
+  files only); dy=S shifts transversely; x=DX / dx=DX shifts longitudinally
+  (added to the file's own x coordinates).
+  An IGES file containing a whole multihull imports as a fleet: hulls are
+  detected by clustering wetted patches, each at its detected centerplane
+  (dry structure like beams and decks is dropped); dy/dx then shift all of
+  them together. Wave interference is computed exactly (thin-ship
+  superposition); the IF column reports combined Rw / sum of standalone Rw.
+  Froude numbers use the longest hull's length. Demihulls are assumed
+  symmetric about their own centerplanes.
 
 SPEED SELECTION (resistance)
   --speeds A[:B:STEP]   speeds in m/s (inclusive range)
@@ -185,45 +189,90 @@ impl Parsed {
     }
 }
 
-/// Parse `path` or `path@x=DX,y=Y` into a file and a placement.
-fn parse_hull_spec(spec: &str) -> Result<(String, Placement), String> {
+/// Placement request from a hull spec suffix.
+#[derive(Default, Clone, Copy)]
+struct SpecPlacement {
+    /// Absolute centerplane position (single-hull files only).
+    y_abs: Option<f64>,
+    /// Transverse shift applied to the file's detected placements.
+    dy: f64,
+    /// Longitudinal shift added to the file's x coordinates.
+    dx: f64,
+}
+
+/// Parse `path` or `path@key=V,...` (keys: `y` absolute centerplane,
+/// `dy` transverse shift, `x`/`dx` longitudinal shift).
+fn parse_hull_spec(spec: &str) -> Result<(String, SpecPlacement), String> {
     let Some((path, rest)) = spec.split_once('@') else {
-        return Ok((spec.to_string(), Placement::default()));
+        return Ok((spec.to_string(), SpecPlacement::default()));
     };
-    let mut place = Placement::default();
+    let mut place = SpecPlacement::default();
     for part in rest.split(',') {
         let (k, v) = part
             .split_once('=')
-            .ok_or_else(|| format!("bad placement {rest:?}: expected x=DX,y=Y"))?;
+            .ok_or_else(|| format!("bad placement {rest:?}: expected key=value pairs"))?;
         let val: f64 = v
             .trim()
             .parse()
             .map_err(|_| format!("bad placement value {v:?} in {spec:?}"))?;
         match k.trim() {
-            "x" => place.x = val,
-            "y" => place.y = val,
-            other => return Err(format!("unknown placement key {other:?} (use x, y)")),
+            "y" => place.y_abs = Some(val),
+            "dy" => place.dy = val,
+            "x" | "dx" => place.dx = val,
+            other => {
+                return Err(format!(
+                    "unknown placement key {other:?} (use y, dy, x/dx)"
+                ))
+            }
         }
+    }
+    if place.y_abs.is_some() && place.dy != 0.0 {
+        return Err(format!("{spec:?}: give either y (absolute) or dy (shift), not both"));
     }
     Ok((path.to_string(), place))
 }
 
-/// Fleet placements plus the loaded hulls, keyed by file path.
-type Fleet = (Vec<(String, Placement)>, HashMap<String, (Hull, Source)>);
+/// One hull of the working fleet: a file may contribute several (a multihull
+/// IGES export), and a spec's `@x,y` offset shifts everything from that file.
+struct Member {
+    path: String,
+    hull: Hull,
+    placement: Placement,
+    source: Source,
+}
 
-/// Load a fleet of hull specs, reading each unique file once.
-fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Fleet, String> {
-    let mut cache: HashMap<String, (Hull, Source)> = HashMap::new();
-    let mut fleet = Vec::new();
+/// Load a fleet of hull specs, reading each unique file once. A file
+/// containing several hulls contributes all of them, each at its detected
+/// placement plus the spec's offset.
+fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Vec<Member>, String> {
+    let mut cache: HashMap<String, Vec<(Hull, Placement, Source)>> = HashMap::new();
+    let mut members = Vec::new();
     for spec in specs {
-        let (path, place) = parse_hull_spec(spec)?;
+        let (path, sp) = parse_hull_spec(spec)?;
         if !cache.contains_key(&path) {
-            let loaded = load_hull(&path, settings)?;
-            cache.insert(path.clone(), loaded);
+            cache.insert(path.clone(), load_hulls(&path, settings)?);
         }
-        fleet.push((path, place));
+        let hulls = &cache[&path];
+        if sp.y_abs.is_some() && hulls.len() > 1 {
+            return Err(format!(
+                "{spec:?}: absolute y placement is ambiguous for a file with {} hulls; \
+                 use dy=SHIFT instead",
+                hulls.len()
+            ));
+        }
+        for (hull, detected, source) in hulls {
+            members.push(Member {
+                path: path.clone(),
+                hull: hull.clone(),
+                placement: Placement {
+                    x: detected.x + sp.dx,
+                    y: sp.y_abs.unwrap_or(detected.y + sp.dy),
+                },
+                source: source.clone(),
+            });
+        }
     }
-    Ok((fleet, cache))
+    Ok(members)
 }
 
 fn describe_source(source: &Source) -> Vec<String> {
@@ -273,45 +322,49 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
     if p.positional.is_empty() {
         return Err("usage: michell info <hull>... [options]".into());
     }
-    let (fleet, cache) = load_fleet(&p.positional, &p.load_settings()?)?;
+    let members = load_fleet(&p.positional, &p.load_settings()?)?;
     if p.switch("--json") {
         let mut out = String::from("[");
-        for (i, (path, _)) in fleet.iter().enumerate() {
-            let (hull, _) = &cache[path];
+        for (i, m) in members.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push_str(&format!(
-                "{{\"path\":{path:?},\"length\":{},\"draft\":{},\"wetted_surface\":{},\
-                 \"displaced_volume\":{}}}",
-                hull.length(),
-                hull.draft(),
-                hull.wetted_surface(),
-                hull.displaced_volume()
+                "{{\"path\":{:?},\"placement\":{{\"x\":{},\"y\":{}}},\"length\":{},\
+                 \"draft\":{},\"wetted_surface\":{},\"displaced_volume\":{}}}",
+                m.path,
+                m.placement.x,
+                m.placement.y,
+                m.hull.length(),
+                m.hull.draft(),
+                m.hull.wetted_surface(),
+                m.hull.displaced_volume()
             ));
         }
         out.push(']');
         println!("{out}");
         return Ok(());
     }
-    for (i, (path, place)) in fleet.iter().enumerate() {
-        let (hull, source) = &cache[path];
+    for (i, m) in members.iter().enumerate() {
         if i > 0 {
             println!();
         }
-        if *place == Placement::default() {
-            println!("hull: {path}");
+        if m.placement == Placement::default() {
+            println!("hull: {}", m.path);
         } else {
-            println!("hull: {path} (placed at x{:+}, y = {})", place.x, place.y);
+            println!(
+                "hull: {} (placed at dx {:+.3} m, y {:.4} m)",
+                m.path, m.placement.x, m.placement.y
+            );
         }
-        for line in describe_source(source) {
+        for line in describe_source(&m.source) {
             println!("{line}");
         }
-        println!("length          {:>10.4} m", hull.length());
-        println!("draft           {:>10.4} m", hull.draft());
-        println!("wetted surface  {:>10.4} m^2", hull.wetted_surface());
-        println!("displaced vol   {:>10.4} m^3", hull.displaced_volume());
-        let s = hull.surface();
+        println!("length          {:>10.4} m", m.hull.length());
+        println!("draft           {:>10.4} m", m.hull.draft());
+        println!("wetted surface  {:>10.4} m^2", m.hull.wetted_surface());
+        println!("displaced vol   {:>10.4} m^3", m.hull.displaced_volume());
+        let s = m.hull.surface();
         println!(
             "spline          degree {}x{}, control net {}x{}",
             s.degree_x(),
@@ -320,16 +373,13 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
             s.n_ctrl_z()
         );
     }
-    if fleet.len() > 1 {
-        let total_s: f64 = fleet.iter().map(|(p, _)| cache[p].0.wetted_surface()).sum();
-        let total_v: f64 = fleet
-            .iter()
-            .map(|(p, _)| cache[p].0.displaced_volume())
-            .sum();
+    if members.len() > 1 {
+        let total_s: f64 = members.iter().map(|m| m.hull.wetted_surface()).sum();
+        let total_v: f64 = members.iter().map(|m| m.hull.displaced_volume()).sum();
         println!();
         println!(
             "fleet: {} hulls, wetted surface {total_s:.4} m^2, displaced vol {total_v:.4} m^3",
-            fleet.len()
+            members.len()
         );
     }
     Ok(())
@@ -342,11 +392,9 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             "usage: michell resistance <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
         );
     }
-    let (fleet, cache) = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = fleet
-        .iter()
-        .map(|(path, place)| (&cache[path].0, *place))
-        .collect();
+    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    let members: Vec<(&Hull, Placement)> =
+        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
     let multi = members.len() > 1;
     // Reference length for Froude number: the longest hull.
     let l_ref = members
@@ -395,20 +443,20 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             .map(|(_, c, _)| c.fluid)
             .unwrap_or(Fluid::SEAWATER_15C);
         let mut out = String::from("{\"hulls\":[");
-        for (i, (path, place)) in fleet.iter().enumerate() {
-            let hull = &cache[path].0;
+        for (i, m) in loaded.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push_str(&format!(
-                "{{\"path\":{path:?},\"placement\":{{\"x\":{},\"y\":{}}},\"length\":{},\
+                "{{\"path\":{:?},\"placement\":{{\"x\":{},\"y\":{}}},\"length\":{},\
                  \"draft\":{},\"wetted_surface\":{},\"displaced_volume\":{}}}",
-                place.x,
-                place.y,
-                hull.length(),
-                hull.draft(),
-                hull.wetted_surface(),
-                hull.displaced_volume()
+                m.path,
+                m.placement.x,
+                m.placement.y,
+                m.hull.length(),
+                m.hull.draft(),
+                m.hull.wetted_surface(),
+                m.hull.displaced_volume()
             ));
         }
         out.push_str("],");
@@ -443,20 +491,20 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     }
 
     let mut seen: Vec<&str> = Vec::new();
-    for (path, _) in &fleet {
-        if seen.contains(&path.as_str()) {
+    for m in &loaded {
+        if seen.contains(&m.path.as_str()) {
             continue;
         }
-        seen.push(path);
-        println!("hull: {path}");
-        for line in describe_source(&cache[path].1) {
+        seen.push(&m.path);
+        println!("hull: {}", m.path);
+        for line in describe_source(&m.source) {
             println!("{line}");
         }
     }
     if multi {
-        let placements: Vec<String> = fleet
+        let placements: Vec<String> = loaded
             .iter()
-            .map(|(path, pl)| format!("{path}@x={},y={}", pl.x, pl.y))
+            .map(|m| format!("{}@x={},y={}", m.path, m.placement.x, m.placement.y))
             .collect();
         println!("fleet: {}", placements.join("  "));
     }
@@ -514,7 +562,15 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         .flags
         .get("output")
         .ok_or("loft requires an output path: -o OUT.hull")?;
-    let (hull, source) = load_hull(path, &p.load_settings()?)?;
+    let mut hulls = load_hulls(path, &p.load_settings()?)?;
+    if hulls.len() > 1 {
+        return Err(format!(
+            "{path} contains {} hulls; a control-net file holds one — export \
+             hulls separately to loft them individually",
+            hulls.len()
+        ));
+    }
+    let (hull, _, source) = hulls.pop().expect("one hull");
     if matches!(source, Source::Native) {
         return Err(format!("{path} is already a control-net file"));
     }

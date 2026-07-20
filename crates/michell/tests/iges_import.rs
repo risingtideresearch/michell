@@ -207,11 +207,10 @@ fn rejects_wrong_waterline() {
     );
 }
 
-/// Wigley hull as a 4-patch full shell (fore/aft x starboard/port), in
-/// metres, z up with the DWL at z = 0.7, offset 7 m to starboard — the shape
-/// of a real multi-patch export of an outrigger hull.
-fn wigley_multipatch_iges() -> String {
-    let (b, t, y0) = (1.0f64, 0.625f64, 7.0f64);
+/// The 4 patch bodies (fore/aft x starboard/port) of a Wigley full shell in
+/// metres, z up with the DWL at z = 0.7, centred at y = y0.
+fn wigley_shell_bodies(y0: f64) -> Vec<String> {
+    let (b, t) = (1.0f64, 0.625f64);
     // Quadratic Bezier pieces of g(x) = 4(x/10)(1 - x/10) split at x = 5.
     let gx_fore = [0.0, 1.0, 1.0];
     let gx_aft = [1.0, 1.0, 0.0];
@@ -243,7 +242,11 @@ fn wigley_multipatch_iges() -> String {
             bodies.push(p);
         }
     }
+    bodies
+}
 
+/// Assemble a complete metres-unit IGES file from 128-entity bodies.
+fn iges_file_meters(bodies: &[String]) -> String {
     let mut s = String::new();
     s.push_str(&line("michell multipatch test", 'S', 1));
     let global = ",,7Hmichell,9Hmulti.igs,7Hmichell,7Hmichell,32,38,6,308,15,\
@@ -274,6 +277,11 @@ fn wigley_multipatch_iges() -> String {
     }
     s.push_str(&line("S      1G      2D      8P     99", 'T', 1));
     s
+}
+
+/// A single offset Wigley full shell (one detected hull at y = 7).
+fn wigley_multipatch_iges() -> String {
+    iges_file_meters(&wigley_shell_bodies(7.0))
 }
 
 #[test]
@@ -317,6 +325,68 @@ fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
     let (_, report2) = iges::import_hull(&text, &opts).unwrap();
     assert_eq!(report2.centerplane, 7.0);
     assert!(report2.two_sided);
+}
+
+#[test]
+fn trimaran_file_imports_as_fleet_with_detected_placements() {
+    // Three full Wigley shells in one file: center hull at y = 0, amas at
+    // y = ±7 — a whole trimaran modelled in position.
+    let mut bodies = wigley_shell_bodies(0.0);
+    bodies.extend(wigley_shell_bodies(7.0));
+    bodies.extend(wigley_shell_bodies(-7.0));
+    let text = iges_file_meters(&bodies);
+    let mut opts = import_opts();
+    opts.waterline_z = 0.7;
+
+    let fleet = iges::import_fleet(&text, &opts).unwrap();
+    assert_eq!(fleet.len(), 3, "expected 3 hulls");
+    let ys: Vec<f64> = fleet.iter().map(|m| m.placement.y).collect();
+    for (got, want) in ys.iter().zip([-7.0, 0.0, 7.0]) {
+        assert!((got - want).abs() < 1e-6, "placements {ys:?}");
+    }
+    for m in &fleet {
+        assert_eq!(m.report.patches, 4);
+        assert!(m.report.two_sided);
+        assert!((m.report.draft - 0.625).abs() < 1e-9);
+        assert!(m.report.fit.max_residual < 1e-8);
+    }
+
+    // Resistance of the imported fleet matches a manually placed fleet of
+    // reference Wigley hulls at the same transverse positions.
+    let cond = Conditions::seawater(3.0);
+    let members: Vec<(&michell::Hull, michell::Placement)> = fleet
+        .iter()
+        .map(|m| (&m.hull, m.placement))
+        .collect();
+    let got = michell::multihull_wave_resistance(&members, &cond)
+        .unwrap()
+        .resistance;
+    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let refs = [
+        (&reference, michell::Placement { x: 0.0, y: -7.0 }),
+        (&reference, michell::Placement { x: 0.0, y: 0.0 }),
+        (&reference, michell::Placement { x: 0.0, y: 7.0 }),
+    ];
+    let want = michell::multihull_wave_resistance(&refs, &cond)
+        .unwrap()
+        .resistance;
+    assert!(
+        (got - want).abs() < 1e-5 * want,
+        "trimaran Rw {got} vs reference {want}"
+    );
+
+    // Single-hull import must refuse the multihull file with a clear count.
+    let err = iges::import_hull(&text, &opts).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("3 separate hulls"), "unexpected error: {msg}");
+
+    // A centerplane override is ambiguous for a multi-hull file.
+    opts.centerplane = Some(0.0);
+    let err = iges::import_fleet(&text, &opts).unwrap_err();
+    assert!(
+        format!("{err}").contains("ambiguous"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

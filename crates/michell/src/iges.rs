@@ -36,6 +36,7 @@ use crate::bspline::{ders_basis, find_span};
 use crate::error::{Error, Result};
 use crate::fit::{fit_offsets, FitOptions, FitReport};
 use crate::hull::Hull;
+use crate::michell::Placement;
 
 // ---------------------------------------------------------------------------
 // Parsed geometry
@@ -522,11 +523,33 @@ struct Patch {
     grid_n: usize,
     /// (x_lo, x_hi, z_lo, z_hi) over the whole patch presample.
     bbox: (f64, f64, f64, f64),
+    /// (x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) over the wetted presample only;
+    /// `None` when the patch is entirely above the waterline.
+    wet_box: Option<[f64; 6]>,
 }
 
-/// Import a hull from IGES text. See the module docs for the expected CAD
-/// frame and the pipeline.
-pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportReport)> {
+/// One hull detected in an IGES file, with its recovered placement.
+#[derive(Debug, Clone)]
+pub struct ImportedHull {
+    pub hull: Hull,
+    /// Placement recovered from the file: `x = 0` (the file's longitudinal
+    /// coordinates are kept) and `y` = the hull's detected centerplane.
+    pub placement: Placement,
+    pub report: ImportReport,
+}
+
+/// Import every hull found in an IGES file.
+///
+/// Patches are clustered by wetted-geometry proximity: seams between patches
+/// of one hull touch to CAD tolerance, while distinct hulls of a multihull
+/// are far apart, so a whole boat modelled in position imports as a fleet
+/// with its true placements. Only wetted geometry clusters, so dry structure
+/// (cross-beams, decks) cannot bridge two hulls and is dropped. Results are
+/// sorted by transverse position.
+///
+/// [`ImportOptions::centerplane`] may only be set when the file contains a
+/// single hull.
+pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull>> {
     let file = parse(text)?;
     if file.entity_counts.iter().any(|&(t, _)| t == 144 || t == 142) {
         return Err(Error::Unsupported(
@@ -561,15 +584,12 @@ pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportRepo
         ));
     }
 
-    // Presample every patch in the hull frame (z' = waterline_z - z, downward)
-    // and gather global wetted statistics.
+    // Presample every patch in the hull frame (z' = waterline_z - z,
+    // downward); track wetted extents globally (for the clustering length
+    // scale) and per patch (for the clusters themselves).
     const GRID_N: usize = 21;
     let mut patches: Vec<Patch> = Vec::with_capacity(file.surfaces.len());
-    let mut draft = 0.0f64;
-    let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut y_sum = 0.0f64;
-    let mut wet_count = 0usize;
+    let mut global_wet: Option<[f64; 6]> = None;
     for s in &file.surfaces {
         let mut hs = s.clone();
         for p in hs.ctrl.iter_mut() {
@@ -579,6 +599,7 @@ pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportRepo
         let (v0, v1) = hs.v_domain();
         let mut pts = Vec::with_capacity(GRID_N * GRID_N);
         let mut bbox = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let mut wet_box: Option<[f64; 6]> = None;
         for i in 0..GRID_N {
             let u = u0 + (u1 - u0) * i as f64 / (GRID_N - 1) as f64;
             for j in 0..GRID_N {
@@ -590,15 +611,22 @@ pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportRepo
                 bbox.2 = bbox.2.min(zd);
                 bbox.3 = bbox.3.max(zd);
                 if zd >= -1e-12 {
-                    draft = draft.max(zd);
-                    x_min = x_min.min(x);
-                    x_max = x_max.max(x);
-                    y_lo = y_lo.min(y);
-                    y_hi = y_hi.max(y);
-                    y_sum += y;
-                    wet_count += 1;
+                    let b = wet_box.get_or_insert([x, x, y, y, zd, zd]);
+                    b[0] = b[0].min(x);
+                    b[1] = b[1].max(x);
+                    b[2] = b[2].min(y);
+                    b[3] = b[3].max(y);
+                    b[4] = b[4].min(zd);
+                    b[5] = b[5].max(zd);
                 }
                 pts.push((u, v, x, y, zd));
+            }
+        }
+        if let Some(b) = wet_box {
+            let g = global_wet.get_or_insert(b);
+            for k in 0..3 {
+                g[2 * k] = g[2 * k].min(b[2 * k]);
+                g[2 * k + 1] = g[2 * k + 1].max(b[2 * k + 1]);
             }
         }
         patches.push(Patch {
@@ -606,16 +634,138 @@ pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportRepo
             pts,
             grid_n: GRID_N,
             bbox,
+            wet_box,
         });
     }
-    if wet_count == 0 {
+    let Some(g) = global_wet else {
         return Err(Error::InvalidGeometry(
             "the surface lies entirely above the specified waterline".into(),
         ));
-    }
-    if !(draft > 0.0 && x_max > x_min) {
+    };
+    let scale = (g[1] - g[0]).max(g[3] - g[2]).max(g[5] - g[4]);
+    if scale <= 0.0 || !scale.is_finite() {
         return Err(Error::InvalidGeometry(
-            "the wetted part of the surface is degenerate (zero draft or length)".into(),
+            "the wetted part of the surface is degenerate".into(),
+        ));
+    }
+
+    let clusters = cluster_patches(&patches, 0.01 * scale);
+    if clusters.len() > 1 && opts.centerplane.is_some() {
+        return Err(Error::InvalidConditions(format!(
+            "a centerplane override is ambiguous: {} separate hulls detected",
+            clusters.len()
+        )));
+    }
+    let mut slots: Vec<Option<Patch>> = patches.into_iter().map(Some).collect();
+    let mut out = Vec::with_capacity(clusters.len());
+    for idxs in &clusters {
+        let cluster: Vec<Patch> = idxs
+            .iter()
+            .map(|&i| slots[i].take().expect("each patch in one cluster"))
+            .collect();
+        let (hull, report) = import_cluster(cluster, opts, file.units_scale)?;
+        out.push(ImportedHull {
+            placement: Placement {
+                x: 0.0,
+                y: report.centerplane,
+            },
+            hull,
+            report,
+        });
+    }
+    out.sort_by(|a, b| a.placement.y.total_cmp(&b.placement.y));
+    Ok(out)
+}
+
+/// Import a hull from an IGES file that contains exactly one; errors (listing
+/// the detected centerplanes) when the file holds several hulls — use
+/// [`import_fleet`] for whole-multihull files.
+pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportReport)> {
+    let mut fleet = import_fleet(text, opts)?;
+    if fleet.len() == 1 {
+        let m = fleet.pop().expect("one member");
+        return Ok((m.hull, m.report));
+    }
+    let ys: Vec<String> = fleet
+        .iter()
+        .map(|m| format!("{:.3}", m.placement.y))
+        .collect();
+    Err(Error::Unsupported(format!(
+        "the file contains {} separate hulls (centerplanes at y = {}); import \
+         them as a fleet (import_fleet) or export hulls separately",
+        fleet.len(),
+        ys.join(", ")
+    )))
+}
+
+/// Union-find clustering of patches whose wetted bounding boxes come within
+/// `eps` of touching; dry patches are excluded.
+#[allow(clippy::needless_range_loop)]
+fn cluster_patches(patches: &[Patch], eps: f64) -> Vec<Vec<usize>> {
+    let n = patches.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..n {
+        let Some(a) = patches[i].wet_box else { continue };
+        for j in (i + 1)..n {
+            let Some(b) = patches[j].wet_box else { continue };
+            let touch = (0..3).all(|k| {
+                a[2 * k] - eps <= b[2 * k + 1] && b[2 * k] - eps <= a[2 * k + 1]
+            });
+            if touch {
+                let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                parent[ri] = rj;
+            }
+        }
+    }
+    let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+    for i in 0..n {
+        if patches[i].wet_box.is_none() {
+            continue;
+        }
+        let r = find(&mut parent, i);
+        match groups.iter_mut().find(|(root, _)| *root == r) {
+            Some((_, v)) => v.push(i),
+            None => groups.push((r, vec![i])),
+        }
+    }
+    groups.into_iter().map(|(_, v)| v).collect()
+}
+
+/// Run the single-hull pipeline on one cluster of patches.
+fn import_cluster(
+    patches: Vec<Patch>,
+    opts: &ImportOptions,
+    units_scale: f64,
+) -> Result<(Hull, ImportReport)> {
+    // Wetted statistics of this cluster.
+    let mut draft = 0.0f64;
+    let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut y_sum = 0.0f64;
+    let mut wet_count = 0usize;
+    for p in &patches {
+        for q in &p.pts {
+            if q.4 >= -1e-12 {
+                draft = draft.max(q.4);
+                x_min = x_min.min(q.2);
+                x_max = x_max.max(q.2);
+                y_lo = y_lo.min(q.3);
+                y_hi = y_hi.max(q.3);
+                y_sum += q.3;
+                wet_count += 1;
+            }
+        }
+    }
+    if wet_count == 0 || !(draft > 0.0 && x_max > x_min) {
+        return Err(Error::InvalidGeometry(
+            "a detected hull's wetted geometry is degenerate (zero draft or length)".into(),
         ));
     }
     let length = x_max - x_min;
@@ -713,7 +863,7 @@ pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportRepo
     Ok((
         hull,
         ImportReport {
-            units_scale: file.units_scale,
+            units_scale,
             patches: patches.len(),
             two_sided,
             centerplane: y_c,
@@ -918,6 +1068,7 @@ mod tests {
             pts,
             grid_n: n,
             bbox,
+            wet_box: None,
         }
     }
 

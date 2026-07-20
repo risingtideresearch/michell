@@ -28,9 +28,10 @@
 
 use michell::fit::{fit_offsets, FitOptions, FitReport};
 use michell::iges::{self, ImportOptions, ImportReport};
-use michell::{BSplineSurface, Hull};
+use michell::{BSplineSurface, Hull, Placement};
 
 /// Where a hull came from, with any conversion diagnostics.
+#[derive(Clone)]
 pub enum Source {
     /// Native control-net file: exact, no fit involved.
     Native,
@@ -63,7 +64,13 @@ impl Default for LoadSettings {
     }
 }
 
-pub fn load_hull(path: &str, settings: &LoadSettings) -> Result<(Hull, Source), String> {
+/// Load every hull contained in a file. Native control nets and offsets
+/// tables hold one hull at the default placement; an IGES file may contain a
+/// whole multihull, each member carrying its detected placement.
+pub fn load_hulls(
+    path: &str,
+    settings: &LoadSettings,
+) -> Result<Vec<(Hull, Placement, Source)>, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let first = text
         .lines()
@@ -72,7 +79,7 @@ pub fn load_hull(path: &str, settings: &LoadSettings) -> Result<(Hull, Source), 
         .trim_end();
     if first.starts_with("michell-hull") {
         let hull = parse_hull_file(&text)?;
-        return Ok((hull, Source::Native));
+        return Ok(vec![(hull, Placement::default(), Source::Native)]);
     }
     if first.starts_with("michell-offsets") {
         let (st, wl, y) = parse_offsets_file(&text)?;
@@ -85,7 +92,7 @@ pub fn load_hull(path: &str, settings: &LoadSettings) -> Result<(Hull, Source), 
         }
         let (hull, report) =
             fit_offsets(&st, &wl, &y, &fit).map_err(|e| format!("loft failed: {e}"))?;
-        return Ok((hull, Source::Offsets(report)));
+        return Ok(vec![(hull, Placement::default(), Source::Offsets(report))]);
     }
     let lower = path.to_ascii_lowercase();
     let looks_iges = lower.ends_with(".igs")
@@ -105,9 +112,12 @@ pub fn load_hull(path: &str, settings: &LoadSettings) -> Result<(Hull, Source), 
             },
             centerplane: settings.centerplane,
         };
-        let (hull, report) =
-            iges::import_hull(&text, &opts).map_err(|e| format!("IGES import failed: {e}"))?;
-        return Ok((hull, Source::Iges(report)));
+        let fleet =
+            iges::import_fleet(&text, &opts).map_err(|e| format!("IGES import failed: {e}"))?;
+        return Ok(fleet
+            .into_iter()
+            .map(|m| (m.hull, m.placement, Source::Iges(m.report)))
+            .collect());
     }
     Err(format!(
         "cannot determine the format of {path}: expected a `michell-hull v1` or \
