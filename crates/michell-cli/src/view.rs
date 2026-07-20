@@ -28,7 +28,7 @@ use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
 use michell::float::{solve_equilibrium_bodies, LoadCase};
-use michell::iges::{HullPose, Platform};
+use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -132,16 +132,34 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         *path_counts.entry(m.path.clone()).or_insert(0usize) += 1;
     }
 
+    // A single IGES file contributes several hulls that float as one platform.
+    // Decompose it once into full-band bodies so displacement can re-float via
+    // the fast body path (re-floating the raw IGES source directly would
+    // re-loft the NURBS patches every Newton step — tens of seconds).
+    let iges_bodies = bodies_from_iges(&p.positional, &settings);
+
     let mut hulls: Vec<ViewHull> = Vec::new();
     let mut design_mass = 0.0;
-    for m in &members {
-        let body = if path_counts[&m.path] == 1 {
-            load_body(&m.path).ok()
-        } else {
-            None
+    for (idx, m) in members.iter().enumerate() {
+        let body = match &iges_bodies {
+            Some(bodies) if bodies.len() == members.len() => Some(bodies[idx].clone()),
+            _ if path_counts[&m.path] == 1 => load_body(&m.path).ok(),
+            _ => None,
         };
         design_mass += m.hull.displaced_volume() * cond.fluid.density;
         hulls.push(build_view_hull(m, body));
+    }
+
+    // Disambiguate duplicate names (a multi-hull IGES gives every hull the
+    // file stem) so the fleet reads "full #1 · full #2 · …".
+    let mut name_counts = std::collections::HashMap::new();
+    for vh in &hulls {
+        *name_counts.entry(vh.name.clone()).or_insert(0) += 1;
+    }
+    if name_counts.values().any(|&c| c > 1) {
+        for (i, vh) in hulls.iter_mut().enumerate() {
+            vh.name = format!("{} #{}", vh.name, i + 1);
+        }
     }
 
     // World view: as the `wake` default region, over the whole fleet.
@@ -234,6 +252,76 @@ fn build_view_hull(m: &Member, body: Option<Body>) -> ViewHull {
         },
         dry: false,
     }
+}
+
+/// Decompose a single IGES file into per-hull full-band bodies (as `michell
+/// loft` does), so displacement can re-float them via the fast body path.
+/// `None` unless the input is exactly one IGES file with no `@` suffix.
+fn bodies_from_iges(
+    positional: &[String],
+    settings: &crate::formats::LoadSettings,
+) -> Option<Vec<Body>> {
+    if positional.len() != 1 {
+        return None;
+    }
+    let path = &positional[0];
+    if path.contains('@') {
+        return None;
+    }
+    let lower = path.to_ascii_lowercase();
+    if !(lower.ends_with(".igs") || lower.ends_with(".iges")) {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let design_wl = settings.waterline_z;
+    let opts = ImportOptions {
+        waterline_z: design_wl,
+        stations: settings.samples.0,
+        waterlines: settings.samples.1,
+        fit: if settings.fit_explicit {
+            settings.fit
+        } else {
+            ImportOptions::default().fit
+        },
+        centerplane: settings.centerplane,
+    };
+    let src = source_fleet(&text, design_wl).ok()?;
+    let mut bodies = Vec::with_capacity(src.len());
+    for idx in 0..src.len() {
+        let bottom = src.hull_z_bottom(idx);
+        let top = src.hull_z_top(idx);
+        let draft_est = design_wl - bottom;
+        if draft_est <= 0.0 {
+            return None;
+        }
+        // Band from keel to half a draft above the design waterline (as loft).
+        let band_top = (design_wl + 0.5 * draft_est).min(top);
+        let mut hull_opts = opts;
+        if hull_opts.centerplane.is_none() {
+            // Detect the centerplane at the design waterline (coarse).
+            let mut d = opts;
+            d.stations = 61;
+            d.waterlines = 17;
+            d.fit.n_ctrl_x = d.fit.n_ctrl_x.min(10);
+            d.fit.n_ctrl_z = d.fit.n_ctrl_z.min(7);
+            hull_opts.centerplane = src
+                .situate_one(idx, design_wl, &HullPose::default(), &Platform::default(), &d)
+                .ok()?
+                .map(|m| m.report.centerplane);
+        }
+        let m = src
+            .situate_one(
+                idx,
+                band_top,
+                &HullPose::default(),
+                &Platform::default(),
+                &hull_opts,
+            )
+            .ok()??;
+        let wl_depth = band_top - design_wl;
+        bodies.push(Body::new(m.hull.surface().clone(), wl_depth, m.report.centerplane).ok()?);
+    }
+    Some(bodies)
 }
 
 fn hull_name(path: &str) -> String {
@@ -496,17 +584,7 @@ fn set_displacement(state: &mut ViewState, mass: f64) -> Result<(), String> {
         };
         match situated {
             Some(sb) => {
-                let (x0, x1) = sb.hull.surface().x_domain();
-                let n = vh.beam.len();
-                vh.beam = (0..n)
-                    .map(|i| {
-                        let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
-                        (x, sb.hull.surface().eval(x, 0.0).max(0.0))
-                    })
-                    .collect();
-                vh.x0 = x0;
-                vh.x1 = x1;
-                vh.hull = sb.hull;
+                set_hull_geometry(vh, sb.hull);
                 vh.dry = false;
             }
             None => vh.dry = true,
@@ -514,6 +592,22 @@ fn set_displacement(state: &mut ViewState, mass: f64) -> Result<(), String> {
     }
     state.mass = mass;
     recompute_fields(state)
+}
+
+/// Replace a view hull's wetted geometry (and its waterline beam profile for
+/// the glyph) after a re-float.
+fn set_hull_geometry(vh: &mut ViewHull, hull: Hull) {
+    let (x0, x1) = hull.surface().x_domain();
+    let n = vh.beam.len().max(2);
+    vh.beam = (0..n)
+        .map(|i| {
+            let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
+            (x, hull.surface().eval(x, 0.0).max(0.0))
+        })
+        .collect();
+    vh.x0 = x0;
+    vh.x1 = x1;
+    vh.hull = hull;
 }
 
 // ---------------------------------------------------------------------------
