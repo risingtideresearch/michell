@@ -74,6 +74,20 @@
       <input type="range" id="disp" min="20" max="300" value="100" step="5">
       <div class="hintline" id="dispHint">drag, then release to re-float</div>
     </div>
+    <div class="ctl" id="heelCtl" style="display:none">
+      <label>heel <b><span id="heelVal">0°</span></b></label>
+      <input type="range" id="heel" min="-40" max="40" value="0" step="1">
+    </div>
+    <div class="ctl" id="amaCtl" style="display:none">
+      <label>ama immersion <b><span id="amaVal">0.00 m</span></b></label>
+      <input type="range" id="ama" min="-0.4" max="0.4" value="0" step="0.02">
+      <div class="hintline">+ lowers the outriggers deeper</div>
+    </div>
+    <div class="ctl" id="vcgCtl" style="display:none">
+      <label>vertical CG <b><span id="vcgVal">0.00 m</span></b></label>
+      <input type="range" id="vcg" min="-0.5" max="2.5" value="0" step="0.05">
+      <div class="hintline">above the design floatplane, for GZ</div>
+    </div>
 
     <div class="stats">
       <div class="stat"><span>Froude number</span><span id="fn">—</span></div>
@@ -82,11 +96,15 @@
       <div class="stat"><span>total resistance</span><span id="rt">—</span></div>
       <div class="stat"><span>interference</span><span id="intf">—</span></div>
       <div class="stat"><span>effective power</span><span id="pe">—</span></div>
+      <div class="stat" id="gzRow" style="display:none"><span>righting arm GZ</span><span id="gz">—</span></div>
+      <div class="stat" id="rmRow" style="display:none"><span>righting moment</span><span id="rm">—</span></div>
     </div>
     <div class="note">
       The fleet field is the exact sum of each hull's standalone wake, so dragging
       recomposites instantly. The pattern is physical only astern of every hull;
-      ahead of the aft-most stern it is faded.
+      ahead of the aft-most stern it is faded. Heel is modelled as a rigid platform
+      rotation (amas change immersion and shift transversely); GZ adds a
+      first-order metacentric correction for each hull's own tilt.
     </div>
   </div>
 
@@ -98,8 +116,9 @@ const errEl = document.getElementById("err");
 
 let S = null;              // /api/state
 let fields = [];           // per hull: {meta, data:Float32Array}
-let place = [];            // per hull: {x, y} world placement (home + drag)
-let dragging = -1, dragOff = [0, 0];
+let place = [];            // per hull: {x, y} absolute world placement
+let dragOff = [];          // per hull: {x, y} user drag offset from home (kept across re-floats)
+let dragging = -1, grabAnchor = [0, 0];
 let raf = 0;
 
 // ---- diverging colormap (port of png::diverging) ----
@@ -269,16 +288,17 @@ cv.addEventListener("mousemove", e=>{
   if (dragging<0){ cv.style.cursor = hullAt(px,py)>=0 ? "grab" : "default"; return; }
   const [wx,wy]=c2w(px,py);
   const hu=S.hulls[dragging], home={x:hu.homeX,y:hu.homeY}, M=S.margin;
-  let nx=wx-dragOff[0], ny=wy-dragOff[1];
+  let nx=wx-grabAnchor[0], ny=wy-grabAnchor[1];
   nx=Math.max(home.x-M,Math.min(home.x+M,nx));
   ny=Math.max(home.y-M,Math.min(home.y+M,ny));
   place[dragging]={x:nx,y:ny};
+  dragOff[dragging]={x:nx-home.x, y:ny-home.y};  // persists across re-floats
   scheduleRender(false);
   requestResistance();
 });
 cv.addEventListener("mousedown", e=>{
   const [px,py]=evtPos(e); const i=hullAt(px,py); if (i<0) return;
-  dragging=i; const [wx,wy]=c2w(px,py); dragOff=[wx-place[i].x, wy-place[i].y];
+  dragging=i; const [wx,wy]=c2w(px,py); grabAnchor=[wx-place[i].x, wy-place[i].y];
   cv.style.cursor="grabbing"; e.preventDefault();
 });
 window.addEventListener("mouseup", ()=>{ if (dragging>=0){ dragging=-1; cv.style.cursor="grab"; scheduleRender(true); requestResistance(); } });
@@ -310,18 +330,23 @@ async function pumpResistance(){
 }
 function num(v, f){ return (v==null || !isFinite(v)) ? "—" : f(v); }
 
-// ---- sliders ----
+// ---- controls ----
 const speedEl=document.getElementById("speed"), dispEl=document.getElementById("disp");
+const heelEl=document.getElementById("heel"), amaEl=document.getElementById("ama"), vcgEl=document.getElementById("vcg");
 const busyEl=document.getElementById("busy"), busyMsg=document.getElementById("busyMsg");
 let uMin, uMax, busy=false;
 
-// A recompute (speed / displacement) blocks the single-threaded server for a
-// fraction of a second up to ~2s, so make it an explicit, guarded action with
-// a spinner rather than something that fires continuously mid-drag.
+// A recompute (speed / re-float) blocks the server for a fraction of a second
+// up to ~2s, so make it an explicit, guarded action with a spinner rather than
+// something that fires continuously mid-drag.
 function setBusy(on, msg){
   busy=on; busyEl.classList.toggle("on", on); if (msg) busyMsg.textContent=msg;
+  const floatable = !!(S && S.refloatable);
   speedEl.disabled = on;
-  dispEl.disabled = on || !(S && S.hulls.some(h=>h.canFloat));
+  dispEl.disabled = on || !floatable;
+  heelEl.disabled = on || !floatable;
+  vcgEl.disabled  = on || !floatable;
+  amaEl.disabled  = on || !(S && S.hasAmas);
 }
 
 // Speed is a dropdown of discrete speeds spanning the launch range: recompute
@@ -350,14 +375,21 @@ function syncSpeedSelect(){
 }
 speedEl.addEventListener("change", ()=>{ if (!busy) applySpeed(+speedEl.value); });
 
-// Displacement stays a slider so it feels draggable, but the (expensive)
-// re-float fires only on release (change), not while scrubbing (input just
-// previews the label).
+// Displacement / heel / ama immersion stay sliders so they feel draggable, but
+// the (expensive) re-float fires only on release (change); input previews the
+// label. All three re-float together via /api/solve.
 dispEl.addEventListener("input", ()=>{
   const m=S.designMass*(dispEl.value/100);
   document.getElementById("dispVal").textContent=fmtMass(m)+"  ("+dispEl.value+"%)";
 });
-dispEl.addEventListener("change", ()=>{ if (!busy) applyDisp(S.designMass*(dispEl.value/100)); });
+heelEl.addEventListener("input", ()=>{ document.getElementById("heelVal").textContent=(+heelEl.value).toFixed(0)+"°"; });
+amaEl.addEventListener("input", ()=>{ document.getElementById("amaVal").textContent=(+amaEl.value).toFixed(2)+" m"; });
+for (const el of [dispEl, heelEl, amaEl]) el.addEventListener("change", ()=>{ if (!busy) applySolve(); });
+
+// vcg only changes the righting arm, not the wave field, so it takes the cheap
+// path (no re-float, no field reload).
+vcgEl.addEventListener("input", ()=>{ document.getElementById("vcgVal").textContent=(+vcgEl.value).toFixed(2)+" m"; });
+vcgEl.addEventListener("change", ()=>{ if (!busy) applyVcg(+vcgEl.value); });
 
 async function applySpeed(u){
   setBusy(true, "recomputing wave field…");
@@ -365,14 +397,24 @@ async function applySpeed(u){
   catch(e){ showErr(""+e); }
   finally { setBusy(false); }
 }
-async function applyDisp(m){
-  const prevPct = Math.round(S.mass/S.designMass*100);
-  setBusy(true, "re-floating & recomputing…");
+async function applySolve(){
+  const mass=S.designMass*(dispEl.value/100), heel=+heelEl.value, ama=+amaEl.value;
+  const prev={pct:Math.round(S.mass/S.designMass*100), heel:S.heelDeg, ama:S.amaDz};
+  setBusy(true, heel!==0 ? "heeling & re-floating…" : "re-floating & recomputing…");
   try {
-    const res=await fetch("/api/displacement?mass="+m);
-    if (!res.ok){ showErr(await res.text()); dispEl.value=prevPct; refreshStats(); return; }
+    const res=await fetch(`/api/solve?mass=${mass}&heel=${heel}&amaDz=${ama}`);
+    if (!res.ok){ showErr(await res.text()); revertControls(prev); return; }
     await adopt(await res.json());
-  } catch(e){ showErr(""+e); dispEl.value=prevPct; }
+  } catch(e){ showErr(""+e); revertControls(prev); }
+  finally { setBusy(false); }
+}
+function revertControls(prev){
+  dispEl.value=prev.pct; heelEl.value=prev.heel; amaEl.value=prev.ama; refreshStats();
+}
+async function applyVcg(v){
+  setBusy(true, "updating stability…");
+  try { const st=await (await fetch("/api/vcg?v="+v)).json(); S=st; refreshStats(); }
+  catch(e){ showErr(""+e); }
   finally { setBusy(false); }
 }
 
@@ -386,35 +428,49 @@ async function loadFields(){
 }
 async function adopt(state){
   S=state;
-  // keep drag placements; only reset on first load
-  if (place.length!==S.hulls.length) place=S.hulls.map(h=>({x:h.homeX,y:h.homeY}));
+  const n=S.hulls.length;
+  // Preserve each hull's user drag offset across re-floats; a heel/re-float
+  // moves the home positions, and place = home + offset tracks that.
+  if (dragOff.length!==n) dragOff=S.hulls.map(()=>({x:0,y:0}));
+  place=S.hulls.map((h,i)=>({x:h.homeX+dragOff[i].x, y:h.homeY+dragOff[i].y}));
   await loadFields();
   refreshStats(); scheduleRender(true); requestResistance();
 }
+function show(id, on){ document.getElementById(id).style.display = on ? "" : "none"; }
 function refreshStats(){
   buildFadedLut(S.fadeToward, S.fadeFraction);
   document.getElementById("lambda").textContent=S.transverseWavelength.toFixed(2)+" m";
   const pct=Math.round(S.mass/S.designMass*100);
   document.getElementById("dispVal").textContent=fmtMass(S.mass)+"  ("+pct+"%)";
-  const floatable=S.hulls.some(h=>h.canFloat);
-  if (!busy) dispEl.disabled=!floatable;
+  const floatable=!!S.refloatable, hasAmas=!!S.hasAmas;
+  if (!busy){ dispEl.disabled=!floatable; heelEl.disabled=!floatable; vcgEl.disabled=!floatable; amaEl.disabled=!hasAmas; }
   dispEl.value=pct;
   document.getElementById("dispHint").textContent =
     floatable ? "drag, then release to re-float" : "displacement fixed (no re-floatable bodies)";
+  // stability controls + metrics only when the fleet can be re-floated
+  show("heelCtl", floatable); show("vcgCtl", floatable); show("amaCtl", hasAmas);
+  show("gzRow", floatable); show("rmRow", floatable);
+  heelEl.value=S.heelDeg; document.getElementById("heelVal").textContent=(S.heelDeg||0).toFixed(0)+"°";
+  amaEl.value=S.amaDz; document.getElementById("amaVal").textContent=(S.amaDz||0).toFixed(2)+" m";
+  vcgEl.value=S.vcg; document.getElementById("vcgVal").textContent=(S.vcg||0).toFixed(2)+" m";
+  setStat("gz", num(S.gz, v=>v.toFixed(3)+" m"));
+  setStat("rm", num(S.rm, fmtNm));
   document.getElementById("fleetName").textContent=S.hulls.map(h=>h.name).join(" · ");
   syncSpeedSelect();
 }
 function setStat(id,v){ document.getElementById(id).textContent=v; }
-function showErr(m){ errEl.textContent=m; errEl.style.display="block"; setTimeout(()=>errEl.style.display="none", 4000); }
+function showErr(m){ errEl.textContent=m; errEl.style.display="block"; setTimeout(()=>errEl.style.display="none", 5000); }
 function fmtN(x){ return x>=1000 ? (x/1000).toFixed(2)+" kN" : x.toFixed(1)+" N"; }
 function fmtW(x){ return x>=1000 ? (x/1000).toFixed(2)+" kW" : x.toFixed(1)+" W"; }
 function fmtMass(x){ return x>=1000 ? (x/1000).toFixed(2)+" t" : x.toFixed(0)+" kg"; }
+function fmtNm(x){ const a=Math.abs(x); return a>=1000 ? (x/1000).toFixed(2)+" kN·m" : x.toFixed(0)+" N·m"; }
 
 async function boot(){
   drawColorbar();
   S=await (await fetch("/api/state")).json();
   uMin=Math.max(0.2, S.speed*0.4); uMax=S.speed*2.0;
   buildSpeedOptions();
+  dragOff=S.hulls.map(()=>({x:0,y:0}));
   place=S.hulls.map(h=>({x:h.homeX,y:h.homeY}));
   await loadFields();
   refreshStats(); resize(); requestResistance();

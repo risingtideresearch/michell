@@ -27,7 +27,7 @@
 use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_bodies, LoadCase};
+use michell::float::{heel_poses, righting_arm, solve_equilibrium_bodies, FleetState, LoadCase};
 use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
@@ -69,6 +69,9 @@ struct ViewHull {
     /// (a light load can raise slender outriggers clear): it then makes no
     /// wake and contributes no resistance.
     dry: bool,
+    /// An outrigger (not the centreline/main hull): the ama-immersion control
+    /// applies to these.
+    is_ama: bool,
 }
 
 struct ViewState {
@@ -93,6 +96,14 @@ struct ViewState {
     /// estimate the combined figure uses, so their ratio (the interference
     /// factor) is consistent and → 1 as hulls separate.
     solo_wave_total: f64,
+    /// Platform heel angle [rad], + = starboard (+y) side down.
+    heel: f64,
+    /// Immersion offset applied to the ama (outrigger) hulls [m], + = deeper.
+    ama_dz: f64,
+    /// Vertical centre of gravity above the design floatplane [m] (for GZ).
+    vcg: f64,
+    /// Righting arm GZ [m] at the current heel/vcg (0 when not re-floatable).
+    gz: f64,
 }
 
 pub fn cmd_view(args: &[String]) -> Result<(), String> {
@@ -163,6 +174,18 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         }
     }
 
+    // Mark amas: every hull except the one nearest the centreline (the main
+    // hull) is an outrigger the ama-immersion control acts on. With one hull
+    // there are none.
+    if hulls.len() > 1 {
+        let main = (0..hulls.len())
+            .min_by(|&a, &b| hulls[a].home.y.abs().total_cmp(&hulls[b].home.y.abs()))
+            .unwrap();
+        for (i, vh) in hulls.iter_mut().enumerate() {
+            vh.is_ama = i != main && vh.body.is_some();
+        }
+    }
+
     // World view: as the `wake` default region, over the whole fleet.
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
@@ -195,6 +218,10 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         viscous_total: 0.0,
         wetted_surface: 0.0,
         solo_wave_total: 0.0,
+        heel: 0.0,
+        ama_dz: 0.0,
+        vcg: 0.0,
+        gz: 0.0,
     };
     recompute_fields(&mut state)?;
 
@@ -267,6 +294,7 @@ fn build_view_hull(m: &Member, body: Option<Body>) -> ViewHull {
             zeta: Vec::new(),
         },
         dry: false,
+        is_ama: false,
     }
 }
 
@@ -558,56 +586,107 @@ fn sample_field(f: &Field, x: f64, y: f64) -> f64 {
     a * (1.0 - ty) + b * ty
 }
 
-/// Re-float the whole assembly (bodies only) at a new total mass and rebuild
-/// the wetted hulls, then recompute fields. Members without a retained body
-/// keep their design geometry.
-fn set_displacement(state: &mut ViewState, mass: f64) -> Result<(), String> {
+/// Re-float the whole assembly (bodies only) at a new total mass, heel angle,
+/// and ama-immersion offset; rebuild the wetted hulls and their transverse
+/// positions, compute the righting arm, then recompute fields.
+///
+/// Heel is modelled as a rigid platform rotation that shifts each demihull
+/// transversely and in immersion (see [`michell::float::heel_poses`]) — the
+/// dominant multihull mechanism (an ama digs in as the other lifts) — while
+/// each half-breadth hull stays upright about its own centreplane, so the
+/// wave-field superposition still holds. The hull-local tilt a half-breadth
+/// model can't represent is restored to first order in the GZ figure.
+fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Result<(), String> {
     let opts = state.body_opts;
     let density = state.cond.fluid.density;
+    let vcg = state.vcg;
 
-    // Solve the assembly's common flotation for this total mass.
-    let (sinkage, trim) = {
-        let bodies: Vec<&Body> = state.hulls.iter().filter_map(|h| h.body.as_ref()).collect();
-        if bodies.is_empty() {
-            return Err("no re-floatable bodies in this fleet (displacement is fixed)".into());
+    // Solve the heeled/loaded equilibrium and situate each body at it, holding
+    // the borrow of `state.hulls` only until we have owned results.
+    let (gz, situated): (f64, Vec<(usize, Option<Hull>, Placement)>) = {
+        let idx: Vec<usize> = (0..state.hulls.len())
+            .filter(|&i| state.hulls[i].body.is_some())
+            .collect();
+        if idx.is_empty() {
+            return Err("this fleet cannot be re-floated (no full-band bodies)".into());
         }
-        let poses = vec![HullPose::default(); bodies.len()];
+        let bodies: Vec<&Body> = idx
+            .iter()
+            .map(|&i| state.hulls[i].body.as_ref().unwrap())
+            .collect();
+        // Base poses: amas carry the immersion offset; then heel the platform.
+        let base: Vec<HullPose> = idx
+            .iter()
+            .map(|&i| HullPose {
+                dz: if state.hulls[i].is_ama { ama_dz } else { 0.0 },
+                ..HullPose::default()
+            })
+            .collect();
+        let heeled = heel_poses(&bodies, &base, heel).map_err(|e| format!("{e}"))?;
         let eq = solve_equilibrium_bodies(
             &bodies,
             0.0,
-            &poses,
+            &heeled,
             &LoadCase { mass, lcg: None },
             density,
             &opts,
         )
         .map_err(|e| format!("{e}"))?;
-        (eq.sinkage, eq.trim)
+        let platform = Platform {
+            sinkage: eq.sinkage,
+            trim: eq.trim,
+            pivot_x: 0.0,
+        };
+        let gz = righting_arm(&eq.fleet, heel, vcg);
+        let mut situated = Vec::with_capacity(idx.len());
+        for (k, &i) in idx.iter().enumerate() {
+            match bodies[k]
+                .situate(0.0, &heeled[k], &platform, &opts)
+                .map_err(|e| format!("{e}"))?
+            {
+                Some(sb) => situated.push((i, Some(sb.hull), sb.placement)),
+                None => situated.push((i, None, Placement { x: 0.0, y: 0.0 })),
+            }
+        }
+        (gz, situated)
     };
 
-    // Re-loft each body at the solved platform state. A body that comes back
-    // dry (lifted clear at a light load) is flagged, not an error.
-    let platform = Platform {
-        sinkage,
-        trim,
-        pivot_x: 0.0,
-    };
-    for vh in state.hulls.iter_mut() {
-        let situated = match &vh.body {
-            Some(body) => body
-                .situate(0.0, &HullPose::default(), &platform, &opts)
-                .map_err(|e| format!("{e}"))?,
-            None => continue, // not re-floatable: leave as loaded
-        };
-        match situated {
-            Some(sb) => {
-                set_hull_geometry(vh, sb.hull);
-                vh.dry = false;
+    for (i, hull, placement) in situated {
+        match hull {
+            Some(h) => {
+                // Heel repositions the hull transversely, so its home moves too.
+                state.hulls[i].home = placement;
+                set_hull_geometry(&mut state.hulls[i], h);
+                state.hulls[i].dry = false;
             }
-            None => vh.dry = true,
+            None => state.hulls[i].dry = true,
         }
     }
     state.mass = mass;
+    state.heel = heel;
+    state.ama_dz = ama_dz;
+    state.gz = gz;
     recompute_fields(state)
+}
+
+/// Righting arm GZ [m] for the current wet fleet at the given heel and vcg,
+/// without re-floating — used when only the vcg changes.
+fn compute_gz(state: &ViewState, heel: f64, vcg: f64) -> f64 {
+    let members: Vec<(Hull, Placement)> = state
+        .hulls
+        .iter()
+        .filter(|h| !h.dry && h.body.is_some())
+        .map(|h| (h.hull.clone(), h.home))
+        .collect();
+    if members.is_empty() {
+        return 0.0;
+    }
+    let fleet = FleetState {
+        members,
+        dry: 0,
+        band_exceeded: 0,
+    };
+    righting_arm(&fleet, heel, vcg)
 }
 
 /// Replace a view hull's wetted geometry (and its waterline beam profile for
@@ -739,16 +818,34 @@ fn route(path: &str, query: &str, state: &Mutex<ViewState>) -> Result<Resp, Stri
                 body: state_json(&s).into_bytes(),
             })
         }
-        "/api/displacement" => {
-            let mass: f64 = param(query, "mass")
-                .ok_or("displacement: missing mass")?
-                .parse()
-                .map_err(|_| "displacement: bad value".to_string())?;
+        // Re-float the platform: mass [kg], heel [deg], amaDz [m] (each
+        // defaults to the current value if omitted).
+        "/api/solve" => {
+            let mut s = state.lock().unwrap();
+            let mass = num_param(query, "mass", s.mass)?;
+            let heel_deg = num_param(query, "heel", s.heel.to_degrees())?;
+            let ama_dz = num_param(query, "amaDz", s.ama_dz)?;
             if !(mass.is_finite() && mass > 0.0) {
                 return Err("mass must be positive".into());
             }
+            if !(heel_deg.is_finite() && heel_deg.abs() < 89.0) {
+                return Err("heel must be within ±89 degrees".into());
+            }
+            solve_state(&mut s, mass, heel_deg.to_radians(), ama_dz)?;
+            Ok(Resp {
+                ctype: "application/json",
+                body: state_json(&s).into_bytes(),
+            })
+        }
+        // Vertical CG [m]; only affects the righting arm, so no re-float.
+        "/api/vcg" => {
             let mut s = state.lock().unwrap();
-            set_displacement(&mut s, mass)?;
+            let v = num_param(query, "v", s.vcg)?;
+            if !v.is_finite() {
+                return Err("vcg must be finite".into());
+            }
+            s.vcg = v;
+            s.gz = compute_gz(&s, s.heel, v);
             Ok(Resp {
                 ctype: "application/json",
                 body: state_json(&s).into_bytes(),
@@ -842,10 +939,15 @@ fn state_json(s: &ViewState) -> String {
     let [x0, x1, y0, y1] = s.view;
     let nu = s.cond.gravity / (s.cond.speed * s.cond.speed);
     let mut out = String::new();
+    let refloatable = s.hulls.iter().any(|h| h.body.is_some());
+    let has_amas = s.hulls.iter().any(|h| h.is_ama);
+    let rm = s.mass * s.cond.gravity * s.gz; // righting moment [N·m]
     out.push_str(&format!(
         "{{\"view\":{{\"x0\":{x0},\"x1\":{x1},\"y0\":{y0},\"y1\":{y1}}},\
          \"speed\":{},\"froude\":{},\"transverseWavelength\":{},\"vmax\":{},\
          \"mass\":{},\"designMass\":{},\"lRef\":{},\"margin\":{},\
+         \"heelDeg\":{},\"amaDz\":{},\"vcg\":{},\"gz\":{},\"rm\":{},\
+         \"refloatable\":{},\"hasAmas\":{},\
          \"fadeToward\":[240,239,236],\"fadeFraction\":0.55,\"hulls\":[",
         s.cond.speed,
         s.cond.froude_number(s.l_ref),
@@ -855,6 +957,13 @@ fn state_json(s: &ViewState) -> String {
         s.design_mass,
         s.l_ref,
         s.margin,
+        jnum(s.heel.to_degrees()),
+        jnum(s.ama_dz),
+        jnum(s.vcg),
+        jnum(s.gz),
+        jnum(rm),
+        refloatable,
+        has_amas,
     ));
     for (i, vh) in s.hulls.iter().enumerate() {
         if i > 0 {
@@ -863,7 +972,7 @@ fn state_json(s: &ViewState) -> String {
         let f = &vh.field;
         out.push_str(&format!(
             "{{\"id\":{i},\"name\":\"{}\",\"homeX\":{},\"homeY\":{},\"x0\":{},\"x1\":{},\
-             \"canFloat\":{},\"dry\":{},\"field\":{{\"lx0\":{},\"lx1\":{},\"ly0\":{},\"ly1\":{},\
+             \"canFloat\":{},\"dry\":{},\"isAma\":{},\"field\":{{\"lx0\":{},\"lx1\":{},\"ly0\":{},\"ly1\":{},\
              \"nx\":{},\"ny\":{}}},\"beam\":[",
             json_escape(&vh.name),
             vh.home.x,
@@ -872,6 +981,7 @@ fn state_json(s: &ViewState) -> String {
             vh.x1,
             vh.body.is_some(),
             vh.dry,
+            vh.is_ama,
             f.lx0,
             f.lx1,
             f.ly0,
@@ -902,6 +1012,14 @@ fn json_escape(s: &str) -> String {
         }
     }
     o
+}
+
+/// A numeric query parameter, or `default` when absent.
+fn num_param(query: &str, key: &str, default: f64) -> Result<f64, String> {
+    match param(query, key) {
+        None => Ok(default),
+        Some(v) => v.parse().map_err(|_| format!("{key}: bad number {v:?}")),
+    }
 }
 
 fn param(query: &str, key: &str) -> Option<String> {
