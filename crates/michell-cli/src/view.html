@@ -218,13 +218,16 @@ function drawHulls(){
 // ---- hit testing & drag ----
 function hullAt(px,py){
   const [wx,wy]=c2w(px,py);
+  if (!isFinite(wx) || !isFinite(wy)) return -1;   // e.g. before first resize
   for (let i=S.hulls.length-1;i>=0;i--){
-    const hu=S.hulls[i], p=place[i];
+    const hu=S.hulls[i], p=place[i], beam=hu.beam;
+    if (!beam || !beam.length) continue;
     if (wx < hu.x0+p.x || wx > hu.x1+p.x) continue;
     // half-beam at this x by nearest sample
-    const beam=hu.beam, t=(wx-p.x-hu.x0)/(hu.x1-hu.x0);
-    const idx=Math.max(0,Math.min(beam.length-1, Math.round(t*(beam.length-1))));
-    const hb=Math.max(beam[idx][1], (hu.x1-hu.x0)*0.01);
+    const span=(hu.x1-hu.x0)||1, t=(wx-p.x-hu.x0)/span;
+    let idx=Math.round(t*(beam.length-1));
+    idx=Math.max(0,Math.min(beam.length-1, isFinite(idx)?idx:0));
+    const hb=Math.max(beam[idx][1], span*0.01);
     if (Math.abs(wy-p.y) <= hb) return i;
   }
   return -1;
@@ -240,27 +243,41 @@ cv.addEventListener("mousemove", e=>{
   ny=Math.max(home.y-M,Math.min(home.y+M,ny));
   place[dragging]={x:nx,y:ny};
   scheduleRender(false);
-  queueResistance();
+  requestResistance();
 });
 cv.addEventListener("mousedown", e=>{
   const [px,py]=evtPos(e); const i=hullAt(px,py); if (i<0) return;
   dragging=i; const [wx,wy]=c2w(px,py); dragOff=[wx-place[i].x, wy-place[i].y];
   cv.style.cursor="grabbing"; e.preventDefault();
 });
-window.addEventListener("mouseup", ()=>{ if (dragging>=0){ dragging=-1; cv.style.cursor="grab"; scheduleRender(true); fetchResistance(); } });
+window.addEventListener("mouseup", ()=>{ if (dragging>=0){ dragging=-1; cv.style.cursor="grab"; scheduleRender(true); requestResistance(); } });
 
-// ---- resistance (throttled while dragging) ----
-let resTimer=0;
-function queueResistance(){ if (resTimer) return; resTimer=setTimeout(()=>{ resTimer=0; fetchResistance(); }, 120); }
-async function fetchResistance(){
+// ---- resistance: live, in-flight-guarded so it tracks the drag ----
+// Fire as fast as round-trips allow (the endpoint is milliseconds), coalesce
+// while a request is in flight, and always trail one final request for the
+// latest placement. A sequence number means only the newest response is
+// applied, so out-of-order arrivals never leave a stale value on screen.
+let resInFlight = false, resDirty = false, resSeq = 0;
+function requestResistance(){ resDirty = true; pumpResistance(); }
+async function pumpResistance(){
+  if (resInFlight || !resDirty) return;
+  resInFlight = true; resDirty = false;
+  const seq = ++resSeq;
   const p = place.map(q=>q.x+","+q.y).join(";");
   try {
-    const r = await (await fetch("/api/resistance?p="+encodeURIComponent(p))).json();
-    setStat("rw", fmtN(r.wave)); setStat("rt", fmtN(r.total));
-    setStat("intf", r.interference.toFixed(3)+"×");
-    setStat("pe", fmtW(r.effective_power)); setStat("fn", r.froude.toFixed(3));
+    const res = await fetch("/api/resistance?p="+encodeURIComponent(p));
+    if (res.ok){
+      const r = await res.json();
+      if (seq === resSeq){
+        setStat("rw", num(r.wave, fmtN)); setStat("rt", num(r.total, fmtN));
+        setStat("intf", num(r.interference, v=>v.toFixed(3)+"×"));
+        setStat("pe", num(r.effective_power, fmtW)); setStat("fn", num(r.froude, v=>v.toFixed(3)));
+      }
+    }
   } catch(e){ /* ignore transient */ }
+  finally { resInFlight = false; if (resDirty) pumpResistance(); }
 }
+function num(v, f){ return (v==null || !isFinite(v)) ? "—" : f(v); }
 
 // ---- sliders ----
 const speedEl=document.getElementById("speed"), dispEl=document.getElementById("disp");
@@ -305,7 +322,7 @@ async function adopt(state){
   // keep drag placements; only reset on first load
   if (place.length!==S.hulls.length) place=S.hulls.map(h=>({x:h.homeX,y:h.homeY}));
   await loadFields();
-  refreshStats(); scheduleRender(true); fetchResistance();
+  refreshStats(); scheduleRender(true); requestResistance();
 }
 function refreshStats(){
   document.getElementById("lambda").textContent=S.transverseWavelength.toFixed(2)+" m";
@@ -327,7 +344,7 @@ async function boot(){
   uMin=Math.max(0.2, S.speed*0.4); uMax=S.speed*1.8;
   place=S.hulls.map(h=>({x:h.homeX,y:h.homeY}));
   await loadFields();
-  refreshStats(); resize(); fetchResistance();
+  refreshStats(); resize(); requestResistance();
 }
 boot().catch(e=>showErr("load failed: "+e));
 </script>

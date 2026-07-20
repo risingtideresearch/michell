@@ -77,6 +77,15 @@ struct ViewState {
     /// speed/displacement change.
     vmax: f64,
     body_opts: BodyOptions,
+    /// Placement-independent resistance pieces, refreshed with the fields on
+    /// every speed/displacement change so the live readout only has to redo
+    /// the (placement-dependent) combined wave integral.
+    viscous_total: f64,
+    wetted_surface: f64,
+    /// Σ of each hull's standalone wave resistance, by the SAME fixed-grid
+    /// estimate the combined figure uses, so their ratio (the interference
+    /// factor) is consistent and → 1 as hulls separate.
+    solo_wave_total: f64,
 }
 
 pub fn cmd_view(args: &[String]) -> Result<(), String> {
@@ -158,6 +167,9 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         mass: design_mass,
         vmax: 0.0,
         body_opts,
+        viscous_total: 0.0,
+        wetted_surface: 0.0,
+        solo_wave_total: 0.0,
     };
     recompute_fields(&mut state)?;
 
@@ -317,8 +329,48 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
         vh.field = f;
     }
 
+    // Placement-independent resistance pieces (viscous, wetted surface, and
+    // each hull's standalone wave resistance) — recomputed here so the live
+    // readout only redoes the combined wave integral.
+    let mut viscous_total = 0.0;
+    let mut wetted_surface = 0.0;
+    let mut solo_wave_total = 0.0;
+    for vh in &state.hulls {
+        viscous_total += michell::viscous_resistance(&vh.hull, &cond)
+            .map(|v| v.resistance)
+            .unwrap_or(0.0);
+        wetted_surface += vh.hull.wetted_surface();
+        let mut solo = FreeWaveSpectrum::new(&[(&vh.hull, Placement { x: 0.0, y: 0.0 })], &cond)
+            .map_err(|e| format!("{e}"))?;
+        solo_wave_total += fast_wave_resistance(&mut solo);
+    }
+    state.viscous_total = viscous_total;
+    state.wetted_surface = wetted_surface;
+    state.solo_wave_total = solo_wave_total;
+
     state.vmax = colour_scale(state);
     Ok(())
+}
+
+/// Fixed-grid estimate of wave resistance R_w = ∫ (dR_w/dθ) dθ over
+/// (−θ_max, θ_max), where sec θ_max = 15 (the viewer's spectral cap). Simpson
+/// on a uniform θ grid: unlike the library's adaptive integrator its cost is
+/// independent of hull separation, so the live readout stays responsive when
+/// hulls are dragged far apart (where the interference integrand oscillates
+/// fast and the exact integrator slows to ~a second). Accurate to display
+/// precision; the CLI `resistance` command remains the reference.
+fn fast_wave_resistance(spec: &mut FreeWaveSpectrum) -> f64 {
+    const MAX_SEC: f64 = 15.0;
+    let theta_max = (1.0 / MAX_SEC).acos();
+    let n = 4000usize; // even, for Simpson
+    let h = 2.0 * theta_max / n as f64;
+    let mut sum = spec.resistance_density(-theta_max) + spec.resistance_density(theta_max);
+    for i in 1..n {
+        let th = -theta_max + h * i as f64;
+        let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+        sum += w * spec.resistance_density(th);
+    }
+    sum * h / 3.0
 }
 
 /// y coordinate of row `i` of an inclusive `n`-point grid over [a, b] — the
@@ -550,19 +602,42 @@ fn resistance_json(s: &ViewState, places: &[Placement]) -> Result<String, String
         .zip(places)
         .map(|(vh, &p)| (&vh.hull, p))
         .collect();
-    let r = michell::multihull_resistance(&members, &s.cond).map_err(|e| format!("{e}"))?;
+    // Only the combined wave resistance depends on placement; integrate it on
+    // the fixed grid (fast regardless of separation). Viscous, wetted surface,
+    // and the solo-wave total are precomputed for the current speed/mass.
+    let mut spec = FreeWaveSpectrum::new(&members, &s.cond).map_err(|e| format!("{e}"))?;
+    let wave = fast_wave_resistance(&mut spec);
+    let total = wave + s.viscous_total;
+    let u = s.cond.speed;
+    let q = 0.5 * s.cond.fluid.density * u * u * s.wetted_surface;
+    let interference = if s.solo_wave_total > f64::MIN_POSITIVE {
+        wave / s.solo_wave_total
+    } else {
+        1.0
+    };
     Ok(format!(
         "{{\"total\":{},\"wave\":{},\"viscous\":{},\"interference\":{},\
          \"cw\":{},\"ct\":{},\"effective_power\":{},\"froude\":{}}}",
-        r.total,
-        r.wave.resistance,
-        r.viscous_total,
-        r.interference,
-        r.cw,
-        r.ct,
-        r.effective_power,
-        s.cond.froude_number(s.l_ref),
+        jnum(total),
+        jnum(wave),
+        jnum(s.viscous_total),
+        jnum(interference),
+        jnum(if q > 0.0 { wave / q } else { f64::NAN }),
+        jnum(if q > 0.0 { total / q } else { f64::NAN }),
+        jnum(total * u),
+        jnum(s.cond.froude_number(s.l_ref)),
     ))
+}
+
+/// A finite f64 as a JSON number, else JSON `null` (JSON has no NaN/Inf, and
+/// emitting a bare `NaN` would make the whole response unparseable — which
+/// would silently freeze the live readout rather than degrade one field).
+fn jnum(x: f64) -> String {
+    if x.is_finite() {
+        format!("{x}")
+    } else {
+        "null".to_string()
+    }
 }
 
 fn state_json(s: &ViewState) -> String {
