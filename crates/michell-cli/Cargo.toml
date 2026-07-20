@@ -1,0 +1,13 @@
+[package]
+name = "michell-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI for thin-ship wave resistance (Michell's integral) from hull files"
+license = "MIT"
+
+[[bin]]
+name = "michell"
+path = "src/main.rs"
+
+[dependencies]
+michell = { path = "../michell" }

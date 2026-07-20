@@ -1,0 +1,8 @@
+[package]
+name = "michell"
+version = "0.1.0"
+edition = "2021"
+description = "Thin-ship wave resistance (Michell's integral) and ITTC-57 viscous resistance from B-spline hull half-breadth surfaces"
+license = "MIT"
+
+[dependencies]

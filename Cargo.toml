@@ -1,0 +1,6 @@
+[workspace]
+members = ["crates/michell", "crates/michell-cli"]
+resolver = "2"
+
+[profile.release]
+lto = true
