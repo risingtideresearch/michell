@@ -361,17 +361,26 @@ dispEl.addEventListener("change", ()=>{ if (!busy) applyDisp(S.designMass*(dispE
 
 async function applySpeed(u){
   setBusy(true, "recomputing wave field…");
-  try { const st=await (await fetch("/api/speed?u="+u)).json(); await adopt(st); }
+  const t0=performance.now();
+  try {
+    const st=await (await fetch("/api/speed?u="+u)).json();
+    const tf=performance.now();
+    await adopt(st);
+    console.log(`speed ${u}: fetch ${Math.round(tf-t0)}ms, adopt ${Math.round(performance.now()-tf)}ms, total ${Math.round(performance.now()-t0)}ms`);
+  }
   catch(e){ showErr(""+e); }
   finally { setBusy(false); }
 }
 async function applyDisp(m){
   const prevPct = Math.round(S.mass/S.designMass*100);
   setBusy(true, "re-floating & recomputing…");
+  const t0=performance.now();
   try {
     const res=await fetch("/api/displacement?mass="+m);
     if (!res.ok){ showErr(await res.text()); dispEl.value=prevPct; refreshStats(); return; }
+    const tf=performance.now();
     await adopt(await res.json());
+    console.log(`disp ${Math.round(m)}kg: fetch ${Math.round(tf-t0)}ms, adopt ${Math.round(performance.now()-tf)}ms, total ${Math.round(performance.now()-t0)}ms`);
   } catch(e){ showErr(""+e); dispEl.value=prevPct; }
   finally { setBusy(false); }
 }

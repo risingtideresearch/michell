@@ -33,7 +33,7 @@ use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PAGE: &str = include_str!("view.html");
 
@@ -623,32 +623,75 @@ fn set_hull_geometry(vh: &mut ViewHull, hull: Hull) {
 // ---------------------------------------------------------------------------
 
 fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
-    // Don't let an idle/speculative socket tie up a handler thread forever.
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let _ = stream.set_nodelay(true);
+    // Idle timeout: a keep-alive connection (or an idle speculative socket)
+    // that sends no next request is closed after this, freeing the thread.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(20)));
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(());
-    }
-    // Drain headers (we need none of them, but must consume to the blank line).
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
-            break;
-        }
-    }
-    let mut parts = request_line.split_whitespace();
-    let _method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("/");
-    let (path, query) = match target.split_once('?') {
-        Some((p, q)) => (p, q),
-        None => (target, ""),
-    };
-
     let mut stream = stream;
-    match route(path, query, state) {
-        Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body),
-        Err(msg) => write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes()),
+
+    // HTTP/1.1 keep-alive: serve requests on this connection until the client
+    // closes it or goes idle. Forcing a new connection per request (Connection:
+    // close) made browsers stall on their per-host connection limit — the
+    // dominant latency for the real UI, invisible to curl.
+    loop {
+        let accepted = Instant::now();
+        let mut request_line = String::new();
+        match reader.read_line(&mut request_line) {
+            Ok(0) => return Ok(()),  // client closed the connection
+            Ok(_) => {}
+            Err(_) => return Ok(()), // idle timeout or read error: drop it
+        }
+        if request_line.trim().is_empty() {
+            continue; // tolerate a stray blank line between requests
+        }
+        // Consume headers to the blank line; note an explicit close request.
+        let mut client_close = false;
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line)?;
+            if n == 0 || line == "\r\n" || line == "\n" {
+                break;
+            }
+            let l = line.to_ascii_lowercase();
+            if l.starts_with("connection:") && l.contains("close") {
+                client_close = true;
+            }
+        }
+        let read_ms = accepted.elapsed().as_millis();
+        let (method, target) = {
+            let mut parts = request_line.split_whitespace();
+            (
+                parts.next().unwrap_or("").to_string(),
+                parts.next().unwrap_or("/").to_string(),
+            )
+        };
+        let (path, query) = match target.split_once('?') {
+            Some((p, q)) => (p, q),
+            None => (target.as_str(), ""),
+        };
+
+        let work = Instant::now();
+        let routed = route(path, query, state);
+        let route_ms = work.elapsed().as_millis();
+
+        let keep_alive = !client_close;
+        let r = match routed {
+            Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body, keep_alive),
+            Err(msg) => {
+                write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes(), keep_alive)
+            }
+        };
+        if path.starts_with("/api/") {
+            eprintln!(
+                "view: {method} {target} — read {read_ms}ms, route {route_ms}ms, total {}ms",
+                accepted.elapsed().as_millis()
+            );
+        }
+        r?;
+        if client_close {
+            return Ok(());
+        }
     }
 }
 
@@ -921,11 +964,13 @@ fn write_response(
     status: u16,
     ctype: &str,
     body: &[u8],
+    keep_alive: bool,
 ) -> std::io::Result<()> {
     let reason = if status == 200 { "OK" } else { "Bad Request" };
+    let conn = if keep_alive { "keep-alive" } else { "close" };
     let header = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
-         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+         Cache-Control: no-store\r\nConnection: {conn}\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes())?;
