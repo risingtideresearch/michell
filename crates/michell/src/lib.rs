@@ -55,6 +55,7 @@
 
 pub mod body;
 mod bspline;
+pub mod centerplane;
 mod conditions;
 mod error;
 pub mod fit;
