@@ -183,23 +183,28 @@ impl Body {
         let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
         let mut grid = vec![0.0f64; ns * nw];
         let mut band_exceeded = 0usize;
+        // The forward scan and this inverse map round-trip through the same
+        // rotations, so grid rows meant to land exactly on a domain edge (the
+        // keel row, the end stations) can overshoot by roundoff; clamp a
+        // whisker rather than silently zeroing them.
+        let xtol = 1e-9 * (x1 - x0);
+        let ztol = 1e-9 * depth;
         for (i, &xw) in stations.iter().enumerate() {
             for (j, &zw) in waterlines.iter().enumerate() {
                 let (xb, zb) = map.water_to_body(xw, zw);
-                if xb < x0 || xb > x1 {
+                if xb < x0 - xtol || xb > x1 + xtol {
                     continue; // beyond the ends: no hull
                 }
-                if zb > depth {
+                if zb > depth + ztol {
                     continue; // below the keel
                 }
-                if zb < 0.0 {
+                if zb < -ztol {
                     // Above the modelled band while under water: unknown
-                    // geometry (allow a whisker of tolerance at the edge).
-                    if zb < -1e-9 * depth {
-                        band_exceeded += 1;
-                    }
+                    // geometry, taken as zero.
+                    band_exceeded += 1;
                     continue;
                 }
+                let (xb, zb) = (xb.clamp(x0, x1), zb.clamp(0.0, depth));
                 grid[i * nw + j] = self.surface.eval(xb, zb).max(0.0);
             }
         }

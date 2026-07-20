@@ -5,7 +5,7 @@
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_bodies, FleetState, LoadCase};
+use michell::float::{heel_poses, righting_arm, solve_equilibrium_bodies, FleetState, LoadCase};
 use michell::iges::{HullPose, Platform};
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
@@ -23,6 +23,8 @@ enum PoseParam {
 enum Target {
     Weight,
     Lcg,
+    Vcg,
+    HeelDeg,
     Waterline,
     Pose(Vec<usize>, PoseParam),
 }
@@ -208,6 +210,22 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     });
                     continue;
                 }
+                "vcg" => {
+                    axes.push(Axis {
+                        label: "vcg".into(),
+                        values,
+                        target: Target::Vcg,
+                    });
+                    continue;
+                }
+                "heel" => {
+                    axes.push(Axis {
+                        label: "heel".into(),
+                        values,
+                        target: Target::HeelDeg,
+                    });
+                    continue;
+                }
                 "waterline" => {
                     axes.push(Axis {
                         label: "waterline".into(),
@@ -269,6 +287,18 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     waterline is solved)"
             .into());
     }
+    let vcg_mode = axes.iter().any(|a| matches!(a.target, Target::Vcg));
+    if vcg_mode && !float_mode {
+        return Err("a vcg axis requires a weight axis (gz is computed at a \
+                    solved equilibrium)"
+            .into());
+    }
+    if axes.iter().any(|a| matches!(a.target, Target::HeelDeg)) && !vcg_mode {
+        return Err("a heel axis requires a vcg axis so gz is well defined \
+                    (vcg is metres above the design floatplane; use \
+                    { \"target\": \"vcg\", \"value\": 0 } to put G on it)"
+            .into());
+    }
 
     // Base situate: reference length for Froude numbers.
     let mut l_ref = 0.0f64;
@@ -326,13 +356,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let header: Vec<String> = axes
         .iter()
         .map(|a| a.label.clone())
+        .chain(["sinkage", "trim_deg", "volume", "lcb"].iter().map(|s| s.to_string()))
+        .chain(if vcg_mode { &["gz", "rm"][..] } else { &[] }.iter().map(|s| s.to_string()))
         .chain(
-            [
-                "sinkage", "trim_deg", "volume", "lcb", "dry", "speed", "froude", "rw", "rv",
-                "rt", "pe", "interference", "cw", "ct",
-            ]
-            .iter()
-            .map(|s| s.to_string()),
+            ["dry", "speed", "froude", "rw", "rv", "rt", "pe", "interference", "cw", "ct"]
+                .iter()
+                .map(|s| s.to_string()),
         )
         .collect();
     let mut out = String::new();
@@ -352,11 +381,15 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         let mut waterline = 0.0f64;
         let mut weight = None;
         let mut lcg = None;
+        let mut vcg = None;
+        let mut heel = 0.0f64;
         for (a, &v) in axes.iter().zip(&vals) {
             match &a.target {
                 Target::Waterline => waterline = v,
                 Target::Weight => weight = Some(v),
                 Target::Lcg => lcg = Some(v),
+                Target::Vcg => vcg = Some(v),
+                Target::HeelDeg => heel = v.to_radians(),
                 Target::Pose(idxs, pp) => {
                     for &hi in idxs {
                         let pose = &mut poses[hi];
@@ -375,6 +408,11 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     }
                 }
             }
+        }
+
+        if heel != 0.0 {
+            poses = heel_poses(&bodies, &poses, heel)
+                .map_err(|e| format!("point {}: {e}", point + 1))?;
         }
 
         let (state, sinkage, trim_deg, volume, lcb) = if let Some(mass) = weight {
@@ -423,6 +461,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 lcb,
             )
         };
+        // Righting arm and moment at this (solved) heeled state.
+        let gz_rm = vcg.map(|vcg| {
+            let gz = righting_arm(&state, heel, vcg);
+            (gz, weight.unwrap_or(0.0) * gravity * gz)
+        });
+
         let members: Vec<(&Hull, Placement)> =
             state.members.iter().map(|(h, p)| (h, *p)).collect();
 
@@ -448,11 +492,9 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             let nums: Vec<f64> = vals
                 .iter()
                 .cloned()
+                .chain([sinkage, trim_deg, volume, lcb])
+                .chain(gz_rm.map(|(gz, rm)| [gz, rm]).into_iter().flatten())
                 .chain([
-                    sinkage,
-                    trim_deg,
-                    volume,
-                    lcb,
                     state.dry as f64,
                     u,
                     froude,
