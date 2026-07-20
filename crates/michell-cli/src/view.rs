@@ -33,7 +33,7 @@ use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const PAGE: &str = include_str!("view.html");
 
@@ -209,6 +209,14 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         state.cond.speed,
         state.cond.froude_number(state.l_ref),
     );
+    if cfg!(debug_assertions) {
+        eprintln!(
+            "  WARNING: this is an unoptimized debug build — wave-field recomputes \
+             run ~40x slower (speed/displacement changes will take many seconds).\n  \
+             Rebuild for interactive use: `cargo run --release -- view ...` or \
+             `cargo build --release`."
+        );
+    }
     let _ = std::process::Command::new("open").arg(&url).spawn();
 
     // One thread per connection. Browsers open speculative "preconnect"
@@ -635,7 +643,6 @@ fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
     // close) made browsers stall on their per-host connection limit — the
     // dominant latency for the real UI, invisible to curl.
     loop {
-        let accepted = Instant::now();
         let mut request_line = String::new();
         match reader.read_line(&mut request_line) {
             Ok(0) => return Ok(()),  // client closed the connection
@@ -658,37 +665,24 @@ fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
                 client_close = true;
             }
         }
-        let read_ms = accepted.elapsed().as_millis();
-        let (method, target) = {
-            let mut parts = request_line.split_whitespace();
-            (
-                parts.next().unwrap_or("").to_string(),
-                parts.next().unwrap_or("/").to_string(),
-            )
-        };
+        let target = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or("/")
+            .to_string();
         let (path, query) = match target.split_once('?') {
             Some((p, q)) => (p, q),
             None => (target.as_str(), ""),
         };
 
-        let work = Instant::now();
         let routed = route(path, query, state);
-        let route_ms = work.elapsed().as_millis();
-
         let keep_alive = !client_close;
-        let r = match routed {
-            Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body, keep_alive),
+        match routed {
+            Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body, keep_alive)?,
             Err(msg) => {
-                write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes(), keep_alive)
+                write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes(), keep_alive)?
             }
         };
-        if path.starts_with("/api/") {
-            eprintln!(
-                "view: {method} {target} — read {read_ms}ms, route {route_ms}ms, total {}ms",
-                accepted.elapsed().as_millis()
-            );
-        }
-        r?;
         if client_close {
             return Ok(());
         }
