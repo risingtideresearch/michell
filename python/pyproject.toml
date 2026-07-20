@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymichell"
+version = "0.1.0"
+description = "A clear, NumPy reproduction of the Michell thin-ship wave-amplitude grid from a B-spline hull control net"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["numpy>=1.20"]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.4"]
+
+[tool.setuptools]
+packages = ["pymichell"]
