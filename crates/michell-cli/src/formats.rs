@@ -25,12 +25,17 @@
 //!
 //! IGES files (`.igs`/`.iges`, or sniffed by the section letter in column
 //! 73) are imported via `michell::iges`.
+//!
+//! **`*.grid.json` — derivative-augmented sample grid** (see
+//! [`crate::gridio`]): the intermediate representation every sampled source
+//! reduces to, written by `--dump-grid` and lofted on load.
 
+use crate::gridio;
 use michell::body::{Body, BodyOptions};
-use michell::fit::{fit_offsets, FitOptions, FitReport};
+use michell::fit::{fit_grid, FitOptions, FitReport};
 use michell::iges::{self, HullPose, ImportOptions, ImportReport, Platform};
 use michell::stl;
-use michell::{BSplineSurface, Hull, Placement};
+use michell::{BSplineSurface, Hull, Placement, SampleGrid};
 
 /// Where a hull came from, with any conversion diagnostics.
 #[derive(Clone)]
@@ -41,6 +46,8 @@ pub enum Source {
     Body(FitReport),
     /// Lofted from an offsets table.
     Offsets(FitReport),
+    /// Lofted from a sample-grid JSON file.
+    Grid(FitReport),
     /// Imported from IGES.
     Iges(ImportReport),
     /// Sampled from an STL mesh.
@@ -58,6 +65,9 @@ pub struct LoadSettings {
     pub fit_explicit: bool,
     /// Scale to metres for unitless formats (STL).
     pub units: Option<f64>,
+    /// Write the sample grid(s) a load produced to this path (`-N` suffixed
+    /// before `.grid.json` when a file contains several hulls).
+    pub dump_grid: Option<String>,
 }
 
 impl Default for LoadSettings {
@@ -69,7 +79,35 @@ impl Default for LoadSettings {
             fit: FitOptions::default(),
             fit_explicit: false,
             units: None,
+            dump_grid: None,
         }
+    }
+}
+
+/// Write dumped grids: one file, or `-N` suffixed files for a multihull.
+pub fn dump_grids(
+    settings: &LoadSettings,
+    grids: &[(&SampleGrid, Option<f64>)],
+) -> Result<(), String> {
+    let Some(spec) = &settings.dump_grid else {
+        return Ok(());
+    };
+    for (i, (grid, centerplane)) in grids.iter().enumerate() {
+        let path = numbered_grid_path(spec, i, grids.len());
+        std::fs::write(&path, gridio::write_grid_json(grid, *centerplane))
+            .map_err(|e| format!("cannot write {path}: {e}"))?;
+        eprintln!("wrote {path}");
+    }
+    Ok(())
+}
+
+fn numbered_grid_path(spec: &str, i: usize, n: usize) -> String {
+    if n == 1 {
+        return spec.to_string();
+    }
+    match spec.strip_suffix(".grid.json") {
+        Some(stem) => format!("{stem}-{i}.grid.json"),
+        None => format!("{spec}-{i}"),
     }
 }
 
@@ -133,6 +171,12 @@ pub fn load_hulls(
         let fl = mf
             .situate(settings.waterline_z, &poses, &Platform::default(), &opts)
             .map_err(|e| format!("STL import failed: {e}"))?;
+        let grids: Vec<(&SampleGrid, Option<f64>)> = fl
+            .members
+            .iter()
+            .map(|m| (&m.grid, Some(m.placement.y)))
+            .collect();
+        dump_grids(settings, &grids)?;
         return Ok(fl
             .members
             .into_iter()
@@ -141,6 +185,35 @@ pub fn load_hulls(
     }
 
     let text = String::from_utf8(bytes).expect("checked utf8");
+    // Sample-grid JSON: the IR written by --dump-grid, lofted on load.
+    if text.trim_start().starts_with('{') {
+        let (grid, centerplane) =
+            gridio::parse_grid_json(&text).map_err(|e| format!("{path}: {e}"))?;
+        let mut fit = settings.fit;
+        if !settings.fit_explicit {
+            // Adapt the default control count to the grid so small grids
+            // still loft.
+            fit.n_ctrl_x = fit
+                .n_ctrl_x
+                .min(grid.stations().len().saturating_sub(2))
+                .max(fit.degree_x + 1);
+            fit.n_ctrl_z = fit
+                .n_ctrl_z
+                .min(grid.waterlines().len().saturating_sub(2))
+                .max(fit.degree_z + 1);
+        }
+        dump_grids(settings, &[(&grid, centerplane)])?;
+        let (hull, report) =
+            fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
+        return Ok(vec![(
+            hull,
+            Placement {
+                x: 0.0,
+                y: centerplane.unwrap_or(0.0),
+            },
+            Source::Grid(report),
+        )]);
+    }
     let first = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -158,9 +231,16 @@ pub fn load_hulls(
                     .situate(0.0, &HullPose::default(), &Platform::default(), &bopts)
                     .map_err(|e| format!("{e}"))?
                     .ok_or_else(|| format!("{path}: body is dry at its design waterline"))?;
+                dump_grids(settings, &[(&situated.grid, Some(situated.placement.y))])?;
                 Ok(vec![(situated.hull, situated.placement, Source::Body(situated.fit))])
             }
             None => {
+                if settings.dump_grid.is_some() {
+                    return Err(format!(
+                        "{path} is an exact control net; there is no sampled \
+                         grid to dump"
+                    ));
+                }
                 let hull = Hull::new(data.surface).map_err(|e| format!("{e}"))?;
                 Ok(vec![(
                     hull,
@@ -179,8 +259,10 @@ pub fn load_hulls(
             fit.n_ctrl_x = fit.n_ctrl_x.min(st.len().saturating_sub(2)).max(fit.degree_x + 1);
             fit.n_ctrl_z = fit.n_ctrl_z.min(wl.len().saturating_sub(2)).max(fit.degree_z + 1);
         }
+        let grid = SampleGrid::new(st, wl, y).map_err(|e| format!("{path}: {e}"))?;
+        dump_grids(settings, &[(&grid, None)])?;
         let (hull, report) =
-            fit_offsets(&st, &wl, &y, &fit).map_err(|e| format!("loft failed: {e}"))?;
+            fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
         return Ok(vec![(hull, Placement::default(), Source::Offsets(report))]);
     }
     let looks_iges = lower.ends_with(".igs")
@@ -202,6 +284,11 @@ pub fn load_hulls(
         };
         let fleet =
             iges::import_fleet(&text, &opts).map_err(|e| format!("IGES import failed: {e}"))?;
+        let grids: Vec<(&SampleGrid, Option<f64>)> = fleet
+            .iter()
+            .map(|m| (&m.grid, Some(m.placement.y)))
+            .collect();
+        dump_grids(settings, &grids)?;
         return Ok(fleet
             .into_iter()
             .map(|m| (m.hull, m.placement, Source::Iges(m.report)))
@@ -209,7 +296,7 @@ pub fn load_hulls(
     }
     Err(format!(
         "cannot determine the format of {path}: expected a `michell-hull v1` or \
-         `michell-offsets v1` header, or an IGES file"
+         `michell-offsets v1` header, a `*.grid.json` sample grid, or an IGES file"
     ))
 }
 

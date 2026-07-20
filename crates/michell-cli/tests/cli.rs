@@ -486,6 +486,76 @@ fn loft_decomposes_and_manifest_sweeps() {
     assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
 }
 
+#[test]
+fn manifest_heel_axis_produces_gz_curve() {
+    // Catamaran: shells at y = +-4 in one IGES file, lofted with the design
+    // waterline at 0.5 so the bodies keep topsides above the DWL.
+    let iges_path = tmp("cat.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[4.0, -4.0])).unwrap();
+    let prefix = tmp("cat");
+    run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.5",
+        "-o",
+        prefix.to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+
+    let manifest = r#"{
+  "name": "gz curve",
+  "fluid": "seawater",
+  "hulls": [
+    { "id": "port", "file": "cat-port.hull" },
+    { "id": "stbd", "file": "cat-starboard.hull" }
+  ],
+  "sweep": [
+    { "target": "speed", "unit": "ms", "value": 3.0 },
+    { "target": "weight", "value": 2900 },
+    { "target": "vcg", "value": 0.2 },
+    { "target": "heel", "values": [-1.5, 0, 1.5] }
+  ],
+  "output": { "format": "csv", "file": "gz.csv" },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+}"#;
+    let man_path = tmp("gz_study.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let csv = std::fs::read_to_string(tmp("gz.csv")).unwrap();
+    let gz = csv_col(&csv, "gz");
+    assert_eq!(gz.len(), 3, "{csv}");
+    // Upright a symmetric catamaran has no righting arm; heeled to starboard
+    // (+y down) the buoyancy transfer at 4 m spacing must right it strongly,
+    // and the curve is antisymmetric.
+    assert!(gz[1].abs() < 1e-6, "gz(0) = {}", gz[1]);
+    assert!(gz[2] > 0.5, "gz(+1.5 deg) = {}", gz[2]);
+    assert!(
+        (gz[0] + gz[2]).abs() < 0.02 * gz[2],
+        "gz not antisymmetric: {gz:?}"
+    );
+    // rm = displacement weight x gz.
+    let rm = csv_col(&csv, "rm");
+    let want = 2900.0 * michell::STANDARD_GRAVITY * gz[2];
+    assert!(
+        (rm[2] - want).abs() < 1e-6 * want.abs(),
+        "rm {} vs {want}",
+        rm[2]
+    );
+    // Displacement is held across the heel sweep (equilibrium re-solved).
+    let vols = csv_col(&csv, "volume");
+    for v in &vols {
+        let want = 2900.0 / 1025.9;
+        assert!((v - want).abs() < 0.005 * want, "volume {v} vs {want}");
+    }
+}
+
 /// Tessellated Wigley full shell (ASCII STL, metres, DWL at z = 0.7).
 fn wigley_stl(nx: usize, nz: usize) -> String {
     let f = |x: f64, zp: f64| {
@@ -586,6 +656,51 @@ fn stl_resistance_and_loft() {
         "body rw {rw_body} vs {}",
         want.wave.resistance
     );
+}
+
+#[test]
+fn dump_grid_roundtrips_through_grid_json() {
+    let iges_path = tmp("dump_shell.iges");
+    std::fs::write(&iges_path, wigley_shell_iges()).unwrap();
+    let grid_path = tmp("dump.grid.json");
+
+    // Import the IGES, dumping the sampled grid IR alongside.
+    let direct = run_ok(bin().args([
+        "info",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.7",
+        "--samples",
+        "41x13",
+        "--fit-control",
+        "8x6",
+        "--dump-grid",
+        grid_path.to_str().unwrap(),
+        "--json",
+    ]));
+
+    // The dumped grid must carry the derivative channels.
+    let grid_text = std::fs::read_to_string(&grid_path).unwrap();
+    assert!(grid_text.contains("\"michell\": \"sample-grid\""), "{grid_text}");
+    assert!(grid_text.contains("\"dfdx\""), "no dfdx channel:\n{grid_text}");
+    assert!(grid_text.contains("\"dfdz\""));
+    assert!(grid_text.contains("\"weights\""));
+
+    // Re-lofting the dumped grid with the same fit reproduces the hull.
+    let reloaded = run_ok(bin().args([
+        "info",
+        grid_path.to_str().unwrap(),
+        "--fit-control",
+        "8x6",
+        "--json",
+    ]));
+    for key in ["length", "draft", "wetted_surface", "displaced_volume"] {
+        let (a, b) = (json_num(&direct, key), json_num(&reloaded, key));
+        assert!(
+            (a - b).abs() <= 1e-9 * a.abs().max(1e-9),
+            "{key}: {a} vs {b}"
+        );
+    }
 }
 
 #[test]

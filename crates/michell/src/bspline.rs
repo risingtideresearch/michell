@@ -236,12 +236,18 @@ fn validate_knots(knots: &[f64], degree: usize, dir: &str) -> Result<usize> {
     Ok(n)
 }
 
-/// Non-zero B-spline basis values at `u`: returns the index of the first
-/// non-zero basis function and the `degree + 1` values.
-pub(crate) fn basis_row(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> (usize, Vec<f64>) {
+/// Non-zero B-spline basis values and first derivatives at `u`: returns the
+/// index of the first non-zero basis function and two rows of `degree + 1`
+/// entries — `rows[0]` the basis values, `rows[1]` their first derivatives.
+pub(crate) fn basis_rows1(
+    knots: &[f64],
+    degree: usize,
+    n_ctrl: usize,
+    u: f64,
+) -> (usize, Vec<Vec<f64>>) {
     let span = find_span(knots, degree, n_ctrl, u);
-    let ders = ders_basis(knots, degree, span, u, 0);
-    (span - degree, ders.into_iter().next().unwrap())
+    let ders = ders_basis(knots, degree, span, u, 1);
+    (span - degree, ders)
 }
 
 /// Index `s` such that `knots[s] <= u < knots[s+1]` within the domain,

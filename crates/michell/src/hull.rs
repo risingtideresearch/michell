@@ -37,9 +37,11 @@ pub struct Hull {
     wetted_surface: f64,
     displaced_volume: f64,
     lcb_x: f64,
+    vcb_z: f64,
     waterplane_area: f64,
     waterplane_moment: f64,
     waterplane_second_moment: f64,
+    waterplane_transverse_moment: f64,
 }
 
 impl Hull {
@@ -121,7 +123,7 @@ impl Hull {
         // Geometric integrals by per-span Gauss-Legendre.
         // Volume: integrand is polynomial of degree (p, q) => exact.
         // Wetted surface: smooth integrand, use a generous rule.
-        // x·f raises the x-degree by one; +2 keeps the rule comfortably exact.
+        // x·f and z·f raise one degree by one; +2 keeps the rule exact.
         let n_vol = (p.max(q) + 2) / 2 + 2;
         // Wetted-surface integrand is smooth but non-polynomial; a hull may be
         // a single span, so use a high-order rule per span.
@@ -130,6 +132,7 @@ impl Hull {
         let (xw, ww) = gauss_legendre(n_wet);
         let mut volume = 0.0;
         let mut volume_mx = 0.0;
+        let mut volume_mz = 0.0;
         let mut wetted = 0.0;
         for sx in &spans_x {
             for sz in &spans_z {
@@ -137,9 +140,11 @@ impl Hull {
                 for (i, &xi) in xv.iter().enumerate() {
                     let x = sx.start + sx.len * (xi + 1.0) / 2.0;
                     for (j, &zj) in xv.iter().enumerate() {
-                        let f = surface.eval(x, zj_map(sz, zj));
+                        let z = zj_map(sz, zj);
+                        let f = surface.eval(x, z);
                         volume += wv[i] * wv[j] * jac * f;
                         volume_mx += wv[i] * wv[j] * jac * x * f;
+                        volume_mz += wv[i] * wv[j] * jac * z * f;
                     }
                 }
                 for (i, &xi) in xw.iter().enumerate() {
@@ -156,22 +161,27 @@ impl Hull {
         // Both sides of the hull.
         volume *= 2.0;
         volume_mx *= 2.0;
+        volume_mz *= 2.0;
         wetted *= 2.0;
 
         // Waterplane properties: 1-D integrals of the beam b(x) = 2 f(x, 0)
-        // (x²·f raises the degree by two; the rule is sized for it).
-        let (xq, wq) = gauss_legendre(p / 2 + 3);
+        // (the transverse inertia integrand f³ has degree 3p; the rule is
+        // sized for it, which also covers x²·f at degree p + 2).
+        let (xq, wq) = gauss_legendre(3 * p / 2 + 2);
         let mut wp_area = 0.0;
         let mut wp_mx = 0.0;
         let mut wp_ixx = 0.0;
+        let mut wp_iyy = 0.0;
         for sx in &spans_x {
             let jac = sx.len / 2.0;
             for (i, &xi) in xq.iter().enumerate() {
                 let x = sx.start + sx.len * (xi + 1.0) / 2.0;
-                let b = 2.0 * surface.eval(x, z0.max(0.0));
+                let f = surface.eval(x, z0.max(0.0));
+                let b = 2.0 * f;
                 wp_area += wq[i] * jac * b;
                 wp_mx += wq[i] * jac * x * b;
                 wp_ixx += wq[i] * jac * x * x * b;
+                wp_iyy += wq[i] * jac * (2.0 / 3.0) * f * f * f;
             }
         }
 
@@ -186,9 +196,11 @@ impl Hull {
             wetted_surface: wetted,
             displaced_volume: volume,
             lcb_x: if volume > 0.0 { volume_mx / volume } else { 0.0 },
+            vcb_z: if volume > 0.0 { volume_mz / volume } else { 0.0 },
             waterplane_area: wp_area,
             waterplane_moment: wp_mx,
             waterplane_second_moment: wp_ixx,
+            waterplane_transverse_moment: wp_iyy,
         })
     }
 
@@ -224,6 +236,12 @@ impl Hull {
         self.lcb_x
     }
 
+    /// Vertical centre of buoyancy `z_B = ∬ z f / ∬ f` [m], measured
+    /// **downward** from the waterline (KB below the water surface).
+    pub fn vcb_z(&self) -> f64 {
+        self.vcb_z
+    }
+
     /// Waterplane area `A_w = ∫ 2 f(x, 0) dx` [m²].
     pub fn waterplane_area(&self) -> f64 {
         self.waterplane_area
@@ -237,6 +255,13 @@ impl Hull {
     /// Second moment of the waterplane about x = 0: `∫ 2 x² f(x, 0) dx` [m⁴].
     pub fn waterplane_second_moment(&self) -> f64 {
         self.waterplane_second_moment
+    }
+
+    /// Second moment of the waterplane about the hull's own centerplane:
+    /// `I_T = ∫ (2/3) f(x, 0)³ dx` [m⁴] — the transverse inertia that sets
+    /// the hull's individual metacentric radius `BM_T = I_T / ∇`.
+    pub fn waterplane_transverse_moment(&self) -> f64 {
+        self.waterplane_transverse_moment
     }
 
     /// Longitudinal centre of flotation (waterplane centroid) [m].

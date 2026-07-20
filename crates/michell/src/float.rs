@@ -12,6 +12,10 @@
 //! reported, not an error.
 //!
 //! All of this is *hydrostatic*: no speed-dependent (dynamic) sinkage/trim.
+//!
+//! Transverse stability rides on the same machinery: [`heel_poses`] heels
+//! the platform rigidly, the equilibrium re-solve holds the displacement,
+//! and [`righting_arm`] reads the GZ off the solved fleet.
 
 use crate::body::{Body, BodyOptions};
 use crate::error::{Error, Result};
@@ -234,6 +238,79 @@ pub fn solve_equilibrium_with(
         lcb_residual: load.lcg.map_or(0.0, |l| (lcb - l).abs()),
         fleet,
     })
+}
+
+/// Rigid platform heel applied to a set of body poses.
+///
+/// Heel is a rotation about the platform's longitudinal axis through the
+/// centerline at the design floatplane; **positive heel puts the +y side
+/// down**. Each hull's transverse station `y = centerplane + dy` moves to
+/// `y·cos φ` and gains `y·sin φ` of immersion. A half-breadth surface cannot
+/// rotate about its own x axis, so hull-local heel is not represented here;
+/// [`righting_arm`] restores it to first order (metacentrically). Solve the
+/// returned poses with [`solve_equilibrium_bodies`] so the displaced volume
+/// stays at the load's target while the platform heels.
+pub fn heel_poses(bodies: &[&Body], poses: &[HullPose], heel: f64) -> Result<Vec<HullPose>> {
+    if bodies.len() != poses.len() {
+        return Err(Error::InvalidInput(format!(
+            "{} poses supplied for {} bodies",
+            poses.len(),
+            bodies.len()
+        )));
+    }
+    if !heel.is_finite() || heel.abs() >= std::f64::consts::FRAC_PI_2 {
+        return Err(Error::InvalidConditions(format!(
+            "heel angle must be finite and within ±90 degrees, got {} rad",
+            heel
+        )));
+    }
+    let (sin, cos) = heel.sin_cos();
+    Ok(bodies
+        .iter()
+        .zip(poses)
+        .map(|(body, pose)| {
+            let y = body.centerplane() + pose.dy;
+            HullPose {
+                dy: y * cos - body.centerplane(),
+                dz: pose.dz + y * sin,
+                ..*pose
+            }
+        })
+        .collect())
+}
+
+/// Righting arm GZ [m] of a solved fleet at heel angle `heel` [rad] (the
+/// angle its poses were heeled by, positive = +y side down), for a centre of
+/// gravity on the platform centerline `vcg` metres **above** the design
+/// floatplane. Positive GZ rights the platform.
+///
+/// GZ is the horizontal separation of the buoyancy and gravity lines of
+/// action. The buoyancy side is the earth-frame transverse centre of
+/// buoyancy of the situated members — exact for the volume transfer between
+/// hulls that the equilibrium re-solve captures (the dominant multihull
+/// mechanism) — plus a per-hull metacentric correction
+/// `sin φ · (I_T/∇ − KB)` for the hull-local heel the half-breadth model
+/// cannot rotate, which is first-order in φ and exact as φ → 0 (for a
+/// single centerline hull, GZ reduces to GM_T·sin φ). Only meaningful when
+/// the fleet is in vertical force balance (buoyancy = weight): otherwise
+/// the moment depends on the pivot.
+pub fn righting_arm(fleet: &FleetState, heel: f64, vcg: f64) -> f64 {
+    let sin = heel.sin();
+    let mut volume = 0.0;
+    let mut moment_y = 0.0;
+    for (hull, place) in &fleet.members {
+        let v = hull.displaced_volume();
+        if v <= 0.0 {
+            continue;
+        }
+        let bm = hull.waterplane_transverse_moment() / v;
+        moment_y += v * (place.y + sin * (bm - hull.vcb_z()));
+        volume += v;
+    }
+    if volume <= 0.0 {
+        return 0.0;
+    }
+    moment_y / volume - vcg * sin
 }
 
 /// Equilibrium of an IGES source fleet at design poses (see

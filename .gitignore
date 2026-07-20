@@ -1,5 +1,6 @@
 /target
 /.claude/
+/output/
 
 # hull data and studies live beside the repo but are not source
 /*.igs

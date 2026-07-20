@@ -14,7 +14,8 @@
 //! caller must supply the scale to metres.
 
 use crate::error::{Error, Result};
-use crate::fit::fit_offsets;
+use crate::fit::fit_grid;
+use crate::grid::SampleGrid;
 use crate::iges::{
     rotate_xz, HullPose, ImportOptions, ImportReport, ImportedHull, Platform, SituatedFleet,
 };
@@ -561,7 +562,9 @@ impl MeshFleet {
             }
         }
 
-        let (hull, fit_report) = fit_offsets(&stations, &waterlines, &grid, &opts.fit)?;
+        // Value-only grid: a tessellated mesh carries no usable slopes.
+        let sample_grid = SampleGrid::new(stations, waterlines, grid)?;
+        let (hull, fit_report) = fit_grid(&sample_grid, &opts.fit)?;
         Ok(Some(ImportedHull {
             placement: Placement { x: 0.0, y: y_c },
             hull,
@@ -576,8 +579,10 @@ impl MeshFleet {
                 max_asymmetry: max_asym,
                 ambiguous_samples: ambiguous,
                 failed_inversions: 0,
+                derivative_gaps: 0,
                 fit: fit_report,
             },
+            grid: sample_grid,
         }))
     }
 }
