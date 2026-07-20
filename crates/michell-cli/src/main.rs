@@ -40,6 +40,7 @@ fn run() -> Result<(), String> {
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
         Some("loft") => cmd_loft(&args[1..]),
+        Some("place") => cmd_place(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
         Some("help") | Some("-h") | Some("--help") | None => {
             print!("{HELP}");
@@ -58,6 +59,7 @@ USAGE
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
   michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
+  michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
 HULL INPUTS (sniffed by header / extension)
@@ -147,6 +149,28 @@ SWEEPS
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
                                 keeps the old single-hull wetted output
+
+PLACE (reconstruct CAD geometry from a studied configuration)
+  michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7,dz=0.05 -o boat.igs
+  Writes the input geometry, posed, as a new IGES file (untrimmed 128
+  surfaces, metres) for import back into CAD — e.g. amas at the dx/dy/dz a
+  sweep found good. Inputs: IGES files (surfaces pass through exactly, with
+  each spec's pose applied to every hull in that file) and .hull control
+  nets or bodies (the half-breadth spline converts exactly to a mirrored
+  pair of surfaces). Suffix keys, all optional:
+      dx / x    longitudinal shift [m]        dy  transverse shift [m]
+      dz        immersion [m], + is deeper    y   absolute centerplane
+                                                  (.hull inputs only)
+      trim      design trim [deg], + raises the +x end, about pivot=X
+                (default: the hull's x mid) at the waterline
+  --waterline Z         CAD height of the design waterline (default 0);
+                        poses and the sinkage re-expression are relative to it
+  --sinkage S           platform sinkage [m] from a solved equilibrium row;
+                        + moves every hull deeper (the DWL stays at Z)
+  --platform-trim DEG   platform pitch about (--pivot-x, the waterline)
+  --pivot-x X           platform trim pivot station (default 0)
+  Bounded (143/141) source patches are exported as full base surfaces with
+  their parameter range restricted to the bounded box.
 
 SWEEPS (flag form, IGES inputs; hulls modelled in position)
   michell sweep boat.igs --speeds 3:8:1 [axes...]         long-form CSV/JSON
@@ -333,15 +357,13 @@ fn parse_hull_spec(spec: &str) -> Result<(String, SpecPlacement), String> {
             "y" => place.y_abs = Some(val),
             "dy" => place.dy = val,
             "x" | "dx" => place.dx = val,
-            other => {
-                return Err(format!(
-                    "unknown placement key {other:?} (use y, dy, x/dx)"
-                ))
-            }
+            other => return Err(format!("unknown placement key {other:?} (use y, dy, x/dx)")),
         }
     }
     if place.y_abs.is_some() && place.dy != 0.0 {
-        return Err(format!("{spec:?}: give either y (absolute) or dy (shift), not both"));
+        return Err(format!(
+            "{spec:?}: give either y (absolute) or dy (shift), not both"
+        ));
     }
     Ok((path.to_string(), place))
 }
@@ -586,8 +608,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         );
     }
     let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> =
-        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
     let multi = members.len() > 1;
     // Reference length for Froude number: the longest hull.
     let l_ref = members
@@ -826,8 +847,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     let mut files: Vec<File> = Vec::new();
     let mut l_ref = 0.0f64;
     for path in &p.positional {
-        let text =
-            std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
         let src = iges::source_fleet(&text, base_wl).map_err(|e| format!("{path}: {e}"))?;
         let poses = vec![HullPose::default(); src.len()];
         let fl = src
@@ -851,7 +871,10 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         eprintln!(
             "loaded {path}: {} hull(s) at y = {:?}",
             src.len(),
-            base_y.iter().map(|y| (y * 1e4).round() / 1e4).collect::<Vec<_>>()
+            base_y
+                .iter()
+                .map(|y| (y * 1e4).round() / 1e4)
+                .collect::<Vec<_>>()
         );
         files.push(File {
             stem,
@@ -980,7 +1003,11 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     }
     let density = p.conditions(1.0)?.fluid.density;
 
-    let points: usize = axes.iter().map(|a| a.values.len()).product::<usize>().max(1);
+    let points: usize = axes
+        .iter()
+        .map(|a| a.values.len())
+        .product::<usize>()
+        .max(1);
     if points * speeds.len() > 100_000 {
         return Err(format!(
             "sweep would produce {} rows; narrow the axes",
@@ -999,8 +1026,20 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         .map(|a| a.label.clone())
         .chain(
             [
-                "sinkage", "trim_deg", "volume", "lcb", "dry", "speed", "froude", "rw", "rv",
-                "rt", "pe", "interference", "cw", "ct",
+                "sinkage",
+                "trim_deg",
+                "volume",
+                "lcb",
+                "dry",
+                "speed",
+                "froude",
+                "rw",
+                "rv",
+                "rt",
+                "pe",
+                "interference",
+                "cw",
+                "ct",
             ]
             .iter()
             .map(|s| s.to_string()),
@@ -1019,15 +1058,13 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     // Odometer over the axis grid.
     let mut idx = vec![0usize; axes.len()];
     for point in 0..points {
-        let vals: Vec<f64> = axes
-            .iter()
-            .zip(&idx)
-            .map(|(a, &i)| a.values[i])
-            .collect();
+        let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
 
         // Assemble poses and load for this point.
-        let mut poses: Vec<Vec<HullPose>> =
-            files.iter().map(|f| vec![HullPose::default(); f.n]).collect();
+        let mut poses: Vec<Vec<HullPose>> = files
+            .iter()
+            .map(|f| vec![HullPose::default(); f.n])
+            .collect();
         let mut waterline = base_wl;
         let mut weight = None;
         let mut lcg = None;
@@ -1127,19 +1164,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 .iter()
                 .cloned()
                 .chain([
-                    sinkage,
-                    trim_deg,
-                    volume,
-                    lcb,
-                    dry as f64,
-                    u,
-                    froude,
-                    rw,
-                    rv,
-                    rt,
-                    pe,
-                    iff,
-                    cw,
+                    sinkage, trim_deg, volume, lcb, dry as f64, u, froude, rw, rv, rt, pe, iff, cw,
                     ct,
                 ])
                 .collect();
@@ -1218,8 +1243,7 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
         return Err("usage: michell spectrum <hull>... --speed U [options]".into());
     }
     let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> =
-        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
     let l_ref = members
         .iter()
         .map(|(h, _)| h.length())
@@ -1234,8 +1258,7 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
             .max(9),
     };
 
-    let mut spec =
-        michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
 
     // Significant angular range: where dRw/dθ still matters.
     let lim = 89.5f64.to_radians();
@@ -1309,7 +1332,11 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
                 a.im,
                 a.abs(),
                 d,
-                if rw_spectrum > 0.0 { cum[i] / rw_spectrum } else { 0.0 }
+                if rw_spectrum > 0.0 {
+                    cum[i] / rw_spectrum
+                } else {
+                    0.0
+                }
             ));
         }
         out.push_str("]}");
@@ -1328,7 +1355,11 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
             a.im,
             a.abs(),
             d,
-            if rw_spectrum > 0.0 { cum[i] / rw_spectrum } else { 0.0 }
+            if rw_spectrum > 0.0 {
+                cum[i] / rw_spectrum
+            } else {
+                0.0
+            }
         );
     }
     Ok(())
@@ -1337,13 +1368,10 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
 fn cmd_wake(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
-        return Err(
-            "usage: michell wake <hull>... --speed U [-o wake.png] [options]".into(),
-        );
+        return Err("usage: michell wake <hull>... --speed U [-o wake.png] [options]".into());
     }
     let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> =
-        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
     let l_ref = members
         .iter()
         .map(|(h, _)| h.length())
@@ -1383,8 +1411,7 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
         return Err("--size: need at least 2x2 grid points".into());
     }
 
-    let mut spec =
-        michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, nx, ny)
         .map_err(|e| format!("{e}"))?;
@@ -1467,8 +1494,7 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
                 println!();
             }
         } else {
-            std::fs::write(&out_path, out)
-                .map_err(|e| format!("cannot write {out_path}: {e}"))?;
+            std::fs::write(&out_path, out).map_err(|e| format!("cannot write {out_path}: {e}"))?;
             println!("wrote {out_path}");
         }
         return Ok(());
@@ -1514,8 +1540,7 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
             for iy in 0..ny {
                 if (grid.y(iy) - m.placement.y).abs() <= half_beam {
                     let row = ny - 1 - iy;
-                    rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3]
-                        .copy_from_slice(&HULL_GRAY);
+                    rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3].copy_from_slice(&HULL_GRAY);
                 }
             }
         }
@@ -1751,8 +1776,7 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         } else {
             format!("{prefix}-{name}.hull")
         };
-        let body_text =
-            formats::write_body_file(m.hull.surface(), *wl_depth, m.report.centerplane);
+        let body_text = formats::write_body_file(m.hull.surface(), *wl_depth, m.report.centerplane);
         std::fs::write(&file, body_text).map_err(|e| format!("cannot write {file}: {e}"))?;
         println!(
             "{file:<28} {:>12.4} {:>9.4} {:>9.4} {:>11.3e} {:>9.3},{:>7.3}",
@@ -1764,6 +1788,171 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
             m.report.fit.max_residual_at.1,
         );
     }
+    Ok(())
+}
+
+/// One `place` input: a path plus the pose to apply to every hull in it.
+struct PlaceSpec {
+    path: String,
+    /// Absolute centerplane (`y=`); `.hull` inputs only.
+    y_abs: Option<f64>,
+    pose: michell::iges::HullPose,
+}
+
+/// Parse `path` or `path@key=V,...` (keys: dx/x, dy, y, dz, trim [deg],
+/// pivot [m]).
+fn parse_place_spec(spec: &str) -> Result<PlaceSpec, String> {
+    let (path, rest) = match spec.split_once('@') {
+        Some((p, r)) => (p, r),
+        None => (spec, ""),
+    };
+    let mut out = PlaceSpec {
+        path: path.to_string(),
+        y_abs: None,
+        pose: michell::iges::HullPose::default(),
+    };
+    for part in rest.split(',').filter(|s| !s.trim().is_empty()) {
+        let (k, v) = part
+            .split_once('=')
+            .ok_or_else(|| format!("bad pose {rest:?}: expected key=value pairs"))?;
+        let val: f64 = v
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad pose value {v:?} in {spec:?}"))?;
+        match k.trim() {
+            "dx" | "x" => out.pose.dx = val,
+            "dy" => out.pose.dy = val,
+            "y" => out.y_abs = Some(val),
+            "dz" => out.pose.dz = val,
+            "trim" => out.pose.trim = val.to_radians(),
+            "pivot" => out.pose.pivot_x = Some(val),
+            other => {
+                return Err(format!(
+                    "unknown pose key {other:?} (use dx/x, dy, y, dz, trim, pivot)"
+                ))
+            }
+        }
+    }
+    if out.y_abs.is_some() && out.pose.dy != 0.0 {
+        return Err(format!(
+            "{spec:?}: give either y (absolute) or dy (shift), not both"
+        ));
+    }
+    Ok(out)
+}
+
+fn cmd_place(args: &[String]) -> Result<(), String> {
+    use michell::iges::{self, Platform};
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err(
+            "usage: michell place <hull>[@dx=..,dy=..,dz=..,trim=..]... -o OUT.igs \
+             [--waterline Z] [--sinkage S] [--platform-trim DEG] [--pivot-x X]"
+                .into(),
+        );
+    }
+    let out_path = p
+        .flag("output")
+        .ok_or("place requires an output path: -o OUT.igs")?;
+    let waterline_z = p.f64_flag("waterline")?.unwrap_or(0.0);
+    let platform = Platform {
+        sinkage: p.f64_flag("sinkage")?.unwrap_or(0.0),
+        trim: p.f64_flag("platform-trim")?.unwrap_or(0.0).to_radians(),
+        pivot_x: p.f64_flag("pivot-x")?.unwrap_or(0.0),
+    };
+
+    // Each input file is parsed once; a spec's pose applies rigidly to every
+    // hull the file contains.
+    enum Loaded {
+        Fleet(iges::SourceFleet),
+        Spline(formats::HullFileData),
+    }
+    let mut cache: HashMap<String, Loaded> = HashMap::new();
+    let mut surfaces: Vec<michell::iges::NurbsSurface3> = Vec::new();
+    for raw in &p.positional {
+        let spec = parse_place_spec(raw)?;
+        if !cache.contains_key(&spec.path) {
+            let path = &spec.path;
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            let first = text
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim_end();
+            let lower = path.to_ascii_lowercase();
+            let loaded = if first.starts_with("michell-hull") {
+                Loaded::Spline(formats::parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?)
+            } else if lower.ends_with(".igs")
+                || lower.ends_with(".iges")
+                || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G')
+            {
+                Loaded::Fleet(
+                    iges::source_fleet(&text, waterline_z).map_err(|e| format!("{path}: {e}"))?,
+                )
+            } else {
+                return Err(format!(
+                    "{path}: place takes IGES files and .hull control nets or \
+                     bodies; loft other formats first (michell loft)"
+                ));
+            };
+            cache.insert(spec.path.clone(), loaded);
+        }
+        let before = surfaces.len();
+        let hulls = match &cache[&spec.path] {
+            Loaded::Fleet(fleet) => {
+                if spec.y_abs.is_some() {
+                    return Err(format!(
+                        "{raw:?}: absolute y placement needs a recorded centerplane, \
+                         which IGES inputs don't carry; use dy=SHIFT"
+                    ));
+                }
+                for i in 0..fleet.len() {
+                    surfaces.extend(
+                        fleet
+                            .posed_surfaces(i, waterline_z, &spec.pose, &platform)
+                            .map_err(|e| format!("{}: {e}", spec.path))?,
+                    );
+                }
+                fleet.len()
+            }
+            Loaded::Spline(data) => {
+                let centerplane = data.centerplane.unwrap_or(0.0);
+                let z_top_cad = waterline_z + data.waterline.unwrap_or(0.0);
+                let mut pose = spec.pose;
+                if let Some(y) = spec.y_abs {
+                    pose.dy = y - centerplane;
+                }
+                let mut pair = iges::halfbreadth_surfaces(&data.surface, centerplane, z_top_cad);
+                iges::apply_pose(&mut pair, waterline_z, &pose, &platform);
+                surfaces.extend(pair);
+                1
+            }
+        };
+        eprintln!(
+            "{}: {} hull{}, {} patch{}",
+            raw,
+            hulls,
+            if hulls == 1 { "" } else { "s" },
+            surfaces.len() - before,
+            if surfaces.len() - before == 1 {
+                ""
+            } else {
+                "es"
+            },
+        );
+    }
+
+    let stem = std::path::Path::new(out_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("michell");
+    let text = iges::write(&surfaces, stem).map_err(|e| format!("{e}"))?;
+    std::fs::write(out_path, text).map_err(|e| format!("cannot write {out_path}: {e}"))?;
+    println!(
+        "wrote {out_path}: {} surface patches, metres, design waterline at z = {waterline_z}",
+        surfaces.len()
+    );
     Ok(())
 }
 

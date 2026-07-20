@@ -38,7 +38,7 @@
 //! samples, failed inversions, loft residuals) are reported so a bad import
 //! is visible.
 
-use crate::bspline::{ders_basis, find_span};
+use crate::bspline::{ders_basis, find_span, BSplineSurface};
 use crate::error::{Error, Result};
 use crate::fit::{fit_grid, FitOptions, FitReport};
 use crate::grid::SampleGrid;
@@ -263,7 +263,12 @@ pub fn parse(text: &str) -> Result<IgesFile> {
     // (x, y) = (u, v); entities 126, 110, and 102 composites thereof.
     let curve_uv_bbox = |de0: i64| -> Option<[f64; 4]> {
         let mut stack = vec![de0];
-        let mut b = [f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY];
+        let mut b = [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
         let mut grow = |u: f64, v: f64| {
             b[0] = b[0].min(u);
             b[1] = b[1].max(u);
@@ -331,8 +336,12 @@ pub fn parse(text: &str) -> Result<IgesFile> {
     // unresolvable boundary imposes no restriction.
     let mut trims: Vec<(usize, [f64; 4])> = Vec::new();
     for d in dirs.iter().filter(|d| d.etype == 143) {
-        let Ok(p) = entity_params(d.pd_ptr, d.pd_count) else { continue };
-        let (Some(&sptr), Some(&n)) = (p.get(2), p.get(3)) else { continue };
+        let Ok(p) = entity_params(d.pd_ptr, d.pd_count) else {
+            continue;
+        };
+        let (Some(&sptr), Some(&n)) = (p.get(2), p.get(3)) else {
+            continue;
+        };
         let boxes: Option<Vec<[f64; 4]>> = (0..n as usize)
             .map(|i| p.get(4 + i).and_then(|&b| boundary_uv_bbox(b as i64)))
             .collect();
@@ -378,8 +387,8 @@ pub fn parse(text: &str) -> Result<IgesFile> {
             for p in surf.ctrl.iter_mut() {
                 let q = *p;
                 for r in 0..3 {
-                    p[r] = m[4 * r] * q[0] + m[4 * r + 1] * q[1] + m[4 * r + 2] * q[2]
-                        + m[4 * r + 3];
+                    p[r] =
+                        m[4 * r] * q[0] + m[4 * r + 1] * q[1] + m[4 * r + 2] * q[2] + m[4 * r + 3];
                 }
             }
         }
@@ -501,8 +510,8 @@ fn parse_units(g_lines: &[String]) -> Result<f64> {
         .ok_or_else(|| Error::Parse("global section lacks a units flag (field 14)".into()))?;
     let name = fields.get(14).cloned().unwrap_or_default();
     let scale = match flag {
-        1 => 0.0254,       // inches
-        2 => 0.001,        // millimetres
+        1 => 0.0254, // inches
+        2 => 0.001,  // millimetres
         3 => match name.trim().to_ascii_uppercase().as_str() {
             "M" | "METER" | "METERS" | "METRE" | "METRES" => 1.0,
             "MM" | "MILLIMETER" | "MILLIMETERS" => 0.001,
@@ -515,14 +524,14 @@ fn parse_units(g_lines: &[String]) -> Result<f64> {
                 )))
             }
         },
-        4 => 0.3048,       // feet
-        5 => 1609.344,     // miles
-        6 => 1.0,          // metres
-        7 => 1000.0,       // kilometres
-        8 => 2.54e-5,      // mils
-        9 => 1e-6,         // microns
-        10 => 0.01,        // centimetres
-        11 => 2.54e-8,     // microinches
+        4 => 0.3048,   // feet
+        5 => 1609.344, // miles
+        6 => 1.0,      // metres
+        7 => 1000.0,   // kilometres
+        8 => 2.54e-5,  // mils
+        9 => 1e-6,     // microns
+        10 => 0.01,    // centimetres
+        11 => 2.54e-8, // microinches
         other => {
             return Err(Error::Unsupported(format!(
                 "unknown IGES units flag {other}"
@@ -833,7 +842,9 @@ pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet>
         let dist = |a: &[f64; 6], b: &[f64; 6]| -> f64 {
             (0..3)
                 .map(|k| {
-                    let gap = (a[2 * k] - b[2 * k + 1]).max(b[2 * k] - a[2 * k + 1]).max(0.0);
+                    let gap = (a[2 * k] - b[2 * k + 1])
+                        .max(b[2 * k] - a[2 * k + 1])
+                        .max(0.0);
                     gap * gap
                 })
                 .sum::<f64>()
@@ -945,6 +956,30 @@ impl SourceFleet {
             .fold(f64::INFINITY, |m, p| m.min(p[2]))
     }
 
+    /// A hull's patches with a pose applied — the geometry
+    /// [`SourceFleet::situate`] would sample, expressed in the CAD frame
+    /// (z up, metres) with the water surface back at `waterline_z`: platform
+    /// sinkage moves the *hulls* down rather than the waterline up, so the
+    /// result drops into a CAD model whose waterplane is fixed. Intended for
+    /// re-exporting a studied configuration (see [`write`]).
+    pub fn posed_surfaces(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Result<Vec<NurbsSurface3>> {
+        if idx >= self.hulls.len() {
+            return Err(Error::InvalidInput(format!(
+                "hull index {idx} out of range ({} hulls)",
+                self.hulls.len()
+            )));
+        }
+        let mut surfs = self.hulls[idx].clone();
+        apply_pose(&mut surfs, waterline_z, pose, platform);
+        Ok(surfs)
+    }
+
     fn situate_hull(
         &self,
         hi: usize,
@@ -956,34 +991,7 @@ impl SourceFleet {
         let surfs = &self.hulls[hi];
         let wl = waterline_z + platform.sinkage;
         let mut moved = surfs.clone();
-        // Design trim about (pivot_x, base waterline), then shifts.
-        if pose.trim != 0.0 {
-            let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
-            let (sin, cos) = pose.trim.sin_cos();
-            for s in &mut moved {
-                for p in s.ctrl.iter_mut() {
-                    rotate_xz(p, px, waterline_z, cos, sin);
-                }
-            }
-        }
-        if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
-            for s in &mut moved {
-                for p in s.ctrl.iter_mut() {
-                    p[0] += pose.dx;
-                    p[1] += pose.dy;
-                    p[2] -= pose.dz;
-                }
-            }
-        }
-        // Platform pitch about (pivot_x, effective waterline).
-        if platform.trim != 0.0 {
-            let (sin, cos) = platform.trim.sin_cos();
-            for s in &mut moved {
-                for p in s.ctrl.iter_mut() {
-                    rotate_xz(p, platform.pivot_x, wl, cos, sin);
-                }
-            }
-        }
+        pose_ctrl(&mut moved, waterline_z, pose, platform);
         let patches = presample_surfaces(&moved, wl);
         if patches.iter().all(|p| p.wet_box.is_none()) {
             return Ok(None);
@@ -998,6 +1006,63 @@ impl SourceFleet {
             report,
             grid,
         }))
+    }
+}
+
+/// Apply a design pose and platform state to CAD-frame surfaces (z up,
+/// metres), by moving their control nets, and re-express platform sinkage
+/// as a geometry shift so the water surface stays at `waterline_z`. This is
+/// the configuration [`SourceFleet::situate`] evaluates (situate instead
+/// raises the waterline to `waterline_z + sinkage`, which is equivalent),
+/// in a frame that drops into a CAD model whose waterplane is fixed.
+pub fn apply_pose(
+    surfs: &mut [NurbsSurface3],
+    waterline_z: f64,
+    pose: &HullPose,
+    platform: &Platform,
+) {
+    pose_ctrl(surfs, waterline_z, pose, platform);
+    if platform.sinkage != 0.0 {
+        for s in surfs.iter_mut() {
+            for p in s.ctrl.iter_mut() {
+                p[2] -= platform.sinkage;
+            }
+        }
+    }
+}
+
+/// The transform [`SourceFleet::situate`] applies before clipping at the
+/// effective waterline `waterline_z + sinkage`: design trim about
+/// `(pose.pivot_x, waterline_z)`, then the `dx`/`dy`/`dz` shifts
+/// (`dz` positive lowers the hull), then platform pitch about
+/// `(platform.pivot_x, waterline_z + sinkage)`.
+fn pose_ctrl(surfs: &mut [NurbsSurface3], waterline_z: f64, pose: &HullPose, platform: &Platform) {
+    let wl = waterline_z + platform.sinkage;
+    if pose.trim != 0.0 {
+        let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+        let (sin, cos) = pose.trim.sin_cos();
+        for s in surfs.iter_mut() {
+            for p in s.ctrl.iter_mut() {
+                rotate_xz(p, px, waterline_z, cos, sin);
+            }
+        }
+    }
+    if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
+        for s in surfs.iter_mut() {
+            for p in s.ctrl.iter_mut() {
+                p[0] += pose.dx;
+                p[1] += pose.dy;
+                p[2] -= pose.dz;
+            }
+        }
+    }
+    if platform.trim != 0.0 {
+        let (sin, cos) = platform.trim.sin_cos();
+        for s in surfs.iter_mut() {
+            for p in s.ctrl.iter_mut() {
+                rotate_xz(p, platform.pivot_x, wl, cos, sin);
+            }
+        }
     }
 }
 
@@ -1024,7 +1089,11 @@ fn ctrl_x_mid(surfs: &[NurbsSurface3]) -> f64 {
 /// Parse + reject unsupported content (shared by every entry point).
 fn validated_file(text: &str) -> Result<IgesFile> {
     let file = parse(text)?;
-    if file.entity_counts.iter().any(|&(t, _)| t == 144 || t == 142) {
+    if file
+        .entity_counts
+        .iter()
+        .any(|&(t, _)| t == 144 || t == 142)
+    {
         return Err(Error::Unsupported(
             "the file contains trimmed surfaces (entities 142/144); export the \
              hull as untrimmed (or naturally bounded) surfaces"
@@ -1067,7 +1136,12 @@ fn presample_surfaces(surfaces: &[NurbsSurface3], waterline_z: f64) -> Vec<Patch
         let (u0, u1) = hs.u_domain();
         let (v0, v1) = hs.v_domain();
         let mut pts = Vec::with_capacity(GRID_N * GRID_N);
-        let mut bbox = (f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY);
+        let mut bbox = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
         let mut wet_box: Option<[f64; 6]> = None;
         for i in 0..GRID_N {
             let u = u0 + (u1 - u0) * i as f64 / (GRID_N - 1) as f64;
@@ -1156,12 +1230,15 @@ fn cluster_patches(patches: &[Patch], eps: f64) -> Vec<Vec<usize>> {
         i
     }
     for i in 0..n {
-        let Some(a) = patches[i].wet_box else { continue };
+        let Some(a) = patches[i].wet_box else {
+            continue;
+        };
         for j in (i + 1)..n {
-            let Some(b) = patches[j].wet_box else { continue };
-            let touch = (0..3).all(|k| {
-                a[2 * k] - eps <= b[2 * k + 1] && b[2 * k] - eps <= a[2 * k + 1]
-            });
+            let Some(b) = patches[j].wet_box else {
+                continue;
+            };
+            let touch =
+                (0..3).all(|k| a[2 * k] - eps <= b[2 * k + 1] && b[2 * k] - eps <= a[2 * k + 1]);
             if touch {
                 let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
                 parent[ri] = rj;
@@ -1271,7 +1348,9 @@ fn import_cluster(
             x_min + length * (1.0 - c) / 2.0
         })
         .collect();
-    let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
+    let waterlines: Vec<f64> = (0..nw)
+        .map(|j| draft * j as f64 / (nw - 1) as f64)
+        .collect();
 
     let mut grid = vec![0.0f64; ns * nw];
     let mut fx = vec![f64::NAN; ns * nw];
@@ -1527,6 +1606,302 @@ fn newton_on(
     best
 }
 
+// ---------------------------------------------------------------------------
+// IGES export
+// ---------------------------------------------------------------------------
+
+/// Serialize surfaces to a minimal IGES 5.3 file: one B-spline surface
+/// (entity 128) per patch, coordinates in **metres** (units flag 6). The
+/// output round-trips through [`parse`] and imports into CAD systems.
+///
+/// Surfaces carrying a bounded-surface restriction (`trim_uv`) are written as
+/// plain 128 entities whose parameter range (`U0..U1`, `V0..V1`) is the
+/// restricted box; readers that honour the range see the bounded patch,
+/// others see the full base surface.
+///
+/// `product` names the model in the global section (product ID / file name).
+pub fn write(surfaces: &[NurbsSurface3], product: &str) -> Result<String> {
+    if surfaces.is_empty() {
+        return Err(Error::InvalidInput("no surfaces to write".into()));
+    }
+    for (i, s) in surfaces.iter().enumerate() {
+        let n = s.n_ctrl_u * s.n_ctrl_v;
+        if s.ctrl.len() != n
+            || s.weights.len() != n
+            || s.knots_u.len() != s.n_ctrl_u + s.degree_u + 1
+            || s.knots_v.len() != s.n_ctrl_v + s.degree_v + 1
+            || s.ctrl.iter().flatten().any(|v| !v.is_finite())
+        {
+            return Err(Error::InvalidInput(format!(
+                "surface {i} is inconsistent (control/weight/knot counts or \
+                 non-finite coordinates)"
+            )));
+        }
+    }
+    let product: String = product
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    let product = if product.trim().is_empty() {
+        "michell".to_string()
+    } else {
+        product
+    };
+    let dt = iges_datetime();
+    let max_coord = surfaces
+        .iter()
+        .flat_map(|s| s.ctrl.iter())
+        .flat_map(|p| p.iter())
+        .fold(1.0f64, |m, &c| m.max(c.abs()));
+
+    // Global section (IGES 5.3 field order).
+    let holl = |s: &str| format!("{}H{}", s.len(), s);
+    let g_tokens: Vec<String> = vec![
+        "1H,".into(),                                            //  1 parameter delimiter
+        "1H;".into(),                                            //  2 record delimiter
+        holl(&product),                                          //  3 product ID (sender)
+        holl(&product),                                          //  4 file name
+        holl("michell"),                                         //  5 native system ID
+        holl(&format!("michell {}", env!("CARGO_PKG_VERSION"))), // 6 preprocessor
+        "32".into(),                                             //  7 integer bits
+        "38".into(),                                             //  8 single max exponent
+        "6".into(),                                              //  9 single sig digits
+        "308".into(),                                            // 10 double max exponent
+        "15".into(),                                             // 11 double sig digits
+        holl(&product),                                          // 12 product ID (receiver)
+        "1.".into(),                                             // 13 model space scale
+        "6".into(),                                              // 14 units flag: metres
+        holl("M"),                                               // 15 units name
+        "1".into(),                                              // 16 line weight gradations
+        "0.01".into(),                                           // 17 max line weight
+        holl(&dt),                                               // 18 file generation time
+        fmt_real(1e-9),                                          // 19 minimum resolution
+        fmt_real(max_coord),                                     // 20 approx max coordinate
+        holl("michell"),                                         // 21 author
+        holl("michell"),                                         // 22 organization
+        "11".into(),                                             // 23 version flag (5.3)
+        "0".into(),                                              // 24 drafting standard
+        holl(&dt),                                               // 25 last modified
+    ];
+    let g_lines = pack_tokens(&g_tokens, 72);
+
+    // Parameter + directory sections.
+    let mut p_lines: Vec<(String, usize)> = Vec::new(); // (data, owner DE)
+    let mut d_lines: Vec<String> = Vec::new();
+    for (k, s) in surfaces.iter().enumerate() {
+        let (nu, nv) = (s.n_ctrl_u, s.n_ctrl_v);
+        let mut t: Vec<String> = vec![
+            "128".into(),
+            (nu - 1).to_string(),
+            (nv - 1).to_string(),
+            s.degree_u.to_string(),
+            s.degree_v.to_string(),
+            "0".into(), // PROP1: not closed in u
+            "0".into(), // PROP2: not closed in v
+            if s.is_polynomial() { "1" } else { "0" }.into(),
+            "0".into(), // PROP4: not periodic in u
+            "0".into(), // PROP5: not periodic in v
+        ];
+        t.extend(s.knots_u.iter().map(|&v| fmt_real(v)));
+        t.extend(s.knots_v.iter().map(|&v| fmt_real(v)));
+        // Weights and points with the u index varying fastest (see parse).
+        for j in 0..nv {
+            for i in 0..nu {
+                t.push(fmt_real(s.weights[i * nv + j]));
+            }
+        }
+        for j in 0..nv {
+            for i in 0..nu {
+                let p = s.ctrl[i * nv + j];
+                t.extend(p.iter().map(|&v| fmt_real(v)));
+            }
+        }
+        let (u0, u1) = s.u_domain();
+        let (v0, v1) = s.v_domain();
+        t.extend([u0, u1, v0, v1].iter().map(|&v| fmt_real(v)));
+
+        let de_seq = 2 * k + 1;
+        let pd_ptr = p_lines.len() + 1;
+        let chunk = pack_tokens(&t, 64);
+        let pd_count = chunk.len();
+        p_lines.extend(chunk.into_iter().map(|l| (l, de_seq)));
+
+        let f = |v: usize| format!("{v:>8}");
+        d_lines.push(format!(
+            "{}{}{}{}{}{}{}{}{:>8}",
+            f(128),
+            f(pd_ptr),
+            f(0),
+            f(0),
+            f(0),
+            f(0),
+            f(0),
+            f(0),
+            "00000000"
+        ));
+        d_lines.push(format!(
+            "{}{}{}{}{}{:8}{:8}{:8}{}",
+            f(128),
+            f(0),
+            f(0),
+            f(pd_count),
+            f(0),
+            "",
+            "",
+            "",
+            f(0)
+        ));
+    }
+
+    let mut out = String::new();
+    let mut line = |data: &str, letter: char, seq: usize| {
+        out.push_str(&format!("{data:<72}{letter}{seq:>7}\n"));
+    };
+    line(&format!("{product} - michell IGES export"), 'S', 1);
+    for (i, g) in g_lines.iter().enumerate() {
+        line(g, 'G', i + 1);
+    }
+    for (i, d) in d_lines.iter().enumerate() {
+        line(d, 'D', i + 1);
+    }
+    for (i, (p, de)) in p_lines.iter().enumerate() {
+        line(&format!("{p:<64}{de:>8}"), 'P', i + 1);
+    }
+    let totals = format!(
+        "S{:>7}G{:>7}D{:>7}P{:>7}",
+        1,
+        g_lines.len(),
+        d_lines.len(),
+        p_lines.len()
+    );
+    line(&totals, 'T', 1);
+    Ok(out)
+}
+
+/// Convert a half-breadth spline `y = f(x, z')` (the crate's hull frame,
+/// z' downward) into the mirrored pair of CAD-frame (z up) patches its graph
+/// describes — **exact**, because linear precision puts the Greville
+/// abscissae of each knot vector on the graph's coordinate lines.
+/// `z_top_cad` is the CAD height of z' = 0 (the design waterline for a
+/// wetted hull; the band top for a full-band body); `centerplane` is the
+/// transverse position the two sides mirror about. Returned as
+/// `[starboard (+y), port (−y)]`.
+pub fn halfbreadth_surfaces(
+    s: &BSplineSurface,
+    centerplane: f64,
+    z_top_cad: f64,
+) -> [NurbsSurface3; 2] {
+    let greville = |knots: &[f64], p: usize, n: usize| -> Vec<f64> {
+        (0..n)
+            .map(|i| knots[i + 1..i + 1 + p].iter().sum::<f64>() / p as f64)
+            .collect()
+    };
+    let gx = greville(s.knots_x(), s.degree_x(), s.n_ctrl_x());
+    let gz = greville(s.knots_z(), s.degree_z(), s.n_ctrl_z());
+    let (nx, nz) = (s.n_ctrl_x(), s.n_ctrl_z());
+    #[allow(clippy::needless_range_loop)]
+    let build = |side: f64| -> NurbsSurface3 {
+        let mut ctrl = Vec::with_capacity(nx * nz);
+        for i in 0..nx {
+            for j in 0..nz {
+                ctrl.push([
+                    gx[i],
+                    centerplane + side * s.control()[i * nz + j],
+                    z_top_cad - gz[j],
+                ]);
+            }
+        }
+        NurbsSurface3 {
+            degree_u: s.degree_x(),
+            degree_v: s.degree_z(),
+            knots_u: s.knots_x().to_vec(),
+            knots_v: s.knots_z().to_vec(),
+            n_ctrl_u: nx,
+            n_ctrl_v: nz,
+            ctrl,
+            weights: vec![1.0; nx * nz],
+            trim_uv: None,
+        }
+    };
+    [build(1.0), build(-1.0)]
+}
+
+/// Format a real for an IGES parameter field: Rust's shortest round-trip
+/// representation, with the decimal point IGES requires; extreme magnitudes
+/// switch to `E` exponents so no token can outgrow a parameter line.
+fn fmt_real(v: f64) -> String {
+    let a = v.abs();
+    let s = if a != 0.0 && !(1e-4..1e7).contains(&a) {
+        format!("{v:E}")
+    } else {
+        format!("{v}")
+    };
+    if let Some(e) = s.find('E') {
+        let (m, ex) = s.split_at(e);
+        let m = if m.contains('.') {
+            m.to_string()
+        } else {
+            format!("{m}.0")
+        };
+        format!("{m}E{}", &ex[1..])
+    } else if s.contains('.') {
+        s
+    } else {
+        format!("{s}.")
+    }
+}
+
+/// Join parameter tokens with `,` (record-terminated by `;`) and pack them
+/// into lines of at most `width` columns, breaking only between tokens.
+fn pack_tokens(tokens: &[String], width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for (i, t) in tokens.iter().enumerate() {
+        let delim = if i + 1 == tokens.len() { ';' } else { ',' };
+        let piece = format!("{t}{delim}");
+        if !cur.is_empty() && cur.len() + piece.len() > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(&piece);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Current UTC time as the IGES `YYYYMMDD.HHMMSS` timestamp.
+fn iges_datetime() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = (secs / 86400, secs % 86400);
+    // Civil date from day count (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe as i64 + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}{m:02}{d:02}.{:02}{:02}{:02}",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1685,5 +2060,107 @@ mod tests {
         assert_eq!(parse_number("1.0D2").unwrap(), 100.0);
         assert_eq!(parse_number("").unwrap(), 0.0);
         assert!(parse_number("abc").is_err());
+    }
+
+    #[test]
+    fn real_formatting() {
+        assert_eq!(fmt_real(1.5), "1.5");
+        assert_eq!(fmt_real(1.0), "1.");
+        assert_eq!(fmt_real(-3.0), "-3.");
+        assert_eq!(fmt_real(1e-9), "1.0E-9");
+        assert_eq!(fmt_real(-2.5e-7), "-2.5E-7");
+        assert_eq!(fmt_real(0.0), "0.");
+        for &v in &[0.1, -123.456, 1e-9, 6.02e23, 12.0] {
+            assert_eq!(parse_number(&fmt_real(v)).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn write_roundtrips_through_parse() {
+        let a = nonlinear_surface();
+        let mut b = nonlinear_surface();
+        for p in b.ctrl.iter_mut() {
+            p[0] += 3.25;
+            p[1] = -p[1];
+            p[2] -= 0.75;
+        }
+        let text = write(&[a.clone(), b.clone()], "roundtrip").unwrap();
+        // Fixed-width layout: every line is 80 columns with the section
+        // letter in column 73.
+        for line in text.lines() {
+            assert_eq!(line.len(), 80, "{line:?}");
+            assert!(matches!(
+                line.as_bytes()[72],
+                b'S' | b'G' | b'D' | b'P' | b'T'
+            ));
+        }
+        let file = parse(&text).unwrap();
+        assert_eq!(file.units_scale, 1.0);
+        assert_eq!(file.surfaces.len(), 2);
+        for (got, want) in file.surfaces.iter().zip([&a, &b]) {
+            assert_eq!(got.degree_u, want.degree_u);
+            assert_eq!(got.degree_v, want.degree_v);
+            assert_eq!(got.knots_u, want.knots_u);
+            assert_eq!(got.knots_v, want.knots_v);
+            assert_eq!(got.weights, want.weights);
+            for (g, w) in got.ctrl.iter().zip(&want.ctrl) {
+                for c in 0..3 {
+                    assert_eq!(g[c], w[c], "control point mismatch");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn halfbreadth_graph_is_exact() {
+        // An arbitrary half-breadth spline; its graph surfaces must evaluate
+        // to (x, ±f(x, z) + yc, z_top − z) exactly.
+        let s = BSplineSurface::new(
+            2,
+            2,
+            vec![0.0, 0.0, 0.0, 4.0, 10.0, 10.0, 10.0],
+            vec![0.0, 0.0, 0.0, 1.5, 1.5, 1.5],
+            vec![
+                0.0, 0.0, 0.0, //
+                0.8, 0.6, 0.1, //
+                1.0, 0.9, 0.3, //
+                0.2, 0.1, 0.0,
+            ],
+        )
+        .unwrap();
+        let (yc, ztop) = (1.9, 0.42);
+        let [stbd, port] = halfbreadth_surfaces(&s, yc, ztop);
+        for &(u, v) in &[(0.0, 0.0), (2.7, 0.3), (5.0, 1.1), (9.3, 1.5), (10.0, 0.7)] {
+            let f = s.eval(u, v);
+            let (p, _, _) = stbd.eval1(u, v);
+            assert!((p[0] - u).abs() < 1e-12, "x at ({u},{v}): {}", p[0]);
+            assert!((p[1] - (yc + f)).abs() < 1e-12, "y at ({u},{v})");
+            assert!((p[2] - (ztop - v)).abs() < 1e-12, "z at ({u},{v})");
+            let (q, _, _) = port.eval1(u, v);
+            assert!((q[1] - (yc - f)).abs() < 1e-12, "port y at ({u},{v})");
+        }
+    }
+
+    #[test]
+    fn posed_export_matches_situate_transform() {
+        // apply_pose + sinkage re-expression: a point on the DWL moves down
+        // by dz + sinkage relative to the fixed CAD waterline.
+        let mut surfs = vec![nonlinear_surface()];
+        let pose = HullPose {
+            dx: 1.0,
+            dy: -0.5,
+            dz: 0.2,
+            ..HullPose::default()
+        };
+        let platform = Platform {
+            sinkage: 0.1,
+            ..Platform::default()
+        };
+        let before = surfs[0].ctrl[3];
+        apply_pose(&mut surfs, 0.0, &pose, &platform);
+        let after = surfs[0].ctrl[3];
+        assert!((after[0] - (before[0] + 1.0)).abs() < 1e-12);
+        assert!((after[1] - (before[1] - 0.5)).abs() < 1e-12);
+        assert!((after[2] - (before[2] - 0.3)).abs() < 1e-12);
     }
 }
