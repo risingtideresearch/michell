@@ -120,6 +120,16 @@ for (let k=0;k<512;k++){
   const s = t1>t0 ? (t-t0)/(t1-t0) : 0;
   for (let c=0;c<3;c++){ const a=s2l(c0[c]),b=s2l(c1[c]); LUT[k*3+c]=l2s(a+(b-a)*s); }
 }
+// Second LUT: the same ramp already faded toward the neutral colour, so the
+// non-physical region is one table lookup per pixel instead of ~9 Math.pow
+// calls (which made full renders take seconds on large/Retina canvases).
+let FADED_LUT = new Uint8Array(512*3);
+function buildFadedLut(toward, frac){
+  const ft = toward.map(s2l);
+  for (let k=0;k<512;k++){
+    for (let c=0;c<3;c++){ const a=s2l(LUT[k*3+c]); FADED_LUT[k*3+c]=l2s(a+(ft[c]-a)*frac); }
+  }
+}
 function drawColorbar(){
   const bg = document.getElementById("barGrad"), bx = bg.getContext("2d");
   const img = bx.createImageData(120,10);
@@ -170,14 +180,18 @@ function c2w(px,py){ const v=S.view,{w,h}=viewDims(); return [ v.x0+px/dispW*w, 
 
 // ---- render ----
 function scheduleRender(full){ if (raf) cancelAnimationFrame(raf); raf=requestAnimationFrame(()=>render(full)); }
+// Render the composite into a buffer no larger than this on its long edge;
+// the wake field is smooth, so upscaling to a big/Retina canvas is invisible
+// and keeps render cost bounded regardless of display size.
+const RENDER_CAP = 1100;
 function render(full){
   raf=0;
   if (!S) return;
-  const scale = (dragging>=0 && !full) ? 0.55 : 1.0;
+  let scale = (dragging>=0 && !full) ? 0.55 : 1.0;
+  scale = Math.min(scale, RENDER_CAP/Math.max(cv.width, cv.height));
   const W=Math.max(2,Math.round(cv.width*scale)), H=Math.max(2,Math.round(cv.height*scale));
   const v=S.view,{w,h}=viewDims();
   const vmax=S.vmax, inv=1/vmax;
-  const fade=S.fadeFraction, ft=S.fadeToward.map(s2l);
   const stern=aftmostStern();
   const img=ctx.createImageData(W,H);
   const D=img.data, nh=S.hulls.length;
@@ -188,23 +202,19 @@ function render(full){
       let z=0;
       for (let i=0;i<nh;i++) z+=sample(fields[i], wx-place[i].x, wy-place[i].y);
       let t=z*inv; if (t<-1)t=-1; else if (t>1)t=1;
-      let k=((t+1)*0.5*511+0.5)|0;
-      let r=LUT[k*3], g=LUT[k*3+1], b=LUT[k*3+2];
-      if (wx>stern){ // fade toward neutral where not physical
-        r=l2s(s2l(r)+(ft[0]-s2l(r))*fade);
-        g=l2s(s2l(g)+(ft[1]-s2l(g))*fade);
-        b=l2s(s2l(b)+(ft[2]-s2l(b))*fade);
-      }
-      const o=(py*W+px)*4; D[o]=r; D[o+1]=g; D[o+2]=b; D[o+3]=255;
+      const k=((t+1)*0.5*511+0.5)|0;
+      // Table lookup only — the faded LUT is the physicality fade, precomputed.
+      const src = wx>stern ? FADED_LUT : LUT;
+      const o=(py*W+px)*4; D[o]=src[k*3]; D[o+1]=src[k*3+1]; D[o+2]=src[k*3+2]; D[o+3]=255;
     }
   }
   // blit the (possibly downscaled) buffer to the full canvas
-  ctx.imageSmoothingEnabled = scale<1;
-  if (scale===1){ ctx.putImageData(img,0,0); }
+  if (W===cv.width && H===cv.height){ ctx.setTransform(1,0,0,1,0,0); ctx.putImageData(img,0,0); }
   else {
     const tmp=document.createElement("canvas"); tmp.width=W; tmp.height=H;
     tmp.getContext("2d").putImageData(img,0,0);
     ctx.setTransform(1,0,0,1,0,0);
+    ctx.imageSmoothingEnabled = true;
     ctx.drawImage(tmp,0,0,cv.width,cv.height);
   }
   drawHulls();
@@ -382,6 +392,7 @@ async function adopt(state){
   refreshStats(); scheduleRender(true); requestResistance();
 }
 function refreshStats(){
+  buildFadedLut(S.fadeToward, S.fadeFraction);
   document.getElementById("lambda").textContent=S.transverseWavelength.toFixed(2)+" m";
   const pct=Math.round(S.mass/S.designMass*100);
   document.getElementById("dispVal").textContent=fmtMass(S.mass)+"  ("+pct+"%)";

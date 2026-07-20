@@ -32,7 +32,8 @@ use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 const PAGE: &str = include_str!("view.html");
 
@@ -210,13 +211,20 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
     );
     let _ = std::process::Command::new("open").arg(&url).spawn();
 
-    let state = Mutex::new(state);
+    // One thread per connection. Browsers open speculative "preconnect"
+    // sockets that may send no request; a single-threaded accept loop would
+    // block on reading one of those and stall every real request behind it.
+    // Shared state is behind the mutex, so recomputes still serialise safely.
+    let state = Arc::new(Mutex::new(state));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = handle(s, &state) {
-                    eprintln!("view: connection error: {e}");
-                }
+                let st = Arc::clone(&state);
+                std::thread::spawn(move || {
+                    if let Err(e) = handle(s, &st) {
+                        eprintln!("view: connection error: {e}");
+                    }
+                });
             }
             Err(e) => eprintln!("view: accept error: {e}"),
         }
@@ -615,6 +623,8 @@ fn set_hull_geometry(vh: &mut ViewHull, hull: Hull) {
 // ---------------------------------------------------------------------------
 
 fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
+    // Don't let an idle/speculative socket tie up a handler thread forever.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
