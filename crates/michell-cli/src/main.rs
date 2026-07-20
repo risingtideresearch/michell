@@ -127,7 +127,8 @@ WAVE FIELD (spectrum, wake)
 
   wake: the Kelvin wave pattern zeta(x, y) reconstructed from the spectrum.
     -o OUT.png|.csv|.json  output (default wake.png); the PNG is a heatmap
-                        (blue trough, red crest, gray hull waterplanes)
+                        (blue trough, red crest, gray hull waterplanes;
+                        faded where not astern of every hull)
     --region X0:X1:Y0:Y1   window in fleet coordinates [m]
                         (default: ~3 hull lengths of wake, auto width)
     --size WxH          grid points (default 900 wide, aspect-matched)
@@ -1491,13 +1492,21 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
         }
     };
 
+    // The free-wave field is physical only astern of every hull: fade the
+    // columns from the aft-most stern forward so the trustworthy wake reads
+    // at full strength and the rest is visibly indicative.
+    const FADE_TOWARD: [u8; 3] = [0xf0, 0xef, 0xec];
+    const FADE_FRACTION: f64 = 0.55;
     let mut rgb = vec![0u8; 3 * nx * ny];
     for iy in 0..ny {
         // PNG row 0 is the top of the image = the +y edge.
         let row = ny - 1 - iy;
         for ix in 0..nx {
             let t = grid.get(ix, iy) / vmax;
-            let c = png::diverging(t);
+            let mut c = png::diverging(t);
+            if grid.x(ix) > x_lo {
+                c = png::fade(c, FADE_TOWARD, FADE_FRACTION);
+            }
             rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3].copy_from_slice(&c);
         }
     }
@@ -1523,6 +1532,9 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
     std::fs::write(&out_path, png::encode_rgb(nx, ny, &rgb))
         .map_err(|e| format!("cannot write {out_path}: {e}"))?;
     println!("{summary}");
+    if x1 > x_lo {
+        println!("faded ahead of x = {x_lo:.2} m (aft-most stern): not physical there");
+    }
     println!("color scale: +-{vmax:.4} m; wrote {out_path}");
     Ok(())
 }

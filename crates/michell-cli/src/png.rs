@@ -128,6 +128,18 @@ pub fn diverging(t: f64) -> [u8; 3] {
     out
 }
 
+/// Blend `c` a fraction `f` toward `toward` in linear-light RGB.
+pub fn fade(c: [u8; 3], toward: [u8; 3], f: f64) -> [u8; 3] {
+    let f = f.clamp(0.0, 1.0);
+    let mut out = [0u8; 3];
+    for k in 0..3 {
+        let a = srgb_to_linear(c[k]);
+        let b = srgb_to_linear(toward[k]);
+        out[k] = linear_to_srgb(a + (b - a) * f);
+    }
+    out
+}
+
 fn srgb_to_linear(v: u8) -> f64 {
     let x = v as f64 / 255.0;
     if x <= 0.04045 {
