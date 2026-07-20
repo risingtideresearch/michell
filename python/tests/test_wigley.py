@@ -16,6 +16,8 @@ import numpy as np
 
 from pymichell import wave_field, wigley
 
+_trap = getattr(np, "trapezoid", None) or np.trapz  # renamed in NumPy 2.0
+
 
 def _field():
     return wave_field(wigley(10.0, 1.0, 0.625), speed=3.0)
@@ -45,6 +47,28 @@ def test_amplitude_matches_crate():
         a = field.amplitude(np.radians(theta_deg))[0]
         assert abs(a.real) < 1e-6 * (abs(want_imag) + 1e-9)
         assert abs(a.imag - want_imag) < 1e-3 * abs(want_imag)
+
+
+def test_inner_integral_matches_direct_quadrature():
+    # The closed-form span machinery must agree with a naive but obviously
+    # correct 2-D numerical integration of the same double integral.
+    surface = wigley(10.0, 1.0, 0.625)
+    field = wave_field(surface, speed=3.0)
+    x0, x1 = surface.x_domain
+    z0, z1 = surface.z_domain
+    xn = np.linspace(x0, x1, 2000)
+    zn = np.linspace(z0, z1, 400)
+    fx = surface.evaluate(xn, zn, dx=1)  # (nx, nz)
+    xc = surface.x_center
+    for lam in [1.0, 1.3, 2.0, 4.0, 8.0]:
+        kappa = field.nu * lam * lam
+        kx = field.nu * lam
+        gz = _trap(fx * np.exp(-kappa * zn)[None, :], zn, axis=1)  # (nx,)
+        ref = _trap(gz * np.exp(1j * kx * (xn - xc)), xn)
+        exact = field.inner_integral(lam)[0]
+        # Absolute floor absorbs the reference trapezoid's own error near the
+        # near-zeros of |F| (where a purely relative bound is unreasonable).
+        assert abs(exact - ref) < 1e-6 + 1e-4 * abs(ref)
 
 
 def test_wake_has_transverse_waves():

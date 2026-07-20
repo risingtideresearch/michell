@@ -3,8 +3,13 @@
 A pedagogical companion to the Rust ``michell`` crate.  Given a hull as a
 B-spline half-breadth control net, it computes the thin-ship free-wave
 amplitude ``F = I + iJ``, the far-field spectrum ``A(θ)``, the Kelvin-wake
-elevation grid ``ζ(x, y)``, and the wave resistance ``R_w`` -- using plain
-NumPy quadrature chosen for legibility over speed.
+elevation grid ``ζ(x, y)``, and the wave resistance ``R_w``.
+
+Like the crate, the inner amplitude integral is evaluated **exactly**,
+span by span: on each knot span ``∂f/∂x`` is a local polynomial and the
+integrals reduce to closed-form moments (:mod:`pymichell.moments`), so
+``I`` and ``J`` match the crate to machine precision.  Only the smooth outer
+θ-integrals use plain trapezoidal quadrature, for legibility.
 
 Quick start::
 

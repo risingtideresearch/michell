@@ -15,9 +15,11 @@ Pierre & Rousseaux 2016), with ``ν = g/U²`` and the half-beam ``f(x, z)``:
             = ∬ (∂f/∂x) · exp(-ν λ² z) · exp(i ν λ (x - x_c)) dx dz
 
    (phases referenced to the hull mid-length ``x_c``; ``|F|`` does not
-   depend on that choice).  The crate evaluates this in closed form span by
-   span; here we integrate it numerically on a grid -- the same integral,
-   written plainly.
+   depend on that choice).  Because the hull is piecewise polynomial this
+   integral is evaluated **exactly, span by span**: on each knot span
+   ``∂f/∂x`` is a local polynomial (:meth:`BSplineSurface.corner_partials`)
+   and the two 1-D integrals reduce to the closed-form moments in
+   :mod:`pymichell.moments`.  ``I`` and ``J`` carry no quadrature error.
 
 2. **Free-wave amplitude density.**
 
@@ -40,18 +42,21 @@ Pierre & Rousseaux 2016), with ``ν = g/U²`` and the half-beam ``f(x, z)``:
    The ship advances toward ``+x``; the wake trails toward ``-x`` and this
    free-wave reconstruction is physical only *astern* of the hull.
 
-Everything below deliberately uses simple, dense numerical quadrature
-(trapezoidal rules over uniform grids).  It is not how you would evaluate
-this quickly -- it is how you would explain it.
+The inner integral ``F`` (step 1) is exact; only the smooth *outer*
+integrals over the propagation angle ``θ`` -- resistance (step 3) and the
+wake reconstruction (step 4) -- are done by simple trapezoidal quadrature,
+chosen for legibility over the crate's adaptive, oscillation-aware panels.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
 
 from .bspline import BSplineSurface
+from .moments import exp_moments, osc_moments
 
 STANDARD_GRAVITY = 9.80665
 SEAWATER_DENSITY = 1025.9  # kg/m³, salt water at 15 °C (ITTC)
@@ -90,58 +95,88 @@ def _trapezoid_weights(nodes: np.ndarray) -> np.ndarray:
 class WaveField:
     """The free-wave field of one thin hull at a fixed speed.
 
-    On construction it samples ``∂f/∂x`` once on a dense ``(x, z)`` grid;
-    every amplitude and elevation query is then a weighted sum over that
-    cached slope field.  Raise ``n_x``/``n_z`` for accuracy on wiggly hulls
-    or high speeds (the ``x`` grid must resolve the wave phase ``ν λ x``).
+    On construction it extracts, once, the exact local polynomial of
+    ``∂f/∂x`` on every knot span (via corner Taylor data).  The inner
+    integral is then *closed form*: on each span the integrand is a
+    polynomial times ``e^{ikx}`` in x and a polynomial times ``e^{-κz}`` in
+    z, and both reduce to the moment integrals in :mod:`pymichell.moments`.
+    ``I`` and ``J`` therefore carry no quadrature error -- only the smooth
+    outer θ-integrals (resistance, wake) are done numerically.
     """
 
-    def __init__(
-        self,
-        surface: BSplineSurface,
-        conditions: Conditions,
-        n_x: int = 400,
-        n_z: int = 80,
-    ) -> None:
+    def __init__(self, surface: BSplineSurface, conditions: Conditions) -> None:
         self.surface = surface
         self.cond = conditions
         self.nu = conditions.nu
         self.x_center = surface.x_center
         self.waterline = surface.waterline
+        self.p = surface.degree_x
+        self.q = surface.degree_z
 
-        # Cache the slope field ∂f/∂x on a uniform grid over the *submerged*
-        # region z ∈ [waterline, draft], with the trapezoid weights that
-        # integrate over it.  For a plain wetted-surface hull waterline = 0.
-        x0, x1 = surface.x_domain
-        _, z_keel = surface.z_domain
-        self.x_nodes = np.linspace(x0, x1, n_x)
-        self.z_nodes = np.linspace(surface.waterline, z_keel, n_z)
-        self.wx = _trapezoid_weights(self.x_nodes)
-        self.wz = _trapezoid_weights(self.z_nodes)
-        self.fx = surface.evaluate(self.x_nodes, self.z_nodes, dx=1, dz=0)  # (n_x, n_z)
+        # x-spans (integrated in full) and z-spans (clipped to the submerged
+        # region z >= waterline; spans entirely above water are dropped).
+        self.x_spans = [(start, length) for _, start, length in surface.x_spans()]
+        self.z_spans = []  # (start, length, clip) below the waterline
+        z_span_ids = []
+        for idx, (z_knot, z_start, z_len) in enumerate(surface.z_spans()):
+            if z_start + z_len <= self.waterline:
+                continue  # this span is entirely above the water surface
+            self.z_spans.append((z_start, z_len, max(0.0, self.waterline - z_start)))
+            z_span_ids.append((idx, z_knot))
+
+        # Local polynomial coefficients of ∂f/∂x on each (x-span, z-span):
+        # coeff[sx][sz] has shape (p, q+1) with the coefficient of
+        # (x - x0)^a (z - z0)^b.  From f = Σ D[a][b]/(a! b!) X^a Z^b, the
+        # coefficient of X^a Z^b in ∂f/∂x is D[a+1][b] / (a! b!).
+        fact = np.array([math.factorial(i) for i in range(max(self.p, self.q) + 1)], float)
+        inv_fact = 1.0 / np.outer(fact[: self.p], fact[: self.q + 1])  # (p, q+1)
+        self.coeff = []  # per x-span: array (n_zspan, p, q+1)
+        for x_knot, _, _ in surface.x_spans():
+            per_x = []
+            for _, z_knot in z_span_ids:
+                d = surface.corner_partials(x_knot, z_knot)  # (p+1, q+1)
+                per_x.append(d[1 : self.p + 1, :] * inv_fact)
+            self.coeff.append(np.array(per_x))
 
     # -- amplitude function ----------------------------------------------
     def inner_integral(self, lam) -> np.ndarray:
         """Michell inner integral ``F(λ) = I + i J`` for ``λ = sec θ ≥ 1``.
 
-        Accepts a scalar or array of ``λ`` and returns complex values of the
-        same shape.  This is the double integral of the docstring, done as
-        two nested weighted sums over the cached slope grid.
+        Exact, span by span::
+
+            F(λ) = Σ_{x-spans} e^{i k_x (x0 - x_c)}
+                   Σ_a M_a(k_x, h_x) Σ_{z-spans} Σ_b coeff[a, b] · Z_b
+
+        where ``M_a = ∫_0^{h_x} X^a e^{i k_x X} dX`` and ``Z_b`` is the
+        z-moment of ``(z - z0)^b e^{-κ (z - z_wl)}`` over the submerged part
+        of the span -- both from :mod:`pymichell.moments`.  ``k_x = ν λ``,
+        ``κ = ν λ²``.  Accepts a scalar or array of ``λ`` (vectorized over
+        the angles) and returns complex values of matching length.
         """
         lam = np.atleast_1d(np.asarray(lam, dtype=float))
-        kx = self.nu * lam  # oscillation rate in x
-        kappa = self.nu * lam * lam  # decay rate with depth z
+        kx = self.nu * lam  # (L,)  oscillation rate in x
+        kappa = self.nu * lam * lam  # (L,)  decay rate with depth z
 
-        # ∫ (∂f/∂x) e^{-κ (z - z_wl)} dz  for every x station and every λ,
-        # where z - z_wl is the depth below the waterline.
-        below = self.z_nodes[None, :] - self.waterline
-        depth = np.exp(-kappa[:, None] * below) * self.wz[None, :]  # (L, n_z)
-        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            g = depth @ self.fx.T  # (L, n_x)  (errstate: see BSplineSurface.evaluate)
+        # z-moments per submerged z-span, shape (L, n_zspan, q+1).
+        #   Z_b = e^{-κ (z0 - z_wl)} · ( N_b(κ, h) - N_b(κ, clip) )
+        # where the clip subtracts the part of the span above the waterline.
+        z_moments = []
+        for z_start, z_len, clip in self.z_spans:
+            n_full = exp_moments(kappa, z_len, self.q)  # (L, q+1)
+            n_clip = exp_moments(kappa, clip, self.q) if clip > 0 else 0.0
+            shift = np.exp(-kappa * (z_start - self.waterline))[:, None]
+            z_moments.append(shift * (n_full - n_clip))
+        z_stack = np.stack(z_moments, axis=1)  # (L, n_zspan, q+1)
 
-        # ∫ g(x) e^{i k_x (x - x_c)} dx.
-        phase = np.exp(1j * kx[:, None] * (self.x_nodes[None, :] - self.x_center))  # (L, n_x)
-        return np.sum(self.wx[None, :] * g * phase, axis=1)
+        # x-spans: closed-form x-moments, then assemble.
+        f = np.zeros(len(lam), dtype=complex)
+        for (x_start, x_len), coeff in zip(self.x_spans, self.coeff):
+            mx = osc_moments(kx, x_len, self.p - 1)  # (L, p)
+            phase = np.exp(1j * kx * (x_start - self.x_center))  # (L,)
+            # g[l, a] = Σ_{z-span} Σ_b coeff[z-span, a, b] · Z_b[l, z-span]
+            g = np.einsum("lzb,zab->la", z_stack, coeff)  # (L, p)
+            f += phase * np.sum(mx * g, axis=1)
+        return f
 
     def amplitude(self, theta) -> np.ndarray:
         """Complex free-wave amplitude density ``A(θ)`` [m/rad]."""

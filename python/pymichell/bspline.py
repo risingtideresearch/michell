@@ -30,71 +30,89 @@ from dataclasses import dataclass
 import numpy as np
 
 
-def _basis_matrix(knots: np.ndarray, degree: int, u: np.ndarray, deriv: int = 0) -> np.ndarray:
-    """B-spline basis (or its first derivative) as a dense matrix.
+def _basis_derivatives(knots: np.ndarray, degree: int, u: np.ndarray, max_deriv: int) -> list:
+    """All B-spline basis functions and derivatives up to ``max_deriv``.
 
-    Returns ``B`` of shape ``(len(u), n_ctrl)`` where ``B[k, i]`` is
-    ``N_{i,degree}(u[k])`` for ``deriv == 0`` or ``N'_{i,degree}(u[k])``
-    for ``deriv == 1``.  ``n_ctrl = len(knots) - degree - 1``.
+    Returns a list ``D`` of length ``max_deriv + 1``; ``D[k]`` is a matrix of
+    shape ``(len(u), n_ctrl)`` whose entry ``D[k][r, i]`` is the ``k``-th
+    derivative ``N^{(k)}_{i,degree}(u[r])``.  ``n_ctrl = len(knots) - degree - 1``.
 
-    This is the textbook Cox--de Boor recurrence
+    Built straight from the textbook recurrences, raising the degree one
+    level at a time (Cox--de Boor for the value, and the standard derivative
+    rule -- Piegl & Tiller Eq. 3.10 -- which expresses a degree-``p``
+    derivative in terms of degree-``p-1`` derivatives)::
 
-        N_{i,0}(u) = 1 if t_i <= u < t_{i+1} else 0
-        N_{i,p}(u) = (u - t_i)/(t_{i+p} - t_i)     · N_{i,p-1}(u)
-                   + (t_{i+p+1} - u)/(t_{i+p+1} - t_{i+1}) · N_{i+1,p-1}(u)
+        N_{i,0}(u)      = 1 if t_i <= u < t_{i+1} else 0
+        N_{i,p}(u)      = (u - t_i)/(t_{i+p} - t_i)         · N_{i,p-1}(u)
+                        + (t_{i+p+1} - u)/(t_{i+p+1} - t_{i+1}) · N_{i+1,p-1}(u)
+        N^{(k)}_{i,p}(u) = p [ N^{(k-1)}_{i,p-1}(u)/(t_{i+p} - t_i)
+                             - N^{(k-1)}_{i+1,p-1}(u)/(t_{i+p+1} - t_{i+1}) ]
 
-    with the standard derivative rule (which reuses the degree ``p-1``
-    basis)
-
-        N'_{i,p}(u) = p [ N_{i,p-1}(u)/(t_{i+p} - t_i)
-                        - N_{i+1,p-1}(u)/(t_{i+p+1} - t_{i+1}) ] .
-
-    Points outside the parametric domain are clamped onto it, matching the
-    crate's ``eval`` behaviour; the right domain endpoint is folded into the
-    last non-empty span so it evaluates there instead of falling through the
+    Points outside the parametric domain are clamped onto it (matching the
+    crate's ``eval``); the right domain endpoint is folded into the last
+    non-empty span so it evaluates there rather than falling through the
     half-open interval.
     """
-    if deriv not in (0, 1):
-        raise ValueError("only value (deriv=0) and first derivative (deriv=1) are supported")
+    max_deriv = min(max_deriv, degree)
     knots = np.asarray(knots, dtype=float)
-    u = np.clip(np.atleast_1d(np.asarray(u, dtype=float)), knots[degree], knots[len(knots) - degree - 1])
     n_ctrl = len(knots) - degree - 1
+    u = np.clip(np.atleast_1d(np.asarray(u, dtype=float)), knots[degree], knots[n_ctrl])
 
-    # Degree 0: indicator functions of each half-open knot span.
+    # Degree 0: indicator functions of each half-open knot span (only the
+    # 0-th derivative is non-zero at this level).
     basis = ((u[:, None] >= knots[:-1]) & (u[:, None] < knots[1:])).astype(float)
-    # Fold the right domain endpoint into the last non-empty span.
     last = n_ctrl - 1
     while knots[last + 1] <= knots[last]:
         last -= 1
     at_end = u >= knots[n_ctrl]
     basis[at_end, :] = 0.0
     basis[at_end, last] = 1.0
+    levels = [basis]  # derivatives 0.. of the current degree
 
-    # Raise the degree one level at a time, keeping the level below so the
-    # derivative rule at the top can reuse it.
-    lower = basis
     for p in range(1, degree + 1):
         n_p = len(knots) - p - 1
-        raised = np.zeros((len(u), n_p))
+        new_levels = [np.zeros((len(u), n_p)) for _ in range(min(max_deriv, p) + 1)]
         for i in range(n_p):
             left_den = knots[i + p] - knots[i]
             right_den = knots[i + p + 1] - knots[i + 1]
-            if left_den > 0:
-                raised[:, i] += (u - knots[i]) / left_den * lower[:, i]
-            if right_den > 0:
-                raised[:, i] += (knots[i + p + 1] - u) / right_den * lower[:, i + 1]
-        if p == degree and deriv == 1:
-            der = np.zeros((len(u), n_p))
-            for i in range(n_p):
-                left_den = knots[i + p] - knots[i]
-                right_den = knots[i + p + 1] - knots[i + 1]
-                if left_den > 0:
-                    der[:, i] += lower[:, i] / left_den
-                if right_den > 0:
-                    der[:, i] -= lower[:, i + 1] / right_den
-            return p * der
-        lower = raised
-    return lower
+            for k in range(len(new_levels)):
+                if k == 0:  # value recurrence
+                    if left_den > 0:
+                        new_levels[0][:, i] += (u - knots[i]) / left_den * levels[0][:, i]
+                    if right_den > 0:
+                        new_levels[0][:, i] += (knots[i + p + 1] - u) / right_den * levels[0][:, i + 1]
+                else:  # derivative recurrence, from the level below
+                    if left_den > 0:
+                        new_levels[k][:, i] += p * levels[k - 1][:, i] / left_den
+                    if right_den > 0:
+                        new_levels[k][:, i] -= p * levels[k - 1][:, i + 1] / right_den
+        levels = new_levels
+
+    # Pad with zero matrices if max_deriv exceeds the degree.
+    while len(levels) <= max_deriv:
+        levels.append(np.zeros((len(u), n_ctrl)))
+    return levels
+
+
+def _basis_matrix(knots: np.ndarray, degree: int, u: np.ndarray, deriv: int = 0) -> np.ndarray:
+    """The ``deriv``-th derivative basis matrix (shape ``(len(u), n_ctrl)``)."""
+    return _basis_derivatives(knots, degree, u, deriv)[deriv]
+
+
+def _nonempty_spans(knots: np.ndarray, degree: int) -> list:
+    """Non-empty knot spans as ``(knot_index, start, length)`` triples.
+
+    A clamped knot vector has ``n_ctrl - degree`` candidate spans
+    ``[knots[s], knots[s+1])`` for ``s = degree .. n_ctrl - 1``; repeated
+    (interior) knots make some of them empty, and those are dropped.
+    """
+    knots = np.asarray(knots, dtype=float)
+    n_ctrl = len(knots) - degree - 1
+    spans = []
+    for s in range(degree, n_ctrl):
+        if knots[s + 1] > knots[s]:
+            spans.append((s, float(knots[s]), float(knots[s + 1] - knots[s])))
+    return spans
 
 
 @dataclass
@@ -171,6 +189,38 @@ class BSplineSurface:
         # finite and correct.
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
             return bx @ self.control @ bz.T
+
+    # -- knot spans (the pieces the closed-form integral works over) ------
+    def x_spans(self) -> list:
+        """Non-empty knot spans in x as ``(knot_index, start, length)``."""
+        return _nonempty_spans(self.knots_x, self.degree_x)
+
+    def z_spans(self) -> list:
+        """Non-empty knot spans in z as ``(knot_index, start, length)``."""
+        return _nonempty_spans(self.knots_z, self.degree_z)
+
+    def corner_partials(self, span_x: int, span_z: int) -> np.ndarray:
+        """Mixed partials at a span's lower-left corner.
+
+        Returns ``D`` of shape ``(degree_x + 1, degree_z + 1)`` with
+        ``D[a, b] = ∂^{a+b} f / ∂x^a ∂z^b`` evaluated at the corner
+        ``(knots_x[span_x], knots_z[span_z])``.  On the span rectangle the
+        surface is exactly polynomial, so together with Taylor's theorem
+        these partials *are* the local polynomial:
+        ``f = Σ_{a,b} D[a, b]/(a! b!) · (x - x0)^a (z - z0)^b``.
+
+        For a tensor-product surface the mixed partial factorises into the
+        x- and z-basis derivatives at the corner::
+
+            D[a, b] = Σ_i Σ_j control[i, j] · N^{(a)}_i(x0) · M^{(b)}_j(z0)
+        """
+        x0 = self.knots_x[span_x]
+        z0 = self.knots_z[span_z]
+        dx = _basis_derivatives(self.knots_x, self.degree_x, np.array([x0]), self.degree_x)
+        dz = _basis_derivatives(self.knots_z, self.degree_z, np.array([z0]), self.degree_z)
+        nx = np.vstack([d[0] for d in dx])  # (degree_x + 1, n_ctrl_x)
+        mz = np.vstack([d[0] for d in dz])  # (degree_z + 1, n_ctrl_z)
+        return nx @ self.control @ mz.T
 
 
 def load_hull(path: str) -> BSplineSurface:

@@ -6,10 +6,14 @@ B-spline half-breadth **control net**, compute the thin-ship **wave
 amplitude grid** — the far-field Kelvin wave pattern — and the wave
 resistance that pattern carries away.
 
-It is deliberately *not* a port of the whole tool, and it is not optimized.
-Where the crate evaluates the Michell inner integrals in closed form span by
-span, this package integrates them numerically on dense grids, because the
-goal here is to make the physics legible.
+It is deliberately *not* a port of the whole tool. But it reproduces the
+mathematically interesting core faithfully: like the crate, the inner
+amplitude integral `I + iJ` is evaluated **exactly, span by span** — on each
+knot span `∂f/∂x` is a local polynomial and the two 1-D integrals collapse
+onto closed-form moments — so `I` and `J` match the crate to machine
+precision (~1e-16). Only the smooth *outer* integrals over propagation angle
+(resistance, wake reconstruction) use plain trapezoidal quadrature, chosen
+for legibility over the crate's adaptive oscillation-aware panels.
 
 ## The calculation
 
@@ -22,8 +26,11 @@ waterline), everything flows from one integral over the hull surface:
    F(λ) = I(λ) + i J(λ) = ∬ (∂f/∂x) · e^(−ν λ² z) · e^(i ν λ (x − x_c)) dx dz
    ```
 
-   `∂f/∂x` is read straight off the control net (`bspline.py`); the double
-   integral is a pair of weighted sums (`WaveField.inner_integral`).
+   Evaluated **exactly**: on each knot span `∂f/∂x` is a local polynomial,
+   extracted from corner Taylor data off the control net
+   (`BSplineSurface.corner_partials`); the two 1-D integrals then reduce to
+   the closed-form moments `∫ Xᵃ e^(ikX) dX` and `∫ Zᵇ e^(−κZ) dZ`
+   (`moments.py`) and are summed span by span (`WaveField.inner_integral`).
 
 2. **Free-wave spectrum** — the complex amplitude density per propagation
    angle:
@@ -82,9 +89,11 @@ python examples/demo.py ../ama.hull 8      # a real .hull control net at 8 m/s
 
 | file | contents |
 |------|----------|
-| `pymichell/bspline.py` | `.hull` parser, Cox–de Boor B-spline surface, `∂f/∂x` |
-| `pymichell/wave.py`    | inner integral `F`, amplitude `A(θ)`, wake grid `ζ`, `R_w` |
+| `pymichell/bspline.py` | `.hull` parser, Cox–de Boor B-spline surface, knot spans, corner Taylor data |
+| `pymichell/moments.py` | closed-form moment integrals `∫ tᵃ e^(ikt) dt`, `∫ tᵇ e^(−κt) dt` |
+| `pymichell/wave.py`    | exact inner integral `F`, amplitude `A(θ)`, wake grid `ζ`, `R_w` |
 | `tests/test_wigley.py` | validation against the crate's Wigley reference values |
+| `tests/test_moments.py`| moments vs. direct quadrature (both branches) |
 | `examples/demo.py`     | compute + plot a wake |
 
 ## Validation
@@ -120,5 +129,6 @@ Two flavours of `.hull` file exist, and both load:
 
 Single symmetric hull; deep water; no sinkage/trim; the free-wave
 reconstruction is physical only *astern* of the hull. Multihull
-interference, closed-form exact integration, adaptive quadrature, body
-re-lofting, and the CAD/STL/IGES front-ends all live in the Rust crate.
+interference, adaptive oscillation-aware outer quadrature, body re-lofting,
+and the CAD/STL/IGES front-ends all live in the Rust crate. (The exact
+closed-form *inner* integral, by contrast, is reproduced here in full.)
