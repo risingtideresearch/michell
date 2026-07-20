@@ -36,6 +36,10 @@ pub struct Hull {
     x_center: f64,
     wetted_surface: f64,
     displaced_volume: f64,
+    lcb_x: f64,
+    waterplane_area: f64,
+    waterplane_moment: f64,
+    waterplane_second_moment: f64,
 }
 
 impl Hull {
@@ -117,13 +121,15 @@ impl Hull {
         // Geometric integrals by per-span Gauss-Legendre.
         // Volume: integrand is polynomial of degree (p, q) => exact.
         // Wetted surface: smooth integrand, use a generous rule.
-        let n_vol = (p.max(q) + 2) / 2 + 1;
+        // x·f raises the x-degree by one; +2 keeps the rule comfortably exact.
+        let n_vol = (p.max(q) + 2) / 2 + 2;
         // Wetted-surface integrand is smooth but non-polynomial; a hull may be
         // a single span, so use a high-order rule per span.
         let n_wet = 24;
         let (xv, wv) = gauss_legendre(n_vol);
         let (xw, ww) = gauss_legendre(n_wet);
         let mut volume = 0.0;
+        let mut volume_mx = 0.0;
         let mut wetted = 0.0;
         for sx in &spans_x {
             for sz in &spans_z {
@@ -131,7 +137,9 @@ impl Hull {
                 for (i, &xi) in xv.iter().enumerate() {
                     let x = sx.start + sx.len * (xi + 1.0) / 2.0;
                     for (j, &zj) in xv.iter().enumerate() {
-                        volume += wv[i] * wv[j] * jac * surface.eval(x, zj_map(sz, zj));
+                        let f = surface.eval(x, zj_map(sz, zj));
+                        volume += wv[i] * wv[j] * jac * f;
+                        volume_mx += wv[i] * wv[j] * jac * x * f;
                     }
                 }
                 for (i, &xi) in xw.iter().enumerate() {
@@ -147,7 +155,25 @@ impl Hull {
         }
         // Both sides of the hull.
         volume *= 2.0;
+        volume_mx *= 2.0;
         wetted *= 2.0;
+
+        // Waterplane properties: 1-D integrals of the beam b(x) = 2 f(x, 0)
+        // (x²·f raises the degree by two; the rule is sized for it).
+        let (xq, wq) = gauss_legendre(p / 2 + 3);
+        let mut wp_area = 0.0;
+        let mut wp_mx = 0.0;
+        let mut wp_ixx = 0.0;
+        for sx in &spans_x {
+            let jac = sx.len / 2.0;
+            for (i, &xi) in xq.iter().enumerate() {
+                let x = sx.start + sx.len * (xi + 1.0) / 2.0;
+                let b = 2.0 * surface.eval(x, z0.max(0.0));
+                wp_area += wq[i] * jac * b;
+                wp_mx += wq[i] * jac * x * b;
+                wp_ixx += wq[i] * jac * x * x * b;
+            }
+        }
 
         Ok(Hull {
             surface,
@@ -159,6 +185,10 @@ impl Hull {
             x_center: 0.5 * (x0 + x1),
             wetted_surface: wetted,
             displaced_volume: volume,
+            lcb_x: if volume > 0.0 { volume_mx / volume } else { 0.0 },
+            waterplane_area: wp_area,
+            waterplane_moment: wp_mx,
+            waterplane_second_moment: wp_ixx,
         })
     }
 
@@ -186,6 +216,36 @@ impl Hull {
     /// Displaced volume `∇ = 2 ∬ f dx dz` [m³] (thin-ship approximation).
     pub fn displaced_volume(&self) -> f64 {
         self.displaced_volume
+    }
+
+    /// Longitudinal centre of buoyancy `x_B = ∬ x f / ∬ f` [m], in the hull's
+    /// x coordinates.
+    pub fn lcb_x(&self) -> f64 {
+        self.lcb_x
+    }
+
+    /// Waterplane area `A_w = ∫ 2 f(x, 0) dx` [m²].
+    pub fn waterplane_area(&self) -> f64 {
+        self.waterplane_area
+    }
+
+    /// First moment of the waterplane about x = 0: `∫ 2 x f(x, 0) dx` [m³].
+    pub fn waterplane_moment(&self) -> f64 {
+        self.waterplane_moment
+    }
+
+    /// Second moment of the waterplane about x = 0: `∫ 2 x² f(x, 0) dx` [m⁴].
+    pub fn waterplane_second_moment(&self) -> f64 {
+        self.waterplane_second_moment
+    }
+
+    /// Longitudinal centre of flotation (waterplane centroid) [m].
+    pub fn lcf_x(&self) -> f64 {
+        if self.waterplane_area > 0.0 {
+            self.waterplane_moment / self.waterplane_area
+        } else {
+            0.0
+        }
     }
 
     pub(crate) fn spans_x(&self) -> &[Span] {

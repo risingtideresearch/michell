@@ -223,6 +223,180 @@ fn catamaran_fleet_matches_library() {
     assert!(table.contains("IF"), "missing IF column:\n{table}");
 }
 
+/// Full-shell Wigley (L=10, B=1, T0=0.625) in metres, z up, DWL at z=0.7,
+/// centred at y=0: 4 untrimmed biquadratic patches.
+fn wigley_shell_iges() -> String {
+    fn line(content: &str, section: char, seq: usize) -> String {
+        format!("{content:<72}{section}{seq:>7}\n")
+    }
+    let mut bodies: Vec<String> = Vec::new();
+    let (gx_f, gx_a) = ([0.0, 1.0, 1.0], [1.0, 1.0, 0.0]);
+    let (xs_f, xs_a) = ([0.0, 2.5, 5.0], [5.0, 7.5, 10.0]);
+    let hv = [1.0, 1.0, 0.0];
+    let zs = [0.7, 0.7 - 0.3125, 0.7 - 0.625];
+    for (xs, gx) in [(xs_f, gx_f), (xs_a, gx_a)] {
+        for side in [1.0f64, -1.0] {
+            let mut b = String::from("128,2,2,2,2,0,0,1,0,0");
+            for _ in 0..2 {
+                for k in ["0.0", "0.0", "0.0", "1.0", "1.0", "1.0"] {
+                    b.push_str(&format!(",{k}"));
+                }
+            }
+            for _ in 0..9 {
+                b.push_str(",1.0");
+            }
+            for j in 0..3usize {
+                for i in 0..3usize {
+                    let y = side * 0.5 * gx[i] * hv[j];
+                    b.push_str(&format!(",{:.6},{y:.6},{:.6}", xs[i], zs[j]));
+                }
+            }
+            b.push_str(",0.0,1.0,0.0,1.0;");
+            bodies.push(b);
+        }
+    }
+    let mut s = String::new();
+    s.push_str(&line("cli sweep test hull", 'S', 1));
+    let global = ",,7Hmichell,8Hcli.iges,7Hmichell,7Hmichell,32,38,6,308,15,\
+                  7Hmichell,1.0,6,1HM,1,0.01,15H20260719.000000,1E-08,100.0,\
+                  3Havi,7Hmichell,11,0,15H20260719.000000;";
+    let mut gseq = 1;
+    let mut rest: &str = global;
+    while !rest.is_empty() {
+        let take = rest.len().min(72);
+        s.push_str(&line(&rest[..take], 'G', gseq));
+        gseq += 1;
+        rest = &rest[take..];
+    }
+    // P bodies packed at 64 columns, breaking at delimiters.
+    let mut packed: Vec<(String, usize, usize)> = Vec::new();
+    let mut p_at = 1usize;
+    for (k, body) in bodies.iter().enumerate() {
+        let de = 2 * k + 1;
+        let mut text = String::new();
+        let mut n = 0usize;
+        let mut rest: &str = body;
+        while !rest.is_empty() {
+            let take = if rest.len() <= 64 {
+                rest.len()
+            } else {
+                rest[..64].rfind([',', ';']).map(|i| i + 1).unwrap()
+            };
+            let (chunk, tail) = rest.split_at(take);
+            text.push_str(&format!("{chunk:<64}{de:>8}P{:>7}\n", p_at + n));
+            n += 1;
+            rest = tail;
+        }
+        packed.push((text, p_at, n));
+        p_at += n;
+    }
+    for (k, (_, ptr, n)) in packed.iter().enumerate() {
+        let l1 = format!(
+            "{:>8}{:>8}{z:>8}{z:>8}{z:>8}{z:>8}{z:>8}{z:>8}{z:>8}",
+            128,
+            ptr,
+            z = 0
+        );
+        let l2 = format!(
+            "{:>8}{z:>8}{z:>8}{:>8}{z:>8}{b:>8}{b:>8}{b:>8}{z:>8}",
+            128,
+            n,
+            z = 0,
+            b = ""
+        );
+        s.push_str(&line(&l1, 'D', 2 * k + 1));
+        s.push_str(&line(&l2, 'D', 2 * k + 2));
+    }
+    for (text, _, _) in &packed {
+        s.push_str(text);
+    }
+    s.push_str(&line("S      1G      2D      8P     99", 'T', 1));
+    s
+}
+
+fn csv_col(csv: &str, col: &str) -> Vec<f64> {
+    let mut lines = csv.lines();
+    let header: Vec<&str> = lines.next().expect("header").split(',').collect();
+    let at = header
+        .iter()
+        .position(|h| *h == col)
+        .unwrap_or_else(|| panic!("column {col} in {header:?}"));
+    lines
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            l.split(',')
+                .nth(at)
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or_else(|| panic!("bad value in row {l:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn sweep_equilibrium_hits_target_displacements() {
+    let iges_path = tmp("sweep_shell.iges");
+    std::fs::write(&iges_path, wigley_shell_iges()).unwrap();
+    let out = run_ok(bin().args([
+        "sweep",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.7",
+        "--float",
+        "weight=1000:2000:1000",
+        "--speeds",
+        "3.0",
+        "--samples",
+        "41x13",
+        "--fit-control",
+        "8x6",
+    ]));
+    let vols = csv_col(&out, "volume");
+    assert_eq!(vols.len(), 2, "{out}");
+    for (v, mass) in vols.iter().zip([1000.0, 2000.0]) {
+        let want = mass / 1025.9;
+        assert!(
+            (v - want).abs() < 0.005 * want,
+            "volume {v} vs target {want}"
+        );
+    }
+    let rws = csv_col(&out, "rw");
+    assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
+    // Heavier boat, deeper: sinkage must increase with weight.
+    let sink = csv_col(&out, "sinkage");
+    assert!(sink[1] > sink[0], "sinkage {sink:?}");
+}
+
+#[test]
+fn sweep_raw_waterline_and_trim_axes() {
+    let iges_path = tmp("sweep_shell2.iges");
+    std::fs::write(&iges_path, wigley_shell_iges()).unwrap();
+    let out = run_ok(bin().args([
+        "sweep",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.7",
+        "--axis",
+        "waterline=0.6:0.7:0.1",
+        "--axis",
+        "sweep_shell2:trim=-2:2:2",
+        "--speeds",
+        "3.0",
+        "--samples",
+        "41x13",
+        "--fit-control",
+        "8x6",
+    ]));
+    // 2 waterlines x 3 trims x 1 speed = 6 rows.
+    let vols = csv_col(&out, "volume");
+    assert_eq!(vols.len(), 6, "{out}");
+    // Deeper waterline displaces more at every trim.
+    let deep: f64 = vols[3..].iter().sum();
+    let shallow: f64 = vols[..3].iter().sum();
+    assert!(deep > shallow, "{vols:?}");
+    // Trim symmetry within each waterline.
+    assert!((vols[0] - vols[2]).abs() < 1e-3 * vols[0], "{vols:?}");
+}
+
 #[test]
 fn errors_are_clean() {
     // Unknown file format.

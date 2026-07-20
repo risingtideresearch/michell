@@ -257,6 +257,22 @@ fn wigley_geometry_integrals() {
     );
     assert!((hull.length() - l).abs() < 1e-12);
     assert!((hull.draft() - t).abs() < 1e-12);
+    // Hydrostatics closed forms for the Wigley hull (symmetric about x = 0):
+    // LCB = LCF = 0, A_w = 2BL/3, second moment = BL³/30.
+    assert!(hull.lcb_x().abs() < 1e-10, "lcb {}", hull.lcb_x());
+    let aw_exact = 2.0 * b * l / 3.0;
+    assert!(
+        (hull.waterplane_area() - aw_exact).abs() < 1e-12 * aw_exact,
+        "Aw {} vs {aw_exact}",
+        hull.waterplane_area()
+    );
+    assert!(hull.lcf_x().abs() < 1e-10);
+    let ixx_exact = b * l.powi(3) / 30.0;
+    assert!(
+        (hull.waterplane_second_moment() - ixx_exact).abs() < 1e-12 * ixx_exact,
+        "Ixx {} vs {ixx_exact}",
+        hull.waterplane_second_moment()
+    );
 }
 
 #[test]

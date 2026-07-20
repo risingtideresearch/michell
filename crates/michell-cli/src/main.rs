@@ -19,6 +19,7 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("resistance") => cmd_resistance(&args[1..]),
+        Some("sweep") => cmd_sweep(&args[1..]),
         Some("info") => cmd_info(&args[1..]),
         Some("loft") => cmd_loft(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
@@ -80,8 +81,26 @@ PHYSICS OPTIONS
   --form-factor K       viscous form factor (1+k), default 0
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
 
+SWEEPS (IGES inputs only; hulls modelled in position)
+  michell sweep boat.igs --speeds 3:8:1 [axes...]         long-form CSV/JSON
+  --axis waterline=A:B:S        raw waterline sweep
+  --axis SEL:PARAM=A[:B:S]      design-pose sweep; SEL = file stem, or
+                                stem#0, stem#0+2 for specific hulls (indexed
+                                by transverse position); PARAM one of
+                                dz (immersion, +down), dx, dy,
+                                spread (outboard shift, sign follows side),
+                                trim (degrees, + raises the +x end)
+  --float weight=A[:B:S]        solve sinkage (and pitch, with lcg) so the
+  --float lcg=A[:B:S]           fleet floats each load; excludes a waterline
+                                axis; single input file only
+  Rows are the Cartesian product of all axes x speeds; each row carries the
+  solved sinkage/trim, displacement, LCB, and the resistance breakdown.
+  Output is CSV on stdout (use --json for JSON); progress goes to stderr.
+  All poses are static (hydrostatic) attitudes: no dynamic sinkage/trim.
+
 OUTPUT
-  --json                machine-readable output (resistance, info)
+  --json                machine-readable output (resistance, info, sweep)
+  --csv                 sweep: comma-separated output (the default)
 ";
 
 // ---------------------------------------------------------------------------
@@ -90,16 +109,17 @@ OUTPUT
 
 struct Parsed {
     positional: Vec<String>,
-    flags: HashMap<String, String>,
+    /// Every `--flag value` occurrence, in order (flags may repeat).
+    pairs: Vec<(String, String)>,
     switches: Vec<String>,
 }
 
-const SWITCHES: &[&str] = &["--json", "--knots"];
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {
         positional: Vec::new(),
-        flags: HashMap::new(),
+        pairs: Vec::new(),
         switches: Vec::new(),
     };
     let mut i = 0;
@@ -107,7 +127,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
         let a = &args[i];
         if a == "-o" {
             let val = args.get(i + 1).ok_or("-o requires a value")?;
-            p.flags.insert("output".to_string(), val.clone());
+            p.pairs.push(("output".to_string(), val.clone()));
             i += 1;
         } else if let Some(name) = a.strip_prefix("--") {
             if SWITCHES.contains(&a.as_str()) {
@@ -116,7 +136,7 @@ fn parse_args(args: &[String]) -> Result<Parsed, String> {
                 let val = args
                     .get(i + 1)
                     .ok_or_else(|| format!("--{name} requires a value"))?;
-                p.flags.insert(name.to_string(), val.clone());
+                p.pairs.push((name.to_string(), val.clone()));
                 i += 1;
             }
         } else {
@@ -132,8 +152,26 @@ impl Parsed {
         self.switches.iter().any(|s| s == name)
     }
 
+    /// Last occurrence of a flag.
+    fn flag(&self, name: &str) -> Option<&String> {
+        self.pairs
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
+    }
+
+    /// All occurrences of a flag, in order.
+    fn all(&self, name: &str) -> Vec<&String> {
+        self.pairs
+            .iter()
+            .filter(|(k, _)| k == name)
+            .map(|(_, v)| v)
+            .collect()
+    }
+
     fn f64_flag(&self, name: &str) -> Result<Option<f64>, String> {
-        match self.flags.get(name) {
+        match self.flag(name) {
             None => Ok(None),
             Some(v) => v
                 .parse::<f64>()
@@ -148,16 +186,16 @@ impl Parsed {
             s.waterline_z = w;
         }
         s.centerplane = self.f64_flag("centerplane")?;
-        if let Some(v) = self.flags.get("samples") {
+        if let Some(v) = self.flag("samples") {
             s.samples = parse_pair(v)?;
         }
-        if let Some(v) = self.flags.get("fit-degree") {
+        if let Some(v) = self.flag("fit-degree") {
             let (px, pz) = parse_pair(v)?;
             s.fit.degree_x = px;
             s.fit.degree_z = pz;
             s.fit_explicit = true;
         }
-        if let Some(v) = self.flags.get("fit-control") {
+        if let Some(v) = self.flag("fit-control") {
             let (nx, nz) = parse_pair(v)?;
             s.fit.n_ctrl_x = nx;
             s.fit.n_ctrl_z = nz;
@@ -167,7 +205,7 @@ impl Parsed {
     }
 
     fn conditions(&self, speed: f64) -> Result<Conditions, String> {
-        let mut cond = match self.flags.get("fluid").map(String::as_str) {
+        let mut cond = match self.flag("fluid").map(String::as_str) {
             None | Some("seawater") => Conditions::seawater(speed),
             Some("freshwater") => Conditions::freshwater(speed),
             Some(other) => {
@@ -406,7 +444,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
 
     let knots = p.switch("--knots");
     let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
-    let speeds: Vec<f64> = match (p.flags.get("speeds"), p.flags.get("froude")) {
+    let speeds: Vec<f64> = match (p.flag("speeds"), p.flag("froude")) {
         (Some(_), Some(_)) => return Err("give either --speeds or --froude, not both".into()),
         (Some(s), None) => {
             let v = parse_range(s)?;
@@ -553,14 +591,438 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Sweep
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+enum PoseParam {
+    Dz,
+    Dx,
+    Dy,
+    Spread,
+    TrimDeg,
+}
+
+enum Target {
+    Waterline,
+    Weight,
+    Lcg,
+    Pose {
+        file: usize,
+        hulls: Vec<usize>,
+        param: PoseParam,
+    },
+}
+
+struct Axis {
+    label: String,
+    values: Vec<f64>,
+    target: Target,
+}
+
+fn cmd_sweep(args: &[String]) -> Result<(), String> {
+    use michell::float::{solve_equilibrium, LoadCase};
+    use michell::iges::{self, HullPose, ImportOptions, Platform, SourceFleet};
+
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err(
+            "usage: michell sweep <boat.igs>... --speeds A[:B:S] [--float weight=... \
+             [--float lcg=...]] [--axis KEY=A:B:S]..."
+                .into(),
+        );
+    }
+    if p.positional.iter().any(|s| s.contains('@')) {
+        return Err(
+            "sweep does not accept @ placement suffixes; use --axis with dz/dx/dy/spread/trim"
+                .into(),
+        );
+    }
+    let settings = p.load_settings()?;
+    if settings.centerplane.is_some() {
+        return Err("--centerplane is not supported by sweep".into());
+    }
+    let base_wl = settings.waterline_z;
+    let opts = ImportOptions {
+        waterline_z: base_wl,
+        stations: settings.samples.0,
+        waterlines: settings.samples.1,
+        fit: if settings.fit_explicit {
+            settings.fit
+        } else {
+            ImportOptions::default().fit
+        },
+        centerplane: None,
+    };
+
+    // Load the source fleets and learn each hull's base transverse position.
+    struct File {
+        stem: String,
+        src: SourceFleet,
+        base_y: Vec<f64>,
+        n: usize,
+    }
+    let mut files: Vec<File> = Vec::new();
+    let mut l_ref = 0.0f64;
+    for path in &p.positional {
+        let text =
+            std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let src = iges::source_fleet(&text, base_wl).map_err(|e| format!("{path}: {e}"))?;
+        let poses = vec![HullPose::default(); src.len()];
+        let fl = src
+            .situate(base_wl, &poses, &Platform::default(), &opts)
+            .map_err(|e| format!("{path}: {e}"))?;
+        let mut base_y = vec![0.0; src.len()];
+        let mut mi = 0;
+        for (hi, y) in base_y.iter_mut().enumerate() {
+            if fl.dry.contains(&hi) {
+                continue;
+            }
+            *y = fl.members[mi].placement.y;
+            l_ref = l_ref.max(fl.members[mi].hull.length());
+            mi += 1;
+        }
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(path)
+            .to_string();
+        eprintln!(
+            "loaded {path}: {} hull(s) at y = {:?}",
+            src.len(),
+            base_y.iter().map(|y| (y * 1e4).round() / 1e4).collect::<Vec<_>>()
+        );
+        files.push(File {
+            stem,
+            n: src.len(),
+            src,
+            base_y,
+        });
+    }
+
+    // Axes: --float entries first, then --axis entries, in CLI order.
+    let mut axes: Vec<Axis> = Vec::new();
+    for v in p.all("float") {
+        let (key, range) = v
+            .split_once('=')
+            .ok_or_else(|| format!("--float {v:?}: expected weight=... or lcg=..."))?;
+        let target = match key.trim() {
+            "weight" => Target::Weight,
+            "lcg" => Target::Lcg,
+            other => return Err(format!("--float key {other:?}: expected weight or lcg")),
+        };
+        axes.push(Axis {
+            label: key.trim().to_string(),
+            values: parse_range(range)?,
+            target,
+        });
+    }
+    for v in p.all("axis") {
+        let (key, range) = v
+            .split_once('=')
+            .ok_or_else(|| format!("--axis {v:?}: expected KEY=A[:B:S]"))?;
+        let values = parse_range(range)?;
+        let target = if key.trim() == "waterline" {
+            Target::Waterline
+        } else {
+            let (sel, pname) = key
+                .rsplit_once(':')
+                .ok_or_else(|| format!("--axis key {key:?}: expected SEL:PARAM or waterline"))?;
+            let param = match pname.trim() {
+                "dz" => PoseParam::Dz,
+                "dx" => PoseParam::Dx,
+                "dy" => PoseParam::Dy,
+                "spread" => PoseParam::Spread,
+                "trim" => PoseParam::TrimDeg,
+                other => {
+                    return Err(format!(
+                        "unknown pose parameter {other:?} (dz, dx, dy, spread, trim)"
+                    ))
+                }
+            };
+            let (stem, idx_spec) = match sel.split_once('#') {
+                None => (sel.trim(), None),
+                Some((st, is)) => (st.trim(), Some(is)),
+            };
+            let file = files
+                .iter()
+                .position(|f| f.stem == stem)
+                .ok_or_else(|| format!("no input file with stem {stem:?}"))?;
+            let hulls: Vec<usize> = match idx_spec {
+                None => (0..files[file].n).collect(),
+                Some(is) => is
+                    .split('+')
+                    .map(|t| {
+                        t.trim()
+                            .parse::<usize>()
+                            .map_err(|_| format!("bad hull index {t:?} in {key:?}"))
+                    })
+                    .collect::<Result<_, _>>()?,
+            };
+            if hulls.iter().any(|&h| h >= files[file].n) {
+                return Err(format!(
+                    "hull index out of range in {key:?}: file has {} hulls",
+                    files[file].n
+                ));
+            }
+            Target::Pose { file, hulls, param }
+        };
+        axes.push(Axis {
+            label: key.trim().to_string(),
+            values,
+            target,
+        });
+    }
+
+    let float_mode = axes.iter().any(|a| matches!(a.target, Target::Weight));
+    if axes.iter().any(|a| matches!(a.target, Target::Lcg)) && !float_mode {
+        return Err("--float lcg=... requires --float weight=...".into());
+    }
+    if float_mode {
+        if axes.iter().any(|a| matches!(a.target, Target::Waterline)) {
+            return Err("a waterline axis cannot be combined with --float (the \
+                        waterline is solved)"
+                .into());
+        }
+        if files.len() != 1 {
+            return Err(
+                "--float requires a single input file (the whole platform in one \
+                 IGES) so the rigid-body equilibrium is well defined"
+                    .into(),
+            );
+        }
+    }
+
+    // Speeds.
+    let knots = p.switch("--knots");
+    let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
+    let speeds: Vec<f64> = match (p.flag("speeds"), p.flag("froude")) {
+        (Some(_), Some(_)) => return Err("give either --speeds or --froude, not both".into()),
+        (Some(s), None) => {
+            let v = parse_range(s)?;
+            if knots {
+                v.into_iter().map(|u| u * KNOT).collect()
+            } else {
+                v
+            }
+        }
+        (None, Some(f)) => parse_range(f)?
+            .into_iter()
+            .map(|fr| fr * (g * l_ref).sqrt())
+            .collect(),
+        (None, None) => return Err("select speeds with --speeds or --froude".into()),
+    };
+    let form_factor = p.f64_flag("form-factor")?.unwrap_or(0.0);
+    let mut wave_opts = WaveOptions::default();
+    if let Some(t) = p.f64_flag("rel-tol")? {
+        wave_opts.rel_tol = t;
+    }
+    let density = p.conditions(1.0)?.fluid.density;
+
+    let points: usize = axes.iter().map(|a| a.values.len()).product::<usize>().max(1);
+    if points * speeds.len() > 100_000 {
+        return Err(format!(
+            "sweep would produce {} rows; narrow the axes",
+            points * speeds.len()
+        ));
+    }
+    eprintln!(
+        "sweep: {points} point(s) x {} speed(s){}",
+        speeds.len(),
+        if float_mode { ", equilibrium mode" } else { "" }
+    );
+
+    // Output assembly.
+    let header: Vec<String> = axes
+        .iter()
+        .map(|a| a.label.clone())
+        .chain(
+            [
+                "sinkage", "trim_deg", "volume", "lcb", "dry", "speed", "froude", "rw", "rv",
+                "rt", "pe", "interference", "cw", "ct",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        )
+        .collect();
+    let json = p.switch("--json");
+    let mut out = String::new();
+    if json {
+        out.push('[');
+    } else {
+        out.push_str(&header.join(","));
+        out.push('\n');
+    }
+    let mut first_row = true;
+
+    // Odometer over the axis grid.
+    let mut idx = vec![0usize; axes.len()];
+    for point in 0..points {
+        let vals: Vec<f64> = axes
+            .iter()
+            .zip(&idx)
+            .map(|(a, &i)| a.values[i])
+            .collect();
+
+        // Assemble poses and load for this point.
+        let mut poses: Vec<Vec<HullPose>> =
+            files.iter().map(|f| vec![HullPose::default(); f.n]).collect();
+        let mut waterline = base_wl;
+        let mut weight = None;
+        let mut lcg = None;
+        for (a, &v) in axes.iter().zip(&vals) {
+            match &a.target {
+                Target::Waterline => waterline = v,
+                Target::Weight => weight = Some(v),
+                Target::Lcg => lcg = Some(v),
+                Target::Pose { file, hulls, param } => {
+                    for &h in hulls {
+                        let pose = &mut poses[*file][h];
+                        match param {
+                            PoseParam::Dz => pose.dz = v,
+                            PoseParam::Dx => pose.dx = v,
+                            PoseParam::Dy => pose.dy = v,
+                            PoseParam::Spread => {
+                                pose.dy = if files[*file].base_y[h] < 0.0 { -v } else { v }
+                            }
+                            PoseParam::TrimDeg => pose.trim = v.to_radians(),
+                        }
+                    }
+                }
+            }
+        }
+
+        // Situate (raw) or solve (float).
+        let mut fleets = Vec::new();
+        let (sinkage, trim_deg, volume, lcb, dry) = if let Some(mass) = weight {
+            let eq = solve_equilibrium(
+                &files[0].src,
+                base_wl,
+                &poses[0],
+                &LoadCase { mass, lcg },
+                density,
+                &opts,
+            )
+            .map_err(|e| format!("point {}: {e}", point + 1))?;
+            let out = (
+                eq.sinkage,
+                eq.trim.to_degrees(),
+                eq.volume,
+                eq.lcb,
+                eq.fleet.dry.len(),
+            );
+            fleets.push(eq.fleet);
+            out
+        } else {
+            let mut volume = 0.0;
+            let mut moment = 0.0;
+            let mut dry = 0usize;
+            for (f, fp) in files.iter().zip(&poses) {
+                let fl = f
+                    .src
+                    .situate(waterline, fp, &Platform::default(), &opts)
+                    .map_err(|e| format!("point {}: {e}", point + 1))?;
+                dry += fl.dry.len();
+                for m in &fl.members {
+                    volume += m.hull.displaced_volume();
+                    moment += m.hull.lcb_x() * m.hull.displaced_volume();
+                }
+                fleets.push(fl);
+            }
+            let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
+            (0.0, 0.0, volume, lcb, dry)
+        };
+        let members: Vec<(&Hull, Placement)> = fleets
+            .iter()
+            .flat_map(|fl| fl.members.iter().map(|m| (&m.hull, m.placement)))
+            .collect();
+
+        for &u in &speeds {
+            let cond = p.conditions(u)?;
+            let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
+                (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            } else {
+                let r =
+                    michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
+                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                (
+                    r.wave.resistance,
+                    r.viscous_total,
+                    r.total,
+                    r.effective_power,
+                    r.interference,
+                    r.cw,
+                    r.ct,
+                )
+            };
+            let froude = u / (g * l_ref).sqrt();
+            let nums: Vec<f64> = vals
+                .iter()
+                .cloned()
+                .chain([
+                    sinkage,
+                    trim_deg,
+                    volume,
+                    lcb,
+                    dry as f64,
+                    u,
+                    froude,
+                    rw,
+                    rv,
+                    rt,
+                    pe,
+                    iff,
+                    cw,
+                    ct,
+                ])
+                .collect();
+            if json {
+                if !first_row {
+                    out.push(',');
+                }
+                first_row = false;
+                out.push('{');
+                for (i, (k, v)) in header.iter().zip(&nums).enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&format!("{k:?}:{v}"));
+                }
+                out.push('}');
+            } else {
+                let row: Vec<String> = nums.iter().map(|v| format!("{v}")).collect();
+                out.push_str(&row.join(","));
+                out.push('\n');
+            }
+        }
+        eprintln!("point {}/{points} done", point + 1);
+
+        // Advance the odometer.
+        for (i, a) in axes.iter().enumerate().rev() {
+            idx[i] += 1;
+            if idx[i] < a.values.len() {
+                break;
+            }
+            idx[i] = 0;
+        }
+    }
+    if json {
+        out.push(']');
+        println!("{out}");
+    } else {
+        print!("{out}");
+    }
+    Ok(())
+}
+
 fn cmd_loft(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     let [path] = p.positional.as_slice() else {
         return Err("usage: michell loft <offsets|iges> -o OUT.hull [options]".into());
     };
     let out_path = p
-        .flags
-        .get("output")
+        .flag("output")
         .ok_or("loft requires an output path: -o OUT.hull")?;
     let mut hulls = load_hulls(path, &p.load_settings()?)?;
     if hulls.len() > 1 {
@@ -590,7 +1052,7 @@ fn cmd_wigley(args: &[String]) -> Result<(), String> {
     let t = p.f64_flag("draft")?.unwrap_or(b * 0.625);
     let hull = michell::hulls::wigley(l, b, t).map_err(|e| format!("{e}"))?;
     let text = write_hull_file(&hull);
-    match p.flags.get("output") {
+    match p.flag("output") {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}"))?;
             println!("wrote {path} (Wigley L={l} B={b} T={t})");

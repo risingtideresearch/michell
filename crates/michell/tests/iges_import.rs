@@ -284,6 +284,65 @@ fn wigley_multipatch_iges() -> String {
     iges_file_meters(&wigley_shell_bodies(7.0))
 }
 
+/// Like [`wigley_shell_bodies`] but split into upper/lower z bands (8
+/// patches), so a shallow waterline leaves the upper band entirely dry.
+fn wigley_shell_bodies_zsplit(y0: f64) -> Vec<String> {
+    let gx_fore = [0.0, 1.0, 1.0];
+    let gx_aft = [1.0, 1.0, 0.0];
+    let xs_fore = [0.0, 2.5, 5.0];
+    let xs_aft = [5.0, 7.5, 10.0];
+    // de Casteljau split at v = 1/2 of hv = [1,1,0] and zs (linear).
+    let hv_upper = [1.0, 1.0, 0.75];
+    let hv_lower = [0.75, 0.5, 0.0];
+    let zs_upper = [0.7, 0.54375, 0.3875];
+    let zs_lower = [0.3875, 0.23125, 0.075];
+    let mut bodies = Vec::new();
+    for (xs, gx) in [(xs_fore, gx_fore), (xs_aft, gx_aft)] {
+        for side in [1.0f64, -1.0] {
+            for (hv, zs) in [(hv_upper, zs_upper), (hv_lower, zs_lower)] {
+                let mut p = String::from("128,2,2,2,2,0,0,1,0,0");
+                for _ in 0..2 {
+                    for k in ["0.0", "0.0", "0.0", "1.0", "1.0", "1.0"] {
+                        p.push_str(&format!(",{k}"));
+                    }
+                }
+                for _ in 0..9 {
+                    p.push_str(",1.0");
+                }
+                for j in 0..3usize {
+                    for i in 0..3usize {
+                        let y = side * 0.5 * gx[i] * hv[j] + y0;
+                        p.push_str(&format!(",{:.6},{y:.6},{:.6}", xs[i], zs[j]));
+                    }
+                }
+                p.push_str(",0.0,1.0,0.0,1.0;");
+                bodies.push(p);
+            }
+        }
+    }
+    bodies
+}
+
+#[test]
+fn dry_patches_are_retained_for_deeper_poses() {
+    use michell::iges::{HullPose, Platform};
+    // Cluster at a shallow reference waterline (upper band of every quadrant
+    // fully dry), then situate deeper: the volume must recover the full hull.
+    let text = iges_file_meters(&wigley_shell_bodies_zsplit(0.0));
+    let src = iges::source_fleet(&text, 0.3).unwrap();
+    assert_eq!(src.len(), 1);
+    let opts = import_opts();
+    let fl = src
+        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
+        .unwrap();
+    let v = fl.members[0].hull.displaced_volume();
+    let v_full = 4.0 * 1.0 * 10.0 * 0.625 / 9.0;
+    assert!(
+        (v - v_full).abs() < 1e-3 * v_full,
+        "volume {v} vs full {v_full}"
+    );
+}
+
 #[test]
 fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
     let text = wigley_multipatch_iges();
@@ -459,6 +518,164 @@ fn wigley_iges_offset_starboard() -> String {
     s.push_str(&ptext);
     s.push_str(&line("S      1G      2D      2P     40", 'T', 1));
     s
+}
+
+#[test]
+fn situate_dz_equals_waterline_shift() {
+    use michell::iges::{HullPose, Platform};
+    // Raising a hull by 0.1 m is the same wetted geometry as lowering the
+    // waterline by 0.1 m.
+    let text = iges_file_meters(&wigley_shell_bodies(7.0));
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    assert_eq!(src.len(), 1);
+    let opts = import_opts();
+    let raised = src
+        .situate(
+            0.7,
+            &[HullPose {
+                dz: -0.1,
+                ..Default::default()
+            }],
+            &Platform::default(),
+            &opts,
+        )
+        .unwrap();
+    let lowered_wl = src
+        .situate(0.6, &[HullPose::default()], &Platform::default(), &opts)
+        .unwrap();
+    let (a, b) = (&raised.members[0].hull, &lowered_wl.members[0].hull);
+    assert!(
+        (a.displaced_volume() - b.displaced_volume()).abs() < 1e-9 * b.displaced_volume(),
+        "vol {} vs {}",
+        a.displaced_volume(),
+        b.displaced_volume()
+    );
+    assert!((a.draft() - b.draft()).abs() < 1e-9);
+    let cond = Conditions::seawater(3.0);
+    let rw_a = michell::wave_resistance(a, &cond).unwrap().resistance;
+    let rw_b = michell::wave_resistance(b, &cond).unwrap().resistance;
+    assert!((rw_a - rw_b).abs() < 1e-8 * rw_b, "Rw {rw_a} vs {rw_b}");
+}
+
+#[test]
+fn situate_trim_is_symmetric_for_symmetric_hull() {
+    use michell::iges::{HullPose, Platform};
+    let text = iges_file_meters(&wigley_shell_bodies(0.0));
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    let opts = import_opts();
+    let vol = |trim: f64| -> f64 {
+        let fl = src
+            .situate(
+                0.7,
+                &[HullPose {
+                    trim,
+                    ..Default::default()
+                }],
+                &Platform::default(),
+                &opts,
+            )
+            .unwrap();
+        fl.members[0].hull.displaced_volume()
+    };
+    let v0 = vol(0.0);
+    let vp = vol(3.0f64.to_radians());
+    let vm = vol((-3.0f64).to_radians());
+    assert!(
+        (vp - vm).abs() < 1e-5 * v0,
+        "trim asymmetry: {vp} vs {vm} (v0 {v0})"
+    );
+    // Trimming a fore-aft symmetric hull about its midpoint is a second-order
+    // volume effect — noticeable at 3 degrees on a 10 m hull, but bounded.
+    assert!((vp - v0).abs() < 0.15 * v0, "vp {vp} vs v0 {v0}");
+}
+
+#[test]
+fn equilibrium_matches_analytic_wigley() {
+    use michell::float::{solve_equilibrium, LoadCase};
+    use michell::iges::HullPose;
+    // Wigley shell at design draft T0 = 0.625 under waterline 0.7. Target
+    // immersion d = 0.5 -> analytic volume and sinkage = -0.125.
+    let (l, b, t0, d) = (10.0f64, 1.0f64, 0.625f64, 0.5f64);
+    let c = t0 - d;
+    let v_analytic = b * (2.0 * l / 3.0) * (d - t0 / 3.0 + c.powi(3) / (3.0 * t0 * t0));
+    let density = 1025.9;
+    let mass = density * v_analytic;
+
+    let text = iges_file_meters(&wigley_shell_bodies(0.0));
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    let opts = import_opts();
+
+    // Weight-only balance (trim locked).
+    let eq = solve_equilibrium(
+        &src,
+        0.7,
+        &[HullPose::default()],
+        &LoadCase { mass, lcg: None },
+        density,
+        &opts,
+    )
+    .unwrap();
+    assert!(
+        (eq.sinkage + 0.125).abs() < 2e-3,
+        "sinkage {} (want -0.125)",
+        eq.sinkage
+    );
+    assert!(eq.volume_residual < 5e-4, "vol residual {}", eq.volume_residual);
+    assert_eq!(eq.trim, 0.0);
+    assert!(eq.fleet.dry.is_empty());
+
+    // The shell spans x in [0, 10], so its symmetry plane is x = 5: with lcg
+    // there the trim must stay ~0.
+    let eq = solve_equilibrium(
+        &src,
+        0.7,
+        &[HullPose::default()],
+        &LoadCase {
+            mass,
+            lcg: Some(5.0),
+        },
+        density,
+        &opts,
+    )
+    .unwrap();
+    assert!(eq.trim.abs() < 1e-3, "trim {}", eq.trim);
+    assert!(eq.lcb_residual < 1e-3, "lcb residual {}", eq.lcb_residual);
+
+    // Shift the CG forward: solver must trim until LCB follows.
+    let eq = solve_equilibrium(
+        &src,
+        0.7,
+        &[HullPose::default()],
+        &LoadCase {
+            mass,
+            lcg: Some(5.3),
+        },
+        density,
+        &opts,
+    )
+    .unwrap();
+    assert!(eq.volume_residual < 5e-4);
+    assert!(eq.lcb_residual < 1.5e-3, "lcb residual {}", eq.lcb_residual);
+    assert!((eq.lcb - 5.3).abs() < 1.5e-3, "lcb {}", eq.lcb);
+    assert!(eq.trim.abs() > 1e-3, "expected nonzero trim, got {}", eq.trim);
+
+    // An impossible CG (at the bow tip) must fail with a diagnosis, not hang.
+    let err = solve_equilibrium(
+        &src,
+        0.7,
+        &[HullPose::default()],
+        &LoadCase {
+            mass,
+            lcg: Some(0.0),
+        },
+        density,
+        &opts,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err}").contains("unreachable"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

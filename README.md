@@ -129,6 +129,22 @@ michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
 ```
 
+**Sweeps** (`michell sweep`, IGES inputs): long-form CSV/JSON over the
+Cartesian product of design and load axes. `--axis waterline=…` sweeps the
+raw waterline; `--axis stem:dz|dx|dy|spread|trim=…` sweeps a hull's mount
+pose (trim in degrees rotates the control nets exactly — affine); and
+`--float weight=… [--float lcg=…]` switches to **equilibrium mode**: for
+each load the platform's sinkage (and pitch) are solved by a Newton
+iteration whose Jacobian comes from the waterplane properties, so
+counterfactuals like "what if the boat were heavier / the CG further
+forward" are directly sweepable at physically consistent attitudes. Every
+record carries the solved state, displacement, LCB, and the resistance
+breakdown. Hulls that fly dry at a pose contribute zero and are counted,
+not errored. All poses are hydrostatic (no speed-dependent squat).
+
+Hydrostatics on every hull: displaced volume, LCB, waterplane area and
+moments, LCF — exact spline integrals.
+
 Multihulls: list several hulls, each with an optional placement suffix —
 `@y=Y` places a (single-hull file's) centerplane absolutely, `@dy=S` shifts
 transversely, `@x=DX`/`@dx=DX` shifts longitudinally. An IGES file holding a
@@ -164,13 +180,18 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
   `Placement` — fleets with exact wave interference.
 - `iges::import_fleet` — every hull in a file, with detected placements;
   `iges::import_hull` — exactly one (errors on multihull files).
+- `iges::source_fleet` + `SourceFleet::situate(waterline, poses, platform)` —
+  re-situate hulls repeatedly (immersion, mount trim, position) for sweeps.
+- `float::solve_equilibrium(fleet, waterline, poses, load, ρ)` — hydrostatic
+  sinkage/pitch balance for a mass + LCG load case.
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `hulls::wigley(l, b, t)` — exact reference hull.
 
 ## Roadmap
 
-1. STEP reader feeding the same sample-and-loft pipeline.
-2. Transom closure, wave spectrum output, Python bindings.
+1. Parallel sweep evaluation (each equilibrium point is independent).
+2. STEP reader feeding the same sample-and-loft pipeline.
+3. Transom closure, wave spectrum output, Python bindings.
 
 ## References
 

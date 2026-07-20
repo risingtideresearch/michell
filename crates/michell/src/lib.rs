@@ -57,6 +57,7 @@ mod bspline;
 mod conditions;
 mod error;
 pub mod fit;
+pub mod float;
 mod friction;
 mod hull;
 pub mod hulls;

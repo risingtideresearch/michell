@@ -538,18 +538,291 @@ pub struct ImportedHull {
     pub report: ImportReport,
 }
 
-/// Import every hull found in an IGES file.
-///
-/// Patches are clustered by wetted-geometry proximity: seams between patches
-/// of one hull touch to CAD tolerance, while distinct hulls of a multihull
-/// are far apart, so a whole boat modelled in position imports as a fleet
-/// with its true placements. Only wetted geometry clusters, so dry structure
-/// (cross-beams, decks) cannot bridge two hulls and is dropped. Results are
-/// sorted by transverse position.
-///
-/// [`ImportOptions::centerplane`] may only be set when the file contains a
-/// single hull.
-pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull>> {
+/// Per-hull **design** pose: how a hull is mounted relative to the platform.
+/// Applied to the source geometry before the waterline clip, so all fields
+/// change the wetted shape exactly (affine maps of the control nets).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HullPose {
+    /// Longitudinal shift [m].
+    pub dx: f64,
+    /// Transverse shift [m].
+    pub dy: f64,
+    /// Immersion shift [m]; positive lowers the hull (deeper).
+    pub dz: f64,
+    /// Pitch rotation [rad]; positive raises the hull's +x end.
+    pub trim: f64,
+    /// Pivot station for `trim` (default: the hull's x mid); the pivot height
+    /// is the base waterline.
+    pub pivot_x: Option<f64>,
+}
+
+/// Whole-platform **state**: rigid-body sinkage and pitch, normally solved
+/// from a load case rather than chosen.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Platform {
+    /// Additional immersion of the whole platform [m]; positive = deeper.
+    pub sinkage: f64,
+    /// Pitch rotation [rad]; positive raises the +x end.
+    pub trim: f64,
+    /// Pivot station for `trim`, at the effective waterline height.
+    pub pivot_x: f64,
+}
+
+/// A situated fleet: the wetted hulls plus which source hulls were dry.
+#[derive(Debug)]
+pub struct SituatedFleet {
+    /// Wetted members, in source-hull order.
+    pub members: Vec<ImportedHull>,
+    /// Indices (into the [`SourceFleet`]) of hulls entirely above the water.
+    pub dry: Vec<usize>,
+}
+
+/// Parsed and clustered source geometry, kept in CAD coordinates so hulls can
+/// be re-situated (waterline, immersion, trim, position) repeatedly.
+pub struct SourceFleet {
+    units_scale: f64,
+    /// Patches of each detected hull, CAD frame, metres, sorted by y.
+    hulls: Vec<Vec<NurbsSurface3>>,
+}
+
+/// Parse an IGES file and cluster its patches into hulls at a reference
+/// waterline (use the deepest waterline you intend to sweep, so cluster
+/// membership stays fixed).
+pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet> {
+    let file = validated_file(text)?;
+    let patches = presample_surfaces(&file.surfaces, reference_waterline);
+    let mut global_wet: Option<[f64; 6]> = None;
+    for p in &patches {
+        if let Some(b) = p.wet_box {
+            let g = global_wet.get_or_insert(b);
+            for k in 0..3 {
+                g[2 * k] = g[2 * k].min(b[2 * k]);
+                g[2 * k + 1] = g[2 * k + 1].max(b[2 * k + 1]);
+            }
+        }
+    }
+    let Some(g) = global_wet else {
+        return Err(Error::InvalidGeometry(
+            "the surface lies entirely above the specified waterline".into(),
+        ));
+    };
+    let scale = (g[1] - g[0]).max(g[3] - g[2]).max(g[5] - g[4]);
+    if scale <= 0.0 || !scale.is_finite() {
+        return Err(Error::InvalidGeometry(
+            "the wetted part of the surface is degenerate".into(),
+        ));
+    }
+    let mut clusters = cluster_patches(&patches, 0.01 * scale);
+    // Deterministic order: by wetted-y midpoint.
+    let key = |idxs: &Vec<usize>| -> f64 {
+        let mids: Vec<f64> = idxs
+            .iter()
+            .filter_map(|&i| patches[i].wet_box.map(|b| (b[2] + b[3]) / 2.0))
+            .collect();
+        mids.iter().sum::<f64>() / mids.len().max(1) as f64
+    };
+    clusters.sort_by(|a, b| key(a).total_cmp(&key(b)));
+
+    // Dry patches (decks, topsides above the reference waterline) belong to
+    // *some* hull and must be retained — a deeper pose may wet them. Attach
+    // each to the nearest cluster by box distance. Clusters themselves are
+    // still formed from wetted geometry only, so dry structure cannot merge
+    // two hulls.
+    let cluster_boxes: Vec<[f64; 6]> = clusters
+        .iter()
+        .map(|idxs| {
+            let mut b = [
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for &i in idxs {
+                if let Some(w) = patches[i].wet_box {
+                    for k in 0..3 {
+                        b[2 * k] = b[2 * k].min(w[2 * k]);
+                        b[2 * k + 1] = b[2 * k + 1].max(w[2 * k + 1]);
+                    }
+                }
+            }
+            b
+        })
+        .collect();
+    let assigned: Vec<bool> = {
+        let mut a = vec![false; patches.len()];
+        for idxs in &clusters {
+            for &i in idxs {
+                a[i] = true;
+            }
+        }
+        a
+    };
+    for (pi, patch) in patches.iter().enumerate() {
+        if assigned[pi] {
+            continue;
+        }
+        // Full 3-D bbox of the dry patch from its presample.
+        let mut pb = [
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        for q in &patch.pts {
+            pb[0] = pb[0].min(q.2);
+            pb[1] = pb[1].max(q.2);
+            pb[2] = pb[2].min(q.3);
+            pb[3] = pb[3].max(q.3);
+            pb[4] = pb[4].min(q.4);
+            pb[5] = pb[5].max(q.4);
+        }
+        let dist = |a: &[f64; 6], b: &[f64; 6]| -> f64 {
+            (0..3)
+                .map(|k| {
+                    let gap = (a[2 * k] - b[2 * k + 1]).max(b[2 * k] - a[2 * k + 1]).max(0.0);
+                    gap * gap
+                })
+                .sum::<f64>()
+        };
+        let nearest = cluster_boxes
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| dist(&pb, a).total_cmp(&dist(&pb, b)))
+            .map(|(i, _)| i)
+            .expect("at least one cluster");
+        clusters[nearest].push(pi);
+    }
+
+    Ok(SourceFleet {
+        units_scale: file.units_scale,
+        hulls: clusters
+            .iter()
+            .map(|idxs| idxs.iter().map(|&i| file.surfaces[i].clone()).collect())
+            .collect(),
+    })
+}
+
+impl SourceFleet {
+    /// Number of hulls detected.
+    pub fn len(&self) -> usize {
+        self.hulls.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hulls.is_empty()
+    }
+
+    pub fn units_scale(&self) -> f64 {
+        self.units_scale
+    }
+
+    /// Situate the fleet: apply each hull's design pose and the platform
+    /// state, clip at the effective waterline `waterline_z + sinkage`, and
+    /// loft. Hulls that end up entirely dry are reported, not errors.
+    pub fn situate(
+        &self,
+        waterline_z: f64,
+        poses: &[HullPose],
+        platform: &Platform,
+        opts: &ImportOptions,
+    ) -> Result<SituatedFleet> {
+        if poses.len() != self.hulls.len() {
+            return Err(Error::InvalidInput(format!(
+                "{} poses supplied for {} hulls",
+                poses.len(),
+                self.hulls.len()
+            )));
+        }
+        if self.hulls.len() > 1 && opts.centerplane.is_some() {
+            return Err(Error::InvalidConditions(format!(
+                "a centerplane override is ambiguous: {} separate hulls detected",
+                self.hulls.len()
+            )));
+        }
+        if opts.stations < 8 || opts.waterlines < 6 {
+            return Err(Error::InvalidInput(
+                "need at least 8 stations and 6 waterlines to sample".into(),
+            ));
+        }
+        let wl = waterline_z + platform.sinkage;
+        let mut members = Vec::new();
+        let mut dry = Vec::new();
+        for (hi, surfs) in self.hulls.iter().enumerate() {
+            let pose = &poses[hi];
+            let mut moved = surfs.clone();
+            // Design trim about (pivot_x, base waterline), then shifts.
+            if pose.trim != 0.0 {
+                let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+                let (sin, cos) = pose.trim.sin_cos();
+                for s in &mut moved {
+                    for p in s.ctrl.iter_mut() {
+                        rotate_xz(p, px, waterline_z, cos, sin);
+                    }
+                }
+            }
+            if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
+                for s in &mut moved {
+                    for p in s.ctrl.iter_mut() {
+                        p[0] += pose.dx;
+                        p[1] += pose.dy;
+                        p[2] -= pose.dz;
+                    }
+                }
+            }
+            // Platform pitch about (pivot_x, effective waterline).
+            if platform.trim != 0.0 {
+                let (sin, cos) = platform.trim.sin_cos();
+                for s in &mut moved {
+                    for p in s.ctrl.iter_mut() {
+                        rotate_xz(p, platform.pivot_x, wl, cos, sin);
+                    }
+                }
+            }
+            let patches = presample_surfaces(&moved, wl);
+            if patches.iter().all(|p| p.wet_box.is_none()) {
+                dry.push(hi);
+                continue;
+            }
+            let (hull, report) = import_cluster(patches, opts, self.units_scale)?;
+            members.push(ImportedHull {
+                placement: Placement {
+                    x: 0.0,
+                    y: report.centerplane,
+                },
+                hull,
+                report,
+            });
+        }
+        Ok(SituatedFleet { members, dry })
+    }
+}
+
+/// Pitch rotation of a control point in the x–z plane about `(px, pz)`;
+/// positive angle raises the +x side.
+#[inline]
+fn rotate_xz(p: &mut [f64; 3], px: f64, pz: f64, cos: f64, sin: f64) {
+    let (dx, dz) = (p[0] - px, p[2] - pz);
+    p[0] = px + dx * cos - dz * sin;
+    p[2] = pz + dz * cos + dx * sin;
+}
+
+fn ctrl_x_mid(surfs: &[NurbsSurface3]) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for s in surfs {
+        for p in &s.ctrl {
+            lo = lo.min(p[0]);
+            hi = hi.max(p[0]);
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Parse + reject unsupported content (shared by every entry point).
+fn validated_file(text: &str) -> Result<IgesFile> {
     let file = parse(text)?;
     if file.entity_counts.iter().any(|&(t, _)| t == 144 || t == 142) {
         return Err(Error::Unsupported(
@@ -578,22 +851,18 @@ pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull
             file.surfaces.len()
         )));
     }
-    if opts.stations < 8 || opts.waterlines < 6 {
-        return Err(Error::InvalidInput(
-            "need at least 8 stations and 6 waterlines to sample".into(),
-        ));
-    }
+    Ok(file)
+}
 
-    // Presample every patch in the hull frame (z' = waterline_z - z,
-    // downward); track wetted extents globally (for the clustering length
-    // scale) and per patch (for the clusters themselves).
+/// Presample CAD-frame surfaces into hull-frame patches
+/// (z' = waterline_z - z, downward).
+fn presample_surfaces(surfaces: &[NurbsSurface3], waterline_z: f64) -> Vec<Patch> {
     const GRID_N: usize = 21;
-    let mut patches: Vec<Patch> = Vec::with_capacity(file.surfaces.len());
-    let mut global_wet: Option<[f64; 6]> = None;
-    for s in &file.surfaces {
+    let mut patches = Vec::with_capacity(surfaces.len());
+    for s in surfaces {
         let mut hs = s.clone();
         for p in hs.ctrl.iter_mut() {
-            p[2] = opts.waterline_z - p[2];
+            p[2] = waterline_z - p[2];
         }
         let (u0, u1) = hs.u_domain();
         let (v0, v1) = hs.v_domain();
@@ -622,13 +891,6 @@ pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull
                 pts.push((u, v, x, y, zd));
             }
         }
-        if let Some(b) = wet_box {
-            let g = global_wet.get_or_insert(b);
-            for k in 0..3 {
-                g[2 * k] = g[2 * k].min(b[2 * k]);
-                g[2 * k + 1] = g[2 * k + 1].max(b[2 * k + 1]);
-            }
-        }
         patches.push(Patch {
             surf: hs,
             pts,
@@ -637,44 +899,26 @@ pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull
             wet_box,
         });
     }
-    let Some(g) = global_wet else {
-        return Err(Error::InvalidGeometry(
-            "the surface lies entirely above the specified waterline".into(),
-        ));
-    };
-    let scale = (g[1] - g[0]).max(g[3] - g[2]).max(g[5] - g[4]);
-    if scale <= 0.0 || !scale.is_finite() {
-        return Err(Error::InvalidGeometry(
-            "the wetted part of the surface is degenerate".into(),
-        ));
-    }
+    patches
+}
 
-    let clusters = cluster_patches(&patches, 0.01 * scale);
-    if clusters.len() > 1 && opts.centerplane.is_some() {
-        return Err(Error::InvalidConditions(format!(
-            "a centerplane override is ambiguous: {} separate hulls detected",
-            clusters.len()
-        )));
-    }
-    let mut slots: Vec<Option<Patch>> = patches.into_iter().map(Some).collect();
-    let mut out = Vec::with_capacity(clusters.len());
-    for idxs in &clusters {
-        let cluster: Vec<Patch> = idxs
-            .iter()
-            .map(|&i| slots[i].take().expect("each patch in one cluster"))
-            .collect();
-        let (hull, report) = import_cluster(cluster, opts, file.units_scale)?;
-        out.push(ImportedHull {
-            placement: Placement {
-                x: 0.0,
-                y: report.centerplane,
-            },
-            hull,
-            report,
-        });
-    }
-    out.sort_by(|a, b| a.placement.y.total_cmp(&b.placement.y));
-    Ok(out)
+/// Import every hull found in an IGES file at the fixed waterline in `opts`.
+///
+/// Patches are clustered by wetted-geometry proximity: seams between patches
+/// of one hull touch to CAD tolerance, while distinct hulls of a multihull
+/// are far apart, so a whole boat modelled in position imports as a fleet
+/// with its true placements. Only wetted geometry clusters, so dry structure
+/// (cross-beams, decks) cannot bridge two hulls and is dropped. Results are
+/// sorted by transverse position.
+///
+/// [`ImportOptions::centerplane`] may only be set when the file contains a
+/// single hull. For repeated re-situating (sweeps over waterline, immersion,
+/// trim), use [`source_fleet`] + [`SourceFleet::situate`].
+pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull>> {
+    let src = source_fleet(text, opts.waterline_z)?;
+    let poses = vec![HullPose::default(); src.len()];
+    let fl = src.situate(opts.waterline_z, &poses, &Platform::default(), opts)?;
+    Ok(fl.members)
 }
 
 /// Import a hull from an IGES file that contains exactly one; errors (listing
