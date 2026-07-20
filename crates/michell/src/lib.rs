@@ -64,6 +64,7 @@ pub mod grid;
 mod hull;
 pub mod hulls;
 pub mod iges;
+pub mod lifting;
 mod michell;
 mod moments;
 mod quadrature;
