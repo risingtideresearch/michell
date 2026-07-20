@@ -20,7 +20,8 @@
 
 use crate::bspline::BSplineSurface;
 use crate::error::{Error, Result};
-use crate::fit::{fit_offsets, FitOptions, FitReport};
+use crate::fit::{fit_grid, FitOptions, FitReport};
+use crate::grid::SampleGrid;
 use crate::hull::Hull;
 use crate::iges::{HullPose, Platform};
 use crate::michell::Placement;
@@ -43,6 +44,7 @@ impl Default for BodyOptions {
                 degree_z: 3,
                 n_ctrl_x: 20,
                 n_ctrl_z: 12,
+                ..FitOptions::default()
             },
         }
     }
@@ -54,6 +56,8 @@ pub struct SituatedBody {
     pub hull: Hull,
     pub placement: Placement,
     pub fit: FitReport,
+    /// The derivative-augmented sample grid the wetted hull was lofted from.
+    pub grid: SampleGrid,
     /// Wetted samples that mapped **above** the stored band (the water rose
     /// past the modelled sheer): their geometry is unknown and was taken as
     /// zero. A non-zero count means the pose exceeds what the file covers.
@@ -181,30 +185,55 @@ impl Body {
             })
             .collect();
         let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
+
+        // The water → body map is affine, so its Jacobian is constant and
+        // exactly recovered from three evaluations; the sampled slopes are
+        // the body slopes pushed through it by the chain rule.
+        let o = map.water_to_body(0.0, 0.0);
+        let jx = map.water_to_body(1.0, 0.0); // column d(xb, zb)/dxw + o
+        let jz = map.water_to_body(0.0, 1.0); // column d(xb, zb)/dzw + o
+        let (jxx, jzx) = (jx.0 - o.0, jx.1 - o.1);
+        let (jxz, jzz) = (jz.0 - o.0, jz.1 - o.1);
+
         let mut grid = vec![0.0f64; ns * nw];
+        let mut fx = vec![f64::NAN; ns * nw];
+        let mut fz = vec![f64::NAN; ns * nw];
         let mut band_exceeded = 0usize;
         for (i, &xw) in stations.iter().enumerate() {
             for (j, &zw) in waterlines.iter().enumerate() {
-                let (xb, zb) = map.water_to_body(xw, zw);
+                let (xb, mut zb) = map.water_to_body(xw, zw);
+                let s = i * nw + j;
                 if xb < x0 || xb > x1 {
-                    continue; // beyond the ends: no hull
+                    continue; // beyond the ends: no hull, half-beam 0 is data
                 }
                 if zb > depth {
                     continue; // below the keel
                 }
                 if zb < 0.0 {
-                    // Above the modelled band while under water: unknown
-                    // geometry (allow a whisker of tolerance at the edge).
                     if zb < -1e-9 * depth {
+                        // Above the modelled band while under water: unknown
+                        // geometry, taken as zero so the loft still covers
+                        // the wetted rectangle (excluding the whole wedge
+                        // would leave control points unconstrained); the
+                        // slope stays unconstrained and the count reports
+                        // that the pose exceeds what the file models.
                         band_exceeded += 1;
+                        continue;
                     }
-                    continue;
+                    zb = 0.0; // whisker of tolerance at the band edge
                 }
-                grid[i * nw + j] = self.surface.eval(xb, zb).max(0.0);
+                grid[s] = self.surface.eval(xb, zb).max(0.0);
+                let fxb = self.surface.eval_deriv(xb, zb, 1, 0);
+                let fzb = self.surface.eval_deriv(xb, zb, 0, 1);
+                fx[s] = fxb * jxx + fzb * jzx;
+                fz[s] = fxb * jxz + fzb * jzz;
             }
         }
 
-        let (hull, fit) = fit_offsets(&stations, &waterlines, &grid, &opts.fit)?;
+        let grid = SampleGrid::new(stations, waterlines, grid)?
+            .with_fx(fx)?
+            .with_fz(fz)?;
+        let (hull, fit) = fit_grid(&grid, &opts.fit)?;
         Ok(Some(SituatedBody {
             hull,
             placement: Placement {
@@ -212,6 +241,7 @@ impl Body {
                 y: self.centerplane + pose.dy,
             },
             fit,
+            grid,
             band_exceeded,
         }))
     }
@@ -319,6 +349,63 @@ mod tests {
         // (smaller depth) under positive trim.
         let (_, z) = map.body_to_water(5.0, 0.0);
         assert!(z < 0.0, "z {z}");
+    }
+
+    #[test]
+    fn situate_grid_slopes_match_value_samples() {
+        // A posed Wigley body: the sampled slope channels must agree with
+        // finite differences of the sampled values. The surface is
+        // biquadratic and the pose map affine, so a 3-point non-uniform
+        // central difference is exact up to rounding wherever the stencil
+        // stays inside the hull.
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let body = Body::new(hull.surface().clone(), 0.2, 0.0).unwrap();
+        let pose = HullPose {
+            dz: 0.05,
+            trim: 0.04,
+            ..Default::default()
+        };
+        let sb = body
+            .situate(0.0, &pose, &Platform::default(), &BodyOptions::default())
+            .unwrap()
+            .expect("wet");
+        assert!(sb.fit.fx_residual.is_some() && sb.fit.fz_residual.is_some());
+        let g = &sb.grid;
+        let (st, wl) = (g.stations(), g.waterlines());
+        let (f, fx, fz) = (g.half_beams(), g.fx().unwrap(), g.fz().unwrap());
+        let (mx, mz) = (st.len(), wl.len());
+        let mut checked = 0usize;
+        for i in 1..mx - 1 {
+            for j in 1..mz - 1 {
+                let s = i * mz + j;
+                let stencil = [s, s - mz, s + mz, s - 1, s + 1];
+                if stencil.iter().any(|&k| f[k] <= 1e-3)
+                    || !(fx[s].is_finite() && fz[s].is_finite())
+                {
+                    continue;
+                }
+                let (h0, h1) = (st[i] - st[i - 1], st[i + 1] - st[i]);
+                let dfdx = (h0 * h0 * f[s + mz] + (h1 * h1 - h0 * h0) * f[s]
+                    - h1 * h1 * f[s - mz])
+                    / (h0 * h1 * (h0 + h1));
+                let (k0, k1) = (wl[j] - wl[j - 1], wl[j + 1] - wl[j]);
+                let dfdz = (k0 * k0 * f[s + 1] + (k1 * k1 - k0 * k0) * f[s]
+                    - k1 * k1 * f[s - 1])
+                    / (k0 * k1 * (k0 + k1));
+                assert!(
+                    (fx[s] - dfdx).abs() < 1e-4,
+                    "i={i} j={j}: fx {} vs FD {dfdx}",
+                    fx[s]
+                );
+                assert!(
+                    (fz[s] - dfdz).abs() < 1e-4,
+                    "i={i} j={j}: fz {} vs FD {dfdz}",
+                    fz[s]
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 100, "only {checked} interior samples checked");
     }
 
     #[test]

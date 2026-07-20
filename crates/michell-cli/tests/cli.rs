@@ -589,6 +589,51 @@ fn stl_resistance_and_loft() {
 }
 
 #[test]
+fn dump_grid_roundtrips_through_grid_json() {
+    let iges_path = tmp("dump_shell.iges");
+    std::fs::write(&iges_path, wigley_shell_iges()).unwrap();
+    let grid_path = tmp("dump.grid.json");
+
+    // Import the IGES, dumping the sampled grid IR alongside.
+    let direct = run_ok(bin().args([
+        "info",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.7",
+        "--samples",
+        "41x13",
+        "--fit-control",
+        "8x6",
+        "--dump-grid",
+        grid_path.to_str().unwrap(),
+        "--json",
+    ]));
+
+    // The dumped grid must carry the derivative channels.
+    let grid_text = std::fs::read_to_string(&grid_path).unwrap();
+    assert!(grid_text.contains("\"michell\": \"sample-grid\""), "{grid_text}");
+    assert!(grid_text.contains("\"dfdx\""), "no dfdx channel:\n{grid_text}");
+    assert!(grid_text.contains("\"dfdz\""));
+    assert!(grid_text.contains("\"weights\""));
+
+    // Re-lofting the dumped grid with the same fit reproduces the hull.
+    let reloaded = run_ok(bin().args([
+        "info",
+        grid_path.to_str().unwrap(),
+        "--fit-control",
+        "8x6",
+        "--json",
+    ]));
+    for key in ["length", "draft", "wetted_surface", "displaced_volume"] {
+        let (a, b) = (json_num(&direct, key), json_num(&reloaded, key));
+        assert!(
+            (a - b).abs() <= 1e-9 * a.abs().max(1e-9),
+            "{key}: {a} vs {b}"
+        );
+    }
+}
+
+#[test]
 fn errors_are_clean() {
     // Unknown file format.
     let bogus = tmp("bogus.txt");

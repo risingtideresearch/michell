@@ -60,6 +60,7 @@ mod error;
 pub mod fit;
 pub mod float;
 mod friction;
+pub mod grid;
 mod hull;
 pub mod hulls;
 pub mod iges;
@@ -72,6 +73,7 @@ pub use bspline::BSplineSurface;
 pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
 pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, ViscousResistance};
+pub use grid::SampleGrid;
 pub use hull::Hull;
 pub use michell::{
     inner_integrals, multihull_wave_resistance, multihull_wave_resistance_with, wave_resistance,

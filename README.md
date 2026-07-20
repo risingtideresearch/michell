@@ -93,13 +93,24 @@ tolerance runs in ~20 ms (release build).
 
 ## Input front-ends
 
-Both front-ends reduce to the same deterministic back-end
-(`fit::fit_offsets`): a grid of half-beam samples lofted to the spline by
-separable tensor-product least squares (quantile knot placement, residuals
-reported so you can judge fit quality).
+Every front-end reduces to the same intermediate representation
+(`grid::SampleGrid`): a station × waterline grid of half-beam samples,
+optionally augmented with `∂f/∂x`/`∂f/∂z` channels (`NaN` = unknown at that
+sample) and per-sample weights (`0` excludes a sample — e.g. a failed CAD
+inversion, which is *unknown* geometry rather than zero beam). The grid is
+lofted to the spline by `fit::fit_grid`: weighted tensor-product least
+squares over every channel present (quantile knot placement, per-channel
+residuals reported so you can judge fit quality). Derivative observations
+are scaled by the local sample spacing so slopes and values are
+commensurate, and a slope that predicts more change across one sample cell
+than the half-beam anywhere on its stencil is skipped — it describes
+geometry (a bilge wall, the keel fold) that no loft at that sampling can
+resolve, and fitting it would only distort the values.
+`FitOptions::derivative_weight` tunes or disables the channels.
 
 - **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
-  the human-authorable path: a station × waterline table of half-beams.
+  the human-authorable path: a station × waterline table of half-beams
+  (a value-only grid).
 - **STL**: `stl::mesh_fleet(bytes, units_scale, waterline)` — binary or ASCII
   triangle meshes. Half-beams are extracted by transverse **ray casting**
   (exact, no Newton iteration; empty results are the footprint), hulls
@@ -116,10 +127,13 @@ reported so you can judge fit quality).
   a full both-sided shell is folded about the midplane of its shell
   intersections, a half hull measures from y = 0, and `centerplane` overrides
   either — then the wetted region is sampled by per-patch Newton inversion
-  (outermost fold wins) and lofted. Genuinely trimmed surfaces (142/144) and
-  rational weights are rejected with specific messages; fold asymmetry,
-  ambiguous samples, failed inversions, and loft residuals (with the location
-  of the worst one) are reported so a bad import is visible. Handles both the
+  (outermost fold wins) and lofted; the surface slopes `∂y/∂x`, `∂y/∂z` come
+  for free from the converged Newton Jacobian (implicit function theorem)
+  and join the loft as derivative observations. Genuinely trimmed surfaces
+  (142/144) and rational weights are rejected with specific messages; fold
+  asymmetry, ambiguous samples, failed inversions, slope gaps, and loft
+  residuals (with the location of the worst one) are reported so a bad
+  import is visible. Handles both the
   "export selected surface" workflow and multi-patch SubD hull exports,
   including hulls modelled off-centre (e.g. an ama in position).
 
@@ -209,18 +223,29 @@ clustering wetted patches, each at its detected centerplane, and dry
 structure (beams, decks) is dropped. The `IF` column / `interference` JSON
 field reports combined R_w over the sum of standalone R_w.
 
-All three input kinds are accepted everywhere (sniffed by header/extension):
+All input kinds are accepted everywhere (sniffed by header/extension):
 the canonical `.hull` control net, a `michell-offsets v1` station × waterline
-table (lofted on load), and IGES (sampled + lofted; `--waterline` sets the
-DWL). `--json` gives machine-readable output; `--fluid`, `--rho`, `--nu`,
-`--form-factor`, `--rel-tol` control the physics. Conversion diagnostics
-(loft residuals, mirroring, failed inversions) are always printed so a bad
-import can't pass silently.
+table (lofted on load), a `*.grid.json` sample grid, and IGES (sampled +
+lofted; `--waterline` sets the DWL). `--json` gives machine-readable output;
+`--fluid`, `--rho`, `--nu`, `--form-factor`, `--rel-tol` control the physics.
+Conversion diagnostics (loft residuals, mirroring, failed inversions) are
+always printed so a bad import can't pass silently.
+
+`--dump-grid PATH` writes the sample grid a load produced — stations,
+waterlines, half-beams, slope channels, weights — as `*.grid.json`
+(multihull files get `-0`, `-1`, ... suffixes), so you can inspect or diff
+exactly what the importer sampled, and re-loft it later without the source
+CAD file. `--fit-deriv-weight W` scales the slope observations (0 = fit
+values only).
 
 **`.hull` format** (canonical, SI, `#` comments): `michell-hull v1`,
 `degree-x/z`, `knots-x/z`, then one `row` of control values per x index.
 **Offsets format**: `michell-offsets v1`, a `waterlines` line (z downward
 from DWL, starting 0), then `station <x> <half-beams...>` lines.
+**Grid format**: JSON with `"michell": "sample-grid"`, `stations`,
+`waterlines`, row-major `half_beams` (waterline index fastest), optional
+`dfdx`/`dfdz` (JSON `null` = unknown at that sample), optional `weights`,
+optional `centerplane`.
 
 ## API sketch
 

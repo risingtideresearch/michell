@@ -1,6 +1,7 @@
 //! `michell` — thin-ship wave resistance from hull files.
 
 mod formats;
+mod gridio;
 mod json;
 mod manifest;
 
@@ -58,7 +59,10 @@ HULL INPUTS (sniffed by header / extension)
   *.hull            canonical B-spline control net (exact); with a
                     `waterline` key, a re-situatable full-band body
   offsets table     `michell-offsets v1` station x waterline half-beams (lofted)
-  *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted)
+  *.grid.json       derivative-augmented sample grid (the IR written by
+                    --dump-grid), lofted on load
+  *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted, with
+                    surface slopes recovered from the CAD geometry)
   *.stl             triangle mesh, binary or ASCII (ray-sampled and lofted);
                     requires --units; quality tracks the export's chord
                     tolerance — use fine tessellations
@@ -94,6 +98,10 @@ IMPORT / LOFT OPTIONS (offsets and IGES inputs)
                         (default 121x33)
   --fit-degree PxQ      spline degrees for the loft (default 3x3)
   --fit-control NxM     loft control net (default: 12x8 offsets, 20x12 IGES)
+  --fit-deriv-weight W  relative weight of sampled surface slopes in the
+                        loft (default 1; 0 fits values only)
+  --dump-grid PATH      write the sampled grid(s) as *.grid.json before
+                        lofting (multihull files get -0, -1, ... suffixes)
 
 PHYSICS OPTIONS
   --fluid NAME          seawater | freshwater, at 15 C (default seawater)
@@ -235,6 +243,12 @@ impl Parsed {
             s.fit.n_ctrl_z = nz;
             s.fit_explicit = true;
         }
+        if let Some(w) = self.f64_flag("fit-deriv-weight")? {
+            s.fit.derivative_weight = w;
+        }
+        if let Some(p) = self.flag("dump-grid") {
+            s.dump_grid = Some(p.clone());
+        }
         Ok(s)
     }
 
@@ -347,18 +361,47 @@ fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Vec<Member>, 
     Ok(members)
 }
 
+/// Slope-channel residual summary, when the loft fit any.
+fn slope_line(r: &michell::fit::FitReport) -> Option<String> {
+    match (r.fx_residual, r.fz_residual) {
+        (None, None) => None,
+        (fx, fz) => {
+            let one = |name: &str, c: Option<michell::fit::ChannelResiduals>| {
+                c.map(|c| format!("{name} max {:.3e} rms {:.3e}", c.max, c.rms))
+            };
+            let parts: Vec<String> = [one("dfdx", fx), one("dfdz", fz)]
+                .into_iter()
+                .flatten()
+                .collect();
+            Some(format!("slopes: {}", parts.join(", ")))
+        }
+    }
+}
+
 fn describe_source(source: &Source) -> Vec<String> {
     match source {
         Source::Native => vec!["source: native control net (exact)".into()],
-        Source::Body(r) => vec![format!(
-            "source: full-band body, situated at its design waterline \
-             (loft max residual {:.3e} m, rms {:.3e} m)",
-            r.max_residual, r.rms_residual
-        )],
+        Source::Body(r) => {
+            let mut v = vec![format!(
+                "source: full-band body, situated at its design waterline \
+                 (loft max residual {:.3e} m, rms {:.3e} m)",
+                r.max_residual, r.rms_residual
+            )];
+            v.extend(slope_line(r));
+            v
+        }
         Source::Offsets(r) => vec![format!(
             "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
             r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
         )],
+        Source::Grid(r) => {
+            let mut v = vec![format!(
+                "source: sample grid, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
+                r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
+            )];
+            v.extend(slope_line(r));
+            v
+        }
         Source::Stl(r) => {
             let sides = if r.two_sided {
                 format!("full shell folded about y = {:.4} m", r.centerplane)
@@ -403,14 +446,16 @@ fn describe_source(source: &Source) -> Vec<String> {
             ));
             v.push(format!(
                 "loft: max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m, \
-                 {} failed inversions, {} ambiguous samples",
+                 {} failed inversions, {} ambiguous samples, {} slope gaps",
                 r.fit.max_residual,
                 r.fit.max_residual_at.0,
                 r.fit.max_residual_at.1,
                 r.fit.rms_residual,
                 r.failed_inversions,
-                r.ambiguous_samples
+                r.ambiguous_samples,
+                r.derivative_gaps
             ));
+            v.extend(slope_line(&r.fit));
             v
         }
     }
@@ -707,6 +752,11 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     let settings = p.load_settings()?;
     if settings.centerplane.is_some() {
         return Err("--centerplane is not supported by sweep".into());
+    }
+    if settings.dump_grid.is_some() {
+        return Err("--dump-grid is not supported by sweep (it re-lofts one \
+                    grid per pose); use `michell info` or `michell loft`"
+            .into());
     }
     let base_wl = settings.waterline_z;
     let opts = ImportOptions {
@@ -1164,6 +1214,8 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
                 degree_z: 3,
                 n_ctrl_x: 28,
                 n_ctrl_z: 32,
+                // Honour --fit-deriv-weight even with the default net.
+                derivative_weight: settings.fit.derivative_weight,
             }
         },
         centerplane: settings.centerplane,
@@ -1253,6 +1305,11 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         let wl_depth = band_top - design_wl;
         lofted.push((m, wl_depth));
     }
+    let grids: Vec<(&michell::SampleGrid, Option<f64>)> = lofted
+        .iter()
+        .map(|(m, _)| (&m.grid, Some(m.report.centerplane)))
+        .collect();
+    formats::dump_grids(&settings, &grids)?;
     let ys: Vec<f64> = lofted.iter().map(|(m, _)| m.report.centerplane).collect();
     let span = ys.last().unwrap_or(&0.0) - ys.first().unwrap_or(&0.0);
     let names: Vec<String> = if n == 1 {

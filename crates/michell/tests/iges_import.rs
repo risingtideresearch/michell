@@ -125,6 +125,7 @@ fn import_opts() -> ImportOptions {
             degree_z: 2,
             n_ctrl_x: 9,
             n_ctrl_z: 7,
+            ..FitOptions::default()
         },
         centerplane: None,
     }
@@ -676,6 +677,52 @@ fn equilibrium_matches_analytic_wigley() {
         format!("{err}").contains("unreachable"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn import_grid_carries_accurate_slopes() {
+    // The synthetic file is the exact biquadratic Wigley (L=10, B=1,
+    // T=0.625) with x ∈ [0, 10], so the sampled slope channels recovered
+    // from the Newton Jacobian must match the analytic derivatives of
+    // f(x, z) = (10x − x²)/50 · (1 − (z/T)²).
+    let text = wigley_iges("", 1.0);
+    let fleet = iges::import_fleet(&text, &import_opts()).unwrap();
+    assert_eq!(fleet.len(), 1);
+    let g = &fleet[0].grid;
+    let (fx, fz) = (g.fx().expect("fx channel"), g.fz().expect("fz channel"));
+    let t = 0.625f64;
+    let mut checked = 0usize;
+    for (i, &x) in g.stations().iter().enumerate() {
+        for (j, &z) in g.waterlines().iter().enumerate() {
+            let s = g.idx(i, j);
+            // Interior samples only: away from the fold (f = 0) and with a
+            // recovered slope.
+            if g.half_beams()[s] < 1e-3 || !(fx[s].is_finite() && fz[s].is_finite()) {
+                continue;
+            }
+            let want_fx = (10.0 - 2.0 * x) / 50.0 * (1.0 - (z / t).powi(2));
+            let want_fz = -(10.0 * x - x * x) / 25.0 * z / (t * t);
+            assert!(
+                (fx[s] - want_fx).abs() < 1e-8,
+                "x={x} z={z}: fx {} vs {want_fx}",
+                fx[s]
+            );
+            assert!(
+                (fz[s] - want_fz).abs() < 1e-8,
+                "x={x} z={z}: fz {} vs {want_fz}",
+                fz[s]
+            );
+            checked += 1;
+        }
+    }
+    // Most of the wet grid must carry slopes (gaps allowed only at folds
+    // and footprint edges).
+    let total = g.stations().len() * g.waterlines().len();
+    assert!(
+        checked > total / 3,
+        "only {checked} of {total} samples carried slopes"
+    );
+    assert!(fleet[0].report.fit.fx_residual.is_some());
 }
 
 #[test]

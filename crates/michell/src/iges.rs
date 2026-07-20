@@ -23,8 +23,12 @@
 //!    a one-sided (half-hull) file measures from y = 0,
 //! 4. clips to the wetted region `z' ∈ [0, T]` and samples half-beams on a
 //!    station × waterline grid by per-patch 2-D Newton inversion of
-//!    `(x(u,v), z'(u,v))`, taking the outermost fold `max |y - y_c|`,
-//! 5. lofts the samples with [`crate::fit::fit_offsets`].
+//!    `(x(u,v), z'(u,v))`, taking the outermost fold `max |y - y_c|`; the
+//!    surface slopes `∂y/∂x`, `∂y/∂z` come for free from the converged
+//!    Newton Jacobian (implicit function theorem),
+//! 5. lofts the resulting [`crate::grid::SampleGrid`] — values, slopes, and
+//!    per-sample weights (failed inversions are excluded, not zeroed) — with
+//!    [`crate::fit::fit_grid`].
 //!
 //! Expected CAD frame: `x` longitudinal, `z` **up**, `y` transverse.
 //! `waterline_z` gives the design waterline height in the file's frame, **in
@@ -34,7 +38,8 @@
 
 use crate::bspline::{ders_basis, find_span};
 use crate::error::{Error, Result};
-use crate::fit::{fit_offsets, FitOptions, FitReport};
+use crate::fit::{fit_grid, FitOptions, FitReport};
+use crate::grid::SampleGrid;
 use crate::hull::Hull;
 use crate::michell::Placement;
 
@@ -479,6 +484,7 @@ impl Default for ImportOptions {
                 degree_z: 3,
                 n_ctrl_x: 20,
                 n_ctrl_z: 12,
+                ..FitOptions::default()
             },
             centerplane: None,
         }
@@ -510,8 +516,12 @@ pub struct ImportReport {
     /// interior geometry; a few near seams are harmless).
     pub ambiguous_samples: usize,
     /// Grid samples inside a waterline's footprint that could not be
-    /// inverted onto any patch (set to zero half-beam).
+    /// inverted onto any patch (excluded from the loft by zero weight).
     pub failed_inversions: usize,
+    /// Converged samples whose surface slope was unavailable (tangent-vertical
+    /// shell, boundary-clamped near-misses, the centerplane fold): their
+    /// half-beam still constrains the loft, their slope simply does not.
+    pub derivative_gaps: usize,
     pub fit: FitReport,
 }
 
@@ -536,6 +546,8 @@ pub struct ImportedHull {
     /// coordinates are kept) and `y` = the hull's detected centerplane.
     pub placement: Placement,
     pub report: ImportReport,
+    /// The derivative-augmented sample grid the hull was lofted from.
+    pub grid: SampleGrid,
 }
 
 /// Per-hull **design** pose: how a hull is mounted relative to the platform.
@@ -838,7 +850,7 @@ impl SourceFleet {
         if patches.iter().all(|p| p.wet_box.is_none()) {
             return Ok(None);
         }
-        let (hull, report) = import_cluster(patches, opts, self.units_scale)?;
+        let (hull, report, grid) = import_cluster(patches, opts, self.units_scale)?;
         Ok(Some(ImportedHull {
             placement: Placement {
                 x: 0.0,
@@ -846,6 +858,7 @@ impl SourceFleet {
             },
             hull,
             report,
+            grid,
         }))
     }
 }
@@ -1036,7 +1049,7 @@ fn import_cluster(
     patches: Vec<Patch>,
     opts: &ImportOptions,
     units_scale: f64,
-) -> Result<(Hull, ImportReport)> {
+) -> Result<(Hull, ImportReport, SampleGrid)> {
     // Wetted statistics of this cluster.
     let mut draft = 0.0f64;
     let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -1080,7 +1093,7 @@ fn import_cluster(
             if !ys.is_empty() {
                 probe_counts.push(ys.len());
                 if ys.len() >= 2 {
-                    probe_mids.push((ys[0] + ys[ys.len() - 1]) / 2.0);
+                    probe_mids.push((ys[0].y + ys[ys.len() - 1].y) / 2.0);
                 }
             }
         }
@@ -1123,36 +1136,61 @@ fn import_cluster(
     let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
 
     let mut grid = vec![0.0f64; ns * nw];
+    let mut fx = vec![f64::NAN; ns * nw];
+    let mut fz = vec![f64::NAN; ns * nw];
+    let mut weight = vec![1.0f64; ns * nw];
     let mut failed = 0usize;
     let mut ambiguous = 0usize;
+    let mut deriv_gaps = 0usize;
     let mut max_asym = 0.0f64;
     for (j, &zj) in waterlines.iter().enumerate() {
         let Some((flo, fhi)) = footprint(&patches, zj, draft) else {
             continue; // no hull at this depth
         };
         for (i, &xi) in stations.iter().enumerate() {
+            let s = i * nw + j;
             if xi < flo || xi > fhi {
                 continue;
             }
             let ys = shell_intersections(&patches, xi, zj, scale);
             if ys.is_empty() {
+                // Unknown geometry, not zero beam: exclude from the loft.
                 failed += 1;
+                weight[s] = 0.0;
                 continue;
             }
             if ys.len() > 2 {
                 ambiguous += 1;
             }
-            let folded = ys.iter().fold(0.0f64, |m, y| m.max((y - y_c).abs()));
+            let outer = ys
+                .iter()
+                .max_by(|a, b| (a.y - y_c).abs().total_cmp(&(b.y - y_c).abs()))
+                .expect("non-empty");
+            let folded = (outer.y - y_c).abs();
             if two_sided && ys.len() >= 2 {
-                let stb = (ys[ys.len() - 1] - y_c).abs();
-                let prt = (ys[0] - y_c).abs();
+                let stb = (ys[ys.len() - 1].y - y_c).abs();
+                let prt = (ys[0].y - y_c).abs();
                 max_asym = max_asym.max((stb - prt).abs());
             }
-            grid[i * nw + j] = folded;
+            grid[s] = folded;
+            // Half-beam is |y - y_c|: fold the slope's sign with y. At the
+            // fold itself (keel/stem lines) the derivative is one-sided;
+            // leave it unconstrained there.
+            if outer.deriv_ok && folded > 1e-9 * scale {
+                let sign = if outer.y >= y_c { 1.0 } else { -1.0 };
+                fx[s] = sign * outer.y_x;
+                fz[s] = sign * outer.y_z;
+            } else {
+                deriv_gaps += 1;
+            }
         }
     }
 
-    let (hull, fit_report) = fit_offsets(&stations, &waterlines, &grid, &opts.fit)?;
+    let sample_grid = SampleGrid::new(stations, waterlines, grid)?
+        .with_fx(fx)?
+        .with_fz(fz)?
+        .with_weights(weight)?;
+    let (hull, fit_report) = fit_grid(&sample_grid, &opts.fit)?;
     Ok((
         hull,
         ImportReport {
@@ -1166,8 +1204,10 @@ fn import_cluster(
             max_asymmetry: max_asym,
             ambiguous_samples: ambiguous,
             failed_inversions: failed,
+            derivative_gaps: deriv_gaps,
             fit: fit_report,
         },
+        sample_grid,
     ))
 }
 
@@ -1212,14 +1252,59 @@ fn footprint(patches: &[Patch], z: f64, draft: f64) -> Option<(f64, f64)> {
     found.then_some((lo, hi))
 }
 
+/// One shell intersection along y at a target `(x, z)`.
+#[derive(Debug, Clone, Copy)]
+struct ShellHit {
+    y: f64,
+    /// Surface slopes `∂y/∂x`, `∂y/∂z` (hull frame, z down) at the
+    /// intersection; meaningful only when `deriv_ok`.
+    y_x: f64,
+    y_z: f64,
+    deriv_ok: bool,
+}
+
+/// Slopes beyond this magnitude carry no loftable information at realistic
+/// sample densities (the shell is effectively tangent-vertical there); the
+/// sample keeps its value but drops its derivative.
+const MAX_USEFUL_SLOPE: f64 = 1e2;
+
+/// Build a hit at a converged parameter point, recovering `∂y/∂x`, `∂y/∂z`
+/// from the surface partials by the implicit function theorem.
+fn hit_at(surf: &NurbsSurface3, u: f64, v: f64) -> ShellHit {
+    let (s, du, dv) = surf.eval1(u, v);
+    // (x, z)(u, v) Jacobian determinant — the same one Newton inverts.
+    let det = du[0] * dv[2] - dv[0] * du[2];
+    let det_scale = du[0].abs() * dv[2].abs() + dv[0].abs() * du[2].abs();
+    if det.abs() <= 1e-9 * det_scale.max(1e-300) {
+        return ShellHit {
+            y: s[1],
+            y_x: 0.0,
+            y_z: 0.0,
+            deriv_ok: false,
+        };
+    }
+    let y_x = (du[1] * dv[2] - dv[1] * du[2]) / det;
+    let y_z = (dv[1] * du[0] - du[1] * dv[0]) / det;
+    let ok = y_x.is_finite()
+        && y_z.is_finite()
+        && y_x.abs() < MAX_USEFUL_SLOPE
+        && y_z.abs() < MAX_USEFUL_SLOPE;
+    ShellHit {
+        y: s[1],
+        y_x,
+        y_z,
+        deriv_ok: ok,
+    }
+}
+
 /// All shell intersections along y at `(x, z)`: per patch, Newton from the
-/// nearest presample seeds; converged y values deduped across patches and
-/// returned sorted.
-fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec<f64> {
+/// nearest presample seeds; converged hits deduped across patches and
+/// returned sorted by y.
+fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec<ShellHit> {
     let tol = 1e-11 * scale;
     let loose = 1e-7 * scale;
     let margin = 0.05 * scale;
-    let mut ys: Vec<f64> = Vec::new();
+    let mut ys: Vec<ShellHit> = Vec::new();
     let mut best_loose: Option<(f64, f64)> = None; // (residual, y)
     for p in patches {
         if x_t < p.bbox.0 - margin
@@ -1239,9 +1324,9 @@ fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec
             }
         }
         for &(_, su, sv) in &seeds {
-            let (res, y) = newton_on(&p.surf, su, sv, x_t, z_t, tol);
+            let (res, y, u, v) = newton_on(&p.surf, su, sv, x_t, z_t, tol);
             if res < tol {
-                ys.push(y);
+                ys.push(hit_at(&p.surf, u, v));
                 break;
             }
             if best_loose.is_none_or(|(r, _)| res < r) {
@@ -1251,20 +1336,26 @@ fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec
     }
     if ys.is_empty() {
         // Accept a boundary-clamped near-miss (footprint edge) as a single
-        // intersection.
+        // intersection; its parameters don't hit the target, so no slope.
         if let Some((r, y)) = best_loose {
             if r < loose {
-                ys.push(y);
+                ys.push(ShellHit {
+                    y,
+                    y_x: 0.0,
+                    y_z: 0.0,
+                    deriv_ok: false,
+                });
             }
         }
     }
-    ys.sort_by(f64::total_cmp);
-    ys.dedup_by(|a, b| (*a - *b).abs() <= 1e-6 * scale);
+    ys.sort_by(|a, b| a.y.total_cmp(&b.y));
+    ys.dedup_by(|a, b| (a.y - b.y).abs() <= 1e-6 * scale);
     ys
 }
 
 /// 2-D Newton on `(x(u,v), z(u,v)) = (x_t, z_t)` from one seed; returns the
-/// best residual reached and the y value there. Stops early below `tol`.
+/// best residual reached and the y value and parameters there. Stops early
+/// below `tol`.
 fn newton_on(
     surf: &NurbsSurface3,
     mut u: f64,
@@ -1272,16 +1363,16 @@ fn newton_on(
     x_t: f64,
     z_t: f64,
     tol: f64,
-) -> (f64, f64) {
+) -> (f64, f64, f64, f64) {
     let (u0, u1) = surf.u_domain();
     let (v0, v1) = surf.v_domain();
-    let mut best = (f64::INFINITY, 0.0f64);
+    let mut best = (f64::INFINITY, 0.0f64, u, v);
     for _ in 0..60 {
         let (s, du, dv) = surf.eval1(u, v);
         let (fx, fz) = (s[0] - x_t, s[2] - z_t);
         let res = fx.abs() + fz.abs();
         if res < best.0 {
-            best = (res, s[1]);
+            best = (res, s[1], u, v);
         }
         if res < tol {
             break;
@@ -1375,10 +1466,40 @@ mod tests {
                 let ys = shell_intersections(&patches, s[0], s[2], 12.0);
                 assert_eq!(ys.len(), 1, "u={fu} v={fv}: {ys:?}");
                 assert!(
-                    (ys[0] - s[1]).abs() < 1e-9,
+                    (ys[0].y - s[1]).abs() < 1e-9,
                     "u={fu} v={fv}: y {} vs {}",
-                    ys[0],
+                    ys[0].y,
                     s[1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inversion_recovers_surface_slopes() {
+        // x = L(0.7u + 0.3u³), z = T·v, y = (1 + u)(2 − v)/4, so
+        // ∂y/∂x = ((2 − v)/4) / (L(0.7 + 0.9u²)) and ∂y/∂z = −(1 + u)/(4T).
+        let (l, t) = (12.0, 2.0);
+        let surf = nonlinear_surface();
+        let patches = vec![as_patch(surf.clone(), 33)];
+        for &fu in &[0.03, 0.31, 0.5, 0.77, 0.95] {
+            for &fv in &[0.05, 0.4, 0.9] {
+                let (s, _, _) = surf.eval1(fu, fv);
+                let ys = shell_intersections(&patches, s[0], s[2], 12.0);
+                assert_eq!(ys.len(), 1, "u={fu} v={fv}: {ys:?}");
+                let hit = ys[0];
+                assert!(hit.deriv_ok, "u={fu} v={fv}");
+                let want_yx = (2.0 - fv) / 4.0 / (l * (0.7 + 0.9 * fu * fu));
+                let want_yz = -(1.0 + fu) / (4.0 * t);
+                assert!(
+                    (hit.y_x - want_yx).abs() < 1e-8,
+                    "u={fu} v={fv}: y_x {} vs {want_yx}",
+                    hit.y_x
+                );
+                assert!(
+                    (hit.y_z - want_yz).abs() < 1e-8,
+                    "u={fu} v={fv}: y_z {} vs {want_yz}",
+                    hit.y_z
                 );
             }
         }
@@ -1403,7 +1524,10 @@ mod tests {
         let patches = vec![as_patch(wall(1.0), 9), as_patch(wall(-1.0), 9)];
         let ys = shell_intersections(&patches, 5.0, 1.0, 10.0);
         assert_eq!(ys.len(), 2, "{ys:?}");
-        assert!((ys[0] + 1.0).abs() < 1e-9 && (ys[1] - 1.0).abs() < 1e-9);
+        assert!((ys[0].y + 1.0).abs() < 1e-9 && (ys[1].y - 1.0).abs() < 1e-9);
+        // A vertical wall has zero slope in both directions.
+        assert!(ys.iter().all(|h| h.deriv_ok));
+        assert!(ys.iter().all(|h| h.y_x.abs() < 1e-9 && h.y_z.abs() < 1e-9));
     }
 
     #[test]

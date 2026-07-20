@@ -2,15 +2,20 @@
 //! B-spline hull representation.
 //!
 //! This is the shared back-end for every input front-end: a hand-typed
-//! station × waterline offset table and a CAD import both reduce to "a grid of
-//! half-beam samples", which is fit here by separable tensor-product least
-//! squares. The fit is deterministic: interior knots are placed at sample
-//! quantiles (which keeps the normal equations well-conditioned whenever the
-//! sample grid is denser than the control net), and the achieved residuals
-//! are reported so callers can judge fit quality.
+//! station × waterline offset table and a CAD import both reduce to a
+//! [`SampleGrid`], which is fit here by weighted tensor-product least
+//! squares. When the grid carries derivative channels (`∂f/∂x`, `∂f/∂z`),
+//! they join the fit as additional observations — pinning slopes as well as
+//! values, which matters most where the sampling is coarse relative to the
+//! shape (stem, sterns, re-lofted poses). The fit is deterministic: interior
+//! knots are placed at sample quantiles (which keeps the normal equations
+//! well-conditioned whenever the sample grid is denser than the control
+//! net), and the achieved residuals are reported per channel so callers can
+//! judge fit quality.
 
 use crate::bspline::{self, BSplineSurface};
 use crate::error::{Error, Result};
+use crate::grid::SampleGrid;
 use crate::hull::Hull;
 
 /// Fit configuration.
@@ -22,6 +27,11 @@ pub struct FitOptions {
     pub n_ctrl_x: usize,
     /// Control points along z (waterlines direction).
     pub n_ctrl_z: usize,
+    /// Relative weight of the derivative channels. Derivative residuals are
+    /// scaled by the local sample spacing (making a slope error over one
+    /// sample cell commensurate with a value error of the same size), then
+    /// by this factor. `0` ignores derivative channels entirely.
+    pub derivative_weight: f64,
 }
 
 impl Default for FitOptions {
@@ -31,31 +41,41 @@ impl Default for FitOptions {
             degree_z: 3,
             n_ctrl_x: 12,
             n_ctrl_z: 8,
+            derivative_weight: 1.0,
         }
     }
+}
+
+/// Residual summary of one derivative channel, in the channel's units.
+#[derive(Debug, Clone, Copy)]
+pub struct ChannelResiduals {
+    /// Largest |fitted − sample| over the observed samples.
+    pub max: f64,
+    /// Root-mean-square residual over the observed samples.
+    pub rms: f64,
 }
 
 /// Fit quality diagnostics, in the units of the input half-beams.
 #[derive(Debug, Clone, Copy)]
 pub struct FitReport {
-    /// Largest |fitted − sample| over the grid.
+    /// Largest |fitted − sample| over the (weight > 0) grid samples.
     pub max_residual: f64,
     /// Sample location (x, z) of the largest residual.
     pub max_residual_at: (f64, f64),
-    /// Root-mean-square residual over the grid.
+    /// Root-mean-square residual over the (weight > 0) grid samples.
     pub rms_residual: f64,
     /// Most negative control value floored to zero to enforce `f >= 0`
     /// (0.0 if the unconstrained fit was already non-negative).
     pub floored: f64,
+    /// Residuals of the `∂f/∂x` channel, when the grid carried one (and at
+    /// least one sample of it was observed).
+    pub fx_residual: Option<ChannelResiduals>,
+    /// Residuals of the `∂f/∂z` channel, likewise.
+    pub fz_residual: Option<ChannelResiduals>,
 }
 
-/// Fit a hull to gridded half-beam samples.
-///
-/// `stations` (strictly increasing x, metres) and `waterlines` (strictly
-/// increasing z downward from the waterline, starting at 0) define a grid;
-/// `half_beams[i * waterlines.len() + j]` is the half-beam at
-/// `(stations[i], waterlines[j])`. Small negative samples (measurement noise)
-/// are clamped to zero; clearly negative values are rejected.
+/// Fit a hull to gridded half-beam samples (value channel only). Convenience
+/// wrapper over [`fit_grid`]; see [`SampleGrid::new`] for the grid contract.
 ///
 /// Requires a few more samples than control points in each direction
 /// (`len >= n_ctrl + 2`).
@@ -65,91 +85,149 @@ pub fn fit_offsets(
     half_beams: &[f64],
     opts: &FitOptions,
 ) -> Result<(Hull, FitReport)> {
-    let mx = stations.len();
-    let mz = waterlines.len();
-    if half_beams.len() != mx * mz {
-        return Err(Error::InvalidInput(format!(
-            "half_beams has {} entries, expected {} stations x {} waterlines = {}",
-            half_beams.len(),
-            mx,
-            mz,
-            mx * mz
-        )));
-    }
-    check_strictly_increasing(stations, "stations")?;
-    check_strictly_increasing(waterlines, "waterlines")?;
-    let z_span = waterlines[mz - 1] - waterlines[0];
-    if waterlines[0] < 0.0 || waterlines[0] > 1e-9 * z_span {
-        return Err(Error::InvalidInput(format!(
-            "waterlines must start at the design waterline z = 0 (z downward); got {}",
-            waterlines[0]
-        )));
-    }
-    if half_beams.iter().any(|v| !v.is_finite()) {
-        return Err(Error::InvalidInput(
-            "half_beams contains a non-finite value".into(),
-        ));
-    }
-    let y_scale = half_beams.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
-    if half_beams.iter().any(|&v| v < -1e-6 * y_scale.max(1.0)) {
-        return Err(Error::InvalidInput(
-            "half_beams contains clearly negative values; half-beams must be >= 0".into(),
-        ));
-    }
-    let y: Vec<f64> = half_beams.iter().map(|&v| v.max(0.0)).collect();
+    let grid = SampleGrid::new(
+        stations.to_vec(),
+        waterlines.to_vec(),
+        half_beams.to_vec(),
+    )?;
+    fit_grid(&grid, opts)
+}
 
+/// Fit a hull to a [`SampleGrid`], using every channel the grid carries.
+///
+/// All observations — values, and derivatives where present and known — are
+/// assembled into one weighted least-squares system over the tensor-product
+/// control net and solved by dense Cholesky (the net is small; a few hundred
+/// unknowns). With a value-only, unit-weight grid this reproduces the
+/// classical separable fit exactly (the normal equations are identical).
+pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport)> {
+    let st = grid.stations();
+    let wl = grid.waterlines();
+    let (mx, mz) = (st.len(), wl.len());
     let (px, pz) = (opts.degree_x, opts.degree_z);
     let (nx, nz) = (opts.n_ctrl_x, opts.n_ctrl_z);
-    let kx = approx_knots(stations, px, nx)?;
-    let kz = approx_knots(waterlines, pz, nz)?;
+    if !(opts.derivative_weight.is_finite() && opts.derivative_weight >= 0.0) {
+        return Err(Error::InvalidInput(
+            "derivative_weight must be finite and non-negative".into(),
+        ));
+    }
+    let kx = approx_knots(st, px, nx)?;
+    let kz = approx_knots(wl, pz, nz)?;
 
-    // Dense basis matrices (small: samples x control points).
-    let bx = basis_matrix(&kx, px, nx, stations);
-    let bz = basis_matrix(&kz, pz, nz, waterlines);
+    // Per-sample basis rows: (first control index, [values, derivatives]).
+    let rows_x: Vec<(usize, Vec<Vec<f64>>)> = st
+        .iter()
+        .map(|&u| bspline::basis_rows1(&kx, px, nx, u))
+        .collect();
+    let rows_z: Vec<(usize, Vec<Vec<f64>>)> = wl
+        .iter()
+        .map(|&u| bspline::basis_rows1(&kz, pz, nz, u))
+        .collect();
 
-    // Separable normal equations:
-    //   C = (Bx' Bx)^{-1} Bx'  Y  Bz (Bz' Bz)^{-1}
-    let ax = normal_matrix(&bx, mx, nx);
-    let az = normal_matrix(&bz, mz, nz);
-    let lx = cholesky(ax, nx).ok_or_else(ill_conditioned)?;
-    let lz = cholesky(az, nz).ok_or_else(ill_conditioned)?;
+    // Derivative observations are commensurated with value observations by
+    // the local sample spacing (a slope error over one sample cell ≈ a value
+    // error of the same size — so where samples cluster, e.g. cosine-spaced
+    // stations at the ends, slope observations claim proportionally less of
+    // the fit), times the user multiplier; weights enter the normal
+    // equations squared.
+    let local = |t: &[f64], i: usize| -> f64 {
+        (t[(i + 1).min(t.len() - 1)] - t[i.saturating_sub(1)])
+            / (((i + 1).min(t.len() - 1) - i.saturating_sub(1)) as f64)
+    };
+    let dw2 = opts.derivative_weight * opts.derivative_weight;
+    let hx: Vec<f64> = (0..mx).map(|i| local(st, i)).collect();
+    let hz: Vec<f64> = (0..mz).map(|j| local(wl, j)).collect();
 
-    // R1 = Bx' Y  (nx x mz), then solve Ax C1 = R1 column-wise.
-    let mut c1 = vec![0.0f64; nx * mz];
-    for k in 0..nx {
-        for j in 0..mz {
-            let mut s = 0.0;
-            for i in 0..mx {
-                s += bx[i * nx + k] * y[i * mz + j];
+    let f = grid.half_beams();
+    let fx = grid.fx().filter(|_| dw2 > 0.0);
+    let fz = grid.fz().filter(|_| dw2 > 0.0);
+    let weights = grid.weights();
+
+    // A slope observation predicting more change across one sample cell than
+    // the half-beam anywhere on its stencil has left the geometry's
+    // resolvable scale (near-vertical shell at a bilge turn, the keel fold);
+    // no loft at this sampling can honour it, and fitting it only distorts
+    // the values. Skip it — the value observation stays. Comparing against
+    // the neighbourhood, not the sample alone, keeps the informative slopes
+    // where f itself runs out smoothly (stem, stern, waterline endings):
+    // there the adjacent half-beam is ≈ |slope|·h by construction.
+    let usable = |slope: f64, h: f64, fmax: f64| slope.is_finite() && slope.abs() * h <= fmax;
+    let f_near_x = |s: usize| -> f64 {
+        let mut m = f[s];
+        if s >= mz {
+            m = m.max(f[s - mz]);
+        }
+        if s + mz < f.len() {
+            m = m.max(f[s + mz]);
+        }
+        m
+    };
+    let f_near_z = |s: usize, j: usize| -> f64 {
+        let mut m = f[s];
+        if j > 0 {
+            m = m.max(f[s - 1]);
+        }
+        if j + 1 < mz {
+            m = m.max(f[s + 1]);
+        }
+        m
+    };
+
+    let n = nx * nz;
+    let mut a = vec![0.0f64; n * n];
+    let mut rhs = vec![0.0f64; n];
+    let mut scratch: Vec<(usize, f64)> = Vec::with_capacity((px + 1) * (pz + 1));
+    for (i, (x0, brx)) in rows_x.iter().enumerate() {
+        for (j, (z0, brz)) in rows_z.iter().enumerate() {
+            let s = i * mz + j;
+            let w = weights.map_or(1.0, |ws| ws[s]);
+            if w <= 0.0 {
+                continue;
             }
-            c1[k * mz + j] = s;
-        }
-    }
-    let mut col = vec![0.0f64; nx];
-    for j in 0..mz {
-        for k in 0..nx {
-            col[k] = c1[k * mz + j];
-        }
-        chol_solve(&lx, nx, &mut col);
-        for k in 0..nx {
-            c1[k * mz + j] = col[k];
+            add_observation(
+                &mut a,
+                &mut rhs,
+                nz,
+                (*x0, &brx[0]),
+                (*z0, &brz[0]),
+                w,
+                f[s],
+                &mut scratch,
+            );
+            if let Some(fx) = fx {
+                if usable(fx[s], hx[i], f_near_x(s)) {
+                    add_observation(
+                        &mut a,
+                        &mut rhs,
+                        nz,
+                        (*x0, &brx[1]),
+                        (*z0, &brz[0]),
+                        w * dw2 * hx[i] * hx[i],
+                        fx[s],
+                        &mut scratch,
+                    );
+                }
+            }
+            if let Some(fz) = fz {
+                if usable(fz[s], hz[j], f_near_z(s, j)) {
+                    add_observation(
+                        &mut a,
+                        &mut rhs,
+                        nz,
+                        (*x0, &brx[0]),
+                        (*z0, &brz[1]),
+                        w * dw2 * hz[j] * hz[j],
+                        fz[s],
+                        &mut scratch,
+                    );
+                }
+            }
         }
     }
 
-    // R2 = C1 Bz  (nx x nz), then solve Az c_row = r2_row for each row.
-    let mut control = vec![0.0f64; nx * nz];
-    let mut row = vec![0.0f64; nz];
-    for k in 0..nx {
-        for l in 0..nz {
-            let mut s = 0.0;
-            for j in 0..mz {
-                s += c1[k * mz + j] * bz[j * nz + l];
-            }
-            row[l] = s;
-        }
-        chol_solve(&lz, nz, &mut row);
-        control[k * nz..(k + 1) * nz].copy_from_slice(&row);
-    }
+    let l = cholesky(a, n).ok_or_else(ill_conditioned)?;
+    let mut control = rhs;
+    chol_solve(&l, n, &mut control);
 
     // Enforce the hull contract f >= 0: snap numerical dust to zero, floor
     // genuine ringing (reported so the caller can add control points if it
@@ -165,41 +243,104 @@ pub fn fit_offsets(
         }
     }
 
-    // Residuals of the final (floored) control net over the sample grid.
+    // Residuals of the final (floored) control net, per channel, over the
+    // observed (weight > 0) samples.
     let mut max_res = 0.0f64;
-    let mut max_at = (stations[0], waterlines[0]);
+    let mut max_at = (st[0], wl[0]);
     let mut sum_sq = 0.0f64;
-    let mut tmp = vec![0.0f64; nz];
-    for i in 0..mx {
-        for l in 0..nz {
-            let mut s = 0.0;
-            for k in 0..nx {
-                s += bx[i * nx + k] * control[k * nz + l];
+    let mut n_val = 0usize;
+    let mut acc_fx = (0.0f64, 0.0f64, 0usize); // (max, sum_sq, count)
+    let mut acc_fz = (0.0f64, 0.0f64, 0usize);
+    for (i, (x0, brx)) in rows_x.iter().enumerate() {
+        for (j, (z0, brz)) in rows_z.iter().enumerate() {
+            let s = i * mz + j;
+            let w = weights.map_or(1.0, |ws| ws[s]);
+            if w <= 0.0 {
+                continue;
             }
-            tmp[l] = s;
-        }
-        for j in 0..mz {
-            let mut fitted = 0.0;
-            for l in 0..nz {
-                fitted += tmp[l] * bz[j * nz + l];
-            }
-            let r = (fitted - y[i * mz + j]).abs();
+            let r = (tensor_dot((*x0, &brx[0]), (*z0, &brz[0]), &control, nz) - f[s]).abs();
             if r > max_res {
                 max_res = r;
-                max_at = (stations[i], waterlines[j]);
+                max_at = (st[i], wl[j]);
             }
             sum_sq += r * r;
+            n_val += 1;
+            if let Some(fx) = fx {
+                if usable(fx[s], hx[i], f_near_x(s)) {
+                    let r =
+                        (tensor_dot((*x0, &brx[1]), (*z0, &brz[0]), &control, nz) - fx[s]).abs();
+                    acc_fx = (acc_fx.0.max(r), acc_fx.1 + r * r, acc_fx.2 + 1);
+                }
+            }
+            if let Some(fz) = fz {
+                if usable(fz[s], hz[j], f_near_z(s, j)) {
+                    let r =
+                        (tensor_dot((*x0, &brx[0]), (*z0, &brz[1]), &control, nz) - fz[s]).abs();
+                    acc_fz = (acc_fz.0.max(r), acc_fz.1 + r * r, acc_fz.2 + 1);
+                }
+            }
         }
     }
+    let channel = |(max, sum_sq, count): (f64, f64, usize)| {
+        (count > 0).then(|| ChannelResiduals {
+            max,
+            rms: (sum_sq / count as f64).sqrt(),
+        })
+    };
     let report = FitReport {
         max_residual: max_res,
         max_residual_at: max_at,
-        rms_residual: (sum_sq / (mx * mz) as f64).sqrt(),
+        rms_residual: (sum_sq / n_val.max(1) as f64).sqrt(),
         floored,
+        fx_residual: channel(acc_fx),
+        fz_residual: channel(acc_fz),
     };
 
     let surface = BSplineSurface::new(px, pz, kx, kz, control)?;
     Ok((Hull::new(surface)?, report))
+}
+
+/// Accumulate one observation row (the tensor product of two basis rows)
+/// into the normal equations `A += w r rᵀ`, `rhs += w r t`.
+#[allow(clippy::too_many_arguments)]
+fn add_observation(
+    a: &mut [f64],
+    rhs: &mut [f64],
+    nz: usize,
+    bx: (usize, &[f64]),
+    bz: (usize, &[f64]),
+    w: f64,
+    target: f64,
+    scratch: &mut Vec<(usize, f64)>,
+) {
+    let n = rhs.len();
+    scratch.clear();
+    for (i, &vx) in bx.1.iter().enumerate() {
+        for (j, &vz) in bz.1.iter().enumerate() {
+            scratch.push(((bx.0 + i) * nz + (bz.0 + j), vx * vz));
+        }
+    }
+    for &(ci, c1) in scratch.iter() {
+        rhs[ci] += w * c1 * target;
+        let row = &mut a[ci * n..(ci + 1) * n];
+        for &(cj, c2) in scratch.iter() {
+            row[cj] += w * c1 * c2;
+        }
+    }
+}
+
+/// Evaluate a tensor-product row against the control net.
+fn tensor_dot(bx: (usize, &[f64]), bz: (usize, &[f64]), control: &[f64], nz: usize) -> f64 {
+    let mut s = 0.0;
+    for (i, &vx) in bx.1.iter().enumerate() {
+        let row = &control[(bx.0 + i) * nz..];
+        let mut inner = 0.0;
+        for (j, &vz) in bz.1.iter().enumerate() {
+            inner += vz * row[bz.0 + j];
+        }
+        s += vx * inner;
+    }
+    s
 }
 
 fn ill_conditioned() -> Error {
@@ -208,20 +349,6 @@ fn ill_conditioned() -> Error {
          increase sample density or reduce the number of control points"
             .into(),
     )
-}
-
-fn check_strictly_increasing(t: &[f64], name: &str) -> Result<()> {
-    if t.iter().any(|v| !v.is_finite()) {
-        return Err(Error::InvalidInput(format!(
-            "{name} contains a non-finite value"
-        )));
-    }
-    if t.windows(2).any(|w| w[1] <= w[0]) {
-        return Err(Error::InvalidInput(format!(
-            "{name} must be strictly increasing"
-        )));
-    }
-    Ok(())
 }
 
 /// Clamped knot vector for least-squares approximation: interior knots at
@@ -258,42 +385,6 @@ fn approx_knots(t: &[f64], degree: usize, n_ctrl: usize) -> Result<Vec<f64>> {
     }
     knots.extend(std::iter::repeat_n(t[m - 1], degree + 1));
     Ok(knots)
-}
-
-/// Dense basis matrix B (samples x control points, row-major).
-fn basis_matrix(knots: &[f64], degree: usize, n_ctrl: usize, samples: &[f64]) -> Vec<f64> {
-    let m = samples.len();
-    let mut b = vec![0.0f64; m * n_ctrl];
-    for (i, &u) in samples.iter().enumerate() {
-        let (first, vals) = bspline::basis_row(knots, degree, n_ctrl, u);
-        for (j, &v) in vals.iter().enumerate() {
-            b[i * n_ctrl + first + j] = v;
-        }
-    }
-    b
-}
-
-/// A = B'B (n x n, row-major).
-fn normal_matrix(b: &[f64], m: usize, n: usize) -> Vec<f64> {
-    let mut a = vec![0.0f64; n * n];
-    for i in 0..m {
-        let row = &b[i * n..(i + 1) * n];
-        for k in 0..n {
-            if row[k] == 0.0 {
-                continue;
-            }
-            for l in k..n {
-                a[k * n + l] += row[k] * row[l];
-            }
-        }
-    }
-    // Mirror to the lower triangle.
-    for k in 0..n {
-        for l in 0..k {
-            a[k * n + l] = a[l * n + k];
-        }
-    }
-    a
 }
 
 /// In-place Cholesky A = L L'; returns the lower factor, or None if the
@@ -342,6 +433,18 @@ fn chol_solve(l: &[f64], n: usize, rhs: &mut [f64]) {
 mod tests {
     use super::*;
 
+    fn wigley_value(l: f64, b: f64, t: f64, x: f64, z: f64) -> f64 {
+        b / 2.0 * (1.0 - (2.0 * x / l).powi(2)) * (1.0 - (z / t).powi(2))
+    }
+
+    fn wigley_fx(l: f64, b: f64, t: f64, x: f64, z: f64) -> f64 {
+        b / 2.0 * (-8.0 * x / (l * l)) * (1.0 - (z / t).powi(2))
+    }
+
+    fn wigley_fz(l: f64, b: f64, t: f64, x: f64, z: f64) -> f64 {
+        b / 2.0 * (1.0 - (2.0 * x / l).powi(2)) * (-2.0 * z / (t * t))
+    }
+
     fn wigley_grid(l: f64, b: f64, t: f64, mx: usize, mz: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
         let stations: Vec<f64> = (0..mx)
             .map(|i| -l / 2.0 + l * i as f64 / (mx - 1) as f64)
@@ -350,8 +453,7 @@ mod tests {
         let mut y = vec![0.0; mx * mz];
         for (i, &x) in stations.iter().enumerate() {
             for (j, &z) in waterlines.iter().enumerate() {
-                y[i * mz + j] =
-                    b / 2.0 * (1.0 - (2.0 * x / l).powi(2)) * (1.0 - (z / t).powi(2));
+                y[i * mz + j] = wigley_value(l, b, t, x, z);
             }
         }
         (stations, waterlines, y)
@@ -367,6 +469,7 @@ mod tests {
             degree_z: 3,
             n_ctrl_x: 10,
             n_ctrl_z: 7,
+            ..FitOptions::default()
         };
         let (hull, report) = fit_offsets(&st, &wl, &y, &opts).unwrap();
         assert!(
@@ -375,6 +478,7 @@ mod tests {
             report.max_residual
         );
         assert_eq!(report.floored, 0.0);
+        assert!(report.fx_residual.is_none() && report.fz_residual.is_none());
         // The fitted hull must reproduce Wigley resistance.
         let reference = crate::hulls::wigley(l, b, t).unwrap();
         let cond = crate::Conditions::freshwater(3.0);
@@ -386,6 +490,136 @@ mod tests {
         );
         // Geometry too.
         assert!((hull.displaced_volume() - reference.displaced_volume()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn hermite_recovers_biquadratic_from_coarse_grid() {
+        // A grid barely denser than the control net, but with exact
+        // derivative channels: the fit must still be exact in every channel.
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let (st, wl, y) = wigley_grid(l, b, t, 13, 7);
+        let (mut fx, mut fz) = (vec![0.0; 13 * 7], vec![0.0; 13 * 7]);
+        for (i, &x) in st.iter().enumerate() {
+            for (j, &z) in wl.iter().enumerate() {
+                fx[i * 7 + j] = wigley_fx(l, b, t, x, z);
+                fz[i * 7 + j] = wigley_fz(l, b, t, x, z);
+            }
+        }
+        let grid = SampleGrid::new(st, wl, y)
+            .unwrap()
+            .with_fx(fx)
+            .unwrap()
+            .with_fz(fz)
+            .unwrap();
+        let opts = FitOptions {
+            degree_x: 3,
+            degree_z: 3,
+            n_ctrl_x: 10,
+            n_ctrl_z: 5,
+            ..FitOptions::default()
+        };
+        let (hull, report) = fit_grid(&grid, &opts).unwrap();
+        assert!(
+            report.max_residual < 1e-10 * b,
+            "max residual {}",
+            report.max_residual
+        );
+        let fxr = report.fx_residual.expect("fx channel observed");
+        let fzr = report.fz_residual.expect("fz channel observed");
+        assert!(fxr.max < 1e-10, "fx residual {}", fxr.max);
+        assert!(fzr.max < 1e-10, "fz residual {}", fzr.max);
+        let reference = crate::hulls::wigley(l, b, t).unwrap();
+        assert!((hull.displaced_volume() - reference.displaced_volume()).abs() < 1e-8);
+    }
+
+    #[test]
+    fn derivative_channels_improve_a_coarse_fit() {
+        // Non-representable hull sampled coarsely: derivative observations
+        // must reduce the true (off-grid) error, not just the residuals.
+        let (l, t) = (10.0, 0.8);
+        let truth = |x: f64, z: f64| -> f64 {
+            let g = (std::f64::consts::PI * x / l).sin();
+            0.5 * g * g * (1.0 - (z / t).powi(3))
+        };
+        let truth_fx = |x: f64, z: f64| -> f64 {
+            let p = std::f64::consts::PI / l;
+            (p * x).sin() * (p * x).cos() * p * (1.0 - (z / t).powi(3))
+        };
+        let truth_fz = |x: f64, z: f64| -> f64 {
+            let g = (std::f64::consts::PI * x / l).sin();
+            0.5 * g * g * (-3.0 * z * z / (t * t * t))
+        };
+        let (mx, mz) = (16, 9);
+        let st: Vec<f64> = (0..mx).map(|i| l * i as f64 / (mx - 1) as f64).collect();
+        let wl: Vec<f64> = (0..mz).map(|j| t * j as f64 / (mz - 1) as f64).collect();
+        let mut y = vec![0.0; mx * mz];
+        let mut fx = vec![0.0; mx * mz];
+        let mut fz = vec![0.0; mx * mz];
+        for (i, &x) in st.iter().enumerate() {
+            for (j, &z) in wl.iter().enumerate() {
+                y[i * mz + j] = truth(x, z);
+                fx[i * mz + j] = truth_fx(x, z);
+                fz[i * mz + j] = truth_fz(x, z);
+            }
+        }
+        let grid = SampleGrid::new(st, wl, y)
+            .unwrap()
+            .with_fx(fx)
+            .unwrap()
+            .with_fz(fz)
+            .unwrap();
+        let opts = FitOptions {
+            degree_x: 3,
+            degree_z: 3,
+            n_ctrl_x: 12,
+            n_ctrl_z: 6,
+            ..FitOptions::default()
+        };
+        let value_only = FitOptions {
+            derivative_weight: 0.0,
+            ..opts
+        };
+        let (h1, _) = fit_grid(&grid, &value_only).unwrap();
+        let (h2, r2) = fit_grid(&grid, &opts).unwrap();
+        assert!(r2.fx_residual.is_some());
+        let err = |h: &Hull| -> f64 {
+            let mut e = 0.0f64;
+            for i in 0..97 {
+                for j in 0..33 {
+                    let x = l * i as f64 / 96.0;
+                    let z = t * j as f64 / 32.0;
+                    e = e.max((h.surface().eval(x, z) - truth(x, z)).abs());
+                }
+            }
+            e
+        };
+        let (e1, e2) = (err(&h1), err(&h2));
+        assert!(
+            e2 < e1,
+            "hermite fit error {e2} not below value-only error {e1}"
+        );
+        assert!(e2 < 2e-3, "hermite fit error {e2}");
+    }
+
+    #[test]
+    fn zero_weight_excludes_a_poisoned_sample() {
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let (st, wl, y) = wigley_grid(l, b, t, 41, 17);
+        let opts = FitOptions::default();
+        let (clean, _) = fit_offsets(&st, &wl, &y, &opts).unwrap();
+        let mut bad = y.clone();
+        let mut w = vec![1.0; y.len()];
+        bad[20 * 17 + 8] = 1e3; // garbage value at an interior sample
+        w[20 * 17 + 8] = 0.0; // ... excluded by weight
+        let grid = SampleGrid::new(st, wl, bad)
+            .unwrap()
+            .with_weights(w)
+            .unwrap();
+        let (fitted, _) = fit_grid(&grid, &opts).unwrap();
+        let (ca, cb) = (clean.surface().control(), fitted.surface().control());
+        for (a, b) in ca.iter().zip(cb) {
+            assert!((a - b).abs() < 1e-9, "{a} vs {b}");
+        }
     }
 
     #[test]
@@ -409,6 +643,7 @@ mod tests {
             degree_z: 3,
             n_ctrl_x: 14,
             n_ctrl_z: 9,
+            ..FitOptions::default()
         };
         let (hull, report) = fit_offsets(&stations, &waterlines, &y, &opts).unwrap();
         assert!(
@@ -442,5 +677,11 @@ mod tests {
         // Too few samples for the control net.
         let few: Vec<f64> = (0..5).map(|i| i as f64).collect();
         assert!(fit_offsets(&few, &ok_wl, &vec![1.0; 5 * 12], &opts).is_err());
+        // Bad derivative weight.
+        let bad_opts = FitOptions {
+            derivative_weight: f64::NAN,
+            ..FitOptions::default()
+        };
+        assert!(fit_offsets(&ok_st, &ok_wl, &y, &bad_opts).is_err());
     }
 }
