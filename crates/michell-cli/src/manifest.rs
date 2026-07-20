@@ -359,9 +359,21 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         .chain(["sinkage", "trim_deg", "volume", "lcb"].iter().map(|s| s.to_string()))
         .chain(if vcg_mode { &["gz", "rm"][..] } else { &[] }.iter().map(|s| s.to_string()))
         .chain(
-            ["dry", "speed", "froude", "rw", "rv", "rt", "pe", "interference", "cw", "ct"]
-                .iter()
-                .map(|s| s.to_string()),
+            [
+                "dry",
+                "band_exceeded",
+                "speed",
+                "froude",
+                "rw",
+                "rv",
+                "rt",
+                "pe",
+                "interference",
+                "cw",
+                "ct",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
         )
         .collect();
     let mut out = String::new();
@@ -435,6 +447,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         } else {
             let mut members = Vec::new();
             let mut dry = 0usize;
+            let mut band_exceeded = 0usize;
             let mut volume = 0.0;
             let mut moment = 0.0;
             for (h, pose) in hulls.iter().zip(&poses) {
@@ -447,6 +460,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         volume += sb.hull.displaced_volume();
                         moment +=
                             (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
+                        band_exceeded += sb.band_exceeded;
                         members.push((sb.hull, sb.placement));
                     }
                     None => dry += 1,
@@ -454,7 +468,11 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (
-                FleetState { members, dry },
+                FleetState {
+                    members,
+                    dry,
+                    band_exceeded,
+                },
                 0.0,
                 0.0,
                 volume,
@@ -496,6 +514,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .chain(gz_rm.map(|(gz, rm)| [gz, rm]).into_iter().flatten())
                 .chain([
                     state.dry as f64,
+                    state.band_exceeded as f64,
                     u,
                     froude,
                     rw,

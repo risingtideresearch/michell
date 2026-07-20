@@ -1073,7 +1073,11 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                     moment += m.hull.lcb_x() * m.hull.displaced_volume();
                     members.push((m.hull, m.placement));
                 }
-                fleets.push(michell::float::FleetState { members, dry: 0 });
+                fleets.push(michell::float::FleetState {
+                    members,
+                    dry: 0,
+                    band_exceeded: 0,
+                });
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (0.0, 0.0, volume, lcb, dry)
