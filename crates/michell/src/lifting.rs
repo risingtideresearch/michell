@@ -228,7 +228,7 @@ pub fn parabolic_camber_slope(m: f64) -> impl Fn(f64) -> f64 {
 /// Dense linear solve `A x = b` by Gaussian elimination with partial pivoting.
 /// `a` is consumed row-major; systems here are small (a few hundred rows).
 #[allow(clippy::needless_range_loop)] // index loops read clearest for elimination
-fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
+pub(crate) fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Vec<f64> {
     let n = b.len();
     for col in 0..n {
         // Partial pivot.

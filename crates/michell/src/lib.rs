@@ -65,6 +65,7 @@ mod hull;
 pub mod hulls;
 pub mod iges;
 pub mod lifting;
+pub mod lifting3d;
 mod michell;
 mod moments;
 mod quadrature;
