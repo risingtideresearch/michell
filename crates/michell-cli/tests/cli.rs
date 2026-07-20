@@ -808,3 +808,25 @@ fn wake_writes_png_and_json() {
     let first: f64 = zeta[..zeta.find(',').unwrap()].parse().unwrap();
     assert!(first.is_finite());
 }
+
+#[test]
+fn render_writes_png() {
+    let hull_path = tmp("wigley_render.hull");
+    run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
+    let png_path = tmp("render.png");
+    run_ok(bin().args([
+        "render",
+        hull_path.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--grid",
+        "120",
+        "--size",
+        "160x100",
+        "-o",
+        png_path.to_str().unwrap(),
+    ]));
+    let bytes = std::fs::read(&png_path).unwrap();
+    assert!(bytes.len() > 1000, "png too small: {}", bytes.len());
+    assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+}

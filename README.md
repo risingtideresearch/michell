@@ -151,9 +151,10 @@ michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
 michell spectrum wigley.hull --speed 3              # free-wave spectrum (CSV)
 michell wake boat-*.hull --speed 8 --knots -o wake.png   # Kelvin wake heatmap
+michell render boat-*.hull --speed 8 --knots -o shot.png # 3D shot in the wake
 ```
 
-**Wave field** (`spectrum`, `wake`; one speed via `--speed` or `--froude`):
+**Wave field** (`spectrum`, `wake`, `render`; one speed via `--speed` or `--froude`):
 the far-field wave pattern is reconstructed from the same exactly-evaluated
 amplitude function `F = I + iJ` the resistance uses. `spectrum` tabulates the
 free-wave spectrum by propagation angle θ — elevation amplitude density |A(θ)|
@@ -167,11 +168,15 @@ interference cancels. `wake` evaluates the Kelvin pattern
 ```
 
 on a grid and renders a PNG heatmap (blue trough / red crest, hull
-waterplanes in gray), or emits CSV/JSON for other tooling. Conventions: the
-ship advances toward +x, so the wake trails toward −x; the reconstruction is
-the far-field free-wave part of the linear solution, physical astern of each
-hull (not on or ahead of it). Grids too coarse for the shortest diverging
-waves are smoothly band-limited and flagged. The magnitude of A is pinned by
+waterplanes in gray), or emits CSV/JSON for other tooling. `render` puts the
+hulls in that wave field as a 3D shot (zero-dependency software rasterizer;
+`--camera AZ:EL[:DIST]` to move the view, `--z-scale` to exaggerate the
+waves). Conventions: the ship advances toward +x, so the wake trails toward
+−x; the reconstruction is the far-field free-wave part of the linear
+solution, physical astern of each hull (not on or ahead of it) — both PNGs
+fade the water where that caveat bites, and `render` shows hulls at the
+static waterline (no dynamic sinkage or trim). Grids too coarse for the
+shortest diverging waves are smoothly band-limited and flagged. The magnitude of A is pinned by
 the deep-water free-wave resistance identity R_w = ½πρU² ∫|A|²cos³θ dθ; the
 phase follows Tuck, Scullen & Lazauskas mapped to these conventions.
 
