@@ -67,6 +67,7 @@ pub mod iges;
 mod michell;
 mod moments;
 mod quadrature;
+pub mod spectrum;
 pub mod stl;
 
 pub use bspline::BSplineSurface;
@@ -79,6 +80,8 @@ pub use michell::{
     inner_integrals, multihull_wave_resistance, multihull_wave_resistance_with, wave_resistance,
     wave_resistance_with, Placement, WaveOptions, WaveResistance,
 };
+pub use moments::C64;
+pub use spectrum::{FreeWaveSpectrum, WaveGrid};
 
 /// Combined resistance breakdown.
 #[derive(Debug, Clone, Copy)]

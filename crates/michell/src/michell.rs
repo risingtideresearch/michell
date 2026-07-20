@@ -93,9 +93,13 @@ pub fn multihull_wave_resistance(
 ///
 /// In thin-ship theory the far-field free-wave amplitudes superpose: hull `j`
 /// at longitudinal offset `Δx_j` and transverse position `y_j` contributes
-/// `F_j(λ) · exp(i ν (λ Δx_j + λ √(λ²−1) y_j))`, and the resistance integrand
-/// uses `|Σ_j …|²`. For two identical hulls separated by `s` this reduces to
-/// the classical catamaran interference factor `4 cos²(½ ν s λ √(λ²−1))`.
+/// `F_j(λ) · exp(i ν (λ Δx_j ± λ √(λ²−1) y_j))` to the wave system
+/// propagating at ±θ off the track, and the resistance integrand is the mean
+/// of the two systems, `½ (|Σ_j …₊|² + |Σ_j …₋|²)` (the θ < 0 half of the
+/// free-wave spectrum; the two differ only for fleets that are not
+/// mirror-symmetric about their mean centerplane, e.g. staggered pairs). For
+/// two identical hulls separated by `s` this reduces to the classical
+/// catamaran interference factor `4 cos²(½ ν s λ √(λ²−1))`.
 ///
 /// Each member hull must itself be symmetric about its own centerplane (the
 /// crate's geometry contract); asymmetric demihulls are not modelled.
@@ -154,26 +158,32 @@ pub fn multihull_wave_resistance_with(
         .iter()
         .map(|(h, p)| (InnerIntegral::new(h, nu), h.x_center() + p.x - cx_ref, p.y - y_ref))
         .collect();
-    let mut amp = |lambda: f64| -> C64 {
+    let mut amp_sq = |lambda: f64| -> f64 {
         let kx = nu * lambda;
         let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-        let mut a = C64::ZERO;
+        let mut plus = C64::ZERO;
+        let mut minus = C64::ZERO;
         for (inner, dx, dy) in inners.iter_mut() {
-            a = a + inner.eval(lambda) * C64::cis(kx * *dx + ky * *dy);
+            let f = inner.eval(lambda);
+            if f == C64::ZERO {
+                continue;
+            }
+            plus = plus + f * C64::cis(kx * *dx + ky * *dy);
+            minus = minus + f * C64::cis(kx * *dx - ky * *dy);
         }
-        a
+        0.5 * (plus.abs_sq() + minus.abs_sq())
     };
 
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp, &mut evals);
+    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(&params, frac, &mut amp, &mut evals);
+        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
         evals_total += evals;
         let scale = refined.abs().max(f64::MIN_POSITIVE);
         est_rel = (refined - integral).abs() / scale;
@@ -224,11 +234,12 @@ struct OuterParams {
 }
 
 /// Marching-panel Gauss–Legendre integration of
-/// `∫_0^{π/2} |A(sec θ)|² sec³θ dθ` for a combined amplitude `A`.
+/// `∫_0^{π/2} |A(sec θ)|² sec³θ dθ`, where `amp_sq` supplies the combined
+/// `|A|²` of the fleet's two (±θ) wave systems.
 fn integrate_outer(
     params: &OuterParams,
     frac: f64,
-    amp: &mut impl FnMut(f64) -> C64,
+    amp_sq: &mut impl FnMut(f64) -> f64,
     evals: &mut usize,
 ) -> (f64, f64) {
     const GL_N: usize = 16;
@@ -279,8 +290,7 @@ fn integrate_outer(
         for (i, &xi) in gx.iter().enumerate() {
             let th = mid + half * xi;
             let sec = 1.0 / th.cos();
-            let a = amp(sec);
-            panel += gw[i] * a.abs_sq() * sec * sec * sec;
+            panel += gw[i] * amp_sq(sec) * sec * sec * sec;
         }
         panel *= half;
         total += panel;
@@ -309,7 +319,7 @@ fn integrate_outer(
 }
 
 /// Exact (per-span closed-form) evaluation of I + iJ at λ.
-struct InnerIntegral<'h> {
+pub(crate) struct InnerIntegral<'h> {
     hull: &'h Hull,
     nu: f64,
     /// Scratch: z-moments including the e^{−κ z0} shift, [n_spans_z][q+1].
@@ -323,7 +333,7 @@ struct InnerIntegral<'h> {
 }
 
 impl<'h> InnerIntegral<'h> {
-    fn new(hull: &'h Hull, nu: f64) -> Self {
+    pub(crate) fn new(hull: &'h Hull, nu: f64) -> Self {
         let p = hull.surface().degree_x();
         let q = hull.surface().degree_z();
         InnerIntegral {
@@ -340,7 +350,7 @@ impl<'h> InnerIntegral<'h> {
     /// I + iJ at λ = sec θ. Phases use x relative to the hull midpoint (a pure
     /// phase factor on I + iJ that leaves |I + iJ|² unchanged, but keeps the
     /// oscillatory arguments as small as possible).
-    fn eval(&mut self, lambda: f64) -> C64 {
+    pub(crate) fn eval(&mut self, lambda: f64) -> C64 {
         let nu = self.nu;
         let kx = nu * lambda;
         let kappa = nu * lambda * lambda;
@@ -399,6 +409,29 @@ impl<'h> InnerIntegral<'h> {
 mod tests {
     use super::*;
     use crate::hulls::wigley;
+
+    #[test]
+    fn staggered_fleet_resistance_is_mirror_symmetric() {
+        // A staggered pair and its mirror image about y = 0 are the same
+        // physical system; the resistance must not change. (Regression: the
+        // integrand once used only the +θ wave system, which broke this.)
+        let hull = wigley(8.0, 0.8, 0.5).unwrap();
+        let cond = crate::Conditions::seawater(2.5);
+        let a = [
+            (&hull, Placement { x: 0.0, y: 1.4 }),
+            (&hull, Placement { x: 1.7, y: -1.4 }),
+        ];
+        let b = [
+            (&hull, Placement { x: 0.0, y: -1.4 }),
+            (&hull, Placement { x: 1.7, y: 1.4 }),
+        ];
+        let ra = multihull_wave_resistance(&a, &cond).unwrap().resistance;
+        let rb = multihull_wave_resistance(&b, &cond).unwrap().resistance;
+        assert!(
+            (ra - rb).abs() <= 1e-9 * ra,
+            "staggered {ra} vs mirrored {rb}"
+        );
+    }
 
     #[test]
     fn inner_integral_is_translation_invariant_in_modulus() {

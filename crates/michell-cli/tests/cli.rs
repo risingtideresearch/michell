@@ -725,3 +725,86 @@ fn errors_are_clean() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--speeds or --froude"));
 }
+
+#[test]
+fn spectrum_cross_checks_resistance() {
+    let hull_path = tmp("wigley_spectrum.hull");
+    run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
+    let out = run_ok(bin().args([
+        "spectrum",
+        hull_path.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--json",
+    ]));
+    let reference = michell::wave_resistance(
+        &michell::hulls::wigley(10.0, 1.0, 0.625).unwrap(),
+        &michell::Conditions::seawater(3.0),
+    )
+    .unwrap()
+    .resistance;
+    let rw_michell = json_num(&out, "rw_michell");
+    let rw_spectrum = json_num(&out, "rw_spectrum");
+    assert!((rw_michell - reference).abs() < 1e-6 * reference);
+    assert!(
+        (rw_spectrum - rw_michell).abs() < 1e-2 * rw_michell,
+        "spectrum {rw_spectrum} vs michell {rw_michell}"
+    );
+
+    // CSV variant has the documented header and the right row count.
+    let csv = run_ok(bin().args([
+        "spectrum",
+        hull_path.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--points",
+        "101",
+    ]));
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "theta_deg,lambda,wavelength_m,amp_re,amp_im,amp_abs,drw_dtheta,cum_fraction"
+    );
+    assert_eq!(lines.count(), 101);
+}
+
+#[test]
+fn wake_writes_png_and_json() {
+    let hull_path = tmp("wigley_wake.hull");
+    run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
+    let png_path = tmp("wake.png");
+    run_ok(bin().args([
+        "wake",
+        hull_path.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--region",
+        "-30:-5:-10:10",
+        "--size",
+        "200x150",
+        "-o",
+        png_path.to_str().unwrap(),
+    ]));
+    let bytes = std::fs::read(&png_path).unwrap();
+    assert!(bytes.len() > 1000, "png too small: {}", bytes.len());
+    assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+
+    let out = run_ok(bin().args([
+        "wake",
+        hull_path.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--region",
+        "-30:-10:-6:6",
+        "--size",
+        "50x20",
+        "--json",
+    ]));
+    assert_eq!(json_num(&out, "nx"), 50.0);
+    assert_eq!(json_num(&out, "ny"), 20.0);
+    assert!(out.contains("\"zeta\":[["));
+    // The wake is not flat.
+    let zeta = &out[out.find("\"zeta\":[[").unwrap() + 9..];
+    let first: f64 = zeta[..zeta.find(',').unwrap()].parse().unwrap();
+    assert!(first.is_finite());
+}

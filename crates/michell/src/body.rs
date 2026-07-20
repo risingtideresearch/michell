@@ -153,25 +153,49 @@ impl Body {
             zw,
         };
 
-        // Forward-scan the body to find the wetted extents in the water frame.
+        // Forward-scan the body per body-fixed x column: the column's deepest
+        // immersion m(x) is a max of finitely many functions continuous in
+        // the pose/state, so extents derived from its zero crossings vary
+        // CONTINUOUSLY with sinkage and trim. This matters: snapping extents
+        // to scan cells makes V(sinkage) a staircase whose steps can exceed
+        // the equilibrium tolerance, trapping the solver between treads.
         const SCAN: usize = 97;
-        let mut draft = 0.0f64;
-        let (mut wx_lo, mut wx_hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        let mut any_wet = false;
+        let mut col_x = [0.0f64; SCAN]; // water-frame x at the column's deepest point
+        let mut col_m = [f64::NEG_INFINITY; SCAN]; // deepest immersion of the column
         for i in 0..SCAN {
             let xb = x0 + (x1 - x0) * i as f64 / (SCAN - 1) as f64;
             for j in 0..SCAN {
                 let zb = depth * j as f64 / (SCAN - 1) as f64;
-                let (xw, zw) = map.body_to_water(xb, zb);
-                if zw >= -1e-12 {
-                    any_wet = true;
-                    draft = draft.max(zw);
-                    wx_lo = wx_lo.min(xw);
-                    wx_hi = wx_hi.max(xw);
+                let (xw, zdepth) = map.body_to_water(xb, zb);
+                if zdepth > col_m[i] {
+                    col_m[i] = zdepth;
+                    col_x[i] = xw;
                 }
             }
         }
-        if !any_wet || !(draft > 0.0 && wx_hi > wx_lo) {
+        let draft = col_m.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+        if !(draft > 1e-12) {
+            return Ok(None);
+        }
+        let first = col_m.iter().position(|&m| m >= 0.0).expect("draft > 0");
+        let last = col_m.iter().rposition(|&m| m >= 0.0).expect("draft > 0");
+        // Interpolate the wet/dry crossing into the neighbouring dry column.
+        let mut wx_lo = col_x[first];
+        let mut wx_hi = col_x[last];
+        if first > 0 {
+            let (ma, mb) = (col_m[first - 1], col_m[first]);
+            let t = ma / (ma - mb);
+            wx_lo = col_x[first - 1] + (col_x[first] - col_x[first - 1]) * t;
+        }
+        if last + 1 < SCAN {
+            let (ma, mb) = (col_m[last + 1], col_m[last]);
+            let t = ma / (ma - mb);
+            wx_hi = col_x[last + 1] + (col_x[last] - col_x[last + 1]) * t;
+        }
+        if wx_lo > wx_hi {
+            std::mem::swap(&mut wx_lo, &mut wx_hi);
+        }
+        if !(wx_hi > wx_lo) {
             return Ok(None);
         }
 
