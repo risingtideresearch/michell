@@ -5,7 +5,10 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{siunitx}
+\usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
+
+\emergencystretch=3em
 
 \newcommand{\ii}{\mathrm{i}}
 \newcommand{\dd}{\,\mathrm{d}}
@@ -369,9 +372,9 @@ and the complex amplitude \emph{density} is
   \label{eq:Adef}
 \end{equation}
 with $\overline{(\cdot)}$ the complex conjugate and $(x_j, y_j)$ hull $j$'s
-midpoint in fleet coordinates (\texttt{FreeWaveSpectrum::amp\_pair}). The
-conjugate-and-$-\tfrac{2\nu}\pi\sec^3\theta$ prefactor fixes both magnitude and
-phase: it follows Tuck, Scullen \& Lazauskas (2001, 2002) mapped to this crate's
+midpoint in fleet coordinates (\texttt{amp\_pair}). The
+conjugate and the $-\tfrac{2\nu}{\pi}\sec^{3}\theta$ prefactor together fix both
+magnitude and phase: they follow Tuck, Scullen \& Lazauskas (2001, 2002) mapped to this crate's
 conventions, and reproduces the classical Havelock point-source phase (a bow
 source's transverse system trails a crest first). Its magnitude is pinned by the
 free-wave resistance identity, which reproduces \eqref{eq:michell-theta} term for
@@ -381,7 +384,8 @@ term:
     \int_{-\pi/2}^{\pi/2} |A(\theta)|^{2}\cos^{3}\theta \dd\theta .
   \label{eq:Rspec}
 \end{equation}
-The integrand $\tfrac12\pi\rho U^{2}|A(\theta)|^{2}\cos^{3}\theta$ is the angular
+The integrand of \eqref{eq:Rspec}, namely
+$\tfrac12\pi\rho U^{2}|A(\theta)|^{2}\cos^{3}\theta$, is the angular
 resistance density $\dd\Rw/\dd\theta$ (\texttt{resistance\_density}).
 
 \subsection{Elevation grid}
