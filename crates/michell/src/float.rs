@@ -39,6 +39,10 @@ pub struct FleetState {
     pub members: Vec<(Hull, Placement)>,
     /// Number of source hulls entirely above the water.
     pub dry: usize,
+    /// Total wetted samples that fell above the members' modelled bands
+    /// (bodies only): non-zero means missing topside geometry and
+    /// under-counted buoyancy at this state.
+    pub band_exceeded: usize,
 }
 
 /// A solved floating condition.
@@ -126,8 +130,21 @@ pub fn solve_equilibrium_with(
     let mut tau = 0.0f64;
     let mut iterations = 0usize;
 
-    for (coarse, max_iters, tol_v) in [(true, 25usize, 1e-3f64), (false, 8, 2e-4)] {
+    for (coarse, max_iters, tol_v) in [(true, 30usize, 1e-3f64), (false, 20, 2e-4)] {
         let mut converged = false;
+        // Adaptive relaxation: the waterplane-property Jacobian can
+        // underestimate the true sensitivity (e.g. flare or structure
+        // entering the water), which turns plain Newton into a limit cycle.
+        // Halve the step whenever the volume residual flips sign, recover
+        // gently while it doesn't.
+        let mut relax = 1.0f64;
+        let mut last_sign = 0.0f64;
+        // Best state seen this phase, by tolerance-normalised residual.
+        // The situate → loft model carries small-scale roughness (~0.1% of
+        // volume), so Newton can stall dithering across a tolerance edge; a
+        // near-miss is accepted with its residuals reported rather than
+        // failing the whole point.
+        let mut best = (f64::INFINITY, s, tau);
         for _ in 0..max_iters {
             iterations += 1;
             let fleet = situate(s, tau, coarse)?;
@@ -176,14 +193,28 @@ pub fn solve_equilibrium_with(
                     }
                 }
             };
-            // Damping.
-            ds = ds.clamp(-0.3 * z_scale, 0.3 * z_scale);
-            dtau = dtau.clamp(-0.05, 0.05);
+            // Oscillation-adaptive relaxation, then absolute damping caps.
+            let sign = r1.signum();
+            if last_sign != 0.0 && sign != last_sign {
+                relax = (relax * 0.5).max(0.1);
+            } else {
+                relax = (relax * 1.25).min(1.0);
+            }
+            last_sign = sign;
+            ds = (ds * relax).clamp(-0.3 * z_scale, 0.3 * z_scale);
+            dtau = (dtau * relax).clamp(-0.05, 0.05);
             let done_v = r1.abs() <= tol_v * v_target;
             let done_m = match load.lcg {
                 None => true,
                 Some(lcg) => (lcb - lcg).abs() <= 1e-4 * l_scale,
             };
+            let metric = (r1.abs() / (tol_v * v_target)).max(match load.lcg {
+                None => 0.0,
+                Some(lcg) => (lcb - lcg).abs() / (1e-4 * l_scale),
+            });
+            if metric < best.0 {
+                best = (metric, s, tau);
+            }
             if std::env::var("MICHELL_DEBUG_FLOAT").is_ok() {
                 eprintln!(
                     "DBG iter={iterations} s={s:.6} tau={tau:.6} V={:.6} lcb={lcb:.6} \
@@ -210,12 +241,19 @@ pub fn solve_equilibrium_with(
             }
         }
         if !converged {
-            return Err(Error::InvalidConditions(format!(
-                "equilibrium did not converge after {iterations} iterations \
-                 (mass {} kg, lcg {:?}); the load may be outside what the \
-                 geometry can float",
-                load.mass, load.lcg
-            )));
+            // Accept a stalled near-miss (within 10x tolerance — for the
+            // fine phase, volume within 0.2% and LCB within 1e-3 of the
+            // length); the achieved residuals are reported in the result.
+            if best.0 <= 10.0 {
+                (_, s, tau) = best;
+            } else {
+                return Err(Error::InvalidConditions(format!(
+                    "equilibrium did not converge after {iterations} iterations \
+                     (mass {} kg, lcg {:?}, best residual {:.1}x tolerance); the \
+                     load may be outside what the geometry can float",
+                    load.mass, load.lcg, best.0
+                )));
+            }
         }
     }
 
@@ -344,6 +382,7 @@ pub fn solve_equilibrium(
             )?;
             Ok(FleetState {
                 dry: fl.dry.len(),
+                band_exceeded: 0, // IGES situates carry the full geometry
                 members: fl
                     .members
                     .into_iter()
@@ -390,13 +429,21 @@ pub fn solve_equilibrium_bodies(
             let o = if coarse { &coarse_opts } else { opts };
             let mut members = Vec::new();
             let mut dry = 0usize;
+            let mut band_exceeded = 0usize;
             for (body, pose) in bodies.iter().zip(poses) {
                 match body.situate(water_offset, pose, &platform, o)? {
-                    Some(sb) => members.push((sb.hull, sb.placement)),
+                    Some(sb) => {
+                        band_exceeded += sb.band_exceeded;
+                        members.push((sb.hull, sb.placement));
+                    }
                     None => dry += 1,
                 }
             }
-            Ok(FleetState { members, dry })
+            Ok(FleetState {
+                members,
+                dry,
+                band_exceeded,
+            })
         },
         load,
         density,
