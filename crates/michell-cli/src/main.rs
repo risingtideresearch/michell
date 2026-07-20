@@ -495,16 +495,42 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
         println!("{out}");
         return Ok(());
     }
+    // Several hulls (a multihull file, or several specs): lead with a fleet
+    // overview so the shape of the fleet is visible before the per-hull
+    // detail blocks.
+    if members.len() > 1 {
+        println!("fleet: {} hulls", members.len());
+        for (i, m) in members.iter().enumerate() {
+            println!(
+                "  [{}] {}  y {:+.4} m  length {:.4} m  draft {:.4} m  \
+                 displaced vol {:.4} m^3",
+                i + 1,
+                m.path,
+                m.placement.y,
+                m.hull.length(),
+                m.hull.draft(),
+                m.hull.displaced_volume()
+            );
+        }
+        let total_s: f64 = members.iter().map(|m| m.hull.wetted_surface()).sum();
+        let total_v: f64 = members.iter().map(|m| m.hull.displaced_volume()).sum();
+        println!("  total: wetted surface {total_s:.4} m^2, displaced vol {total_v:.4} m^3");
+    }
     for (i, m) in members.iter().enumerate() {
-        if i > 0 {
+        if i > 0 || members.len() > 1 {
             println!();
         }
+        let name = if members.len() > 1 {
+            format!("hull [{}]: {}", i + 1, m.path)
+        } else {
+            format!("hull: {}", m.path)
+        };
         if m.placement == Placement::default() {
-            println!("hull: {}", m.path);
+            println!("{name}");
         } else {
             println!(
-                "hull: {} (placed at dx {:+.3} m, y {:.4} m)",
-                m.path, m.placement.x, m.placement.y
+                "{name} (placed at dx {:+.3} m, y {:.4} m)",
+                m.placement.x, m.placement.y
             );
         }
         for line in describe_source(&m.source) {
@@ -521,15 +547,6 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
             s.degree_z(),
             s.n_ctrl_x(),
             s.n_ctrl_z()
-        );
-    }
-    if members.len() > 1 {
-        let total_s: f64 = members.iter().map(|m| m.hull.wetted_surface()).sum();
-        let total_v: f64 = members.iter().map(|m| m.hull.displaced_volume()).sum();
-        println!();
-        println!(
-            "fleet: {} hulls, wetted surface {total_s:.4} m^2, displaced vol {total_v:.4} m^3",
-            members.len()
         );
     }
     Ok(())

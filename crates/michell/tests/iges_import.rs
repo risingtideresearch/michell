@@ -246,8 +246,9 @@ fn wigley_shell_bodies(y0: f64) -> Vec<String> {
     bodies
 }
 
-/// Assemble a complete metres-unit IGES file from 128-entity bodies.
-fn iges_file_meters(bodies: &[String]) -> String {
+/// Assemble a complete metres-unit IGES file from (entity type, P body)
+/// pairs; entity `k` gets directory entry `2k + 1`.
+fn iges_file_meters_entities(entities: &[(i32, String)]) -> String {
     let mut s = String::new();
     s.push_str(&line("michell multipatch test", 'S', 1));
     let global = ",,7Hmichell,9Hmulti.igs,7Hmichell,7Hmichell,32,38,6,308,15,\
@@ -264,20 +265,26 @@ fn iges_file_meters(bodies: &[String]) -> String {
     // Pack all P bodies first to learn line counts, then directory entries.
     let mut packed = Vec::new();
     let mut p_at = 1usize;
-    for (k, body) in bodies.iter().enumerate() {
+    for (k, (_, body)) in entities.iter().enumerate() {
         let de = 2 * k + 1;
         let (text, n) = pack_params(body, de, p_at);
         packed.push((text, p_at, n));
         p_at += n;
     }
-    for (k, (_, ptr, n)) in packed.iter().enumerate() {
-        s.push_str(&dir_entry(128, *ptr, *n, 0, 2 * k + 1));
+    for (k, (ptr, n)) in packed.iter().map(|(_, p, n)| (p, n)).enumerate() {
+        s.push_str(&dir_entry(entities[k].0, *ptr, *n, 0, 2 * k + 1));
     }
     for (text, _, _) in &packed {
         s.push_str(text);
     }
     s.push_str(&line("S      1G      2D      8P     99", 'T', 1));
     s
+}
+
+/// Assemble a complete metres-unit IGES file from 128-entity bodies.
+fn iges_file_meters(bodies: &[String]) -> String {
+    let entities: Vec<(i32, String)> = bodies.iter().map(|b| (128, b.clone())).collect();
+    iges_file_meters_entities(&entities)
 }
 
 /// A single offset Wigley full shell (one detected hull at y = 7).
@@ -447,6 +454,60 @@ fn trimaran_file_imports_as_fleet_with_detected_placements() {
         format!("{err}").contains("ambiguous"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn bounded_base_plane_does_not_bridge_hulls() {
+    // A catamaran (full shells at y = 0 and y = 7) plus a submerged plane
+    // whose untrimmed extent spans both hulls, wrapped as a bounded surface
+    // (143) whose boundary (141) keeps only a plank under the first hull —
+    // the shape SubD/T-spline exporters produce. The phantom untrimmed
+    // region must not weld the two hulls into one cluster.
+    let mut ents: Vec<(i32, String)> = wigley_shell_bodies(0.0)
+        .into_iter()
+        .chain(wigley_shell_bodies(7.0))
+        .map(|b| (128, b))
+        .collect();
+    // Bilinear plane at z = 0.2 (0.5 m below the DWL): x = 10u, y = -0.4 + 7.8v.
+    let plane_de = 2 * ents.len() + 1;
+    ents.push((
+        128,
+        "128,1,1,1,1,0,0,1,0,0,0.0,0.0,1.0,1.0,0.0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,\
+         0.0,-0.4,0.2,10.0,-0.4,0.2,0.0,7.4,0.2,10.0,7.4,0.2,0.0,1.0,0.0,1.0;"
+            .into(),
+    ));
+    // Parameter-space boundary curve: the diagonal of the kept rectangle
+    // v <= 0.1, i.e. y <= 0.38 (only its bounding box matters).
+    let pcurve_de = 2 * ents.len() + 1;
+    ents.push((
+        126,
+        "126,1,1,0,0,1,0,0.0,0.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,1.0,0.1,0.0,0.0,1.0;"
+            .into(),
+    ));
+    let boundary_de = 2 * ents.len() + 1;
+    ents.push((141, format!("141,1,1,{plane_de},1,{pcurve_de},1,1,{pcurve_de};")));
+    ents.push((143, format!("143,1,{plane_de},1,{boundary_de};")));
+
+    let text = iges_file_meters_entities(&ents);
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    assert_eq!(src.len(), 2, "expected 2 hulls, plane restricted to a plank");
+
+    let mut opts = import_opts();
+    opts.waterline_z = 0.7;
+    let fleet = iges::import_fleet(&text, &opts).unwrap();
+    assert_eq!(fleet.len(), 2);
+    // The plank joins the first hull; the second imports untouched.
+    assert!(fleet[0].placement.y.abs() < 0.1, "y {}", fleet[0].placement.y);
+    assert_eq!(fleet[0].report.patches, 5);
+    assert!((fleet[1].placement.y - 7.0).abs() < 1e-6, "y {}", fleet[1].placement.y);
+    assert_eq!(fleet[1].report.patches, 4);
+    assert!(fleet[1].report.fit.max_residual < 1e-8);
+
+    // Without the bounded-surface wrapper the untrimmed plane really does
+    // bridge the hulls — the hazard this test guards against.
+    let unwrapped = iges_file_meters_entities(&ents[..ents.len() - 2]);
+    let src = iges::source_fleet(&unwrapped, 0.7).unwrap();
+    assert_eq!(src.len(), 1);
 }
 
 #[test]

@@ -3,8 +3,10 @@
 //! Scope: **untrimmed rational B-spline surfaces** (entity 128) — one or many
 //! patches — with optional transformation matrices (entity 124) and unit
 //! conversion from the global section. Bounded-surface wrappers (143/141), as
-//! produced by SubD/T-spline → NURBS exports, are tolerated on the assumption
-//! that the boundaries are the natural patch rectangles; genuinely *trimmed*
+//! produced by SubD/T-spline → NURBS exports, are supported approximately:
+//! each base surface is restricted to the parameter-space **bounding box** of
+//! its boundary curves, which is exact for rectangular boundaries (the common
+//! natural-patch case) and conservative otherwise. Genuinely *trimmed*
 //! surfaces (entities 142/144) are rejected. This is a hull-surface importer,
 //! not a CAD kernel.
 //!
@@ -61,6 +63,11 @@ pub struct NurbsSurface3 {
     pub ctrl: Vec<[f64; 3]>,
     /// Same layout as `ctrl`.
     pub weights: Vec<f64>,
+    /// `[u0, u1, v0, v1]` bounding box of this surface's boundary in
+    /// parameter space, when the file marks it as the base of a bounded
+    /// surface (entity 143). Sampling is restricted to this box: the region
+    /// outside the boundary is construction geometry, not shell.
+    pub trim_uv: Option<[f64; 4]>,
 }
 
 impl NurbsSurface3 {
@@ -75,11 +82,13 @@ impl NurbsSurface3 {
     }
 
     pub fn u_domain(&self) -> (f64, f64) {
-        (self.knots_u[self.degree_u], self.knots_u[self.n_ctrl_u])
+        let full = (self.knots_u[self.degree_u], self.knots_u[self.n_ctrl_u]);
+        clip_domain(full, self.trim_uv.map(|t| (t[0], t[1])))
     }
 
     pub fn v_domain(&self) -> (f64, f64) {
-        (self.knots_v[self.degree_v], self.knots_v[self.n_ctrl_v])
+        let full = (self.knots_v[self.degree_v], self.knots_v[self.n_ctrl_v]);
+        clip_domain(full, self.trim_uv.map(|t| (t[2], t[3])))
     }
 
     /// Point and first partials. Assumes uniform weights (polynomial).
@@ -106,6 +115,19 @@ impl NurbsSurface3 {
             }
         }
         (out[0], out[1], out[2])
+    }
+}
+
+/// Intersect a knot domain with an optional trim interval; a trim that
+/// leaves no proper interval is ignored rather than producing an empty or
+/// inverted domain.
+fn clip_domain(full: (f64, f64), trim: Option<(f64, f64)>) -> (f64, f64) {
+    let Some((t0, t1)) = trim else { return full };
+    let (a, b) = (full.0.max(t0), full.1.min(t1));
+    if a < b && a.is_finite() && b.is_finite() {
+        (a, b)
+    } else {
+        full
     }
 }
 
@@ -223,10 +245,125 @@ pub fn parse(text: &str) -> Result<IgesFile> {
         }
     }
 
+    // Bounded surfaces (143): the untrimmed base surface can extend far past
+    // the shell it carries (e.g. a full-width plane trimmed down to a keel
+    // plank). Restrict each base surface to the parameter-space bounding box
+    // of its boundary (141) so the phantom untrimmed region is never
+    // sampled — left in, it can bridge the hulls of a multihull into one
+    // cluster. Boundaries that cannot be resolved leave the surface
+    // unrestricted (the pre-existing behaviour).
+    let de_dir = |de: i64| -> Option<&Dir> {
+        let de = de.unsigned_abs() as usize;
+        if de == 0 || de.is_multiple_of(2) {
+            return None;
+        }
+        dirs.get((de - 1) / 2)
+    };
+    // Bounding box over the control points of a parameter-space curve
+    // (x, y) = (u, v); entities 126, 110, and 102 composites thereof.
+    let curve_uv_bbox = |de0: i64| -> Option<[f64; 4]> {
+        let mut stack = vec![de0];
+        let mut b = [f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY];
+        let mut grow = |u: f64, v: f64| {
+            b[0] = b[0].min(u);
+            b[1] = b[1].max(u);
+            b[2] = b[2].min(v);
+            b[3] = b[3].max(v);
+        };
+        while let Some(de) = stack.pop() {
+            let d = de_dir(de)?;
+            let p = entity_params(d.pd_ptr, d.pd_count).ok()?;
+            match d.etype {
+                126 => {
+                    let k = *p.get(1)? as usize;
+                    let m = *p.get(2)? as usize;
+                    let start = 7 + (k + m + 2) + (k + 1);
+                    for i in 0..=k {
+                        grow(*p.get(start + 3 * i)?, *p.get(start + 3 * i + 1)?);
+                    }
+                }
+                110 => {
+                    grow(*p.get(1)?, *p.get(2)?);
+                    grow(*p.get(4)?, *p.get(5)?);
+                }
+                102 => {
+                    let n = *p.get(1)? as usize;
+                    for i in 0..n {
+                        stack.push(*p.get(2 + i)? as i64);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        // Iso-parameter edges are degenerate in one direction; only require
+        // that some points were seen. Degenerate *unions* are discarded when
+        // the trim is applied (`clip_domain` ignores improper intervals).
+        (b[0] <= b[1] && b[2] <= b[3]).then_some(b)
+    };
+    // Boundary (141) -> parameter-space bbox, when it carries pcurves.
+    let boundary_uv_bbox = |de: i64| -> Option<[f64; 4]> {
+        let d = de_dir(de)?;
+        if d.etype != 141 {
+            return None;
+        }
+        let p = entity_params(d.pd_ptr, d.pd_count).ok()?;
+        if *p.get(1)? as i64 != 1 {
+            return None; // model-space representation only
+        }
+        let n = *p.get(4)? as usize;
+        let mut b: Option<[f64; 4]> = None;
+        let mut at = 5;
+        for _ in 0..n {
+            let k = *p.get(at + 2)? as usize;
+            for j in 0..k {
+                let c = curve_uv_bbox(*p.get(at + 3 + j)? as i64)?;
+                let u = b.get_or_insert(c);
+                u[0] = u[0].min(c[0]);
+                u[1] = u[1].max(c[1]);
+                u[2] = u[2].min(c[2]);
+                u[3] = u[3].max(c[3]);
+            }
+            at += 3 + k;
+        }
+        b
+    };
+    // Base-surface DE -> union of its boundaries' bboxes; a 143 with any
+    // unresolvable boundary imposes no restriction.
+    let mut trims: Vec<(usize, [f64; 4])> = Vec::new();
+    for d in dirs.iter().filter(|d| d.etype == 143) {
+        let Ok(p) = entity_params(d.pd_ptr, d.pd_count) else { continue };
+        let (Some(&sptr), Some(&n)) = (p.get(2), p.get(3)) else { continue };
+        let boxes: Option<Vec<[f64; 4]>> = (0..n as usize)
+            .map(|i| p.get(4 + i).and_then(|&b| boundary_uv_bbox(b as i64)))
+            .collect();
+        let Some(boxes) = boxes else { continue };
+        let Some(joined) = boxes.into_iter().reduce(|mut a, c| {
+            a[0] = a[0].min(c[0]);
+            a[1] = a[1].max(c[1]);
+            a[2] = a[2].min(c[2]);
+            a[3] = a[3].max(c[3]);
+            a
+        }) else {
+            continue;
+        };
+        trims.push((sptr.abs() as usize, joined));
+    }
+
     let mut surfaces = Vec::new();
-    for d in dirs.iter().filter(|d| d.etype == 128) {
+    for (idx, d) in dirs.iter().enumerate().filter(|(_, d)| d.etype == 128) {
         let p = entity_params(d.pd_ptr, d.pd_count)?;
         let mut surf = parse_surface_128(&p)?;
+        surf.trim_uv = trims
+            .iter()
+            .filter(|(de, _)| *de == 2 * idx + 1)
+            .map(|(_, b)| *b)
+            .reduce(|mut a, c| {
+                a[0] = a[0].min(c[0]);
+                a[1] = a[1].max(c[1]);
+                a[2] = a[2].min(c[2]);
+                a[3] = a[3].max(c[3]);
+                a
+            });
         if d.transform_de != 0 {
             let m = transforms
                 .iter()
@@ -335,6 +472,7 @@ fn parse_surface_128(p: &[f64]) -> Result<NurbsSurface3> {
         n_ctrl_v: nv,
         ctrl,
         weights,
+        trim_uv: None,
     })
 }
 
@@ -1422,6 +1560,7 @@ mod tests {
             n_ctrl_v: 2,
             ctrl,
             weights,
+            trim_uv: None,
         }
     }
 
@@ -1519,6 +1658,7 @@ mod tests {
                 n_ctrl_v: 2,
                 ctrl: vec![[0.0, y, 0.0], [0.0, y, 2.0], [10.0, y, 0.0], [10.0, y, 2.0]],
                 weights: vec![1.0; 4],
+                trim_uv: None,
             }
         };
         let patches = vec![as_patch(wall(1.0), 9), as_patch(wall(-1.0), 9)];
