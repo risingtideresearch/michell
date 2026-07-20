@@ -1,0 +1,770 @@
+//! `michell view` — an interactive local viewer for fleet wave fields.
+//!
+//! A zero-dependency HTTP server (in the hand-rolled spirit of the rest of the
+//! crate — see [`crate::png`]) serves a single-page browser front end. The
+//! physics runs native: each hull's *standalone* free-wave field is computed
+//! once per (speed, displacement) on a local grid, and the browser composites
+//! the fleet field by translating and summing those per-hull grids as hulls
+//! are dragged around. That superposition is exact in thin-ship theory (the
+//! fleet amplitude is a sum of per-hull amplitudes, each carrying only a
+//! placement phase; see [`michell::FreeWaveSpectrum`]), so dragging is a pure
+//! client-side recomposite at interactive rates with no physics re-run.
+//!
+//! Only speed and displacement changes force a native recompute (ν changes, or
+//! the wetted hull is re-floated): both are parallelised across hulls and take
+//! a fraction of a second, driven from debounced sliders.
+//!
+//! Endpoints (all GET; this is a single-user local tool):
+//!   /                         the page
+//!   /api/state                fleet + view + colour scale as JSON
+//!   /api/field?hull=I         hull I's local ζ grid as little-endian f32
+//!   /api/speed?u=U            recompute all fields at speed U, return state
+//!   /api/displacement?mass=M  re-float the assembly at total mass M
+//!   /api/resistance?p=x,y;... resistance for the given world placements
+
+use crate::formats::{body_options, load_body};
+use crate::{load_fleet, parse_args, Member};
+use michell::body::{Body, BodyOptions};
+use michell::float::{solve_equilibrium_bodies, LoadCase};
+use michell::iges::HullPose;
+use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::Mutex;
+
+const PAGE: &str = include_str!("view.html");
+
+/// A hull's standalone wave field on a local grid (hull-fixed coordinates,
+/// row-major over y then x). The client shifts it by the hull's world
+/// placement and sums across the fleet.
+struct Field {
+    lx0: f64,
+    lx1: f64,
+    ly0: f64,
+    ly1: f64,
+    nx: usize,
+    ny: usize,
+    zeta: Vec<f32>,
+}
+
+/// One fleet member the viewer can manipulate.
+struct ViewHull {
+    name: String,
+    hull: Hull,
+    /// Full-band body, retained so displacement can re-float; `None` for
+    /// sources that cannot be re-floated (wetted-only nets, IGES/STL fleets).
+    body: Option<Body>,
+    /// Design placement in world coordinates; drag offsets are added by the
+    /// client on top of this and never mutate it.
+    home: Placement,
+    /// Beam profile at the waterline: (local x, half-beam) for the glyph.
+    beam: Vec<(f64, f64)>,
+    x0: f64,
+    x1: f64,
+    field: Field,
+}
+
+struct ViewState {
+    hulls: Vec<ViewHull>,
+    cond: Conditions,
+    l_ref: f64,
+    view: [f64; 4],
+    margin: f64,
+    base_px: usize,
+    design_mass: f64,
+    mass: f64,
+    /// Colour saturation elevation [m]: fixed while dragging, refreshed on
+    /// speed/displacement change.
+    vmax: f64,
+    body_opts: BodyOptions,
+}
+
+pub fn cmd_view(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err("usage: michell view <hull>... --speed U [--port N] [options]".into());
+    }
+    let settings = p.load_settings()?;
+    let members = load_fleet(&p.positional, &settings)?;
+
+    let l_ref = members
+        .iter()
+        .map(|m| m.hull.length())
+        .fold(0.0f64, f64::max);
+    let u = crate::single_speed(&p, l_ref)?;
+    let cond = p.conditions(u)?;
+    let port: u16 = match p.flag("port") {
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("--port: cannot parse {s:?}"))?,
+        None => 8737,
+    };
+    let base_px = match p.flag("size") {
+        Some(s) => s
+            .parse::<usize>()
+            .map_err(|_| format!("--size: cannot parse {s:?}"))?
+            .clamp(120, 1600),
+        None => 420,
+    };
+
+    let body_opts = body_options(&settings);
+
+    // Retain a Body per member where the source is a single-body `.hull`
+    // file, so displacement can re-float it. A file contributing several
+    // hulls (an IGES fleet) is not re-floatable member-by-member here.
+    let mut path_counts = std::collections::HashMap::new();
+    for m in &members {
+        *path_counts.entry(m.path.clone()).or_insert(0usize) += 1;
+    }
+
+    let mut hulls: Vec<ViewHull> = Vec::new();
+    let mut design_mass = 0.0;
+    for m in &members {
+        let body = if path_counts[&m.path] == 1 {
+            load_body(&m.path).ok()
+        } else {
+            None
+        };
+        design_mass += m.hull.displaced_volume() * cond.fluid.density;
+        hulls.push(build_view_hull(m, body));
+    }
+
+    // World view: as the `wake` default region, over the whole fleet.
+    let mut x_lo = f64::INFINITY;
+    let mut x_hi = f64::NEG_INFINITY;
+    let mut y_abs = 0.0f64;
+    for h in &hulls {
+        x_lo = x_lo.min(h.x0 + h.home.x);
+        x_hi = x_hi.max(h.x1 + h.home.x);
+        y_abs = y_abs.max(h.home.y.abs());
+    }
+    let x1 = x_hi + 0.35 * l_ref;
+    let x0 = x_lo - 3.0 * l_ref;
+    let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
+    let view = [x0, x1, -yh, yh];
+    // Drag margin: how far a hull may roam from home in each direction. The
+    // per-hull local grids are sized to cover the whole view for any
+    // placement within this margin; keep it modest so recompute stays snappy.
+    let margin = (0.22 * (x1 - x0)).max(1.3 * l_ref);
+
+    let mut state = ViewState {
+        hulls,
+        cond,
+        l_ref,
+        view,
+        margin,
+        base_px,
+        design_mass,
+        mass: design_mass,
+        vmax: 0.0,
+        body_opts,
+    };
+    recompute_fields(&mut state)?;
+
+    let addr = format!("127.0.0.1:{port}");
+    let listener = TcpListener::bind(&addr)
+        .map_err(|e| format!("cannot bind {addr}: {e} (try a different --port)"))?;
+    let url = format!("http://{addr}/");
+    println!(
+        "michell view: {} hull(s) at U = {:.3} m/s (Fn {:.3})\n  open {url}\n  \
+         drag hulls to move them; sliders change speed and displacement; Ctrl-C to stop",
+        state.hulls.len(),
+        state.cond.speed,
+        state.cond.froude_number(state.l_ref),
+    );
+    let _ = std::process::Command::new("open").arg(&url).spawn();
+
+    let state = Mutex::new(state);
+    for stream in listener.incoming() {
+        match stream {
+            Ok(s) => {
+                if let Err(e) = handle(s, &state) {
+                    eprintln!("view: connection error: {e}");
+                }
+            }
+            Err(e) => eprintln!("view: accept error: {e}"),
+        }
+    }
+    Ok(())
+}
+
+fn build_view_hull(m: &Member, body: Option<Body>) -> ViewHull {
+    let (x0, x1) = m.hull.surface().x_domain();
+    let n = 96usize;
+    let beam = (0..n)
+        .map(|i| {
+            let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
+            (x, m.hull.surface().eval(x, 0.0).max(0.0))
+        })
+        .collect();
+    ViewHull {
+        name: hull_name(&m.path),
+        hull: m.hull.clone(),
+        body,
+        home: m.placement,
+        beam,
+        x0,
+        x1,
+        field: Field {
+            lx0: 0.0,
+            lx1: 0.0,
+            ly0: 0.0,
+            ly1: 0.0,
+            nx: 0,
+            ny: 0,
+            zeta: Vec::new(),
+        },
+    }
+}
+
+fn hull_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Recompute every hull's standalone field at the current speed, in parallel
+/// across hulls, then refresh the shared colour scale from the composited
+/// fleet field at the home placements.
+fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
+    let cond = state.cond;
+    let [vx0, vx1, vy0, vy1] = state.view;
+    let margin = state.margin;
+    let base_px = state.base_px;
+
+    // Common pixel spacing: the view resolution, but never coarser than ~8
+    // points per transverse wavelength (which shrinks with speed) so the grid
+    // always resolves the pattern.
+    let nu = cond.gravity / (cond.speed * cond.speed);
+    let lambda = 2.0 * std::f64::consts::PI / nu;
+    let dx = ((vx1 - vx0) / (base_px as f64 - 1.0)).min(lambda / 8.0);
+    let dy = dx;
+
+    // Geometry of each hull's local grid (world = local + placement, the
+    // placement roaming within home ± margin, so local spans the view minus
+    // that range).
+    let geoms: Vec<Field> = state
+        .hulls
+        .iter()
+        .map(|vh| {
+            let lx0 = vx0 - vh.home.x - margin;
+            let lx1 = vx1 - vh.home.x + margin;
+            let ly0 = vy0 - vh.home.y - margin;
+            let ly1 = vy1 - vh.home.y + margin;
+            let nx = (((lx1 - lx0) / dx).round() as usize + 1).clamp(2, 1400);
+            let ny = (((ly1 - ly0) / dy).round() as usize + 1).clamp(2, 1400);
+            Field { lx0, lx1, ly0, ly1, nx, ny, zeta: vec![0.0; nx * ny] }
+        })
+        .collect();
+
+    // Fan out over (hull × row-band) so every core is busy even for a
+    // single-hull fleet. Bands share the row spacing exactly, so stitching is
+    // seamless. Each band returns its rows; we copy them into place after.
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let nh = geoms.len();
+    let bands_per_hull = ((2 * cores) / nh.max(1)).max(1);
+    let hulls = &state.hulls;
+
+    type BandTask = (usize, usize, usize); // (hull, row0, row1)
+    let mut tasks: Vec<BandTask> = Vec::new();
+    for (i, g) in geoms.iter().enumerate() {
+        let k = bands_per_hull.min(g.ny.div_ceil(24)).max(1);
+        for b in 0..k {
+            let r0 = b * g.ny / k;
+            let r1 = (b + 1) * g.ny / k;
+            if r1 > r0 {
+                tasks.push((i, r0, r1));
+            }
+        }
+    }
+
+    let cond_ref = &cond;
+    // (hull index, first row, that band's rows).
+    type BandResult = Result<(usize, usize, Vec<f32>), String>;
+    let results: Vec<BandResult> = std::thread::scope(|scope| {
+        let handles: Vec<_> = tasks
+            .iter()
+            .map(|&(i, r0, r1)| {
+                let g = &geoms[i];
+                let hull = &hulls[i].hull;
+                scope.spawn(move || {
+                    let by0 = grid_row_coord(g.ly0, g.ly1, g.ny, r0);
+                    let by1 = grid_row_coord(g.ly0, g.ly1, g.ny, r1 - 1);
+                    let members = [(hull, Placement { x: 0.0, y: 0.0 })];
+                    let mut spec =
+                        FreeWaveSpectrum::new(&members, cond_ref).map_err(|e| format!("{e}"))?;
+                    let grid = spec
+                        .elevation_grid(g.lx0, g.lx1, by0, by1, g.nx, r1 - r0)
+                        .map_err(|e| format!("{e}"))?;
+                    Ok((i, r0, grid.zeta.iter().map(|&v| v as f32).collect()))
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    let mut fields = geoms;
+    for r in results {
+        let (i, r0, rows) = r?;
+        let nx = fields[i].nx;
+        fields[i].zeta[r0 * nx..r0 * nx + rows.len()].copy_from_slice(&rows);
+    }
+    for (vh, f) in state.hulls.iter_mut().zip(fields) {
+        vh.field = f;
+    }
+
+    state.vmax = colour_scale(state);
+    Ok(())
+}
+
+/// y coordinate of row `i` of an inclusive `n`-point grid over [a, b] — the
+/// same rule `WaveGrid` uses, so row-bands land on identical sample points.
+fn grid_row_coord(a: f64, b: f64, n: usize, i: usize) -> f64 {
+    if n <= 1 {
+        a
+    } else {
+        a + (b - a) * i as f64 / (n - 1) as f64
+    }
+}
+
+/// 99.5th-percentile |ζ| of the fleet field composited at the home
+/// placements — the same saturation rule the `wake` PNG uses.
+fn colour_scale(state: &ViewState) -> f64 {
+    let [vx0, vx1, vy0, vy1] = state.view;
+    let nx = 240usize;
+    let ny = 200usize;
+    let mut abs = Vec::with_capacity(nx * ny);
+    for iy in 0..ny {
+        let y = vy0 + (vy1 - vy0) * iy as f64 / (ny - 1) as f64;
+        for ix in 0..nx {
+            let x = vx0 + (vx1 - vx0) * ix as f64 / (nx - 1) as f64;
+            let mut z = 0.0;
+            for vh in &state.hulls {
+                z += sample_field(&vh.field, x - vh.home.x, y - vh.home.y);
+            }
+            abs.push(z.abs());
+        }
+    }
+    abs.sort_by(|a, b| a.total_cmp(b));
+    abs[((abs.len() - 1) as f64 * 0.995) as usize].max(1e-12)
+}
+
+/// Bilinear sample of a field at local (x, y); zero outside the grid.
+fn sample_field(f: &Field, x: f64, y: f64) -> f64 {
+    if f.nx < 2 || f.ny < 2 || x < f.lx0 || x > f.lx1 || y < f.ly0 || y > f.ly1 {
+        return 0.0;
+    }
+    let fx = (x - f.lx0) / (f.lx1 - f.lx0) * (f.nx - 1) as f64;
+    let fy = (y - f.ly0) / (f.ly1 - f.ly0) * (f.ny - 1) as f64;
+    let ix = (fx.floor() as usize).min(f.nx - 2);
+    let iy = (fy.floor() as usize).min(f.ny - 2);
+    let tx = fx - ix as f64;
+    let ty = fy - iy as f64;
+    let g = |ax: usize, ay: usize| f.zeta[ay * f.nx + ax] as f64;
+    let a = g(ix, iy) * (1.0 - tx) + g(ix + 1, iy) * tx;
+    let b = g(ix, iy + 1) * (1.0 - tx) + g(ix + 1, iy + 1) * tx;
+    a * (1.0 - ty) + b * ty
+}
+
+/// Re-float the whole assembly (bodies only) at a new total mass and rebuild
+/// the wetted hulls, then recompute fields. Members without a retained body
+/// keep their design geometry.
+fn set_displacement(state: &mut ViewState, mass: f64) -> Result<(), String> {
+    let bodies: Vec<&Body> = state.hulls.iter().filter_map(|h| h.body.as_ref()).collect();
+    if bodies.is_empty() {
+        return Err("no re-floatable bodies in this fleet (displacement is fixed)".into());
+    }
+    let poses = vec![HullPose::default(); bodies.len()];
+    let eq = solve_equilibrium_bodies(
+        &bodies,
+        0.0,
+        &poses,
+        &LoadCase { mass, lcg: None },
+        state.cond.fluid.density,
+        &state.body_opts,
+    )
+    .map_err(|e| format!("equilibrium solve failed: {e}"))?;
+
+    // Map solved members back onto the re-floatable hulls, in order.
+    let mut solved = eq.fleet.members.into_iter();
+    for vh in state.hulls.iter_mut() {
+        if vh.body.is_none() {
+            continue;
+        }
+        let (hull, _placement) = solved
+            .next()
+            .ok_or("equilibrium returned fewer hulls than bodies")?;
+        let (x0, x1) = hull.surface().x_domain();
+        let n = vh.beam.len();
+        vh.beam = (0..n)
+            .map(|i| {
+                let x = x0 + (x1 - x0) * i as f64 / (n - 1) as f64;
+                (x, hull.surface().eval(x, 0.0).max(0.0))
+            })
+            .collect();
+        vh.x0 = x0;
+        vh.x1 = x1;
+        vh.hull = hull;
+    }
+    state.mass = mass;
+    recompute_fields(state)
+}
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line)? == 0 {
+        return Ok(());
+    }
+    // Drain headers (we need none of them, but must consume to the blank line).
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line == "\r\n" || line == "\n" {
+            break;
+        }
+    }
+    let mut parts = request_line.split_whitespace();
+    let _method = parts.next().unwrap_or("");
+    let target = parts.next().unwrap_or("/");
+    let (path, query) = match target.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (target, ""),
+    };
+
+    let mut stream = stream;
+    match route(path, query, state) {
+        Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body),
+        Err(msg) => write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes()),
+    }
+}
+
+struct Resp {
+    ctype: &'static str,
+    body: Vec<u8>,
+}
+
+fn route(path: &str, query: &str, state: &Mutex<ViewState>) -> Result<Resp, String> {
+    match path {
+        "/" | "/index.html" => Ok(Resp {
+            ctype: "text/html; charset=utf-8",
+            body: PAGE.as_bytes().to_vec(),
+        }),
+        "/api/state" => {
+            let s = state.lock().unwrap();
+            Ok(Resp {
+                ctype: "application/json",
+                body: state_json(&s).into_bytes(),
+            })
+        }
+        "/api/field" => {
+            let i: usize = param(query, "hull")
+                .ok_or("field: missing hull index")?
+                .parse()
+                .map_err(|_| "field: bad hull index".to_string())?;
+            let s = state.lock().unwrap();
+            let f = &s.hulls.get(i).ok_or("field: hull index out of range")?.field;
+            let mut body = Vec::with_capacity(f.zeta.len() * 4);
+            for &v in &f.zeta {
+                body.extend_from_slice(&v.to_le_bytes());
+            }
+            Ok(Resp {
+                ctype: "application/octet-stream",
+                body,
+            })
+        }
+        "/api/speed" => {
+            let u: f64 = param(query, "u")
+                .ok_or("speed: missing u")?
+                .parse()
+                .map_err(|_| "speed: bad value".to_string())?;
+            if !(u.is_finite() && u > 0.0) {
+                return Err("speed must be positive".into());
+            }
+            let mut s = state.lock().unwrap();
+            s.cond.speed = u;
+            recompute_fields(&mut s)?;
+            Ok(Resp {
+                ctype: "application/json",
+                body: state_json(&s).into_bytes(),
+            })
+        }
+        "/api/displacement" => {
+            let mass: f64 = param(query, "mass")
+                .ok_or("displacement: missing mass")?
+                .parse()
+                .map_err(|_| "displacement: bad value".to_string())?;
+            if !(mass.is_finite() && mass > 0.0) {
+                return Err("mass must be positive".into());
+            }
+            let mut s = state.lock().unwrap();
+            set_displacement(&mut s, mass)?;
+            Ok(Resp {
+                ctype: "application/json",
+                body: state_json(&s).into_bytes(),
+            })
+        }
+        "/api/resistance" => {
+            let s = state.lock().unwrap();
+            let places = parse_placements(query, s.hulls.len())?;
+            Ok(Resp {
+                ctype: "application/json",
+                body: resistance_json(&s, &places)?.into_bytes(),
+            })
+        }
+        _ => Err(format!("no such path {path:?}")),
+    }
+}
+
+fn parse_placements(query: &str, n: usize) -> Result<Vec<Placement>, String> {
+    let raw = param(query, "p").ok_or("resistance: missing placements")?;
+    let mut out = Vec::new();
+    for pair in raw.split(';').filter(|s| !s.is_empty()) {
+        let (xs, ys) = pair
+            .split_once(',')
+            .ok_or("resistance: placement must be x,y")?;
+        let x: f64 = xs.parse().map_err(|_| "resistance: bad x".to_string())?;
+        let y: f64 = ys.parse().map_err(|_| "resistance: bad y".to_string())?;
+        out.push(Placement { x, y });
+    }
+    if out.len() != n {
+        return Err(format!(
+            "resistance: expected {n} placements, got {}",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+fn resistance_json(s: &ViewState, places: &[Placement]) -> Result<String, String> {
+    let members: Vec<(&Hull, Placement)> = s
+        .hulls
+        .iter()
+        .zip(places)
+        .map(|(vh, &p)| (&vh.hull, p))
+        .collect();
+    let r = michell::multihull_resistance(&members, &s.cond).map_err(|e| format!("{e}"))?;
+    Ok(format!(
+        "{{\"total\":{},\"wave\":{},\"viscous\":{},\"interference\":{},\
+         \"cw\":{},\"ct\":{},\"effective_power\":{},\"froude\":{}}}",
+        r.total,
+        r.wave.resistance,
+        r.viscous_total,
+        r.interference,
+        r.cw,
+        r.ct,
+        r.effective_power,
+        s.cond.froude_number(s.l_ref),
+    ))
+}
+
+fn state_json(s: &ViewState) -> String {
+    let [x0, x1, y0, y1] = s.view;
+    let nu = s.cond.gravity / (s.cond.speed * s.cond.speed);
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"view\":{{\"x0\":{x0},\"x1\":{x1},\"y0\":{y0},\"y1\":{y1}}},\
+         \"speed\":{},\"froude\":{},\"transverseWavelength\":{},\"vmax\":{},\
+         \"mass\":{},\"designMass\":{},\"lRef\":{},\"margin\":{},\
+         \"fadeToward\":[240,239,236],\"fadeFraction\":0.55,\"hulls\":[",
+        s.cond.speed,
+        s.cond.froude_number(s.l_ref),
+        2.0 * std::f64::consts::PI / nu,
+        s.vmax,
+        s.mass,
+        s.design_mass,
+        s.l_ref,
+        s.margin,
+    ));
+    for (i, vh) in s.hulls.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let f = &vh.field;
+        out.push_str(&format!(
+            "{{\"id\":{i},\"name\":\"{}\",\"homeX\":{},\"homeY\":{},\"x0\":{},\"x1\":{},\
+             \"canFloat\":{},\"field\":{{\"lx0\":{},\"lx1\":{},\"ly0\":{},\"ly1\":{},\
+             \"nx\":{},\"ny\":{}}},\"beam\":[",
+            json_escape(&vh.name),
+            vh.home.x,
+            vh.home.y,
+            vh.x0,
+            vh.x1,
+            vh.body.is_some(),
+            f.lx0,
+            f.lx1,
+            f.ly0,
+            f.ly1,
+            f.nx,
+            f.ny,
+        ));
+        for (j, (x, b)) in vh.beam.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("[{x},{b}]"));
+        }
+        out.push_str("]}");
+    }
+    out.push_str("]}");
+    out
+}
+
+fn json_escape(s: &str) -> String {
+    let mut o = String::new();
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+fn param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        if k == key {
+            Some(url_decode(v))
+        } else {
+            None
+        }
+    })
+}
+
+fn url_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() => {
+                let h = hex(b[i + 1]).zip(hex(b[i + 2]));
+                if let Some((hi, lo)) = h {
+                    out.push(hi * 16 + lo);
+                    i += 3;
+                    continue;
+                }
+                out.push(b[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    ctype: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let reason = if status == 200 { "OK" } else { "Bad Request" };
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use michell::hulls;
+
+    /// The viewer composites the fleet field client-side by translating and
+    /// summing each hull's *standalone* field. That must reproduce the fleet
+    /// field computed directly with all hulls in one spectrum (thin-ship
+    /// superposition), and it must do so with this crate's local-coordinate
+    /// sampling convention — the correctness foundation of the whole viewer.
+    #[test]
+    fn superposition_matches_direct_fleet_field() {
+        let hull = hulls::wigley(12.0, 1.2, 0.75).unwrap();
+        let cond = Conditions::seawater(4.0);
+        let places = [
+            Placement { x: 0.0, y: 2.5 },
+            Placement { x: -3.0, y: -2.5 },
+        ];
+
+        // Direct: both hulls in one spectrum.
+        let members: Vec<(&Hull, Placement)> = places.iter().map(|&p| (&hull, p)).collect();
+        let mut direct = FreeWaveSpectrum::new(&members, &cond).unwrap();
+
+        // Superposition: each hull alone at the origin, evaluated at the
+        // placement-shifted point and summed — exactly what the browser does.
+        let mut solos: Vec<FreeWaveSpectrum> = places
+            .iter()
+            .map(|_| FreeWaveSpectrum::new(&[(&hull, Placement { x: 0.0, y: 0.0 })], &cond).unwrap())
+            .collect();
+
+        let mut max_err = 0.0f64;
+        let mut max_mag = 0.0f64;
+        for &x in &[-30.0, -20.0, -12.0, -6.0] {
+            for &y in &[-6.0, -1.0, 0.0, 3.0, 7.0] {
+                let truth = direct.elevation_at(x, y).unwrap();
+                let mut sum = 0.0;
+                for (solo, p) in solos.iter_mut().zip(&places) {
+                    sum += solo.elevation_at(x - p.x, y - p.y).unwrap();
+                }
+                max_err = max_err.max((truth - sum).abs());
+                max_mag = max_mag.max(truth.abs());
+            }
+        }
+        assert!(
+            max_err <= 1e-6 * max_mag.max(1e-9),
+            "superposition drifted from the direct fleet field: \
+             max_err={max_err:e}, field_mag={max_mag:e}"
+        );
+    }
+
+    #[test]
+    fn bilinear_sample_reads_grid_corners_and_center() {
+        // A 3x3 field with known values; check exact hits and a midpoint.
+        let f = Field {
+            lx0: 0.0,
+            lx1: 2.0,
+            ly0: 0.0,
+            ly1: 2.0,
+            nx: 3,
+            ny: 3,
+            zeta: vec![0.0, 1.0, 2.0, 10.0, 11.0, 12.0, 20.0, 21.0, 22.0],
+        };
+        assert!((sample_field(&f, 0.0, 0.0) - 0.0).abs() < 1e-12);
+        assert!((sample_field(&f, 2.0, 2.0) - 22.0).abs() < 1e-12);
+        assert!((sample_field(&f, 1.0, 1.0) - 11.0).abs() < 1e-12);
+        // Between (0,0)=0 and (1,0)=1 at x=0.5 → 0.5.
+        assert!((sample_field(&f, 0.5, 0.0) - 0.5).abs() < 1e-12);
+        // Outside the grid is zero.
+        assert_eq!(sample_field(&f, -0.1, 0.0), 0.0);
+        assert_eq!(sample_field(&f, 0.0, 2.1), 0.0);
+    }
+}
