@@ -39,7 +39,7 @@
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::moments::{exp_moments, osc_moments, C64};
+use crate::moments::{exp_moments, exp_moments_complex, osc_moments, C64};
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -97,6 +97,94 @@ pub fn wave_resistance_with(
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
     multihull_wave_resistance_with(&[(hull, Placement::default())], cond, opts)
+}
+
+/// Wave resistance of a hull **heeled** by `heel` radians about its
+/// longitudinal axis.
+///
+/// A heeled hull is asymmetric relative to the horizontal free surface, but its
+/// keel swings off the earth-vertical centreplane, so it cannot be written as
+/// port/starboard half-beams there. Thin-ship theory instead keeps the sources
+/// on the ship's own (now tilted) centreplane: a strip at ship-depth `z` sits
+/// at earth depth `z·cosφ` and transverse offset `−z·sinφ`, which turns the
+/// vertical decay **complex**,
+///
+/// ```text
+/// κ = νλ²·cosφ + i·νλ√(λ²−1)·sinφ,
+/// ```
+/// the imaginary part being the transverse-wavenumber phase of the tilt (the
+/// same dipole coupling as an asymmetric hull, arising here from geometry). The
+/// upright kernel is untouched; heel just swaps in a complex-`κ` variant of the
+/// inner integral, so `heel = 0` reproduces [`wave_resistance`] exactly. The
+/// result is even in `heel` (port and starboard heel are mirror images).
+///
+/// This captures the asymmetric **wave-making** of the tilted thickness
+/// distribution — the leading heel effect. It does not include the lifting
+/// side-force a heeled-and-yawed (drifting) hull develops; that is a separate
+/// forcing into the centreplane lifting solve.
+pub fn heel_wave_resistance(
+    hull: &Hull,
+    cond: &Conditions,
+    heel: f64,
+    opts: &WaveOptions,
+) -> Result<WaveResistance> {
+    cond.validate()?;
+    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
+        return Err(Error::InvalidConditions(
+            "rel_tol must be finite and positive".into(),
+        ));
+    }
+    if !heel.is_finite() || heel.abs() >= FRAC_PI_2 {
+        return Err(Error::InvalidGeometry(
+            "heel angle must be finite with |heel| < 90°".into(),
+        ));
+    }
+    let u = cond.speed;
+    let g = cond.gravity;
+    let nu = g / (u * u);
+    let rho = cond.fluid.density;
+
+    let params = OuterParams {
+        nu,
+        x_half: hull.x_half_extent(),
+        // The tilt spreads the centreplane transversely by up to T·|sinφ|; size
+        // the outer-integral panels to resolve that heel-induced oscillation.
+        y_half: hull.draft() * heel.sin().abs(),
+        t_max: hull.draft(),
+    };
+    let mut inner = HeelInner::new(hull, nu, heel);
+    let mut amp_sq = |lambda: f64| -> f64 {
+        // The tilt makes F depend on the sign of θ; average the ±θ systems.
+        0.5 * (inner.eval(lambda, 1.0).abs_sq() + inner.eval(lambda, -1.0).abs_sq())
+    };
+
+    let mut evals_total = 0usize;
+    let mut frac = 1.0;
+    let mut evals = 0usize;
+    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
+    evals_total += evals;
+    let mut est_rel = f64::INFINITY;
+    for _ in 0..opts.max_refinements {
+        frac *= 0.5;
+        let mut evals = 0usize;
+        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
+        evals_total += evals;
+        let scale = refined.abs().max(f64::MIN_POSITIVE);
+        est_rel = (refined - integral).abs() / scale;
+        integral = refined;
+        max_lambda = ml;
+        if est_rel <= opts.rel_tol {
+            break;
+        }
+    }
+
+    let coeff = 4.0 * rho * g * g / (PI * u * u);
+    Ok(WaveResistance {
+        resistance: coeff * integral,
+        est_rel_error: est_rel,
+        inner_evaluations: evals_total,
+        max_lambda,
+    })
 }
 
 /// Combined wave resistance of several thin hulls (multihull), with default
@@ -503,6 +591,108 @@ impl<'h> InnerIntegral<'h> {
                     }
                 }
                 span_sum = span_sum + xma.scale(g_a);
+            }
+            f = f + phase * span_sum;
+        }
+        f
+    }
+}
+
+/// Heeled-hull free-wave amplitude kernel — the upright [`InnerIntegral`] with a
+/// **complex** vertical decay `κ = νλ²cosφ + i·νλ√(λ²−1)·sinφ` (see
+/// [`heel_wave_resistance`]). The x-oscillation moments and the per-span
+/// accumulate are identical to the upright kernel; only the z-moment is complex
+/// (via [`exp_moments_complex`]), so the real path is entirely untouched.
+pub(crate) struct HeelInner<'h> {
+    hull: &'h Hull,
+    nu: f64,
+    cos_phi: f64,
+    sin_phi: f64,
+    /// Scratch: complex z-moments including the e^{−κ z0} shift, [n_spans_z][q+1].
+    zm: Vec<C64>,
+    /// Scratch: x-moments for one span.
+    xm: Vec<C64>,
+    /// Scratch: raw complex z-moments for one span.
+    zm_raw: Vec<C64>,
+    p: usize,
+    q: usize,
+}
+
+impl<'h> HeelInner<'h> {
+    fn new(hull: &'h Hull, nu: f64, heel: f64) -> Self {
+        let p = hull.surface().degree_x();
+        let q = hull.surface().degree_z();
+        HeelInner {
+            hull,
+            nu,
+            cos_phi: heel.cos(),
+            sin_phi: heel.sin(),
+            zm: vec![C64::ZERO; hull.spans_z().len() * (q + 1)],
+            xm: Vec::with_capacity(p),
+            zm_raw: Vec::with_capacity(q + 1),
+            p,
+            q,
+        }
+    }
+
+    /// Free-wave amplitude of the tilted source distribution at λ, for the wave
+    /// system with transverse-wavenumber sign `ky_sign` (±1 ⇒ the ±θ system).
+    fn eval(&mut self, lambda: f64, ky_sign: f64) -> C64 {
+        let kx = self.nu * lambda;
+        let ky = self.nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+        let kappa = C64::new(
+            self.nu * lambda * lambda * self.cos_phi,
+            ky_sign * ky * self.sin_phi,
+        );
+        if !self.fill_zm(kappa) {
+            return C64::ZERO;
+        }
+        self.accumulate(kx)
+    }
+
+    fn fill_zm(&mut self, kappa: C64) -> bool {
+        let hull = self.hull;
+        let q = self.q;
+        let mut any = false;
+        for (t, sz) in hull.spans_z().iter().enumerate() {
+            let decay = kappa.scale(-sz.start).exp();
+            if decay == C64::ZERO {
+                for b in 0..=q {
+                    self.zm[t * (q + 1) + b] = C64::ZERO;
+                }
+                continue;
+            }
+            any = true;
+            exp_moments_complex(kappa, sz.len, q, &mut self.zm_raw);
+            for b in 0..=q {
+                self.zm[t * (q + 1) + b] = decay * self.zm_raw[b];
+            }
+        }
+        any
+    }
+
+    fn accumulate(&mut self, kx: f64) -> C64 {
+        let hull = self.hull;
+        let (p, q) = (self.p, self.q);
+        let nsz = hull.spans_z().len();
+        let x_center = hull.x_center();
+        let coeff = hull.fx_coeff();
+        let mut f = C64::ZERO;
+        for (s, sx) in hull.spans_x().iter().enumerate() {
+            osc_moments(kx, sx.len, p - 1, &mut self.xm);
+            let phase = C64::cis(kx * (sx.start - x_center));
+            let mut span_sum = C64::ZERO;
+            for (a, &xma) in self.xm.iter().enumerate() {
+                let mut g_a = C64::ZERO;
+                for t in 0..nsz {
+                    let base = ((s * nsz + t) * p + a) * (q + 1);
+                    let zrow = &self.zm[t * (q + 1)..(t + 1) * (q + 1)];
+                    let crow = &coeff[base..base + q + 1];
+                    for b in 0..=q {
+                        g_a = g_a + zrow[b].scale(crow[b]);
+                    }
+                }
+                span_sum = span_sum + xma * g_a;
             }
             f = f + phase * span_sum;
         }

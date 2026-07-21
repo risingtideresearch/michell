@@ -103,6 +103,33 @@ fan — the two resistances add with no interference, and a symmetric hull
 > *magnitude* is a leading-order estimate to be read qualitatively until
 > validated against a reference. The symmetric/source path is unaffected.
 
+### Heeled hulls
+
+A hull heeled by `φ` about its longitudinal axis is asymmetric relative to the
+horizontal free surface — but its keel swings off the earth-vertical
+centreplane, so it *cannot* be written as port/starboard half-beams there (the
+starboard offset goes negative near the keel). Thin-ship theory instead keeps
+the sources on the ship's **own tilted centreplane**: a strip at ship-depth `z`
+sits at earth depth `z·cosφ` and transverse offset `−z·sinφ`, which turns the
+vertical decay complex,
+
+```
+κ = νλ²·cosφ + i·νλ√(λ²−1)·sinφ,
+```
+
+the imaginary part being the transverse-wavenumber phase of the tilt — the same
+dipole coupling as an asymmetric hull, here arising from geometry rather than
+camber. `heel_wave_resistance(hull, cond, φ, opts)` evaluates this; the upright
+kernel is left untouched (the complex-`κ` moment is a separate routine), so
+`φ = 0` reproduces `wave_resistance` exactly, the result is even in `φ`, and
+heel raises the wave resistance ∝ `sin²φ` at small angles.
+
+This captures the asymmetric **wave-making** of the tilted thickness
+distribution (the leading heel effect). It does not re-clip the hull to the
+heeled waterline (the emerging/submerging wedges), nor include the lifting
+side-force of a heeled-and-yawed hull — that is a separate forcing into the
+centreplane lifting solve.
+
 ## Validation
 
 `cargo test` checks, among others:
