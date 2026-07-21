@@ -42,6 +42,7 @@
 //! physically grounded magnitude, sharing this term's normalisation exactly (the
 //! strip closure is what it reduces to when `μ = 2U f_a`).
 
+use crate::centerplane::CenterplaneSolution;
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
@@ -278,15 +279,14 @@ impl Default for LiftingGrid {
 /// π/2`). The source amplitude is even in θ and the dipole odd, so they add with
 /// no cross term: `R_w = R_source(f_sym) + R_dipole(μ)`.
 ///
-/// Errors if `hull` is symmetric (use [`wave_resistance`] instead). Single hull
-/// only — the solved-dipole multihull case is not yet wired.
+/// Errors if `hull` is symmetric (use [`wave_resistance`] instead). This is the
+/// single-hull case of [`multihull_wave_resistance_lifting`].
 pub fn asymmetric_wave_resistance_lifting(
     hull: &Hull,
     cond: &Conditions,
     opts: &WaveOptions,
     grid: LiftingGrid,
 ) -> Result<WaveResistance> {
-    cond.validate()?;
     if !hull.is_asymmetric() {
         return Err(Error::InvalidGeometry(
             "asymmetric_wave_resistance_lifting requires a hull built with \
@@ -294,9 +294,63 @@ pub fn asymmetric_wave_resistance_lifting(
                 .into(),
         ));
     }
+    multihull_wave_resistance_lifting(&[(hull, Placement::default())], cond, opts, grid)
+}
+
+/// One fleet member's precomputed inner integral and (for an asymmetric hull)
+/// its solved centreplane dipole distribution.
+struct LiftMember<'h> {
+    inner: InnerIntegral<'h>,
+    /// The solved doublet distribution and the hull length (to re-centre the
+    /// dipole phase at the hull midpoint). `None` for a symmetric member.
+    dipole: Option<(CenterplaneSolution, f64)>,
+    dx: f64,
+    dy: f64,
+}
+
+/// Combined wave resistance of a fleet whose asymmetric members carry a
+/// **solved** centreplane-lifting dipole (rather than the strip closure of
+/// [`multihull_wave_resistance_with`]).
+///
+/// Each asymmetric member's centreplane lifting problem is solved once for its
+/// doublet density `μ_j`; the dipole amplitude `A_{d,j} = i·νλ√(λ²−1)·½·G_j`
+/// then superposes on the source system with the member's placement phase,
+/// exactly like any other free-wave amplitude:
+///
+/// ```text
+/// A₊ = Σ_j (F_j + A_{d,j}) e^{iν(λΔx_j + λ√(λ²−1) y_j)},   A₋ likewise with −y_j,
+/// R_w = (4ρg²/πU²) ∫₁^∞ ½(|A₊|² + |A₋|²) λ²/√(λ²−1) dλ.
+/// ```
+///
+/// This is the far-field coupling: each member's lifting problem is solved
+/// independently (its own free-surface image), and their dipole **wave**
+/// systems interfere through the superposition — so an asymmetric-demihull
+/// catamaran's demihull interference is captured. Near-field lifting
+/// cross-induction between close demihulls is not (that needs one coupled
+/// lifting solve over all centreplanes).
+///
+/// Symmetric members contribute source-only (no dipole); a fleet of one
+/// asymmetric hull is [`asymmetric_wave_resistance_lifting`].
+pub fn multihull_wave_resistance_lifting(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    opts: &WaveOptions,
+    grid: LiftingGrid,
+) -> Result<WaveResistance> {
+    cond.validate()?;
     if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
         return Err(Error::InvalidConditions(
             "rel_tol must be finite and positive".into(),
+        ));
+    }
+    if members.is_empty() {
+        return Err(Error::InvalidConditions(
+            "at least one hull is required".into(),
+        ));
+    }
+    if members.iter().any(|(_, p)| !(p.x.is_finite() && p.y.is_finite())) {
+        return Err(Error::InvalidConditions(
+            "hull placements must be finite".into(),
         ));
     }
     if grid.nx == 0 || grid.nz == 0 {
@@ -309,30 +363,69 @@ pub fn asymmetric_wave_resistance_lifting(
     let nu = g / (u * u);
     let rho = cond.fluid.density;
 
-    // Solve the centreplane lifting problem once for the doublet density μ(x,z).
-    let x0 = hull.surface().x_domain().0;
-    let sol = crate::centerplane::solve_centerplane(
-        hull.length(),
-        hull.draft(),
-        |xl, z| hull.eval_fx_a(x0 + xl, z),
-        grid.nx,
-        grid.nz,
-    );
-
+    // Fleet phase references (identical to the strip multihull path).
+    let n = members.len() as f64;
+    let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
+    let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
     let params = OuterParams {
         nu,
-        x_half: hull.x_half_extent(),
-        y_half: 0.0,
-        t_max: hull.draft(),
+        x_half: members
+            .iter()
+            .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + h.x_half_extent())
+            .fold(0.0, f64::max),
+        y_half: members.iter().map(|(_, p)| (p.y - y_ref).abs()).fold(0.0, f64::max),
+        t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
     };
-    let mut inner = InnerIntegral::new(hull, nu);
+
+    // Solve each asymmetric member's centreplane once (up front, not per λ).
+    let mut data: Vec<LiftMember> = members
+        .iter()
+        .map(|(h, p)| {
+            let dipole = if h.is_asymmetric() {
+                let x0 = h.surface().x_domain().0;
+                let sol = crate::centerplane::solve_centerplane(
+                    h.length(),
+                    h.draft(),
+                    |xl, z| h.eval_fx_a(x0 + xl, z),
+                    grid.nx,
+                    grid.nz,
+                );
+                Some((sol, h.length()))
+            } else {
+                None
+            };
+            LiftMember {
+                inner: InnerIntegral::new(h, nu),
+                dipole,
+                dx: h.x_center() + p.x - cx_ref,
+                dy: p.y - y_ref,
+            }
+        })
+        .collect();
+
     let mut amp_sq = |lambda: f64| -> f64 {
-        // Source (thickness) amplitude — closed form, per span.
-        let f = inner.eval(lambda);
-        // Dipole (camber) amplitude from the solved μ: |A_d|² = ¼ ν²λ²(λ²−1)|G|².
-        let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
-        let wd = 0.5 * nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-        f.abs_sq() + wd * wd * (gre * gre + gim * gim)
+        let kx = nu * lambda;
+        let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+        let wd = 0.5 * ky;
+        let mut plus = C64::ZERO;
+        let mut minus = C64::ZERO;
+        for m in data.iter_mut() {
+            let f = m.inner.eval(lambda); // source (thickness) amplitude
+            let a_d = match &m.dipole {
+                Some((sol, len)) => {
+                    let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
+                    // Re-centre the dipole phase at the hull midpoint so it
+                    // shares the source's origin (the solver uses x ∈ [0, L]).
+                    let gc = C64::new(gre, gim) * C64::cis(-kx * len * 0.5);
+                    // A_d = i · wd · G  (odd in θ: +θ gets +A_d, −θ gets −A_d).
+                    C64::new(-gc.im, gc.re).scale(wd)
+                }
+                None => C64::ZERO,
+            };
+            plus = plus + (f + a_d) * C64::cis(kx * m.dx + ky * m.dy);
+            minus = minus + (f - a_d) * C64::cis(kx * m.dx - ky * m.dy);
+        }
+        0.5 * (plus.abs_sq() + minus.abs_sq())
     };
 
     let mut evals_total = 0usize;

@@ -87,8 +87,8 @@ pub use grid::SampleGrid;
 pub use hull::Hull;
 pub use michell::{
     asymmetric_wave_resistance_lifting, inner_integrals, multihull_wave_resistance,
-    multihull_wave_resistance_with, wave_resistance, wave_resistance_with, LiftingGrid, Placement,
-    WaveOptions, WaveResistance,
+    multihull_wave_resistance_lifting, multihull_wave_resistance_with, wave_resistance,
+    wave_resistance_with, LiftingGrid, Placement, WaveOptions, WaveResistance,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
