@@ -46,6 +46,27 @@ impl C64 {
     pub fn abs(self) -> f64 {
         self.abs_sq().sqrt()
     }
+
+    /// Complex exponential `e^{z}`.
+    #[inline]
+    pub fn exp(self) -> C64 {
+        let r = self.re.exp();
+        let (s, c) = self.im.sin_cos();
+        C64 {
+            re: r * c,
+            im: r * s,
+        }
+    }
+
+    /// Reciprocal `1/z = conj(z)/|z|²`.
+    #[inline]
+    pub fn recip(self) -> C64 {
+        let d = self.abs_sq();
+        C64 {
+            re: self.re / d,
+            im: -self.im / d,
+        }
+    }
 }
 
 impl Add for C64 {
@@ -159,6 +180,47 @@ pub fn exp_moments(kappa: f64, h: f64, b_max: usize, out: &mut Vec<f64>) {
     }
 }
 
+/// Exponential moments `N_b = ∫_0^h t^b e^{-κ t} dt` for a **complex** decay
+/// `κ` with `Re(κ) >= 0` — the same series/recurrence as [`exp_moments`], in
+/// `C64`. Used only by the heeled-hull kernel, where the tilt makes the
+/// vertical decay complex (`κ = νλ²cosφ + i νλ√(λ²−1) sinφ`); the upright path
+/// keeps the real routine untouched.
+pub fn exp_moments_complex(kappa: C64, h: f64, b_max: usize, out: &mut Vec<C64>) {
+    debug_assert!(h > 0.0);
+    debug_assert!(kappa.re >= 0.0);
+    out.clear();
+    let x = kappa.scale(h); // κh
+    if x.abs() <= SERIES_THRESHOLD {
+        let mut h_pow = h;
+        for b in 0..=b_max {
+            let mut term = C64::new(1.0, 0.0); // (-x)^m / m!
+            let mut sum = C64::ZERO;
+            for m in 0..80 {
+                let contrib = term.scale(1.0 / (b as f64 + m as f64 + 1.0));
+                sum = sum + contrib;
+                if contrib.abs() <= 1e-18 * sum.abs() {
+                    break;
+                }
+                term = term * x.scale(-1.0 / (m as f64 + 1.0));
+            }
+            out.push(sum.scale(h_pow));
+            h_pow *= h;
+        }
+    } else {
+        let e = x.scale(-1.0).exp(); // e^{-x}
+        let inv_k = kappa.recip();
+        let mut prev = (C64::new(1.0, 0.0) - e) * inv_k;
+        out.push(prev);
+        let mut h_pow = h;
+        for b in 1..=b_max {
+            let cur = (prev.scale(b as f64) - e.scale(h_pow)) * inv_k;
+            out.push(cur);
+            prev = cur;
+            h_pow *= h;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +288,42 @@ mod tests {
                     "kappa={kappa} h={h} b={b}: got {}, want {want}",
                     out[b]
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn exp_moments_complex_match_quadrature() {
+        let mut out = Vec::new();
+        let mut real = Vec::new();
+        for &(kr, ki, h) in &[
+            (0.5, 0.0, 1.0),   // real ⇒ must match exp_moments
+            (0.3, 0.7, 1.0),   // series branch
+            (2.0, -3.0, 1.2),  // near/over threshold
+            (20.0, 15.0, 0.7), // recurrence branch
+            (5.0, 40.0, 0.3),  // strongly oscillatory decay
+        ] {
+            let kappa = C64::new(kr, ki);
+            exp_moments_complex(kappa, h, 5, &mut out);
+            #[allow(clippy::needless_range_loop)]
+            for b in 0..=5usize {
+                let re = simpson(|t| t.powi(b as i32) * (-kr * t).exp() * (ki * t).cos(), h, 40000);
+                let im =
+                    simpson(|t| t.powi(b as i32) * (-kr * t).exp() * -(ki * t).sin(), h, 40000);
+                let scale = h.powi(b as i32 + 1) / (b as f64 + 1.0);
+                assert!(
+                    (out[b].re - re).abs() < 1e-9 * scale && (out[b].im - im).abs() < 1e-9 * scale,
+                    "κ=({kr},{ki}) h={h} b={b}: got ({}, {}), want ({re}, {im})",
+                    out[b].re,
+                    out[b].im
+                );
+            }
+            // A real decay must reproduce the real routine bit-for-bit closely.
+            if ki == 0.0 {
+                exp_moments(kr, h, 5, &mut real);
+                for b in 0..=5usize {
+                    assert!((out[b].re - real[b]).abs() < 1e-14 && out[b].im.abs() < 1e-300);
+                }
             }
         }
     }
