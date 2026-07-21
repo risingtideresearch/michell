@@ -92,16 +92,53 @@ dipole amplitude is odd, their cross term integrates to zero over the Kelvin
 fan — the two resistances add with no interference, and a symmetric hull
 (`f_a ≡ 0`) reproduces classical Michell to full floating-point precision.
 
-> **Caveat on the dipole magnitude.** The camber part is a *lifting* problem:
-> a doublet sheet's density is fixed by the *mean* of the two-sided normal
-> velocities, which is a hypersingular (non-local) integral of the density —
-> unlike the source strength, which the boundary condition fixes pointwise.
-> The rigorous density solves a hypersingular Fredholm equation of the first
-> kind (Kaklis & Papanikolaou; 21st Symp. Naval Hydrodynamics, App. A). This
-> crate uses the crude *prescribed strip closure* `μ = 2U f_a`, so the dipole
-> *structure* (weight, θ-parity, additive separation) is exact but its overall
-> *magnitude* is a leading-order estimate to be read qualitatively until
-> validated against a reference. The symmetric/source path is unaffected.
+Two dipole *magnitudes* are available (the *structure* — weight, θ-parity,
+additive separation — is exact either way):
+
+- **Strip closure** (`multihull_resistance`, `wave_resistance`): the crude
+  prescribed `μ = 2U f_a`. Fast, closed-form, read qualitatively.
+- **Lifting solve** (`asymmetric_wave_resistance_lifting`): *solves* the
+  centreplane lifting-surface problem (3D horseshoe vortex lattice, free-surface
+  rigid-wall image) for the doublet density `μ(x, z)`, then forms the same
+  dipole from the solved `μ`. This is the physically grounded magnitude; it
+  shares the strip closure's normalisation exactly (the strip result is what it
+  reduces to when `μ = 2U f_a`), and the two agree to an O(1), speed-dependent
+  factor — for a 2-D flat plate `μ_lift/μ_strip = π/2`.
+
+> **Why the camber part needs a solve.** A doublet sheet's density is fixed by
+> the *mean* of the two-sided normal velocities, a hypersingular (non-local)
+> integral of the density — unlike the source strength, which the boundary
+> condition fixes pointwise. The rigorous density solves a hypersingular
+> Fredholm equation of the first kind (Kaklis & Papanikolaou; 21st Symp. Naval
+> Hydrodynamics, App. A); the vortex-lattice solve is its discretisation. The
+> symmetric/source path is unaffected.
+
+### Heeled hulls
+
+A hull heeled by `φ` about its longitudinal axis is asymmetric relative to the
+horizontal free surface — but its keel swings off the earth-vertical
+centreplane, so it *cannot* be written as port/starboard half-beams there (the
+starboard offset goes negative near the keel). Thin-ship theory instead keeps
+the sources on the ship's **own tilted centreplane**: a strip at ship-depth `z`
+sits at earth depth `z·cosφ` and transverse offset `−z·sinφ`, which turns the
+vertical decay complex,
+
+```
+κ = νλ²·cosφ + i·νλ√(λ²−1)·sinφ,
+```
+
+the imaginary part being the transverse-wavenumber phase of the tilt — the same
+dipole coupling as an asymmetric hull, here arising from geometry rather than
+camber. `heel_wave_resistance(hull, cond, φ, opts)` evaluates this; the upright
+kernel is left untouched (the complex-`κ` moment is a separate routine), so
+`φ = 0` reproduces `wave_resistance` exactly, the result is even in `φ`, and
+heel raises the wave resistance ∝ `sin²φ` at small angles.
+
+This captures the asymmetric **wave-making** of the tilted thickness
+distribution (the leading heel effect). It does not re-clip the hull to the
+heeled waterline (the emerging/submerging wedges), nor include the lifting
+side-force of a heeled-and-yawed hull — that is a separate forcing into the
+centreplane lifting solve.
 
 ## Validation
 

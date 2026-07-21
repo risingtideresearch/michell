@@ -36,6 +36,10 @@ pub struct Hull {
     /// `None` for a port/starboard-symmetric hull (the default contract), in
     /// which case every wave computation reduces exactly to classical Michell.
     fx_a_coeff: Option<Vec<f64>>,
+    /// The antisymmetric half-beam surface `f_a = (f₊ − f₋)/2` itself, kept for
+    /// evaluating `∂f_a/∂x` at arbitrary `(x, z)` (the camber forcing of the
+    /// centreplane lifting solve). `Some` exactly when `fx_a_coeff` is.
+    a_surface: Option<BSplineSurface>,
     length: f64,
     draft: f64,
     x_center: f64,
@@ -176,6 +180,7 @@ impl Hull {
             spans_z,
             fx_coeff,
             fx_a_coeff: None,
+            a_surface: None,
             length: x1 - x0,
             draft,
             x_center: 0.5 * (x0 + x1),
@@ -266,6 +271,7 @@ impl Hull {
         let xs = a_surface.x_span_indices();
         let zs = a_surface.z_span_indices();
         hull.fx_a_coeff = Some(compute_fx_coeff(&a_surface, &xs, &zs));
+        hull.a_surface = Some(a_surface);
 
         // Two-sided geometry corrections: wetted surface and the centreplane
         // transverse inertia see each side separately, not twice the mean.
@@ -362,6 +368,20 @@ impl Hull {
     /// hull is port/starboard symmetric.
     pub(crate) fn fx_a_coeff(&self) -> Option<&[f64]> {
         self.fx_a_coeff.as_deref()
+    }
+
+    /// Whether the hull is asymmetric (has an antisymmetric camber part).
+    pub fn is_asymmetric(&self) -> bool {
+        self.a_surface.is_some()
+    }
+
+    /// `∂f_a/∂x` at `(x, z)` in the hull's own coordinates, evaluated from the
+    /// antisymmetric surface. Returns 0 for a symmetric hull. This is the
+    /// camber-slope forcing of the centreplane lifting solve.
+    pub(crate) fn eval_fx_a(&self, x: f64, z: f64) -> f64 {
+        self.a_surface
+            .as_ref()
+            .map_or(0.0, |s| s.eval_deriv(x, z, 1, 0))
     }
 
     /// Half-extent of the hull about its x-midpoint (bandwidth of the

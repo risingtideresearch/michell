@@ -20,6 +20,11 @@
 //! source system; a symmetric hull recovers classical Michell exactly. The
 //! dipole magnitude uses an approximate closure — see the `michell` module.
 //!
+//! **Heeled hulls** are supported via [`heel_wave_resistance`], which keeps the
+//! sources on the ship's tilted centreplane (the geometrically robust thin-ship
+//! treatment of heel) by making the vertical decay complex; `heel = 0`
+//! reproduces the upright result exactly.
+//!
 //! ## Theory
 //!
 //! With `ν = g/U²` (Tuck 1989; Dambrine, Pierre & Rousseaux 2016):
@@ -86,8 +91,9 @@ pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, Visco
 pub use grid::SampleGrid;
 pub use hull::Hull;
 pub use michell::{
-    inner_integrals, multihull_wave_resistance, multihull_wave_resistance_with, wave_resistance,
-    wave_resistance_with, Placement, WaveOptions, WaveResistance,
+    asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
+    multihull_wave_resistance, multihull_wave_resistance_lifting, multihull_wave_resistance_with,
+    wave_resistance, wave_resistance_with, LiftingGrid, Placement, WaveOptions, WaveResistance,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
