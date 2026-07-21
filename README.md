@@ -92,16 +92,26 @@ dipole amplitude is odd, their cross term integrates to zero over the Kelvin
 fan — the two resistances add with no interference, and a symmetric hull
 (`f_a ≡ 0`) reproduces classical Michell to full floating-point precision.
 
-> **Caveat on the dipole magnitude.** The camber part is a *lifting* problem:
-> a doublet sheet's density is fixed by the *mean* of the two-sided normal
-> velocities, which is a hypersingular (non-local) integral of the density —
-> unlike the source strength, which the boundary condition fixes pointwise.
-> The rigorous density solves a hypersingular Fredholm equation of the first
-> kind (Kaklis & Papanikolaou; 21st Symp. Naval Hydrodynamics, App. A). This
-> crate uses the crude *prescribed strip closure* `μ = 2U f_a`, so the dipole
-> *structure* (weight, θ-parity, additive separation) is exact but its overall
-> *magnitude* is a leading-order estimate to be read qualitatively until
-> validated against a reference. The symmetric/source path is unaffected.
+Two dipole *magnitudes* are available (the *structure* — weight, θ-parity,
+additive separation — is exact either way):
+
+- **Strip closure** (`multihull_resistance`, `wave_resistance`): the crude
+  prescribed `μ = 2U f_a`. Fast, closed-form, read qualitatively.
+- **Lifting solve** (`asymmetric_wave_resistance_lifting`): *solves* the
+  centreplane lifting-surface problem (3D horseshoe vortex lattice, free-surface
+  rigid-wall image) for the doublet density `μ(x, z)`, then forms the same
+  dipole from the solved `μ`. This is the physically grounded magnitude; it
+  shares the strip closure's normalisation exactly (the strip result is what it
+  reduces to when `μ = 2U f_a`), and the two agree to an O(1), speed-dependent
+  factor — for a 2-D flat plate `μ_lift/μ_strip = π/2`.
+
+> **Why the camber part needs a solve.** A doublet sheet's density is fixed by
+> the *mean* of the two-sided normal velocities, a hypersingular (non-local)
+> integral of the density — unlike the source strength, which the boundary
+> condition fixes pointwise. The rigorous density solves a hypersingular
+> Fredholm equation of the first kind (Kaklis & Papanikolaou; 21st Symp. Naval
+> Hydrodynamics, App. A); the vortex-lattice solve is its discretisation. The
+> symmetric/source path is unaffected.
 
 ## Validation
 
