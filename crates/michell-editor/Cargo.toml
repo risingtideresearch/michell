@@ -1,0 +1,16 @@
+[package]
+name = "michell-editor"
+version = "0.1.0"
+edition = "2021"
+description = "egui editor for michell sweep-study manifests"
+license = "MIT"
+
+[[bin]]
+name = "michell-editor"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+rfd = "0.15"
+serde_json = "1"
