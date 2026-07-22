@@ -83,11 +83,21 @@ fn parse_progress(line: &str) -> Option<(usize, usize)> {
         let n = rest.split_whitespace().next()?.parse().ok()?;
         return Some((0, n));
     }
-    // "lofting hull 1/3" — hull i is starting, so i-1 are complete.
+    // "lofting hull i/n" or "lofting hull i/n NN%" — hull i of n, optionally
+    // NN% through its own sampling. Reported in hundredths of a hull so the bar
+    // moves smoothly both within a hull and across hulls.
     if let Some(rest) = line.strip_prefix("lofting hull ") {
-        let (a, b) = rest.trim().split_once('/')?;
+        let mut parts = rest.split_whitespace();
+        let (a, b) = parts.next()?.split_once('/')?;
         let i: usize = a.trim().parse().ok()?;
-        return Some((i.saturating_sub(1), b.trim().parse().ok()?));
+        let n: usize = b.trim().parse().ok()?;
+        let within = parts
+            .next()
+            .and_then(|p| p.strip_suffix('%'))
+            .and_then(|p| p.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(100);
+        return Some((i.saturating_sub(1) * 100 + within, n * 100));
     }
     None
 }
@@ -204,8 +214,13 @@ mod tests {
 
     #[test]
     fn parses_loft_lines() {
-        assert_eq!(parse_progress("lofting hull 1/3"), Some((0, 3)));
-        assert_eq!(parse_progress("lofting hull 3/3"), Some((2, 3)));
+        // Without a percent: start of hull i (in hundredths-of-a-hull units).
+        assert_eq!(parse_progress("lofting hull 1/3"), Some((0, 300)));
+        assert_eq!(parse_progress("lofting hull 3/3"), Some((200, 300)));
+        // With a percent: partway through a hull's own sampling.
+        assert_eq!(parse_progress("lofting hull 1/3 0%"), Some((0, 300)));
+        assert_eq!(parse_progress("lofting hull 1/3 45%"), Some((45, 300)));
+        assert_eq!(parse_progress("lofting hull 2/3 100%"), Some((200, 300)));
     }
 
     #[test]

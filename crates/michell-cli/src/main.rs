@@ -1951,6 +1951,20 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
                 LoftSrc::Mesh(s) => s.situate_one(i, wl, pose, platform, opts),
             }
         }
+        fn situate_one_progress(
+            &self,
+            i: usize,
+            wl: f64,
+            pose: &HullPose,
+            platform: &Platform,
+            opts: &ImportOptions,
+            progress: &mut dyn FnMut(f32),
+        ) -> Result<Option<michell::iges::ImportedHull>, michell::Error> {
+            match self {
+                LoftSrc::Iges(s) => s.situate_one_progress(i, wl, pose, platform, opts, progress),
+                LoftSrc::Mesh(s) => s.situate_one_progress(i, wl, pose, platform, opts, progress),
+            }
+        }
     }
     let src = if is_stl {
         let scale = settings.units.ok_or_else(|| {
@@ -1976,9 +1990,10 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
     let band_flag = p.f64_flag("band")?;
     let mut lofted = Vec::new();
     for idx in 0..n {
-        // Per-hull progress (to stderr, like the sweep) so a front-end can show
-        // a bar; the dense band loft is the slow step.
-        eprintln!("lofting hull {}/{n}", idx + 1);
+        // Progress to stderr (like the sweep) so a front-end can show a bar; the
+        // dense band loft is the slow step, reported per waterline row as a
+        // percentage. Start at 0% before any sampling.
+        eprintln!("lofting hull {}/{n} 0%", idx + 1);
         let top = src.hull_z_top(idx);
         let bottom = src.hull_z_bottom(idx);
         let draft_est = design_wl - bottom;
@@ -2012,13 +2027,23 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
                 .map_err(|e| format!("{path} hull {idx}: {e}"))?
                 .map(|m| m.report.centerplane);
         }
+        // Print each new integer percent as the band loft samples.
+        let mut last_pct = 0u32;
+        let mut on_progress = |f: f32| {
+            let pct = (f * 100.0).round() as u32;
+            if pct != last_pct {
+                last_pct = pct;
+                eprintln!("lofting hull {}/{n} {pct}%", idx + 1);
+            }
+        };
         let m = src
-            .situate_one(
+            .situate_one_progress(
                 idx,
                 band_top,
                 &HullPose::default(),
                 &Platform::default(),
                 &hull_opts,
+                &mut on_progress,
             )
             .map_err(|e| format!("{path} hull {idx}: {e}"))?
             .ok_or_else(|| format!("{path} hull {idx}: nothing below the band top?"))?;
