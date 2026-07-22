@@ -1091,10 +1091,26 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     }
     let mut first_row = true;
 
-    // Odometer over the axis grid.
-    let mut idx = vec![0usize; axes.len()];
-    for point in 0..points {
-        let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
+    // Mixed-radix strides so a flat point index decomposes into its per-axis
+    // values independently — the last axis varies fastest, matching the
+    // odometer the serial version walked. This lets any point be evaluated in
+    // isolation, which is what makes the fan-out below safe.
+    let mut strides = vec![1usize; axes.len()];
+    for i in (0..axes.len()).rev() {
+        if i + 1 < axes.len() {
+            strides[i] = strides[i + 1] * axes[i + 1].values.len();
+        }
+    }
+
+    // Evaluate one grid point into its speed rows. Everything it reads
+    // (`axes`, `files`, `opts`, `wave_opts`, `speeds`, `p`, scalars) is
+    // immutable, so points are independent and evaluate in any order/thread.
+    let eval_point = |point: usize| -> Result<Vec<Vec<f64>>, String> {
+        let vals: Vec<f64> = axes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| a.values[(point / strides[i]) % a.values.len()])
+            .collect();
 
         // Assemble poses and load for this point.
         let mut poses: Vec<Vec<HullPose>> = files
@@ -1177,6 +1193,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             .flat_map(|fl| fl.members.iter().map(|(h, p)| (h, *p)))
             .collect();
 
+        let mut rows = Vec::with_capacity(speeds.len());
         for &u in &speeds {
             let cond = p.conditions(u)?;
             let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
@@ -1196,14 +1213,54 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 )
             };
             let froude = u / (g * l_ref).sqrt();
-            let nums: Vec<f64> = vals
-                .iter()
-                .cloned()
-                .chain([
-                    sinkage, trim_deg, volume, lcb, dry as f64, u, froude, rw, rv, rt, pe, iff, cw,
-                    ct,
-                ])
-                .collect();
+            rows.push(
+                vals.iter()
+                    .cloned()
+                    .chain([
+                        sinkage, trim_deg, volume, lcb, dry as f64, u, froude, rw, rv, rt, pe, iff,
+                        cw, ct,
+                    ])
+                    .collect(),
+            );
+        }
+        Ok(rows)
+    };
+
+    // Fan out over points, one worker per core. Contiguous chunks mean the
+    // results concatenate back into grid order without a sort, and a shared
+    // counter reports completion (order is nondeterministic, count is not).
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let nworkers = cores.min(points).max(1);
+    let chunks: Vec<(usize, usize)> = (0..nworkers)
+        .map(|w| (w * points / nworkers, (w + 1) * points / nworkers))
+        .filter(|(a, b)| b > a)
+        .collect();
+    let done = std::sync::atomic::AtomicUsize::new(0);
+    let done_ref = &done;
+    let eval_ref = &eval_point;
+    let chunk_results: Vec<Result<Vec<Vec<f64>>, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|&(a, b)| {
+                scope.spawn(move || {
+                    let mut local: Vec<Vec<f64>> = Vec::new();
+                    for point in a..b {
+                        local.extend(eval_ref(point)?);
+                        let n = done_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        eprintln!("point {n}/{points} done");
+                    }
+                    Ok(local)
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+
+    // Serialize in grid order: the chunks are contiguous and already ordered.
+    for chunk in chunk_results {
+        for nums in chunk? {
             if json {
                 if !first_row {
                     out.push(',');
@@ -1222,16 +1279,6 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 out.push_str(&row.join(","));
                 out.push('\n');
             }
-        }
-        eprintln!("point {}/{points} done", point + 1);
-
-        // Advance the odometer.
-        for (i, a) in axes.iter().enumerate().rev() {
-            idx[i] += 1;
-            if idx[i] < a.values.len() {
-                break;
-            }
-            idx[i] = 0;
         }
     }
     if json {
