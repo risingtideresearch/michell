@@ -4,8 +4,10 @@ mod formats;
 mod gridio;
 mod json;
 mod manifest;
+mod pdf;
 mod png;
 mod render;
+mod report;
 mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
@@ -170,7 +172,10 @@ SWEEPS
                                 fleet CG — see the README for the schema; when
                                 the fleet carries mass each row also rolls up
                                 the heel behaviour (GZ-curve summaries + a
-                                per-angle resistance rise)
+                                per-angle resistance rise). output.format
+                                \"pdf\" writes an illustrated report (profile/
+                                body-plan/plan+wake/GZ views, one page per row)
+                                instead of a CSV/JSON table
   michell loft boat.igs --waterline Z -o boat
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted

@@ -411,6 +411,18 @@ scan resolution and `gz_max` (deg, default 90, bounded below 90° by the incline
 solver) caps the search for the vanishing angle. If GZ is still positive at the
 cap, `gz_vanish_deg`/`gz_area` are reported at the cap and a note is logged.
 
+**PDF reports** (`"output": { "format": "pdf", "file": "study.pdf" }`): instead
+of a CSV/JSON table, write an illustrated report — an index page whose rows
+hyperlink to a page per sweep row. Each detail page shows the fleet in
+**profile** (x–z) and **body-plan** (y–z) views, the **righting-arm (GZ)
+curve** (the same scan the roll-up uses, in equilibrium mode, with the peak
+marked), a **plan view** of the hull waterplanes over the Kelvin
+**wave-amplitude field** at that speed, and a table of the row's values. The
+profile and body-plan views draw the whole modelled band — topsides above the
+waterline included — for every hull at its solved attitude, so the waterline
+reads against real hull. Writing is zero-dependency (the PDF, its vector views,
+and the embedded wave rasters are generated in-crate); `file` is required.
+
 **Bodies**: sweep manifests reference **full-band** `.hull` files — the
 half-breadth spline over the hull's band from keel to above the design
 waterline, written by `michell loft`:

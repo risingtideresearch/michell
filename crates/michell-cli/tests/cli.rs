@@ -557,6 +557,53 @@ fn manifest_heel_rollup_metrics() {
     assert!(r24 > r12, "rise should grow with heel: {r24} vs {r12}");
 }
 
+/// A manifest with `output.format: "pdf"` writes a conformant PDF: one index
+/// page plus a page per sweep row, with the hyperlinks and embedded wave
+/// rasters the report is made of.
+#[test]
+fn manifest_pdf_output_writes_report() {
+    let iges_path = tmp("monopdf.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
+    let prefix = tmp("monopdf");
+    run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.5",
+        "-o",
+        prefix.to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+
+    let manifest = r#"{
+  "name": "pdf report test",
+  "fluid": "seawater",
+  "hulls": [ { "id": "vaka", "file": "monopdf.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
+  "sweep": [ { "target": "speed", "unit": "ms", "values": [2.5, 3.5] } ],
+  "output": { "format": "pdf", "file": "report.pdf" },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2",
+               "heel": { "gz_step": 5, "gz_max": 60 } }
+}"#;
+    let man_path = tmp("pdf_study.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let bytes = std::fs::read(tmp("report.pdf")).unwrap();
+    assert!(bytes.starts_with(b"%PDF-1."), "missing PDF header");
+    assert!(bytes.ends_with(b"%%EOF\n"), "missing PDF trailer");
+    let s = String::from_utf8_lossy(&bytes);
+    // 2 speeds x 1 point = 2 rows, so 3 pages (index + one per row).
+    let pages = s.matches("/Type /Page /Parent").count();
+    assert_eq!(pages, 3, "expected index + 2 row pages, got {pages}");
+    assert!(s.contains("/Subtype /Link"), "no hyperlink annotations");
+    assert!(s.contains("/Subtype /Image"), "no embedded wave rasters");
+}
+
 /// A point load mounted on a hull adds to the derived fleet CG and rides with
 /// its own swept offset: lowering it (`dz` +down) pulls `vcg` down, and its
 /// mass shows up in the derived `mass` column — all pure CG arithmetic, so the

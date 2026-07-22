@@ -122,6 +122,39 @@ impl Body {
         self.centerplane
     }
 
+    /// Depth of the modelled band below its top (keel `z_b`) [m].
+    pub fn band_depth(&self) -> f64 {
+        self.surface.z_domain().1
+    }
+
+    /// Map a band point `(x_b, z_b)` (with `x_b` in [`x_domain`] and `z_b` in
+    /// `[0, band_depth]`) into the fleet frame at this attitude, using the same
+    /// rigid transform as [`Body::situate`]. Returns `(x, z_up)` where `x` is
+    /// the longitudinal water-frame position and `z_up` is measured **up** from
+    /// the water surface (design floatplane + `platform.sinkage`), so the
+    /// waterline is `z_up = 0`. Unlike `situate`, no clipping or lofting — this
+    /// exposes the whole modelled band (topsides included) for drawing.
+    pub fn band_point(
+        &self,
+        xb: f64,
+        zb: f64,
+        water_offset: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> (f64, f64) {
+        let (x0, x1) = self.surface.x_domain();
+        let px = pose.pivot_x.unwrap_or(0.5 * (x0 + x1));
+        let map = FrameMap {
+            waterline: self.waterline,
+            pose: *pose,
+            pose_pivot_x: px,
+            platform: *platform,
+            zw: -(water_offset + platform.sinkage),
+        };
+        let (xw, zdepth) = map.body_to_water(xb, zb);
+        (xw, -zdepth)
+    }
+
     /// Situate the body: apply the design pose and platform state, clip at
     /// the water surface `water_offset + platform.sinkage` below the design
     /// floatplane, and loft the wetted part. `Ok(None)` means the body is

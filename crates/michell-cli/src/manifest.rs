@@ -642,8 +642,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         ),
         None => ("csv".to_string(), None),
     };
-    if format != "csv" && format != "json" {
-        return Err(format!("output format {format:?}: expected csv or json"));
+    if format != "csv" && format != "json" && format != "pdf" {
+        return Err(format!("output format {format:?}: expected csv, json, or pdf"));
+    }
+    let want_pdf = format == "pdf";
+    if want_pdf && out_file.is_none() {
+        return Err("output format \"pdf\" needs an output \"file\"".into());
     }
     // Derived fleet-CG columns (equilibrium mode): the mass-weighted CG that
     // the solve and roll-up ride on, so it is visible as the hulls/loads move.
@@ -711,6 +715,13 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         out.push('\n');
     }
     let mut first_row = true;
+
+    // PDF report accumulators (one entry per output row).
+    let mut report_rows: Vec<crate::report::Row> = Vec::new();
+    let mut index_rows: Vec<Vec<String>> = Vec::new();
+    let index_header: Vec<String> = std::iter::once("row".to_string())
+        .chain(header.iter().cloned())
+        .collect();
 
     let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
     // Section-integration resolution for the heeled inclined-waterplane
@@ -845,7 +856,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         // Heel roll-up metrics (equilibrium mode only). GZ is speed-independent,
         // so its curve — and the heeled equilibria used for the resistance rise
         // — are solved once per point here, riding on the derived fleet CG.
-        let (gz_stats, heeled): (Option<GzStats>, Vec<Option<HeeledEquilibrium>>) = if float_mode {
+        #[allow(clippy::type_complexity)]
+        let (gz_stats, heeled, point_gz): (
+            Option<GzStats>,
+            Vec<Option<HeeledEquilibrium>>,
+            Option<Vec<(f64, f64)>>,
+        ) = if float_mode {
             let load = LoadCase {
                 mass: cg.mass,
                 lcg: Some(cg.lcg),
@@ -919,12 +935,44 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     }
                 })
                 .collect();
-            (Some(stats), heeled)
+            // The GZ curve for the PDF detail page: (heel_deg, gz_m), reusing
+            // the scan already run for the roll-up above.
+            let point_gz = if want_pdf {
+                Some(samples.iter().map(|(r, g)| (r.to_degrees(), *g)).collect())
+            } else {
+                None
+            };
+            (Some(stats), heeled, point_gz)
         } else {
-            (None, Vec::new())
+            (None, Vec::new(), None)
         };
 
         let members: Vec<(&Hull, Placement)> = state.members.iter().map(|(h, p)| (h, *p)).collect();
+
+        // Per-point report geometry: draw every hull's full modelled band at the
+        // solved (upright) attitude, so topsides show above the waterline.
+        let point_hulls: Vec<crate::report::HullGeom> = if want_pdf {
+            let (platform, water_offset) = if float_mode {
+                (
+                    Platform {
+                        sinkage,
+                        trim: trim_deg.to_radians(),
+                        pivot_x: cg.lcg,
+                    },
+                    0.0,
+                )
+            } else {
+                (Platform::default(), waterline)
+            };
+            bodies
+                .iter()
+                .zip(&poses)
+                .map(|(b, pose)| hull_geom(b, water_offset, pose, &platform))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let l_ref_row = l_ref;
 
         for &u in &speeds {
             let cond = make_cond(u)?;
@@ -1017,10 +1065,46 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     out.push_str(&format!("{k:?}:{v}"));
                 }
                 out.push('}');
-            } else {
+            } else if !want_pdf {
                 let row: Vec<String> = nums.iter().map(|v| format!("{v}")).collect();
                 out.push_str(&row.join(","));
                 out.push('\n');
+            }
+
+            if want_pdf {
+                let n = report_rows.len() + 1;
+                let values: Vec<(String, String)> = index_header[1..]
+                    .iter()
+                    .cloned()
+                    .zip(nums.iter().map(|v| fmt_value(*v)))
+                    .collect();
+                let mut index_row = vec![format!("{n}")];
+                index_row.extend(nums.iter().map(|v| fmt_value(*v)));
+                let wave = if members.is_empty() {
+                    None
+                } else {
+                    wave_plan(&members, &cond, l_ref_row)
+                };
+                let axis_desc: Vec<String> = axes
+                    .iter()
+                    .zip(&vals)
+                    .map(|(a, v)| format!("{}={}", a.label, fmt_value(*v)))
+                    .collect();
+                report_rows.push(crate::report::Row {
+                    label: format!("Row {n}"),
+                    subtitle: format!(
+                        "{}   |   U = {:.3} m/s (Fn {:.3})",
+                        axis_desc.join(", "),
+                        u,
+                        froude
+                    ),
+                    values,
+                    hulls: point_hulls.clone(),
+                    gz_curve: point_gz.clone(),
+                    mark_deg: gz_stats.map(|s| s.peak_deg).unwrap_or(0.0),
+                    wave,
+                });
+                index_rows.push(index_row);
             }
         }
         eprintln!("point {}/{points} done", point + 1);
@@ -1031,6 +1115,26 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
             idx[i] = 0;
         }
+    }
+    if want_pdf {
+        let title = doc
+            .get("name")
+            .and_then(Json::as_str)
+            .unwrap_or("Sweep report");
+        let bytes = crate::report::build(title, &index_header, &index_rows, &report_rows);
+        let f = out_file.expect("pdf output requires a file (checked above)");
+        let path = dir.join(&f);
+        std::fs::write(&path, bytes).map_err(|e| format!("cannot write {f}: {e}"))?;
+        let n_index = report_rows
+            .len()
+            .div_ceil(crate::report::INDEX_ROWS_PER_PAGE)
+            .max(1);
+        eprintln!(
+            "wrote {} ({} page(s))",
+            path.display(),
+            report_rows.len() + n_index
+        );
+        return Ok(());
     }
     if format == "json" {
         out.push(']');
@@ -1110,6 +1214,169 @@ mod tests {
         assert!(peak_rad > 0.4 && peak_rad < 0.8, "peak_rad = {peak_rad}");
         assert!(st.rm_peak >= 0.9, "rm_peak = {}", st.rm_peak);
     }
+}
+
+/// Reduce a full-band body at a solved attitude to fleet-frame outlines for
+/// the report views (metres; z up, waterline at z = 0). Samples the whole
+/// modelled band via [`michell::body::Body::band_point`], so the topsides
+/// above the waterline are drawn, not just the immersed part — the waterline
+/// then reads against real hull above and below it. The half-beam is scaled by
+/// `pose.scale` to match `Body::situate`.
+fn hull_geom(
+    body: &Body,
+    water_offset: f64,
+    pose: &HullPose,
+    platform: &Platform,
+) -> crate::report::HullGeom {
+    let surf = body.surface();
+    let (x0, x1) = surf.x_domain();
+    let depth = body.band_depth();
+    let cy = body.centerplane() + pose.dy;
+    let sc = pose.scale;
+    let nx = 100usize;
+    let nz = 40usize;
+    let xf = |i: usize| x0 + (x1 - x0) * i as f64 / nx as f64;
+    let zf = |j: usize| depth * j as f64 / nz as f64;
+    let pt = |xb: f64, zb: f64| body.band_point(xb, zb, water_offset, pose, platform);
+    let beam = |xb: f64, zb: f64| surf.eval(xb, zb).max(0.0) * sc;
+
+    let mut maxb = 0.0f64;
+    for i in 0..=nx {
+        for j in 0..=nz {
+            maxb = maxb.max(beam(xf(i), zf(j)));
+        }
+    }
+    let eps = (1e-3 * maxb).max(1e-6);
+
+    // Profile silhouette: at each station the modelled section spans from the
+    // topmost to the bottommost band row that carries beam (the centreplane
+    // outline), so the stem/keel pinch at the ends and topsides show above the
+    // waterline. Columns with no beam (past the ends) are skipped.
+    let mut top = Vec::new();
+    let mut bot = Vec::new();
+    for i in 0..=nx {
+        let xb = xf(i);
+        let mut z_top = None;
+        let mut z_bot = None;
+        for j in 0..=nz {
+            let zb = zf(j);
+            if beam(xb, zb) > eps {
+                if z_top.is_none() {
+                    z_top = Some(zb);
+                }
+                z_bot = Some(zb);
+            }
+        }
+        if let (Some(zt), Some(zb)) = (z_top, z_bot) {
+            top.push(pt(xb, zt));
+            bot.push(pt(xb, zb));
+        }
+    }
+    let mut profile = top;
+    for &p in bot.iter().rev() {
+        profile.push(p);
+    }
+
+    // Waterplane outline: the beam where each column crosses z_up = 0.
+    let mut wp_stbd = Vec::new();
+    let mut wp_port = Vec::new();
+    for i in 0..=nx {
+        let xb = xf(i);
+        let mut prev = pt(xb, 0.0).1;
+        if prev <= 0.0 {
+            continue; // sheer already submerged: no waterplane here
+        }
+        for j in 1..=nz {
+            let zb = zf(j);
+            let zu = pt(xb, zb).1;
+            if zu <= 0.0 {
+                let t = prev / (prev - zu);
+                let zb_wl = zf(j - 1) + (zb - zf(j - 1)) * t;
+                let hb = beam(xb, zb_wl);
+                let xw = pt(xb, zb_wl).0;
+                wp_stbd.push((xw, cy + hb));
+                wp_port.push((xw, cy - hb));
+                break;
+            }
+            prev = zu;
+        }
+    }
+    let mut waterplane = wp_stbd;
+    for &p in wp_port.iter().rev() {
+        waterplane.push(p);
+    }
+
+    // Body-plan half sections at interior stations (full band, keel to sheer).
+    let nsec = 13usize;
+    let mut sections = Vec::with_capacity(nsec);
+    for s in 0..nsec {
+        let xb = x0 + (x1 - x0) * (s as f64 + 0.5) / nsec as f64;
+        let mut sec = Vec::with_capacity(2 * (nz + 1));
+        for j in 0..=nz {
+            let zb = zf(j);
+            let (_, zu) = pt(xb, zb);
+            sec.push((cy + beam(xb, zb), zu));
+        }
+        for j in (0..=nz).rev() {
+            let zb = zf(j);
+            let (_, zu) = pt(xb, zb);
+            sec.push((cy - beam(xb, zb), zu));
+        }
+        sections.push(sec);
+    }
+
+    crate::report::HullGeom {
+        profile,
+        sections,
+        waterplane,
+    }
+}
+
+/// Colour-mapped plan-view wave field around the fleet at this speed.
+fn wave_plan(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    l_ref: f64,
+) -> Option<crate::report::WavePlan> {
+    let (mut x_lo, mut x_hi, mut y_abs) = (f64::MAX, f64::MIN, 0.0f64);
+    for (h, p) in members {
+        let (a, b) = h.surface().x_domain();
+        x_lo = x_lo.min(a + p.x);
+        x_hi = x_hi.max(b + p.x);
+        y_abs = y_abs.max(p.y.abs());
+    }
+    if x_lo > x_hi {
+        return None;
+    }
+    let x1 = x_hi + 0.30 * l_ref;
+    let x0 = x_lo - 2.0 * l_ref;
+    let yh = (0.34 * (x1 - x0)).max(y_abs + 0.6 * l_ref);
+    let (y0, y1) = (-yh, yh);
+    let nx = 220usize;
+    let ny = (((nx as f64) * (y1 - y0) / (x1 - x0)).round() as usize).clamp(48, 300);
+    let mut spec = michell::FreeWaveSpectrum::new(members, cond).ok()?;
+    let grid = spec.elevation_grid(x0, x1, y0, y1, nx, ny).ok()?;
+    Some(crate::report::WavePlan::from_grid(&grid))
+}
+
+/// Compact human-readable number for the report tables.
+fn fmt_value(v: f64) -> String {
+    if !v.is_finite() {
+        return "-".to_string();
+    }
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let a = v.abs();
+    if !(1e-3..1e6).contains(&a) {
+        return format!("{v:.3e}");
+    }
+    if (v.round() - v).abs() < 1e-9 && a < 1e5 {
+        return format!("{}", v.round() as i64);
+    }
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    s.to_string()
 }
 
 /// Resolve an axis's values: `value`, `values`, or `range: [a, b]` with an
