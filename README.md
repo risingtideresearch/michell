@@ -235,6 +235,7 @@ michell resistance wigley.hull --froude 0.2:0.5:0.05
 michell resistance hull.igs --waterline 2.6 --speeds 4:9:0.5 --knots --json
 michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
 michell loft table.offsets -o hull.hull             # offsets -> control net
+michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7 -o boat.igs  # posed CAD geometry
 michell spectrum wigley.hull --speed 3              # free-wave spectrum (CSV)
 michell wake boat-*.hull --speed 8 --knots -o wake.png   # Kelvin wake heatmap
 michell render boat-*.hull --speed 8 --knots -o shot.png # 3D shot in the wake
@@ -379,6 +380,31 @@ seconds-fast; the loft itself defaults to a dense net (28x32 at 241x97)
 because wave resistance is sensitive to loft resolution near the keel
 rocker and the body is fit once, reused thousands of times.
 
+**Export back to CAD** (`michell place`): once a sweep has found a good
+configuration — amas at a chosen `dx`/`dy`/`dz`, a solved sinkage and trim —
+`place` writes that posed geometry as a new IGES file to import back into
+CAD:
+
+```text
+michell place ama.igs@dy=3.9,dz=-0.008 ama.igs@dy=-0.1,dz=-0.008 \
+  --waterline 0 --sinkage -0.008 -o boat.igs
+```
+
+Each spec's pose (`dx`/`x`, `dy`, `y` absolute centerplane, `dz` immersion,
+`trim` degrees about `pivot`) applies rigidly to every hull in that file, and
+`--sinkage`/`--platform-trim`/`--pivot-x` apply the whole-platform state a
+`weight`/`lcg` equilibrium row reports. IGES inputs pass their surfaces
+through **exactly** (untrimmed 128 patches, unit weights, metres; bounded
+143/141 bases are written as full surfaces with the parameter range
+restricted to the bounded box). `.hull` control nets and full-band bodies
+convert **exactly** too: the half-breadth graph `y = ±f(x, z)` is a B-spline
+surface whose control net sits on the graph's coordinate lines (linear
+precision at the Greville abscissae), emitted as the mirrored port/starboard
+pair. Platform sinkage is re-expressed as the hulls moving down, so the water
+surface stays at `--waterline` in the output frame. The written file
+round-trips through the importer: re-importing the reconstructed boat above
+reproduces the study's resistance to within the loft tolerance.
+
 Hydrostatics on every hull: displaced volume, LCB, KB, waterplane area and
 moments (longitudinal and transverse), LCF — exact spline integrals.
 
@@ -428,6 +454,10 @@ optional `centerplane`.
   `Placement` — fleets with exact wave interference.
 - `iges::import_fleet` — every hull in a file, with detected placements;
   `iges::import_hull` — exactly one (errors on multihull files).
+- `iges::write` — serialize surfaces to an IGES 5.3 file (untrimmed 128
+  patches, metres); `iges::halfbreadth_surfaces` — the exact mirrored
+  surface pair of a half-breadth spline; `iges::apply_pose` /
+  `SourceFleet::posed_surfaces` — pose CAD geometry for re-export.
 - `iges::source_fleet` + `SourceFleet::situate[_one](waterline, poses,
   platform)` — re-situate hulls repeatedly (immersion, mount trim, position).
 - `body::Body` — full-band half-breadth spline; `situate` via exact
