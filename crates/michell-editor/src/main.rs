@@ -6,14 +6,16 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use michell_editor::model::{HullSpec, Manifest};
+use michell_editor::model::{HullInfo, HullSpec, Manifest};
 use michell_editor::preview::Preview;
 use michell_editor::runner::{self, Job, JobKind};
 use michell_editor::validate::Level;
 use michell_editor::{jsonio, ui, validate};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -96,6 +98,9 @@ struct EditorApp {
     /// A running loft/sweep subprocess, if any (one at a time).
     job: Option<Job>,
     import: Option<ImportDialog>,
+    /// Cached `michell info` results per resolved hull path, with the file's
+    /// mtime so an edited/re-lofted body refreshes automatically.
+    hull_info: HashMap<String, (Option<SystemTime>, Result<HullInfo, String>)>,
 }
 
 impl Default for EditorApp {
@@ -112,6 +117,7 @@ impl Default for EditorApp {
             michell_bin: runner::default_michell_bin(),
             job: None,
             import: None,
+            hull_info: HashMap::new(),
         }
     }
 }
@@ -126,6 +132,43 @@ impl EditorApp {
             .as_ref()
             .and_then(|p| p.parent())
             .map(Path::to_path_buf)
+    }
+
+    /// Refresh the `michell info` cache for every hull whose body file exists
+    /// and is new or changed on disk, then return the per-hull info aligned to
+    /// `manifest.hulls` for display.
+    fn refresh_hull_info(&mut self) -> Vec<Option<Result<HullInfo, String>>> {
+        let dir = self.manifest_dir();
+        let mut out = Vec::with_capacity(self.manifest.hulls.len());
+        for h in &self.manifest.hulls {
+            if h.file.trim().is_empty() {
+                out.push(None);
+                continue;
+            }
+            let path = match &dir {
+                Some(d) => d.join(&h.file),
+                None => PathBuf::from(&h.file),
+            };
+            let key = path.to_string_lossy().to_string();
+            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+            let stale = match self.hull_info.get(&key) {
+                Some((cached, _)) => *cached != mtime,
+                None => true,
+            };
+            if stale {
+                // Only spawn `info` for a file that actually exists; a missing
+                // path caches an error without a subprocess (so typing a path
+                // doesn't fire one off per keystroke).
+                let result = if mtime.is_some() {
+                    fetch_hull_info(&self.michell_bin, &path)
+                } else {
+                    Err("file not found".into())
+                };
+                self.hull_info.insert(key.clone(), (mtime, result));
+            }
+            out.push(self.hull_info.get(&key).map(|(_, r)| r.clone()));
+        }
+        out
     }
 
     fn title_file(&self) -> String {
@@ -400,6 +443,44 @@ impl EditorApp {
     }
 }
 
+/// Run `michell info <path> --json` and parse the hydrostatics. A `.hull` body
+/// is one member; a multi-body file is aggregated (summed area/volume, max
+/// length/beam/draft) so the row still reads sensibly.
+fn fetch_hull_info(bin: &Path, path: &Path) -> Result<HullInfo, String> {
+    let out = Command::new(bin)
+        .arg("info")
+        .arg(path)
+        .arg("--json")
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", bin.display()))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr);
+        return Err(msg.trim().trim_start_matches("error:").trim().to_string());
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).map_err(|e| format!("info JSON: {e}"))?;
+    let arr = v
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .ok_or("info returned no hulls")?;
+    let num = |m: &serde_json::Value, k: &str| m.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+    let mut info = HullInfo {
+        length: 0.0,
+        beam: 0.0,
+        draft: 0.0,
+        wetted_surface: 0.0,
+        displaced_volume: 0.0,
+    };
+    for m in arr {
+        info.length = info.length.max(num(m, "length"));
+        info.beam = info.beam.max(num(m, "beam"));
+        info.draft = info.draft.max(num(m, "draft"));
+        info.wetted_surface += num(m, "wetted_surface");
+        info.displaced_volume += num(m, "displaced_volume");
+    }
+    Ok(info)
+}
+
 /// Pull the produced `.hull` filenames out of `michell loft`'s stdout table
 /// (the first column of each non-header row is the file).
 fn parse_lofted(stdout: &str) -> Vec<String> {
@@ -567,10 +648,11 @@ impl eframe::App for EditorApp {
                 });
         }
 
+        let hull_infos = self.refresh_hull_info();
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let dir = self.manifest_dir();
-                let resp = ui::manifest_form(ui, &mut self.manifest, dir.as_deref());
+                let resp = ui::manifest_form(ui, &mut self.manifest, dir.as_deref(), &hull_infos);
                 if resp.changed {
                     self.dirty = true;
                     self.refresh_preview();

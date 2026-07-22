@@ -542,6 +542,23 @@ fn describe_source(source: &Source) -> Vec<String> {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Maximum breadth [m] of a situated hull: twice the largest half-breadth
+/// sampled over its wetted surface graph.
+fn max_beam(hull: &michell::Hull) -> f64 {
+    let s = hull.surface();
+    let (x0, x1) = s.x_domain();
+    let (z0, z1) = s.z_domain();
+    let mut half = 0.0f64;
+    for i in 0..=60 {
+        let x = x0 + (x1 - x0) * i as f64 / 60.0;
+        for j in 0..=30 {
+            let z = z0 + (z1 - z0) * j as f64 / 30.0;
+            half = half.max(s.eval(x, z));
+        }
+    }
+    2.0 * half
+}
+
 fn cmd_info(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
@@ -556,11 +573,12 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
             }
             out.push_str(&format!(
                 "{{\"path\":{:?},\"placement\":{{\"x\":{},\"y\":{}}},\"length\":{},\
-                 \"draft\":{},\"wetted_surface\":{},\"displaced_volume\":{}}}",
+                 \"beam\":{},\"draft\":{},\"wetted_surface\":{},\"displaced_volume\":{}}}",
                 m.path,
                 m.placement.x,
                 m.placement.y,
                 m.hull.length(),
+                max_beam(&m.hull),
                 m.hull.draft(),
                 m.hull.wetted_surface(),
                 m.hull.displaced_volume()

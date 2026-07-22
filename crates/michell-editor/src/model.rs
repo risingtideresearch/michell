@@ -83,6 +83,16 @@ pub struct HullSpec {
     pub points: Vec<PointLoad>,
 }
 
+/// Computed hydrostatics of a loaded `.hull` body, from `michell info`.
+#[derive(Clone, Copy)]
+pub struct HullInfo {
+    pub length: f64,
+    pub beam: f64,
+    pub draft: f64,
+    pub wetted_surface: f64,
+    pub displaced_volume: f64,
+}
+
 impl HullSpec {
     pub fn new() -> Self {
         Self::default()

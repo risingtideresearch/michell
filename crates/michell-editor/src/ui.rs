@@ -16,8 +16,15 @@ pub struct FormResponse {
 
 /// `dir` is the directory the manifest is (or will be) saved in — file paths
 /// picked via Browse are stored relative to it when possible, matching the
-/// "hull files load relative to the manifest" contract.
-pub fn manifest_form(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>) -> FormResponse {
+/// "hull files load relative to the manifest" contract. `infos` holds the
+/// computed hydrostatics per hull (index-aligned to `m.hulls`), or `None` while
+/// unknown.
+pub fn manifest_form(
+    ui: &mut Ui,
+    m: &mut Manifest,
+    dir: Option<&Path>,
+    infos: &[Option<Result<HullInfo, String>>],
+) -> FormResponse {
     let mut r = FormResponse::default();
 
     ui.heading("Study");
@@ -41,7 +48,7 @@ pub fn manifest_form(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>) -> FormR
         });
 
     ui.add_space(12.0);
-    r.changed |= hulls_section(ui, m, dir, &mut r.import_clicked);
+    r.changed |= hulls_section(ui, m, dir, infos, &mut r.import_clicked);
 
     ui.add_space(12.0);
     let hull_ids: Vec<String> = m.hulls.iter().map(|h| h.id.clone()).collect();
@@ -57,7 +64,13 @@ pub fn manifest_form(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>) -> FormR
     r
 }
 
-fn hulls_section(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>, import: &mut bool) -> bool {
+fn hulls_section(
+    ui: &mut Ui,
+    m: &mut Manifest,
+    dir: Option<&Path>,
+    infos: &[Option<Result<HullInfo, String>>],
+    import: &mut bool,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.heading("Hulls");
@@ -108,6 +121,8 @@ fn hulls_section(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>, import: &mut
                     ui.end_row();
                 });
 
+            hull_info_row(ui, infos.get(i).and_then(Option::as_ref));
+
             changed |= pose_editor(ui, i, &mut h.pose);
             changed |= load_editor(ui, i, &mut h.load);
             changed |= points_editor(ui, i, &mut h.points);
@@ -118,6 +133,30 @@ fn hulls_section(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>, import: &mut
         changed = true;
     }
     changed
+}
+
+/// One-line hydrostatics readout for a loaded body (from `michell info`).
+fn hull_info_row(ui: &mut Ui, info: Option<&Result<HullInfo, String>>) {
+    match info {
+        Some(Ok(h)) => {
+            ui.label(
+                RichText::new(format!(
+                    "L {:.2} m   B {:.2} m   T {:.3} m   S {:.2} m²   ∇ {:.3} m³",
+                    h.length, h.beam, h.draft, h.wetted_surface, h.displaced_volume
+                ))
+                .monospace()
+                .small(),
+            );
+        }
+        Some(Err(e)) => {
+            ui.label(
+                RichText::new(format!("⚠ {e}"))
+                    .small()
+                    .color(ui.visuals().warn_fg_color),
+            );
+        }
+        None => {}
+    }
 }
 
 fn pose_editor(ui: &mut Ui, i: usize, pose: &mut Pose) -> bool {
