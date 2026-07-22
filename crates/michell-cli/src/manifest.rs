@@ -670,6 +670,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             let cap = heel_cfg.gz_max.min(89.5);
             let mut samples = vec![(0.0f64, 0.0f64)];
             let mut deg = heel_cfg.gz_step;
+            let mut stopped_early = false;
             while deg <= cap + 1e-9 {
                 match solve_at(deg) {
                     Ok(eq) => {
@@ -681,6 +682,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     }
                     Err(e) => {
                         eprintln!("point {}: GZ scan stopped at {deg}°: {e}", point + 1);
+                        stopped_early = true;
                         break;
                     }
                 }
@@ -688,8 +690,18 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
             let (stats, capped) = gz_curve_stats(&samples, mass * gravity);
             if capped {
+                // `capped` means GZ never crossed zero within the samples, so
+                // `gz_vanish_deg`/`gz_area` only reach the last scanned angle —
+                // whether the scan hit the cap or stopped early on a
+                // non-converged solve. Report the real last angle either way.
+                let last_deg = samples.last().map(|s| s.0.to_degrees()).unwrap_or(0.0);
+                let why = if stopped_early {
+                    "the heeled solve stopped converging"
+                } else {
+                    "GZ was still positive at the scan cap"
+                };
                 eprintln!(
-                    "point {}: GZ still positive at {cap}° — gz_vanish_deg/gz_area are capped there",
+                    "point {}: {why} — gz_vanish_deg/gz_area truncated at {last_deg:.1}°",
                     point + 1
                 );
             }
