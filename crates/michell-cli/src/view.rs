@@ -27,7 +27,8 @@
 use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
-use michell::float::{heel_poses, righting_arm, solve_equilibrium_bodies, FleetState, LoadCase};
+use michell::float::{heel_poses, solve_equilibrium_heeled, LoadCase};
+use michell::inclined::InclinedGrid;
 use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
@@ -634,14 +635,18 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
                 ..HullPose::default()
             })
             .collect();
-        let heeled = heel_poses(&bodies, &base, heel).map_err(|e| format!("{e}"))?;
-        let eq = solve_equilibrium_bodies(
+        // Hydrostatics, trim, and the righting arm come from the true inclined
+        // cut; heel is applied inside the solve, not as a pose reposition.
+        let eq = solve_equilibrium_heeled(
             &bodies,
             0.0,
-            &heeled,
+            &base,
             &LoadCase { mass, lcg: None },
             density,
+            heel,
+            vcg,
             &opts,
+            InclinedGrid::default(),
         )
         .map_err(|e| format!("{e}"))?;
         let platform = Platform {
@@ -649,7 +654,10 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
             trim: eq.trim,
             pivot_x: 0.0,
         };
-        let gz = righting_arm(&eq.fleet, heel, vcg);
+        let gz = eq.gz;
+        // Wetted geometry for display: the rigid heel reposition, situated at
+        // the solved attitude (the same geometry the resistance path uses).
+        let heeled = heel_poses(&bodies, &base, heel).map_err(|e| format!("{e}"))?;
         let mut situated = Vec::with_capacity(idx.len());
         for (k, &i) in idx.iter().enumerate() {
             match bodies[k]
@@ -681,24 +689,11 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
     recompute_fields(state)
 }
 
-/// Righting arm GZ [m] for the current wet fleet at the given heel and vcg,
-/// without re-floating — used when only the vcg changes.
+/// Righting arm GZ [m] at a new vcg without re-floating. `GZ = TCB − vcg·sinφ`
+/// and only the `vcg` term changes when the attitude is fixed, so the stored
+/// arm (`state.gz`, evaluated at `state.vcg`) is adjusted linearly — exact.
 fn compute_gz(state: &ViewState, heel: f64, vcg: f64) -> f64 {
-    let members: Vec<(Hull, Placement)> = state
-        .hulls
-        .iter()
-        .filter(|h| !h.dry && h.body.is_some())
-        .map(|h| (h.hull.clone(), h.home))
-        .collect();
-    if members.is_empty() {
-        return 0.0;
-    }
-    let fleet = FleetState {
-        members,
-        dry: 0,
-        band_exceeded: 0,
-    };
-    righting_arm(&fleet, heel, vcg)
+    state.gz + (state.vcg - vcg) * heel.sin()
 }
 
 /// Replace a view hull's wetted geometry (and its waterline beam profile for
@@ -856,8 +851,8 @@ fn route(path: &str, query: &str, state: &Mutex<ViewState>) -> Result<Resp, Stri
             if !v.is_finite() {
                 return Err("vcg must be finite".into());
             }
+            s.gz = compute_gz(&s, s.heel, v); // uses the old vcg still in `s`
             s.vcg = v;
-            s.gz = compute_gz(&s, s.heel, v);
             Ok(Resp {
                 ctype: "application/json",
                 body: state_json(&s).into_bytes(),

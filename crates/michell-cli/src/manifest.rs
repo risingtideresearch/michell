@@ -5,7 +5,8 @@
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
-use michell::float::{heel_poses, righting_arm, solve_equilibrium_bodies, FleetState, LoadCase};
+use michell::float::{solve_equilibrium_heeled, FleetState, LoadCase};
+use michell::inclined::InclinedGrid;
 use michell::iges::{HullPose, Platform};
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
@@ -386,6 +387,9 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let mut first_row = true;
 
     let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
+    // Section-integration resolution for the heeled inclined-waterplane
+    // hydrostatics (volume balance, trim, and GZ).
+    let incl_grid = InclinedGrid::default();
     let mut idx = vec![0usize; axes.len()];
     for point in 0..points {
         let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
@@ -422,19 +426,20 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
         }
 
-        if heel != 0.0 {
-            poses = heel_poses(&bodies, &poses, heel)
-                .map_err(|e| format!("point {}: {e}", point + 1))?;
-        }
-
-        let (state, sinkage, trim_deg, volume, lcb) = if let Some(mass) = weight {
-            let eq = solve_equilibrium_bodies(
+        // Heel enters the hydrostatics as a true inclined-waterplane rotation
+        // inside `solve_equilibrium_heeled` (a heel axis requires a vcg axis
+        // requires a weight axis, so only the weight branch below can heel).
+        let (state, sinkage, trim_deg, volume, lcb, gz_solved) = if let Some(mass) = weight {
+            let eq = solve_equilibrium_heeled(
                 &bodies,
                 0.0,
                 &poses,
                 &LoadCase { mass, lcg },
                 density,
+                heel,
+                vcg.unwrap_or(0.0),
                 &bopts,
+                incl_grid,
             )
             .map_err(|e| format!("point {}: {e}", point + 1))?;
             (
@@ -443,6 +448,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 eq.trim.to_degrees(),
                 eq.volume,
                 eq.lcb,
+                eq.gz,
             )
         } else {
             let mut members = Vec::new();
@@ -477,13 +483,13 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 0.0,
                 volume,
                 lcb,
+                0.0,
             )
         };
-        // Righting arm and moment at this (solved) heeled state.
-        let gz_rm = vcg.map(|vcg| {
-            let gz = righting_arm(&state, heel, vcg);
-            (gz, weight.unwrap_or(0.0) * gravity * gz)
-        });
+        // Righting arm (from the inclined cut) and moment. Reported only with a
+        // vcg axis, which the constraints tie to a weight axis, so `gz_solved`
+        // is the solved-equilibrium value here.
+        let gz_rm = vcg.map(|_| (gz_solved, weight.unwrap_or(0.0) * gravity * gz_solved));
 
         let members: Vec<(&Hull, Placement)> =
             state.members.iter().map(|(h, p)| (h, *p)).collect();
