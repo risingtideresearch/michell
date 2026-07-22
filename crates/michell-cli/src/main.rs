@@ -164,10 +164,12 @@ WAVE FIELD (spectrum, wake)
 SWEEPS
   michell sweep study.json      preferred: a JSON manifest referencing
                                 full-band .hull bodies (from `michell loft`),
-                                with speed/weight/lcg/waterline/pose axes —
-                                see the README for the schema; a heel axis
-                                (with weight + vcg) re-solves the equilibrium
-                                at each angle and emits gz/rm (GZ curves)
+                                with speed/waterline axes, per-hull load
+                                (mass/lcg/vcg) and pose axes, and a derived
+                                fleet CG — see the README for the schema; a
+                                heel axis (with hull mass) re-solves the
+                                equilibrium at each angle and emits gz/rm
+                                (GZ curves)
   michell loft boat.igs --waterline Z -o boat
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted

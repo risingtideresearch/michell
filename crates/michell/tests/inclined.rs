@@ -77,7 +77,7 @@ fn zero_heel_is_upright() {
     let grid = InclinedGrid::default();
     let target = l * 2.0 * b * t;
     let s = solve_sinkage(&bodies, &poses, 0.0, grid, target);
-    let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), 0.0, 0.1, grid);
+    let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), 0.0, 0.1, 0.0, grid);
     assert!(gz.abs() < 1e-9, "GZ(0) = {gz}");
 }
 
@@ -111,7 +111,7 @@ fn heeled_box_is_wall_sided_and_nonlinear() {
         let v = fleet_volume(&bodies, s, &poses, &Platform::default(), phi, grid);
         assert!((v - target).abs() < 1e-4 * target, "{deg}°: V {v} vs {target}");
 
-        let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), phi, vcg, grid);
+        let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), phi, vcg, 0.0, grid);
         let (sin, tan) = (phi.sin(), phi.tan());
         let want = sin * (gm + 0.5 * bm * tan * tan); // wall-sided exact
         let linear = gm * sin; // metacentric approximation
@@ -165,7 +165,7 @@ fn catamaran_gz_beats_metacentric() {
         // Displacement is held across the heel sweep.
         let v = fleet_volume(&bodies, sk, &poses, &Platform::default(), phi, grid);
         assert!((v - target).abs() < 1e-4 * target, "{deg}°: V {v} vs {target}");
-        fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), phi, vcg, grid)
+        fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), phi, vcg, 0.0, grid)
     };
 
     // Linear regime: agree closely at 2°.
@@ -180,8 +180,8 @@ fn catamaran_gz_beats_metacentric() {
 
     // Antisymmetric about upright.
     let sk = solve_sinkage(&bodies, &poses, 5.0f64.to_radians(), grid, target);
-    let plus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), 5.0f64.to_radians(), vcg, grid);
-    let minus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), -5.0f64.to_radians(), vcg, grid);
+    let plus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), 5.0f64.to_radians(), vcg, 0.0, grid);
+    let minus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), -5.0f64.to_radians(), vcg, 0.0, grid);
     assert!((plus + minus).abs() < 1e-6 * plus.abs(), "not antisymmetric: {plus} vs {minus}");
 }
 

@@ -344,14 +344,16 @@ pub fn fleet_inclined(
 
 /// Righting arm `GZ` [m] of a heeled fleet by inclined-waterplane
 /// hydrostatics: the earth-frame transverse separation of the buoyancy and
-/// gravity lines of action. `vcg` is the centre of gravity on the platform
-/// centerline, metres **above** the design floatplane; positive `GZ` rights the
-/// platform.
+/// gravity lines of action. `vcg` is the centre of gravity metres **above** the
+/// design floatplane; `tcg` is its transverse offset in the fleet frame (0 for
+/// a laterally symmetric load). The arm is `GZ = TCB − vcg·sin φ − tcg·cos φ`;
+/// positive `GZ` rights the platform.
 ///
 /// Unlike [`crate::float::righting_arm`] the per-hull form stability is
 /// integrated from the true tilted cut (nonlinear in `φ`), not added
 /// metacentrically. Only meaningful when the fleet is in vertical balance
 /// (buoyancy = weight) at this `water_offset`.
+#[allow(clippy::too_many_arguments)]
 pub fn fleet_righting_arm(
     bodies: &[&Body],
     water_offset: f64,
@@ -359,13 +361,14 @@ pub fn fleet_righting_arm(
     platform: &Platform,
     heel: f64,
     vcg: f64,
+    tcg: f64,
     grid: InclinedGrid,
 ) -> f64 {
     let f = fleet_inclined(bodies, water_offset, poses, platform, heel, grid);
     if f.volume <= 0.0 {
         return 0.0;
     }
-    f.moment_y / f.volume - vcg * heel.sin()
+    f.moment_y / f.volume - vcg * heel.sin() - tcg * heel.cos()
 }
 
 /// Total displaced volume of a fleet at the given attitude — the vertical-force

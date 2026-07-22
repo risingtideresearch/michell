@@ -448,14 +448,13 @@ fn loft_decomposes_and_manifest_sweeps() {
   "name": "cli test study",
   "fluid": "seawater",
   "hulls": [
-    { "id": "vaka",  "file": "tri-center.hull" },
+    { "id": "vaka",  "file": "tri-center.hull", "load": { "mass": 3000, "lcg": 5.0 } },
     { "id": "ama_s", "file": "tri-starboard.hull" },
     { "id": "ama_p", "file": "tri-port.hull" }
   ],
   "sweep": [
     { "target": "speed", "unit": "ms", "value": 3.0 },
-    { "target": "weight", "range": [3000, 6000], "step": 3000 },
-    { "target": "lcg", "value": 5.0 },
+    { "target": "vaka", "param": "mass", "values": [0, 3000] },
     { "target": ["ama_s", "ama_p"], "param": "spread", "values": [0, 0.5] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
@@ -512,13 +511,11 @@ fn manifest_heel_axis_produces_gz_curve() {
   "name": "gz curve",
   "fluid": "seawater",
   "hulls": [
-    { "id": "port", "file": "cat-port.hull" },
-    { "id": "stbd", "file": "cat-starboard.hull" }
+    { "id": "port", "file": "cat-port.hull", "load": { "mass": 1450, "vcg": 0.2 } },
+    { "id": "stbd", "file": "cat-starboard.hull", "load": { "mass": 1450, "vcg": 0.2 } }
   ],
   "sweep": [
     { "target": "speed", "unit": "ms", "value": 3.0 },
-    { "target": "weight", "value": 2900 },
-    { "target": "vcg", "value": 0.2 },
     { "target": "heel", "values": [-1.5, 0, 1.5] }
   ],
   "output": { "format": "csv", "file": "gz.csv" },
@@ -585,11 +582,9 @@ fn manifest_heel_raises_monohull_wave_resistance() {
     let manifest = r#"{
   "name": "monohull heel wave",
   "fluid": "seawater",
-  "hulls": [ { "id": "vaka", "file": "mono.hull" } ],
+  "hulls": [ { "id": "vaka", "file": "mono.hull", "load": { "mass": 1500, "vcg": 0.3 } } ],
   "sweep": [
     { "target": "speed", "unit": "ms", "value": 3.0 },
-    { "target": "weight", "value": 1500 },
-    { "target": "vcg", "value": 0.3 },
     { "target": "heel", "values": [0, 12, 24] }
   ],
   "output": { "format": "csv", "file": "monoheel.csv" },

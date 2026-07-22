@@ -293,29 +293,40 @@ of the crate. Build with `--release`; a debug build runs the integrals ~40×
 slower and the viewer warns about it.
 
 **Sweeps** (`michell sweep study.json`): long-form CSV/JSON over the
-Cartesian product of axes — every varying quantity (speed, weight, lcg,
+Cartesian product of axes — every varying quantity (speed, hull loads,
 waterline, hull poses) is an axis, with fixed values as single-valued axes.
-A `weight` axis switches to **equilibrium mode**: each point's platform
-sinkage (and pitch, with `lcg`) is solved by a Newton iteration whose
-Jacobian comes from the waterplane properties, so counterfactuals like
-"what if the boat were heavier / the CG further forward" are swept at
-physically consistent attitudes. Every record carries the solved state,
-displacement, LCB, dry-hull count, and the resistance breakdown. All poses
-are hydrostatic (no speed-dependent squat).
+Each hull carries its own **load** — `mass` [kg] and a centre of gravity
+(`lcg` longitudinal, `vcg` metres above the design floatplane) in the hull's
+own frame. The **fleet CG is never set directly**: it is always the
+mass-weighted sum of the per-hull loads, carried through each hull's pose, so
+mounting a hull moves its weight with it (`dx`/`dz` translate its CG, design
+`trim` rotates it) and the platform CG tracks the geometry automatically. An
+unspecified `lcg` defaults to the hull's midship.
+
+When the fleet carries mass it runs in **equilibrium mode**: each point's
+platform sinkage (and pitch, from the derived LCG) is solved by a Newton
+iteration whose Jacobian comes from the waterplane properties, so
+counterfactuals like "what if this hull were heavier / its CG further forward"
+are swept at physically consistent attitudes. Every such record carries the
+solved state, displacement, LCB, the **derived** fleet CG (`mass`, `lcg`,
+`vcg`, `tcg`), the righting arm, dry-hull count, and the resistance breakdown.
+All poses are hydrostatic (no speed-dependent squat).
 
 ```json
 {
   "name": "ama placement study",
   "fluid": "seawater",
   "hulls": [
-    { "id": "vaka",  "file": "boat-center.hull" },
-    { "id": "ama_s", "file": "boat-starboard.hull" },
-    { "id": "ama_p", "file": "boat-port.hull", "pose": { "trim": 0.5 } }
+    { "id": "vaka",  "file": "boat-center.hull",
+      "load": { "mass": 1800, "lcg": -5.8, "vcg": 1.1 } },
+    { "id": "ama_s", "file": "boat-starboard.hull",
+      "load": { "mass": 120, "vcg": 0.4 } },
+    { "id": "ama_p", "file": "boat-port.hull", "pose": { "trim": 0.5 },
+      "load": { "mass": 120, "vcg": 0.4 } }
   ],
   "sweep": [
     { "target": "speed", "unit": "knots", "range": [4, 10], "step": 0.5 },
-    { "target": "weight", "range": [1800, 2600], "step": 200 },
-    { "target": "lcg", "value": -5.8 },
+    { "target": "vaka", "param": "mass", "range": [0, 800], "step": 200 },
     { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
     { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] }
   ],
@@ -326,11 +337,13 @@ are hydrostatic (no speed-dependent squat).
 
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
-(`ms` | `knots` | `froude`). Pose params: `dx`, `dy`, `dz` (+down),
-`spread` (outboard, sign follows each hull's side), `trim` (degrees,
-+ raises the +x end); a target list moves several hulls as one coupled
-axis. Hull files load relative to the manifest. A flag-based sweep over raw
-IGES (`--axis`, `--float`) remains for one-liners.
+(`ms` | `knots` | `froude`). Per-hull params target hull ids and **offset the
+hull's base value** — pose: `dx`, `dy`, `dz` (+down), `spread` (outboard, sign
+follows each hull's side), `trim` (degrees, + raises the +x end); load:
+`mass`, `lcg`, `vcg`. A target list moves several hulls as one coupled axis
+(e.g. sweep both amas' `mass` together to vary payload symmetrically). Hull
+files load relative to the manifest. A flag-based sweep over raw IGES
+(`--axis`, `--float`) remains for one-liners.
 
 **GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
 platform rigidly about the centerline at the design floatplane and re-solves
@@ -338,23 +351,26 @@ the equilibrium at every angle, so the displaced volume is held while
 buoyancy transfers between hulls — the windward hull flying shows up in the
 `dry` column, and resistance is computed on the heeled fleet with the
 tilted-centreplane wave kernel (`multihull_heel_wave_resistance`), so the `rw`
-column reflects the heel's wave-making, not just the reposition. It requires a
-`weight` axis and a `vcg` axis (centre of gravity in metres above the design
-floatplane — itself sweepable for KG studies); with `vcg` present every row
-carries `gz` (righting arm, m; positive rights the boat) and `rm` (righting
-moment, N·m). `gz` is the **true inclined-waterplane cut** of the heeled fleet
-(each section clipped by the tilted free surface — see the `inclined` module),
-so both the inter-hull buoyancy transfer *and* each hull's own form stability
-are integrated exactly — a genuinely nonlinear GZ curve, with the deck-edge
-knee where topsides down-flood. (Sinkage and trim are still balanced on the
-upright reposition, so `dry`/`volume` read as before; only the righting arm uses
-the tilted cut.)
+column reflects the heel's wave-making, not just the reposition. It requires
+the fleet to carry mass; every floated row then carries `gz` (righting arm, m;
+positive rights the boat) and `rm` (righting moment, N·m). The arm is
+`GZ = TCB − vcg·sinφ − tcg·cosφ`: `TCB` is the **true inclined-waterplane cut**
+of the heeled fleet (each section clipped by the tilted free surface — see the
+`inclined` module), so both the inter-hull buoyancy transfer *and* each hull's
+own form stability are integrated exactly — a genuinely nonlinear GZ curve,
+with the deck-edge knee where topsides down-flood. The gravity terms use the
+derived fleet CG, so a **laterally asymmetric load** (heavier ama, offset
+ballast) carries a non-zero `tcg` and gives a real static heel (`gz(0) ≠ 0`).
+(Sinkage and trim are still balanced on the upright reposition, so
+`dry`/`volume` read as before; only the righting arm uses the tilted cut.)
 
 ```json
+  "hulls": [
+    { "id": "port", "file": "boat-port.hull", "load": { "mass": 1100, "vcg": 1.1 } },
+    { "id": "stbd", "file": "boat-starboard.hull", "load": { "mass": 1100, "vcg": 1.1 } }
+  ],
   "sweep": [
     { "target": "speed", "unit": "knots", "value": 8 },
-    { "target": "weight", "value": 2200 },
-    { "target": "vcg", "value": 1.1 },
     { "target": "heel", "range": [-15, 15], "step": 1 }
   ]
 ```
@@ -392,8 +408,8 @@ michell place ama.igs@dy=3.9,dz=-0.008 ama.igs@dy=-0.1,dz=-0.008 \
 
 Each spec's pose (`dx`/`x`, `dy`, `y` absolute centerplane, `dz` immersion,
 `trim` degrees about `pivot`) applies rigidly to every hull in that file, and
-`--sinkage`/`--platform-trim`/`--pivot-x` apply the whole-platform state a
-`weight`/`lcg` equilibrium row reports. IGES inputs pass their surfaces
+`--sinkage`/`--platform-trim`/`--pivot-x` apply the whole-platform state an
+equilibrium (floated-load) row reports. IGES inputs pass their surfaces
 through **exactly** (untrimmed 128 patches, unit weights, metres; bounded
 143/141 bases are written as full surfaces with the parameter range
 restricted to the bounded box). `.hull` control nets and full-band bodies

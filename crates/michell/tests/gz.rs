@@ -3,7 +3,9 @@
 //! inclined-waterplane equilibrium.
 
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_bodies, solve_equilibrium_heeled, LoadCase};
+use michell::float::{
+    fleet_cg, solve_equilibrium_bodies, solve_equilibrium_heeled, HullLoad, LoadCase,
+};
 use michell::iges::HullPose;
 use michell::inclined::InclinedGrid;
 use michell::BSplineSurface;
@@ -36,6 +38,63 @@ fn barge(l: f64, b: f64, d: f64, w: f64, centerplane: f64) -> Body {
     Body::new(surface, w, centerplane).unwrap()
 }
 
+/// The fleet CG is the mass-weighted sum of the per-hull loads, carried through
+/// each hull's pose: a symmetric pair cancels transversely; unequal masses
+/// bias the CG; and dx/dy/dz translate a hull's CG one-for-one.
+#[test]
+fn fleet_cg_is_mass_weighted_and_tracks_pose() {
+    let l = 10.0;
+    let port = barge(l, 0.5, 1.2, 0.8, -1.5);
+    let stbd = barge(l, 0.5, 1.2, 0.8, 1.5);
+    let bodies = [&port, &stbd];
+    let load = |mass| HullLoad {
+        mass,
+        lcg: 5.0,
+        vcg: 0.3,
+    };
+
+    // Symmetric equal masses: transverse cancels, vertical/longitudinal shared.
+    let cg = fleet_cg(&bodies, &[load(1000.0), load(1000.0)], &[HullPose::default(); 2]);
+    assert!((cg.mass - 2000.0).abs() < 1e-9);
+    assert!(cg.tcg.abs() < 1e-9, "tcg {}", cg.tcg);
+    assert!((cg.lcg - 5.0).abs() < 1e-9 && (cg.vcg - 0.3).abs() < 1e-9);
+
+    // Heavier port hull pulls the CG to port (−y): (3000·−1.5 + 1000·1.5)/4000.
+    let cg = fleet_cg(&bodies, &[load(3000.0), load(1000.0)], &[HullPose::default(); 2]);
+    assert!((cg.tcg - (-0.75)).abs() < 1e-9, "tcg {}", cg.tcg);
+
+    // Pose translation: +dx raises lcg, +dy shifts tcg, +dz lowers vcg.
+    let pose = HullPose {
+        dx: 2.0,
+        dy: 0.5,
+        dz: 0.4,
+        ..HullPose::default()
+    };
+    let center = barge(l, 0.5, 1.2, 0.8, 0.0);
+    let cg = fleet_cg(&[&center], &[load(1000.0)], &[pose]);
+    assert!((cg.lcg - 7.0).abs() < 1e-9, "lcg {}", cg.lcg);
+    assert!((cg.tcg - 0.5).abs() < 1e-9, "tcg {}", cg.tcg);
+    assert!((cg.vcg - (-0.1)).abs() < 1e-9, "vcg {}", cg.vcg);
+
+    // Design trim rotates the CG about the hull midship (the pivot default):
+    // a CG on the pivot station at height v maps to (5 − v·sinτ, v·cosτ).
+    let tau = 0.2f64;
+    let cg = fleet_cg(
+        &[&center],
+        &[load(1000.0)],
+        &[HullPose {
+            trim: tau,
+            ..HullPose::default()
+        }],
+    );
+    assert!((cg.lcg - (5.0 - 0.3 * tau.sin())).abs() < 1e-9, "lcg {}", cg.lcg);
+    assert!((cg.vcg - 0.3 * tau.cos()).abs() < 1e-9, "vcg {}", cg.vcg);
+
+    // Massless hulls drop out entirely.
+    let cg = fleet_cg(&bodies, &[load(0.0), load(1000.0)], &[HullPose::default(); 2]);
+    assert!((cg.tcg - 1.5).abs() < 1e-9 && (cg.mass - 1000.0).abs() < 1e-9);
+}
+
 /// At a small heel the inclined-cut righting arm reduces to the metacentric
 /// `GZ = GM·sinφ` for a single centreline barge — the linear limit the exact
 /// cut must recover (`GM = I_T/∇ − KB − vcg`, KB down / G up from the waterline;
@@ -58,6 +117,7 @@ fn inclined_gz_matches_metacentric_gm_at_small_angle() {
         rho,
         heel,
         vcg,
+        0.0,
         &BodyOptions::default(),
         InclinedGrid::default(),
     )
@@ -91,7 +151,7 @@ fn heeled_equilibrium_zero_heel_matches_upright() {
     let grid = InclinedGrid::default();
 
     let up = solve_equilibrium_bodies(&bodies, 0.0, &poses, &load, rho, &opts).unwrap();
-    let he = solve_equilibrium_heeled(&bodies, 0.0, &poses, &load, rho, 0.0, 0.3, &opts, grid)
+    let he = solve_equilibrium_heeled(&bodies, 0.0, &poses, &load, rho, 0.0, 0.3, 0.0, &opts, grid)
         .unwrap();
 
     assert!((he.volume - mass / rho).abs() < 1e-3 * mass / rho, "V {}", he.volume);
@@ -121,7 +181,7 @@ fn heeled_equilibrium_holds_displacement_and_beats_metacentric() {
 
     let gz_at = |deg: f64| {
         let he = solve_equilibrium_heeled(
-            &bodies, 0.0, &poses, &load, rho, (deg as f64).to_radians(), vcg, &opts, grid,
+            &bodies, 0.0, &poses, &load, rho, (deg as f64).to_radians(), vcg, 0.0, &opts, grid,
         )
         .unwrap();
         assert!(
@@ -176,6 +236,7 @@ fn heeled_equilibrium_solves_trim() {
             rho,
             0.0,
             0.1,
+            0.0,
             &opts,
             grid,
         )
