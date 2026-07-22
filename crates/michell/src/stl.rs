@@ -381,7 +381,7 @@ impl MeshFleet {
         let mut members = Vec::new();
         let mut dry = Vec::new();
         for (hi, pose) in poses.iter().enumerate() {
-            match self.situate_hull(hi, waterline_z, pose, platform, opts)? {
+            match self.situate_hull(hi, waterline_z, pose, platform, opts, &mut |_| {})? {
                 Some(m) => members.push(m),
                 None => dry.push(hi),
             }
@@ -398,13 +398,28 @@ impl MeshFleet {
         platform: &Platform,
         opts: &ImportOptions,
     ) -> Result<Option<ImportedHull>> {
+        self.situate_one_progress(idx, waterline_z, pose, platform, opts, &mut |_| {})
+    }
+
+    /// Like [`MeshFleet::situate_one`], but reports loft-sampling progress as a
+    /// fraction in `0.0..=1.0` (one call per station) through `progress`, so a
+    /// front-end can show a bar. The final surface fit is not subdivided.
+    pub fn situate_one_progress(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
+    ) -> Result<Option<ImportedHull>> {
         if idx >= self.hulls.len() {
             return Err(Error::InvalidInput(format!(
                 "hull index {idx} out of range ({} hulls)",
                 self.hulls.len()
             )));
         }
-        self.situate_hull(idx, waterline_z, pose, platform, opts)
+        self.situate_hull(idx, waterline_z, pose, platform, opts, progress)
     }
 
     fn situate_hull(
@@ -414,6 +429,7 @@ impl MeshFleet {
         pose: &HullPose,
         platform: &Platform,
         opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
     ) -> Result<Option<ImportedHull>> {
         if opts.stations < 8 || opts.waterlines < 6 {
             return Err(Error::InvalidInput(
@@ -560,6 +576,7 @@ impl MeshFleet {
                 }
                 grid[i * nw + j] = folded;
             }
+            progress((i + 1) as f32 / ns as f32);
         }
 
         // Value-only grid: a tessellated mesh carries no usable slopes.

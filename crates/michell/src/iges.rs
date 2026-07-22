@@ -91,6 +91,13 @@ impl NurbsSurface3 {
         clip_domain(full, self.trim_uv.map(|t| (t[2], t[3])))
     }
 
+    /// Surface point at parameter `(u, v)` (see [`NurbsSurface3::u_domain`] /
+    /// [`NurbsSurface3::v_domain`] for the valid range). Assumes uniform
+    /// weights, like the rest of the sampler.
+    pub fn point(&self, u: f64, v: f64) -> [f64; 3] {
+        self.eval1(u, v).0
+    }
+
     /// Point and first partials. Assumes uniform weights (polynomial).
     #[allow(clippy::needless_range_loop)]
     fn eval1(&self, u: f64, v: f64) -> ([f64; 3], [f64; 3], [f64; 3]) {
@@ -930,7 +937,7 @@ impl SourceFleet {
         let mut members = Vec::new();
         let mut dry = Vec::new();
         for (hi, pose) in poses.iter().enumerate() {
-            match self.situate_hull(hi, waterline_z, pose, platform, opts)? {
+            match self.situate_hull(hi, waterline_z, pose, platform, opts, &mut |_| {})? {
                 Some(m) => members.push(m),
                 None => dry.push(hi),
             }
@@ -947,13 +954,29 @@ impl SourceFleet {
         platform: &Platform,
         opts: &ImportOptions,
     ) -> Result<Option<ImportedHull>> {
+        self.situate_one_progress(idx, waterline_z, pose, platform, opts, &mut |_| {})
+    }
+
+    /// Like [`SourceFleet::situate_one`], but reports loft-sampling progress as
+    /// a fraction in `0.0..=1.0` (one call per waterline row) through
+    /// `progress`, so a front-end can show a bar. The final surface fit is not
+    /// subdivided, so progress reaches ~1.0 as sampling completes.
+    pub fn situate_one_progress(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
+    ) -> Result<Option<ImportedHull>> {
         if idx >= self.hulls.len() {
             return Err(Error::InvalidInput(format!(
                 "hull index {idx} out of range ({} hulls)",
                 self.hulls.len()
             )));
         }
-        self.situate_hull(idx, waterline_z, pose, platform, opts)
+        self.situate_hull(idx, waterline_z, pose, platform, opts, progress)
     }
 
     /// Highest z (CAD frame, up) of a hull's control net — an upper bound on
@@ -1005,6 +1028,7 @@ impl SourceFleet {
         pose: &HullPose,
         platform: &Platform,
         opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
     ) -> Result<Option<ImportedHull>> {
         let surfs = &self.hulls[hi];
         let wl = waterline_z + platform.sinkage;
@@ -1014,7 +1038,7 @@ impl SourceFleet {
         if patches.iter().all(|p| p.wet_box.is_none()) {
             return Ok(None);
         }
-        let (hull, report, grid) = import_cluster(patches, opts, self.units_scale)?;
+        let (hull, report, grid) = import_cluster(patches, opts, self.units_scale, progress)?;
         Ok(Some(ImportedHull {
             placement: Placement {
                 x: 0.0,
@@ -1308,6 +1332,7 @@ fn import_cluster(
     patches: Vec<Patch>,
     opts: &ImportOptions,
     units_scale: f64,
+    progress: &mut dyn FnMut(f32),
 ) -> Result<(Hull, ImportReport, SampleGrid)> {
     // Wetted statistics of this cluster.
     let mut draft = 0.0f64;
@@ -1445,6 +1470,7 @@ fn import_cluster(
                 deriv_gaps += 1;
             }
         }
+        progress((j + 1) as f32 / nw as f32);
     }
 
     let sample_grid = SampleGrid::new(stations, waterlines, grid)?
