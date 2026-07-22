@@ -92,8 +92,9 @@ pub use grid::SampleGrid;
 pub use hull::Hull;
 pub use michell::{
     asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
-    multihull_wave_resistance, multihull_wave_resistance_lifting, multihull_wave_resistance_with,
-    wave_resistance, wave_resistance_with, LiftingGrid, Placement, WaveOptions, WaveResistance,
+    multihull_heel_wave_resistance, multihull_wave_resistance, multihull_wave_resistance_lifting,
+    multihull_wave_resistance_with, wave_resistance, wave_resistance_with, LiftingGrid, Placement,
+    WaveOptions, WaveResistance,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
@@ -167,6 +168,40 @@ pub fn multihull_resistance_with(
         solo_wave_total +=
             multihull_wave_resistance_with(&[*m], cond, wave_opts)?.resistance;
     }
+    multihull_resistance_core(members, cond, form_factor, wave, solo_wave_total)
+}
+
+/// Multihull resistance for a fleet **heeled** by `heel` radians about the
+/// platform's longitudinal axis: the wave part uses
+/// [`multihull_heel_wave_resistance`], the viscous part is unchanged (the model
+/// does not re-clip to the heeled waterline — see that function). `heel = 0`
+/// reproduces [`multihull_resistance_with`].
+pub fn multihull_resistance_heeled(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    wave_opts: &WaveOptions,
+    form_factor: f64,
+    heel: f64,
+) -> Result<MultihullResistance> {
+    let wave = multihull_heel_wave_resistance(members, cond, heel, wave_opts)?;
+    let mut solo_wave_total = 0.0;
+    for m in members {
+        solo_wave_total +=
+            multihull_heel_wave_resistance(&[*m], cond, heel, wave_opts)?.resistance;
+    }
+    multihull_resistance_core(members, cond, form_factor, wave, solo_wave_total)
+}
+
+/// Assemble the viscous breakdown and coefficients around an already-computed
+/// combined `wave` resistance and `solo_wave_total` (Σ standalone wave). Shared
+/// by the upright and heeled multihull paths.
+fn multihull_resistance_core(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    form_factor: f64,
+    wave: WaveResistance,
+    solo_wave_total: f64,
+) -> Result<MultihullResistance> {
     let viscous: Vec<ViscousResistance> = members
         .iter()
         .map(|(h, _)| viscous_resistance_with(h, cond, form_factor))

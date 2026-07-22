@@ -140,6 +140,23 @@ heeled waterline (the emerging/submerging wedges), nor include the lifting
 side-force of a heeled-and-yawed hull — that is a separate forcing into the
 centreplane lifting solve.
 
+A **heeled multihull** — a rigid platform (catamaran/trimaran) heeled by `φ`
+about its own longitudinal axis — is `multihull_heel_wave_resistance(members,
+cond, φ, opts)`. A rigid heel rotates every demihull's centreplane by the same
+`φ`, so the single angle drives each member's complex-`κ` kernel; rotating about
+the distant platform axis decomposes into a rotation about each demihull's own
+axis (the kernel) plus a rigid translation of the centreplane, whose transverse
+part is the member's offset `y_j` — carried by the usual placement phase. So a
+caller who first repositions the demihulls to the heeled attitude
+(`float::heel_poses`, which also supplies the immersion) and passes the same `φ`
+here gets both the per-hull tilt and the demihull interference. Unlike the
+single hull the result is **not** even in `φ` (an arrangement that is not
+mirror-symmetric heels differently to port and starboard), so both Kelvin
+half-systems are carried explicitly; a symmetric fleet at `φ = 0` reproduces
+`multihull_wave_resistance_with` exactly. `heel_wave_resistance` is the
+single-hull case. The same scope limits apply (no waterline re-clip, no yaw
+side-force).
+
 ## Validation
 
 `cargo test` checks, among others:
@@ -319,7 +336,9 @@ IGES (`--axis`, `--float`) remains for one-liners.
 platform rigidly about the centerline at the design floatplane and re-solves
 the equilibrium at every angle, so the displaced volume is held while
 buoyancy transfers between hulls — the windward hull flying shows up in the
-`dry` column, and resistance is computed on the heeled fleet. It requires a
+`dry` column, and resistance is computed on the heeled fleet with the
+tilted-centreplane wave kernel (`multihull_heel_wave_resistance`), so the `rw`
+column reflects the heel's wave-making, not just the reposition. It requires a
 `weight` axis and a `vcg` axis (centre of gravity in metres above the design
 floatplane — itself sweepable for KG studies); with `vcg` present every row
 carries `gz` (righting arm, m; positive rights the boat) and `rm` (righting

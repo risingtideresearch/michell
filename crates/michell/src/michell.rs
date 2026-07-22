@@ -135,12 +135,55 @@ pub fn heel_wave_resistance(
     heel: f64,
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
-    cond.validate()?;
-    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
-        return Err(Error::InvalidConditions(
-            "rel_tol must be finite and positive".into(),
-        ));
-    }
+    // The single-hull case of the fleet path: one member at the origin, so the
+    // placement phase is unity and the result is bit-for-bit the standalone
+    // heeled amplitude averaged over the ±θ systems.
+    multihull_heel_wave_resistance(&[(hull, Placement::default())], cond, heel, opts)
+}
+
+/// Combined wave resistance of a **heeled multihull** — a rigid platform (e.g.
+/// a catamaran or trimaran) heeled by `heel` radians about its own longitudinal
+/// axis.
+///
+/// A rigid heel rotates *every* demihull's centreplane by the same angle `φ`,
+/// so the single scalar `heel` is applied to each member's tilted-centreplane
+/// (complex-`κ`) kernel — the same one [`heel_wave_resistance`] uses. Rotating
+/// about the distant platform axis decomposes into a rotation about each
+/// demihull's own axis (captured by the kernel) plus a rigid translation of the
+/// centreplane; the transverse part of that translation is exactly the
+/// member's transverse offset `y_j`, carried by the usual placement phase. So a
+/// caller who has already repositioned the demihulls to the heeled attitude
+/// (e.g. via [`crate::float::heel_poses`], which also supplies the immersion)
+/// and passes the same `φ` here gets both the per-hull tilt and the demihull
+/// interference of the heeled fleet.
+///
+/// The demihull free-wave systems (each tilted, each at its heeled transverse
+/// offset) superpose exactly as in [`multihull_wave_resistance_with`]:
+///
+/// ```text
+/// A_± = Σ_j F_j^φ(λ, ±) · exp(iν(λ Δx_j ± λ√(λ²−1) y_j)),
+/// R_w = (4ρg²/πU²) ∫₁^∞ ½(|A₊|² + |A₋|²) λ²/√(λ²−1) dλ.
+/// ```
+///
+/// Unlike the single-hull case the result is **not** even in `φ`: for a fleet
+/// that is not mirror-symmetric about its mean centreplane, or once the demihull
+/// interference is included, port-down and starboard-down heel differ, so both
+/// Kelvin half-systems are carried explicitly (they are not folded together).
+/// `heel = 0` reproduces [`multihull_wave_resistance_with`] for a symmetric
+/// fleet exactly.
+///
+/// Scope (inherited from [`heel_wave_resistance`]): this captures the asymmetric
+/// **wave-making** of the tilted thickness distribution. It does not re-clip
+/// each hull to the true tilted waterline (the emerging/submerging wedges — the
+/// same approximation the hydrostatic heel sweep makes), nor include the lifting
+/// side-force of a heeled-and-yawed (drifting) fleet.
+pub fn multihull_heel_wave_resistance(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    heel: f64,
+    opts: &WaveOptions,
+) -> Result<WaveResistance> {
+    validate_fleet(members, cond, opts)?;
     if !heel.is_finite() || heel.abs() >= FRAC_PI_2 {
         return Err(Error::InvalidGeometry(
             "heel angle must be finite with |heel| < 90°".into(),
@@ -151,47 +194,26 @@ pub fn heel_wave_resistance(
     let nu = g / (u * u);
     let rho = cond.fluid.density;
 
-    let params = OuterParams {
-        nu,
-        x_half: hull.x_half_extent(),
-        // The tilt spreads the centreplane transversely by up to T·|sinφ|; size
-        // the outer-integral panels to resolve that heel-induced oscillation.
-        y_half: hull.draft() * heel.sin().abs(),
-        t_max: hull.draft(),
-    };
-    let mut inner = HeelInner::new(hull, nu, heel);
-    let mut amp_sq = |lambda: f64| -> f64 {
-        // The tilt makes F depend on the sign of θ; average the ±θ systems.
-        0.5 * (inner.eval(lambda, 1.0).abs_sq() + inner.eval(lambda, -1.0).abs_sq())
-    };
+    let (cx_ref, y_ref) = fleet_phase_refs(members);
+    // The tilt spreads each centreplane transversely by up to T·|sinφ| beyond
+    // its placement offset; widen the panel-sizing extent so the outer integral
+    // resolves that heel-induced oscillation.
+    let t_max = members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max);
+    let params = fleet_outer_params(members, nu, cx_ref, y_ref, t_max * heel.sin().abs());
 
-    let mut evals_total = 0usize;
-    let mut frac = 1.0;
-    let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-    evals_total += evals;
-    let mut est_rel = f64::INFINITY;
-    for _ in 0..opts.max_refinements {
-        frac *= 0.5;
-        let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-        evals_total += evals;
-        let scale = refined.abs().max(f64::MIN_POSITIVE);
-        est_rel = (refined - integral).abs() / scale;
-        integral = refined;
-        max_lambda = ml;
-        if est_rel <= opts.rel_tol {
-            break;
-        }
-    }
+    let mut mem: Vec<HeelMember> = members
+        .iter()
+        .map(|(h, p)| HeelMember {
+            inner: HeelInner::new(h, nu, heel),
+            dx: h.x_center() + p.x - cx_ref,
+            dy: p.y - y_ref,
+        })
+        .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(WaveResistance {
-        resistance: coeff * integral,
-        est_rel_error: est_rel,
-        inner_evaluations: evals_total,
-        max_lambda,
-    })
+    Ok(run_outer(&params, opts, coeff, |lambda| {
+        superpose(&mut mem, nu, lambda)
+    }))
 }
 
 /// Combined wave resistance of several thin hulls (multihull), with default
@@ -226,109 +248,28 @@ pub fn multihull_wave_resistance_with(
     cond: &Conditions,
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
-    cond.validate()?;
-    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
-        return Err(Error::InvalidConditions(
-            "rel_tol must be finite and positive".into(),
-        ));
-    }
-    if members.is_empty() {
-        return Err(Error::InvalidConditions(
-            "at least one hull is required".into(),
-        ));
-    }
-    if members
-        .iter()
-        .any(|(_, p)| !(p.x.is_finite() && p.y.is_finite()))
-    {
-        return Err(Error::InvalidConditions(
-            "hull placements must be finite".into(),
-        ));
-    }
+    validate_fleet(members, cond, opts)?;
     let u = cond.speed;
     let g = cond.gravity;
     let nu = g / (u * u);
     let rho = cond.fluid.density;
 
-    // Phase references (constant overall phase is irrelevant; keeping the
-    // oscillatory arguments centred keeps them small).
-    let n = members.len() as f64;
-    let cx_ref = members
-        .iter()
-        .map(|(h, p)| h.x_center() + p.x)
-        .sum::<f64>()
-        / n;
-    let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
-    let params = OuterParams {
-        nu,
-        x_half: members
-            .iter()
-            .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + h.x_half_extent())
-            .fold(0.0, f64::max),
-        y_half: members
-            .iter()
-            .map(|(_, p)| (p.y - y_ref).abs())
-            .fold(0.0, f64::max),
-        t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
-    };
+    let (cx_ref, y_ref) = fleet_phase_refs(members);
+    let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
 
-    let mut inners: Vec<(InnerIntegral, f64, f64)> = members
+    let mut mem: Vec<SourceMember> = members
         .iter()
-        .map(|(h, p)| (InnerIntegral::new(h, nu), h.x_center() + p.x - cx_ref, p.y - y_ref))
+        .map(|(h, p)| SourceMember {
+            inner: InnerIntegral::new(h, nu),
+            dx: h.x_center() + p.x - cx_ref,
+            dy: p.y - y_ref,
+        })
         .collect();
-    let mut amp_sq = |lambda: f64| -> f64 {
-        let kx = nu * lambda;
-        let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-        // Dipole spectral weight: a y-normal centreplane doublet radiates the
-        // source integral scaled by the transverse wavenumber (see
-        // [`dipole_weight`]). It is *odd* in θ — the +θ wave system carries
-        // −w·G and the −θ system +w·G — so the ½(|A₊|² + |A₋|²) average cancels
-        // the source–dipole cross term, leaving R_w = R_source + R_dipole
-        // additively (the θ-parity argument confirmed in the module docs).
-        let w = dipole_weight(lambda);
-        let mut plus = C64::ZERO;
-        let mut minus = C64::ZERO;
-        for (inner, dx, dy) in inners.iter_mut() {
-            let (f, g) = inner.eval_pair(lambda);
-            let wg = g.map_or(C64::ZERO, |g| g.scale(w));
-            if f == C64::ZERO && wg == C64::ZERO {
-                continue;
-            }
-            let a_plus = f - wg;
-            let a_minus = f + wg;
-            plus = plus + a_plus * C64::cis(kx * *dx + ky * *dy);
-            minus = minus + a_minus * C64::cis(kx * *dx - ky * *dy);
-        }
-        0.5 * (plus.abs_sq() + minus.abs_sq())
-    };
-
-    let mut evals_total = 0usize;
-    let mut frac = 1.0;
-    let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-    evals_total += evals;
-    let mut est_rel = f64::INFINITY;
-    for _ in 0..opts.max_refinements {
-        frac *= 0.5;
-        let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-        evals_total += evals;
-        let scale = refined.abs().max(f64::MIN_POSITIVE);
-        est_rel = (refined - integral).abs() / scale;
-        integral = refined;
-        max_lambda = ml;
-        if est_rel <= opts.rel_tol {
-            break;
-        }
-    }
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(WaveResistance {
-        resistance: coeff * integral,
-        est_rel_error: est_rel,
-        inner_evaluations: evals_total,
-        max_lambda,
-    })
+    Ok(run_outer(&params, opts, coeff, |lambda| {
+        superpose(&mut mem, nu, lambda)
+    }))
 }
 
 /// Grid resolution for the centreplane lifting solve behind
@@ -425,22 +366,7 @@ pub fn multihull_wave_resistance_lifting(
     opts: &WaveOptions,
     grid: LiftingGrid,
 ) -> Result<WaveResistance> {
-    cond.validate()?;
-    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
-        return Err(Error::InvalidConditions(
-            "rel_tol must be finite and positive".into(),
-        ));
-    }
-    if members.is_empty() {
-        return Err(Error::InvalidConditions(
-            "at least one hull is required".into(),
-        ));
-    }
-    if members.iter().any(|(_, p)| !(p.x.is_finite() && p.y.is_finite())) {
-        return Err(Error::InvalidConditions(
-            "hull placements must be finite".into(),
-        ));
-    }
+    validate_fleet(members, cond, opts)?;
     if grid.nx == 0 || grid.nz == 0 {
         return Err(Error::InvalidConditions(
             "lifting grid must have at least one panel each way".into(),
@@ -451,22 +377,11 @@ pub fn multihull_wave_resistance_lifting(
     let nu = g / (u * u);
     let rho = cond.fluid.density;
 
-    // Fleet phase references (identical to the strip multihull path).
-    let n = members.len() as f64;
-    let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
-    let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
-    let params = OuterParams {
-        nu,
-        x_half: members
-            .iter()
-            .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + h.x_half_extent())
-            .fold(0.0, f64::max),
-        y_half: members.iter().map(|(_, p)| (p.y - y_ref).abs()).fold(0.0, f64::max),
-        t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
-    };
+    let (cx_ref, y_ref) = fleet_phase_refs(members);
+    let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
 
     // Solve each asymmetric member's centreplane once (up front, not per λ).
-    let mut data: Vec<LiftMember> = members
+    let mut mem: Vec<LiftMember> = members
         .iter()
         .map(|(h, p)| {
             let dipole = if h.is_asymmetric() {
@@ -491,58 +406,10 @@ pub fn multihull_wave_resistance_lifting(
         })
         .collect();
 
-    let mut amp_sq = |lambda: f64| -> f64 {
-        let kx = nu * lambda;
-        let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-        let wd = 0.5 * ky;
-        let mut plus = C64::ZERO;
-        let mut minus = C64::ZERO;
-        for m in data.iter_mut() {
-            let f = m.inner.eval(lambda); // source (thickness) amplitude
-            let a_d = match &m.dipole {
-                Some((sol, len)) => {
-                    let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
-                    // Re-centre the dipole phase at the hull midpoint so it
-                    // shares the source's origin (the solver uses x ∈ [0, L]).
-                    let gc = C64::new(gre, gim) * C64::cis(-kx * len * 0.5);
-                    // A_d = i · wd · G  (odd in θ: +θ gets +A_d, −θ gets −A_d).
-                    C64::new(-gc.im, gc.re).scale(wd)
-                }
-                None => C64::ZERO,
-            };
-            plus = plus + (f + a_d) * C64::cis(kx * m.dx + ky * m.dy);
-            minus = minus + (f - a_d) * C64::cis(kx * m.dx - ky * m.dy);
-        }
-        0.5 * (plus.abs_sq() + minus.abs_sq())
-    };
-
-    let mut evals_total = 0usize;
-    let mut frac = 1.0;
-    let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-    evals_total += evals;
-    let mut est_rel = f64::INFINITY;
-    for _ in 0..opts.max_refinements {
-        frac *= 0.5;
-        let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(&params, frac, &mut amp_sq, &mut evals);
-        evals_total += evals;
-        let scale = refined.abs().max(f64::MIN_POSITIVE);
-        est_rel = (refined - integral).abs() / scale;
-        integral = refined;
-        max_lambda = ml;
-        if est_rel <= opts.rel_tol {
-            break;
-        }
-    }
-
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(WaveResistance {
-        resistance: coeff * integral,
-        est_rel_error: est_rel,
-        inner_evaluations: evals_total,
-        max_lambda,
-    })
+    Ok(run_outer(&params, opts, coeff, |lambda| {
+        superpose(&mut mem, nu, lambda)
+    }))
 }
 
 /// The Michell inner integrals `(I(λ), J(λ))` — the free-wave amplitude
@@ -703,6 +570,205 @@ fn integrate_outer(
     }
     *evals += pass_evals;
     (total, 1.0 / theta.cos().max(1e-300))
+}
+
+// ---------------------------------------------------------------------------
+// Shared multihull driver
+//
+// Every wave-resistance path integrates the same outer integral of the fleet's
+// combined free-wave amplitude; they differ only in how each member's ±θ
+// amplitude is formed. `MemberWave` captures that per-member amplitude;
+// `superpose` shares the placement-phase superposition and `run_outer` the
+// panel refinement and result assembly.
+// ---------------------------------------------------------------------------
+
+/// One fleet member's contribution to the far-field free-wave amplitude.
+trait MemberWave {
+    /// `(A₊, A₋)` — the amplitudes this member carries into the +θ and −θ wave
+    /// systems at `λ` (before the placement phase).
+    fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64);
+    /// `(dx, dy)`: longitudinal and transverse offsets from the fleet phase
+    /// centre. The placement phase is `exp(iν(λ dx ± λ√(λ²−1) dy))`.
+    fn offsets(&self) -> (f64, f64);
+}
+
+/// Combined `½(|A₊|² + |A₋|²)` of the fleet's two Kelvin half-systems at `λ`,
+/// summing each member's amplitude with its placement phase. Shared by every
+/// multihull path — the members differ only in [`MemberWave::amps`].
+fn superpose<M: MemberWave>(members: &mut [M], nu: f64, lambda: f64) -> f64 {
+    let kx = nu * lambda;
+    let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+    let mut plus = C64::ZERO;
+    let mut minus = C64::ZERO;
+    for m in members.iter_mut() {
+        let (a_plus, a_minus) = m.amps(nu, lambda);
+        if a_plus == C64::ZERO && a_minus == C64::ZERO {
+            continue;
+        }
+        let (dx, dy) = m.offsets();
+        plus = plus + a_plus * C64::cis(kx * dx + ky * dy);
+        minus = minus + a_minus * C64::cis(kx * dx - ky * dy);
+    }
+    0.5 * (plus.abs_sq() + minus.abs_sq())
+}
+
+/// March the outer integral to the requested tolerance and assemble the
+/// [`WaveResistance`]; `coeff = 4ρg²/(πU²)` is the Michell prefactor. Shared by
+/// every wave-resistance entry point.
+fn run_outer(
+    params: &OuterParams,
+    opts: &WaveOptions,
+    coeff: f64,
+    mut amp_sq: impl FnMut(f64) -> f64,
+) -> WaveResistance {
+    let mut evals_total = 0usize;
+    let mut frac = 1.0;
+    let mut evals = 0usize;
+    let (mut integral, mut max_lambda) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+    evals_total += evals;
+    let mut est_rel = f64::INFINITY;
+    for _ in 0..opts.max_refinements {
+        frac *= 0.5;
+        let mut evals = 0usize;
+        let (refined, ml) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+        evals_total += evals;
+        let scale = refined.abs().max(f64::MIN_POSITIVE);
+        est_rel = (refined - integral).abs() / scale;
+        integral = refined;
+        max_lambda = ml;
+        if est_rel <= opts.rel_tol {
+            break;
+        }
+    }
+    WaveResistance {
+        resistance: coeff * integral,
+        est_rel_error: est_rel,
+        inner_evaluations: evals_total,
+        max_lambda,
+    }
+}
+
+/// Shared validation for the multihull entry points.
+fn validate_fleet(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    opts: &WaveOptions,
+) -> Result<()> {
+    cond.validate()?;
+    if !(opts.rel_tol.is_finite() && opts.rel_tol > 0.0) {
+        return Err(Error::InvalidConditions(
+            "rel_tol must be finite and positive".into(),
+        ));
+    }
+    if members.is_empty() {
+        return Err(Error::InvalidConditions(
+            "at least one hull is required".into(),
+        ));
+    }
+    if members.iter().any(|(_, p)| !(p.x.is_finite() && p.y.is_finite())) {
+        return Err(Error::InvalidConditions(
+            "hull placements must be finite".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Fleet phase references: the mean hull x-centre and mean transverse position.
+/// Constant overall phase is irrelevant; centring the oscillatory arguments
+/// keeps them small.
+fn fleet_phase_refs(members: &[(&Hull, Placement)]) -> (f64, f64) {
+    let n = members.len() as f64;
+    let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
+    let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
+    (cx_ref, y_ref)
+}
+
+/// Outer-integral panel-sizing parameters for a fleet. `y_tilt` widens the
+/// transverse extent for a heeled fleet (the tilt spreads each centreplane by
+/// up to `T·|sinφ|` beyond its placement offset); pass 0 for an upright fleet.
+fn fleet_outer_params(
+    members: &[(&Hull, Placement)],
+    nu: f64,
+    cx_ref: f64,
+    y_ref: f64,
+    y_tilt: f64,
+) -> OuterParams {
+    OuterParams {
+        nu,
+        x_half: members
+            .iter()
+            .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + h.x_half_extent())
+            .fold(0.0, f64::max),
+        y_half: members
+            .iter()
+            .map(|(_, p)| (p.y - y_ref).abs())
+            .fold(0.0, f64::max)
+            + y_tilt,
+        t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
+    }
+}
+
+/// Upright source (thickness) member carrying the strip-closure camber dipole.
+struct SourceMember<'h> {
+    inner: InnerIntegral<'h>,
+    dx: f64,
+    dy: f64,
+}
+
+impl MemberWave for SourceMember<'_> {
+    fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
+        // Source amplitude plus the strip-closure y-dipole. The dipole spectral
+        // weight scales the source integral by the transverse wavenumber (see
+        // [`dipole_weight`]); it is *odd* in θ (the +θ system carries −w·G, the
+        // −θ system +w·G), so the ½(|A₊|²+|A₋|²) average in `superpose` cancels
+        // the source–dipole cross term, leaving R_w = R_source + R_dipole.
+        let (f, g) = self.inner.eval_pair(lambda);
+        let wg = g.map_or(C64::ZERO, |g| g.scale(dipole_weight(lambda)));
+        (f - wg, f + wg)
+    }
+    fn offsets(&self) -> (f64, f64) {
+        (self.dx, self.dy)
+    }
+}
+
+impl MemberWave for LiftMember<'_> {
+    fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64) {
+        let f = self.inner.eval(lambda); // source (thickness) amplitude
+        let a_d = match &self.dipole {
+            Some((sol, len)) => {
+                let kx = nu * lambda;
+                let wd = 0.5 * nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+                let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
+                // Re-centre the dipole phase at the hull midpoint so it shares
+                // the source's origin (the solver uses x ∈ [0, L]).
+                let gc = C64::new(gre, gim) * C64::cis(-kx * len * 0.5);
+                // A_d = i · wd · G (odd in θ: +θ gets +A_d, −θ gets −A_d).
+                C64::new(-gc.im, gc.re).scale(wd)
+            }
+            None => C64::ZERO,
+        };
+        (f + a_d, f - a_d)
+    }
+    fn offsets(&self) -> (f64, f64) {
+        (self.dx, self.dy)
+    }
+}
+
+/// Heeled member: the tilted-centreplane (complex-`κ`) source amplitude for the
+/// ±θ systems, at a shared platform heel angle.
+struct HeelMember<'h> {
+    inner: HeelInner<'h>,
+    dx: f64,
+    dy: f64,
+}
+
+impl MemberWave for HeelMember<'_> {
+    fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
+        (self.inner.eval(lambda, 1.0), self.inner.eval(lambda, -1.0))
+    }
+    fn offsets(&self) -> (f64, f64) {
+        (self.dx, self.dy)
+    }
 }
 
 /// Exact (per-span closed-form) evaluation of I + iJ at λ.
