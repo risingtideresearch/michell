@@ -4,8 +4,10 @@ mod formats;
 mod gridio;
 mod json;
 mod manifest;
+mod pdf;
 mod png;
 mod render;
+mod report;
 mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
@@ -167,7 +169,10 @@ SWEEPS
                                 with speed/weight/lcg/waterline/pose axes —
                                 see the README for the schema; a heel axis
                                 (with weight + vcg) re-solves the equilibrium
-                                at each angle and emits gz/rm (GZ curves)
+                                at each angle and emits gz/rm (GZ curves).
+                                output.format \"pdf\" writes an illustrated
+                                report (profile/body-plan/plan+wake/GZ views,
+                                one page per row) instead of a CSV/JSON table
   michell loft boat.igs --waterline Z -o boat
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
