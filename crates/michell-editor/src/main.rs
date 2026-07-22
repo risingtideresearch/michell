@@ -730,24 +730,27 @@ fn draw_geometry_view(ui: &mut egui::Ui, d: &mut ImportDialog) {
     };
     let band_top = dwl + band;
 
-    // Display bounds, expanded to include both lines, with padding.
-    let ymin0 = preview.y_min * scale;
-    let ymax0 = preview.y_max * scale;
-    let zmin0 = (preview.z_min * scale).min(dwl);
-    let zmax0 = (preview.z_max * scale).max(band_top);
-    let ypad = ((ymax0 - ymin0) * 0.08).max(1e-3);
-    let zpad = ((zmax0 - zmin0) * 0.08).max(1e-3);
-    let (ymin, ymax) = (ymin0 - ypad, ymax0 + ypad);
-    let (zmin, zmax) = (zmin0 - zpad, zmax0 + zpad);
+    // Fixed view bounds from the geometry alone — never the dragged lines — so
+    // dragging the waterline/band cannot rescale or compress the view.
+    let ymid = 0.5 * (preview.y_min + preview.y_max) * scale;
+    let zmid = 0.5 * (preview.z_min + preview.z_max) * scale;
+    let yspan = ((preview.y_max - preview.y_min) * scale).max(1e-6);
+    let zspan = ((preview.z_max - preview.z_min) * scale).max(1e-6);
 
     let (resp, painter) = ui.allocate_painter(Vec2::new(400.0, 240.0), Sense::click_and_drag());
     let rect = resp.rect;
     painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
 
-    // y (transverse) → x across the width; z (up) → screen y, inverted.
-    let x_of = |y: f32| rect.left() + (y - ymin) / (ymax - ymin) * rect.width();
-    let y_of = |z: f32| rect.bottom() - (z - zmin) / (zmax - zmin) * rect.height();
-    let z_of = |py: f32| zmin + (rect.bottom() - py) / rect.height() * (zmax - zmin);
+    // One pixels-per-metre scale for both axes (true proportions), with an 8%
+    // margin, centred in the rect. y → x, z → screen y (inverted).
+    let s_px = (rect.width() / yspan).min(rect.height() / zspan) * 0.92;
+    let (cx, cy) = (rect.center().x, rect.center().y);
+    let x_of = |y: f32| cx + (y - ymid) * s_px;
+    let y_of = |z: f32| cy - (z - zmid) * s_px;
+    let z_of = |py: f32| zmid - (py - cy) / s_px;
+    // Keep a dragged line within the visible height.
+    let z_half = rect.height() * 0.5 / s_px;
+    let (z_lo, z_hi) = (zmid - z_half, zmid + z_half);
 
     let weak = ui.visuals().weak_text_color();
     // Midship section outline: the raw model's segments where the plane x=x_mid
@@ -762,8 +765,8 @@ fn draw_geometry_view(ui: &mut egui::Ui, d: &mut ImportDialog) {
             Stroke::new(1.3_f32, hull_col),
         );
     }
-    if 0.0 >= ymin && 0.0 <= ymax {
-        let x0 = x_of(0.0);
+    let x0 = x_of(0.0);
+    if (rect.left()..=rect.right()).contains(&x0) {
         painter.line_segment(
             [Pos2::new(x0, rect.top()), Pos2::new(x0, rect.bottom())],
             Stroke::new(1.0_f32, weak.gamma_multiply(0.4)),
@@ -816,7 +819,7 @@ fn draw_geometry_view(ui: &mut egui::Ui, d: &mut ImportDialog) {
     }
     if resp.dragged() {
         if let Some(pos) = resp.interact_pointer_pos() {
-            let z = z_of(pos.y);
+            let z = z_of(pos.y).clamp(z_lo, z_hi);
             match d.dragging {
                 Some(1) => d.band = fmt3((z - dwl).max(0.0)),
                 _ => d.waterline = fmt3(z),
