@@ -119,6 +119,10 @@ PHYSICS OPTIONS
   --gravity G           override g [m/s2]
   --form-factor K       viscous form factor (1+k), default 0
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
+  --heel DEG            (resistance) heel the whole fleet DEG degrees about the
+                        platform's longitudinal axis; adds the tilted-thickness
+                        wave-making (|DEG| < 90). Viscous resistance is
+                        unchanged: no waterline re-clip, no yaw side-force
 
 WAVE FIELD (spectrum, wake)
   Both take one speed: --speed U (m/s; knots with --knots) or --froude F.
@@ -636,6 +640,8 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     };
 
     let form_factor = p.f64_flag("form-factor")?.unwrap_or(0.0);
+    let heel_deg = p.f64_flag("heel")?.unwrap_or(0.0);
+    let heel = heel_deg.to_radians();
     let mut wave_opts = WaveOptions::default();
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
@@ -644,8 +650,12 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     let mut rows = Vec::new();
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let r = michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
-            .map_err(|e| format!("at U = {u} m/s: {e}"))?;
+        let r = if heel != 0.0 {
+            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, form_factor, heel)
+        } else {
+            michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
+        }
+        .map_err(|e| format!("at U = {u} m/s: {e}"))?;
         rows.push((u, cond, r));
     }
 
@@ -673,8 +683,9 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         }
         out.push_str("],");
         out.push_str(&format!(
-            "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},",
-            fluid.density, fluid.kinematic_viscosity, form_factor
+            "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},\
+             \"heel_deg\":{},",
+            fluid.density, fluid.kinematic_viscosity, form_factor, heel_deg
         ));
         out.push_str("\"points\":[");
         for (i, (u, cond, r)) in rows.iter().enumerate() {
@@ -723,6 +734,12 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     println!(
         "L(ref) = {l_ref:.3} m, S = {total_s:.3} m^2, vol = {total_v:.3} m^3, form factor {form_factor}",
     );
+    if heel != 0.0 {
+        println!(
+            "heeled {heel_deg:.1} deg about the platform axis (tilted-thickness \
+             wave-making only; no waterline re-clip, no yaw side-force)"
+        );
+    }
     let u_label = if knots { "U[kn]" } else { "U[m/s]" };
     if multi {
         println!(

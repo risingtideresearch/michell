@@ -6,7 +6,10 @@
 //! result must be even in the heel angle, and (at fixed displacement) heel
 //! raises the wave resistance — growing like `sin²φ` for small angles.
 
-use michell::{heel_wave_resistance, hulls, wave_resistance, Conditions, WaveOptions};
+use michell::{
+    heel_wave_resistance, hulls, multihull_heel_wave_resistance, multihull_wave_resistance_with,
+    wave_resistance, Conditions, Placement, WaveOptions,
+};
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
 
@@ -82,4 +85,98 @@ fn resistance_increases_monotonically_with_heel() {
 fn extreme_heel_is_rejected() {
     let (hull, cond) = hull_and_cond(3.0);
     assert!(heel_wave_resistance(&hull, &cond, 1.6, &WaveOptions::default()).is_err());
+}
+
+// --- Multihull heel -------------------------------------------------------
+
+/// A fleet of one heeled hull is exactly the single-hull path (the placement
+/// phase is unity), so `heel_wave_resistance` and the fleet function must agree
+/// to the bit.
+#[test]
+fn fleet_of_one_matches_single_hull() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    for deg in [0.0, 7.0, 20.0] {
+        let phi = deg * DEG;
+        let single = heel_wave_resistance(&hull, &cond, phi, &opts).unwrap().resistance;
+        let fleet = multihull_heel_wave_resistance(&[(&hull, Placement::default())], &cond, phi, &opts)
+            .unwrap()
+            .resistance;
+        assert_eq!(single, fleet, "{deg}°: single {single} vs fleet-of-one {fleet}");
+    }
+}
+
+/// Zero heel on a catamaran reproduces the upright multihull resistance (with
+/// its interference) to full precision.
+#[test]
+fn zero_heel_catamaran_reproduces_upright() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    let members = [
+        (&hull, Placement { x: 0.0, y: 3.0 }),
+        (&hull, Placement { x: 0.0, y: -3.0 }),
+    ];
+    let upright = multihull_wave_resistance_with(&members, &cond, &opts).unwrap().resistance;
+    let heeled0 = multihull_heel_wave_resistance(&members, &cond, 0.0, &opts).unwrap().resistance;
+    let rel = (heeled0 - upright).abs() / upright;
+    assert!(rel < 1e-10, "heel-0 {heeled0} vs upright {upright} (rel {rel:e})");
+}
+
+/// A catamaran that is mirror-symmetric about its mean centreplane heels evenly:
+/// reflecting y → −y maps the fleet to itself and φ → −φ, so R(+φ) = R(−φ).
+/// (An asymmetric or staggered arrangement need not be even — hence the
+/// per-half-system treatment.)
+#[test]
+fn symmetric_catamaran_heel_is_even() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    let members = [
+        (&hull, Placement { x: 0.0, y: 2.5 }),
+        (&hull, Placement { x: 0.0, y: -2.5 }),
+    ];
+    for deg in [6.0, 15.0, 28.0] {
+        let plus = multihull_heel_wave_resistance(&members, &cond, deg * DEG, &opts)
+            .unwrap()
+            .resistance;
+        let minus = multihull_heel_wave_resistance(&members, &cond, -deg * DEG, &opts)
+            .unwrap()
+            .resistance;
+        assert!((plus - minus).abs() < 1e-9 * plus, "±{deg}°: {plus} vs {minus}");
+    }
+}
+
+/// Heel raises a catamaran's wave resistance too — the per-demihull tilt effect
+/// survives the interference.
+#[test]
+fn heel_adds_resistance_to_catamaran() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    let members = [
+        (&hull, Placement { x: 0.0, y: 2.5 }),
+        (&hull, Placement { x: 0.0, y: -2.5 }),
+    ];
+    let r0 = multihull_heel_wave_resistance(&members, &cond, 0.0, &opts).unwrap().resistance;
+    let r20 = multihull_heel_wave_resistance(&members, &cond, 20.0 * DEG, &opts)
+        .unwrap()
+        .resistance;
+    assert!(r20 > r0, "heel must add resistance to the catamaran: {r20} vs {r0}");
+}
+
+/// Far-apart demihulls stop interfering: the combined heeled resistance
+/// approaches the sum of the members' standalone heeled resistances.
+#[test]
+fn far_apart_heeled_fleet_is_additive() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    let phi = 15.0 * DEG;
+    let solo = heel_wave_resistance(&hull, &cond, phi, &opts).unwrap().resistance;
+    // 40 hull-lengths apart transversely: the interference phase oscillates
+    // fast enough that the cross term integrates away.
+    let members = [
+        (&hull, Placement { x: 0.0, y: 200.0 }),
+        (&hull, Placement { x: 0.0, y: -200.0 }),
+    ];
+    let combined = multihull_heel_wave_resistance(&members, &cond, phi, &opts).unwrap().resistance;
+    let ratio = combined / (2.0 * solo);
+    assert!((ratio - 1.0).abs() < 0.05, "far-apart additivity: combined/2·solo = {ratio}");
 }

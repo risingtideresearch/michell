@@ -493,9 +493,22 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                let r =
+                // The heel axis repositions each demihull (transverse offset +
+                // immersion via `heel_poses`); the heel wave kernel adds the
+                // remaining rotation-about-own-axis effect, so the resistance
+                // column is consistent with the heeled GZ state.
+                let r = if heel != 0.0 {
+                    michell::multihull_resistance_heeled(
+                        &members,
+                        &cond,
+                        &wave_opts,
+                        form_factor,
+                        heel,
+                    )
+                } else {
                     michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
-                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                }
+                .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
                     r.viscous_total,

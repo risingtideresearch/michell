@@ -556,6 +556,60 @@ fn manifest_heel_axis_produces_gz_curve() {
     }
 }
 
+/// A centered monohull heels almost in place (equilibrium only re-solves its
+/// immersion, no transverse shift), so the manifest's resistance column now
+/// reflects the tilted-hull wave kernel: Rw must climb with heel. With only the
+/// upright kernel wired in it would stay essentially flat.
+#[test]
+fn manifest_heel_raises_monohull_wave_resistance() {
+    let iges_path = tmp("mono.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
+    let prefix = tmp("mono");
+    run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.5",
+        "-o",
+        prefix.to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+    let body = tmp("mono.hull");
+    assert!(body.exists(), "single-hull loft should write {body:?}");
+
+    let manifest = r#"{
+  "name": "monohull heel wave",
+  "fluid": "seawater",
+  "hulls": [ { "id": "vaka", "file": "mono.hull" } ],
+  "sweep": [
+    { "target": "speed", "unit": "ms", "value": 3.0 },
+    { "target": "weight", "value": 1500 },
+    { "target": "vcg", "value": 0.3 },
+    { "target": "heel", "values": [0, 12, 24] }
+  ],
+  "output": { "format": "csv", "file": "monoheel.csv" },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+}"#;
+    let man_path = tmp("monoheel.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let csv = std::fs::read_to_string(tmp("monoheel.csv")).unwrap();
+    let rw = csv_col(&csv, "rw");
+    assert_eq!(rw.len(), 3, "{csv}");
+    assert!(rw.iter().all(|r| r.is_finite() && *r > 0.0), "{rw:?}");
+    // Heel adds tilted-thickness wave-making (∝ sin²φ), so Rw rises with heel.
+    assert!(rw[1] > rw[0], "Rw should rise at 12 deg: {rw:?}");
+    assert!(rw[2] > rw[1], "Rw should rise further at 24 deg: {rw:?}");
+    // Real effect, not round-off: comfortably over 1% by 24 degrees.
+    assert!(rw[2] > 1.01 * rw[0], "heel-24 Rw {} vs upright {}", rw[2], rw[0]);
+}
+
 /// Tessellated Wigley full shell (ASCII STL, metres, DWL at z = 0.7).
 fn wigley_stl(nx: usize, nz: usize) -> String {
     let f = |x: f64, zp: f64| {
