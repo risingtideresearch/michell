@@ -645,6 +645,7 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
             density,
             heel,
             vcg,
+            0.0, // CG on the platform centreline in the interactive viewer.
             &opts,
             InclinedGrid::default(),
         )

@@ -442,14 +442,13 @@ fn loft_decomposes_and_manifest_sweeps() {
   "name": "cli test study",
   "fluid": "seawater",
   "hulls": [
-    { "id": "vaka",  "file": "tri-center.hull" },
+    { "id": "vaka",  "file": "tri-center.hull", "load": { "mass": 3000, "lcg": 5.0 } },
     { "id": "ama_s", "file": "tri-starboard.hull" },
     { "id": "ama_p", "file": "tri-port.hull" }
   ],
   "sweep": [
     { "target": "speed", "unit": "ms", "value": 3.0 },
-    { "target": "weight", "range": [3000, 6000], "step": 3000 },
-    { "target": "lcg", "value": 5.0 },
+    { "target": "vaka", "param": "mass", "values": [0, 3000] },
     { "target": ["ama_s", "ama_p"], "param": "spread", "values": [0, 0.5] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
@@ -512,11 +511,9 @@ fn manifest_heel_rollup_metrics() {
     let manifest = r#"{
   "name": "heel rollup",
   "fluid": "seawater",
-  "hulls": [ { "id": "vaka", "file": "mono.hull" } ],
+  "hulls": [ { "id": "vaka", "file": "mono.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
   "sweep": [
-    { "target": "speed", "unit": "ms", "value": 3.0 },
-    { "target": "weight", "value": 1500 },
-    { "target": "vcg", "value": 0.0 }
+    { "target": "speed", "unit": "ms", "value": 3.0 }
   ],
   "output": { "format": "csv", "file": "rollup.csv" },
   "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2",
@@ -558,6 +555,60 @@ fn manifest_heel_rollup_metrics() {
     );
     assert!(r12 > 0.0, "rise@12deg = {r12}");
     assert!(r24 > r12, "rise should grow with heel: {r24} vs {r12}");
+}
+
+/// A point load mounted on a hull adds to the derived fleet CG and rides with
+/// its own swept offset: lowering it (`dz` +down) pulls `vcg` down, and its
+/// mass shows up in the derived `mass` column — all pure CG arithmetic, so the
+/// derived columns are exact.
+#[test]
+fn manifest_point_load_moves_derived_cg() {
+    let iges_path = tmp("ptload.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
+    run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.5",
+        "-o",
+        tmp("ptload").to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+
+    let manifest = r#"{
+  "name": "point load cg",
+  "fluid": "seawater",
+  "hulls": [
+    { "id": "vaka", "file": "ptload.hull",
+      "load": { "mass": 1000, "vcg": 0.5 },
+      "points": [ { "id": "keel", "mass": 500, "dz": 1.0 } ] }
+  ],
+  "sweep": [
+    { "target": "speed", "unit": "ms", "value": 3.0 },
+    { "target": "keel", "param": "dz", "values": [0.0, 2.0] }
+  ],
+  "output": { "format": "csv", "file": "ptload.csv" },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+}"#;
+    let man_path = tmp("ptload.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let csv = std::fs::read_to_string(tmp("ptload.csv")).unwrap();
+    // Derived fleet mass = structural 1000 + point 500, at both points.
+    let mass = csv_col(&csv, "mass");
+    assert_eq!(mass.len(), 2, "{csv}");
+    assert!(mass.iter().all(|m| (m - 1500.0).abs() < 1e-6), "{mass:?}");
+    // vcg = (1000·0.5 + 500·(−dz)) / 1500. dz base 1.0: row0 dz=1.0 → 0;
+    // row1 dz=3.0 → (500 − 1500)/1500 = −2/3.
+    let vcg = csv_col(&csv, "vcg");
+    assert!(vcg[0].abs() < 1e-6, "vcg(dz=1) = {}", vcg[0]);
+    assert!((vcg[1] + 2.0 / 3.0).abs() < 1e-6, "vcg(dz=3) = {}", vcg[1]);
 }
 
 /// Tessellated Wigley full shell (ASCII STL, metres, DWL at z = 0.7).

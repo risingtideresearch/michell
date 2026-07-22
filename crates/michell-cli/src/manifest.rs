@@ -5,7 +5,10 @@
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_heeled, FleetState, HeeledEquilibrium, LoadCase};
+use michell::float::{
+    fleet_cg, solve_equilibrium_heeled, FleetState, HeeledEquilibrium, HullLoad, LoadCase,
+    PointLoad,
+};
 use michell::iges::{HullPose, Platform};
 use michell::inclined::InclinedGrid;
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
@@ -21,12 +24,39 @@ enum PoseParam {
     TrimDeg,
 }
 
-enum Target {
-    Weight,
+/// Per-hull load parameters, swept independently per hull (offsets from the
+/// hull's base load, exactly as pose params offset the base pose). The fleet CG
+/// is always derived from these — never set directly.
+#[derive(Clone, Copy, PartialEq)]
+enum LoadParam {
+    Mass,
     Lcg,
     Vcg,
+}
+
+/// Point-load parameters, swept independently per point (offsets from the
+/// point's base value). `Dx`/`Dy`/`Dz` move the mass relative to the hull
+/// centerpoint; `Mass` scales it.
+#[derive(Clone, Copy, PartialEq)]
+enum PointParam {
+    Mass,
+    Dx,
+    Dy,
+    Dz,
+}
+
+enum Target {
     Waterline,
     Pose(Vec<usize>, PoseParam),
+    Load(Vec<usize>, LoadParam),
+    /// `(hull index, point index)` pairs and the swept point parameter.
+    Point(Vec<(usize, usize)>, PointParam),
+}
+
+/// What a sweep-target id resolves to.
+enum TargetKind {
+    Hull(usize),
+    Point(usize, usize),
 }
 
 #[derive(Clone, Copy)]
@@ -46,6 +76,9 @@ struct MHull {
     id: String,
     body: Body,
     base: HullPose,
+    load: HullLoad,
+    /// Ids of the point loads in `load.points`, in the same order.
+    point_ids: Vec<String>,
 }
 
 /// Configuration for the heel roll-up metrics (active in vcg/equilibrium mode).
@@ -295,15 +328,84 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .unwrap_or(0.0)
                 .to_radians();
         }
+        // Per-hull load: mass and local CG. The fleet CG is derived by summing
+        // these across hulls (carried through each pose), never set directly.
+        // An unspecified longitudinal CG defaults to the hull's midship (like
+        // the pose pivot), so a load with no `lcg` trims to ~zero, not to x=0.
+        let (x0, x1) = body.surface().x_domain();
+        let midship = 0.5 * (x0 + x1);
+        let mut load = HullLoad {
+            mass: 0.0,
+            lcg: midship,
+            vcg: 0.0,
+            points: Vec::new(),
+        };
+        if let Some(ld) = h.get("load") {
+            load.mass = ld.get("mass").and_then(Json::as_f64).unwrap_or(0.0);
+            load.lcg = ld.get("lcg").and_then(Json::as_f64).unwrap_or(midship);
+            load.vcg = ld.get("vcg").and_then(Json::as_f64).unwrap_or(0.0);
+            if load.mass < 0.0 {
+                return Err(format!("hull {id:?}: load mass must be >= 0"));
+            }
+        }
+        // Extra point masses mounted on the hull, offset from its centerpoint.
+        let mut point_ids: Vec<String> = Vec::new();
+        if let Some(pts) = h.get("points") {
+            let arr = pts
+                .as_arr()
+                .ok_or_else(|| format!("hull {id:?}: \"points\" must be an array"))?;
+            for p in arr {
+                let pid = p
+                    .get("id")
+                    .and_then(Json::as_str)
+                    .ok_or_else(|| format!("hull {id:?}: every point load needs an \"id\""))?
+                    .to_string();
+                let mass = p.get("mass").and_then(Json::as_f64).unwrap_or(0.0);
+                if mass < 0.0 {
+                    return Err(format!("hull {id:?} point {pid:?}: mass must be >= 0"));
+                }
+                point_ids.push(pid);
+                load.points.push(PointLoad {
+                    mass,
+                    dx: p.get("dx").and_then(Json::as_f64).unwrap_or(0.0),
+                    dy: p.get("dy").and_then(Json::as_f64).unwrap_or(0.0),
+                    dz: p.get("dz").and_then(Json::as_f64).unwrap_or(0.0),
+                });
+            }
+        }
+        let point_mass: f64 = load.points.iter().map(|p| p.mass).sum();
         eprintln!(
-            "hull {id}: {file} (centerplane {:.4}, base y {:.4})",
+            "hull {id}: {file} (centerplane {:.4}, base y {:.4}, mass {:.1} kg + {} point(s) {:.1} kg)",
             body.centerplane(),
-            body.centerplane() + base.dy
+            body.centerplane() + base.dy,
+            load.mass,
+            load.points.len(),
+            point_mass,
         );
-        hulls.push(MHull { id, body, base });
+        hulls.push(MHull {
+            id,
+            body,
+            base,
+            load,
+            point_ids,
+        });
     }
     if hulls.is_empty() {
         return Err("manifest has no hulls".into());
+    }
+    // Ids (hull and point) must be globally unique so a sweep target resolves
+    // to exactly one thing.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for h in &hulls {
+            for id in std::iter::once(&h.id).chain(h.point_ids.iter()) {
+                if !seen.insert(id.as_str()) {
+                    return Err(format!(
+                        "duplicate id {id:?} (hull and point ids must be unique)"
+                    ));
+                }
+            }
+        }
     }
 
     // Axes.
@@ -343,30 +445,6 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     speed_axis = Some((values, unit));
                     continue;
                 }
-                "weight" => {
-                    axes.push(Axis {
-                        label: "weight".into(),
-                        values,
-                        target: Target::Weight,
-                    });
-                    continue;
-                }
-                "lcg" => {
-                    axes.push(Axis {
-                        label: "lcg".into(),
-                        values,
-                        target: Target::Lcg,
-                    });
-                    continue;
-                }
-                "vcg" => {
-                    axes.push(Axis {
-                        label: "vcg".into(),
-                        values,
-                        target: Target::Vcg,
-                    });
-                    continue;
-                }
                 "waterline" => {
                     axes.push(Axis {
                         label: "waterline".into(),
@@ -378,61 +456,117 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 _ => {}
             }
         }
-        // Hull pose axis.
+        // Per-hull or per-point axis. Resolve every target id, then dispatch by
+        // whether they are hulls (pose / load params) or point loads
+        // (mass/dx/dy/dz). A list must be all one kind so the param is
+        // unambiguous.
         let param =
             param.ok_or_else(|| format!("sweep entry targeting {targets:?} needs a \"param\""))?;
-        let pp = match param {
-            "dx" => PoseParam::Dx,
-            "dy" => PoseParam::Dy,
-            "dz" => PoseParam::Dz,
-            "spread" => PoseParam::Spread,
-            "trim" => PoseParam::TrimDeg,
-            other => return Err(format!("unknown pose param {other:?}")),
-        };
-        let idxs: Vec<usize> = targets
+        let kinds: Vec<TargetKind> = targets
             .iter()
             .map(|t| {
-                hulls
-                    .iter()
-                    .position(|h| &h.id == t)
-                    .ok_or_else(|| format!("sweep target {t:?} is not a hull id"))
+                if let Some(hi) = hulls.iter().position(|h| &h.id == t) {
+                    return Ok(TargetKind::Hull(hi));
+                }
+                for (hi, h) in hulls.iter().enumerate() {
+                    if let Some(pi) = h.point_ids.iter().position(|p| p == t) {
+                        return Ok(TargetKind::Point(hi, pi));
+                    }
+                }
+                Err(format!("sweep target {t:?} is not a hull or point-load id"))
             })
             .collect::<Result<_, _>>()?;
-        if pp == PoseParam::Spread {
-            for &i in &idxs {
-                let y = hulls[i].body.centerplane() + hulls[i].base.dy;
-                if y.abs() < 1e-9 {
+        let all_points = kinds.iter().all(|k| matches!(k, TargetKind::Point(..)));
+        let all_hulls = kinds.iter().all(|k| matches!(k, TargetKind::Hull(_)));
+        let target = if all_points {
+            let pairs: Vec<(usize, usize)> = kinds
+                .iter()
+                .map(|k| match k {
+                    TargetKind::Point(h, p) => (*h, *p),
+                    TargetKind::Hull(_) => unreachable!(),
+                })
+                .collect();
+            match param {
+                "mass" => Target::Point(pairs, PointParam::Mass),
+                "dx" => Target::Point(pairs, PointParam::Dx),
+                "dy" => Target::Point(pairs, PointParam::Dy),
+                "dz" => Target::Point(pairs, PointParam::Dz),
+                other => {
                     return Err(format!(
-                        "spread targets hull {:?} which sits on the centerline",
-                        hulls[i].id
-                    ));
+                        "unknown point-load param {other:?} (use mass, dx, dy, dz)"
+                    ))
                 }
             }
-        }
+        } else if all_hulls {
+            let idxs: Vec<usize> = kinds
+                .iter()
+                .map(|k| match k {
+                    TargetKind::Hull(h) => *h,
+                    TargetKind::Point(..) => unreachable!(),
+                })
+                .collect();
+            match param {
+                "dx" => Target::Pose(idxs, PoseParam::Dx),
+                "dy" => Target::Pose(idxs, PoseParam::Dy),
+                "dz" => Target::Pose(idxs, PoseParam::Dz),
+                "trim" => Target::Pose(idxs, PoseParam::TrimDeg),
+                "spread" => {
+                    for &i in &idxs {
+                        let y = hulls[i].body.centerplane() + hulls[i].base.dy;
+                        if y.abs() < 1e-9 {
+                            return Err(format!(
+                                "spread targets hull {:?} which sits on the centerline",
+                                hulls[i].id
+                            ));
+                        }
+                    }
+                    Target::Pose(idxs, PoseParam::Spread)
+                }
+                "mass" => Target::Load(idxs, LoadParam::Mass),
+                "lcg" => Target::Load(idxs, LoadParam::Lcg),
+                "vcg" => Target::Load(idxs, LoadParam::Vcg),
+                other => return Err(format!("unknown param {other:?}")),
+            }
+        } else {
+            return Err(format!(
+                "sweep entry targeting {targets:?} mixes hull and point-load ids"
+            ));
+        };
         axes.push(Axis {
             label: format!("{}:{param}", targets.join("+")),
             values,
-            target: Target::Pose(idxs, pp),
+            target,
         });
     }
     let Some((speed_values, speed_unit)) = speed_axis else {
         return Err("the sweep needs a speed axis (target \"speed\")".into());
     };
-    let float_mode = axes.iter().any(|a| matches!(a.target, Target::Weight));
-    if axes.iter().any(|a| matches!(a.target, Target::Lcg)) && !float_mode {
-        return Err("an lcg axis requires a weight axis".into());
-    }
+    // The fleet floats (solves sinkage/pitch to its weight) whenever it carries
+    // mass — a base hull/point mass or a swept mass axis. Its CG is always
+    // derived from the per-hull loads, so there is no global weight/lcg/vcg
+    // axis, and the heel roll-up rides on any floated sweep.
+    let base_mass: f64 = hulls
+        .iter()
+        .map(|h| h.load.mass + h.load.points.iter().map(|p| p.mass).sum::<f64>())
+        .sum();
+    let mass_axis = axes.iter().any(|a| {
+        matches!(
+            a.target,
+            Target::Load(_, LoadParam::Mass) | Target::Point(_, PointParam::Mass)
+        )
+    });
+    let float_mode = base_mass > 0.0 || mass_axis;
+    let has_cg_axis = axes
+        .iter()
+        .any(|a| matches!(a.target, Target::Load(_, LoadParam::Lcg | LoadParam::Vcg)));
     if float_mode && axes.iter().any(|a| matches!(a.target, Target::Waterline)) {
-        return Err(
-            "a waterline axis cannot be combined with a weight axis (the \
-                    waterline is solved)"
-                .into(),
-        );
+        return Err("a waterline axis cannot be combined with hull mass (the \
+                    waterline is solved from the load)"
+            .into());
     }
-    let vcg_mode = axes.iter().any(|a| matches!(a.target, Target::Vcg));
-    if vcg_mode && !float_mode {
-        return Err("a vcg axis requires a weight axis (gz is computed at a \
-                    solved equilibrium)"
+    if has_cg_axis && !float_mode {
+        return Err("an lcg/vcg axis needs the fleet to carry mass; give a hull a \
+                    \"load\": { \"mass\": ... } or sweep a mass axis"
             .into());
     }
 
@@ -493,9 +627,19 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     if format != "csv" && format != "json" {
         return Err(format!("output format {format:?}: expected csv or json"));
     }
-    // Heel roll-up columns (vcg/equilibrium mode only): per-point GZ summaries
+    // Derived fleet-CG columns (equilibrium mode): the mass-weighted CG that
+    // the solve and roll-up ride on, so it is visible as the hulls/loads move.
+    let cg_cols: Vec<String> = if float_mode {
+        ["mass", "lcg", "vcg", "tcg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Heel roll-up columns (equilibrium mode only): per-point GZ summaries
     // and a per-(point×speed) resistance rise at each configured angle.
-    let gz_cols: Vec<String> = if vcg_mode {
+    let gz_cols: Vec<String> = if float_mode {
         ["gz_peak_deg", "rm_peak", "gz_area", "gz_vanish_deg"]
             .iter()
             .map(|s| s.to_string())
@@ -503,7 +647,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     } else {
         Vec::new()
     };
-    let rise_cols: Vec<String> = if vcg_mode {
+    let rise_cols: Vec<String> = if float_mode {
         heel_cfg
             .res_angles
             .iter()
@@ -520,6 +664,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .iter()
                 .map(|s| s.to_string()),
         )
+        .chain(cg_cols.iter().cloned())
         .chain(gz_cols.iter().cloned())
         .chain(
             [
@@ -557,16 +702,11 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     for point in 0..points {
         let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
         let mut poses: Vec<HullPose> = hulls.iter().map(|h| h.base).collect();
+        let mut loads: Vec<HullLoad> = hulls.iter().map(|h| h.load.clone()).collect();
         let mut waterline = 0.0f64;
-        let mut weight = None;
-        let mut lcg = None;
-        let mut vcg = None;
         for (a, &v) in axes.iter().zip(&vals) {
             match &a.target {
                 Target::Waterline => waterline = v,
-                Target::Weight => weight = Some(v),
-                Target::Lcg => lcg = Some(v),
-                Target::Vcg => vcg = Some(v),
                 Target::Pose(idxs, pp) => {
                     for &hi in idxs {
                         let pose = &mut poses[hi];
@@ -582,22 +722,59 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         }
                     }
                 }
+                Target::Load(idxs, lp) => {
+                    for &hi in idxs {
+                        let load = &mut loads[hi];
+                        match lp {
+                            LoadParam::Mass => load.mass = hulls[hi].load.mass + v,
+                            LoadParam::Lcg => load.lcg = hulls[hi].load.lcg + v,
+                            LoadParam::Vcg => load.vcg = hulls[hi].load.vcg + v,
+                        }
+                    }
+                }
+                Target::Point(pairs, pp) => {
+                    for &(hi, pi) in pairs {
+                        let base = &hulls[hi].load.points[pi];
+                        let p = &mut loads[hi].points[pi];
+                        match pp {
+                            PointParam::Mass => p.mass = base.mass + v,
+                            PointParam::Dx => p.dx = base.dx + v,
+                            PointParam::Dy => p.dy = base.dy + v,
+                            PointParam::Dz => p.dz = base.dz + v,
+                        }
+                    }
+                }
             }
         }
+        // The fleet CG is always derived by summing the per-hull loads (and
+        // point loads) carried through their poses — so it tracks dx/dy/dz and
+        // the swept masses.
+        let cg = fleet_cg(&bodies, &loads, &poses);
 
         // Upright equilibrium. Heel is no longer a sweep axis — it is rolled up
         // into the per-row metrics below — so this solve (and the resistance
-        // columns) are always upright. The weight branch solves flotation; the
-        // waterline branch situates at a fixed cut.
-        let (state, sinkage, trim_deg, volume, lcb) = if let Some(mass) = weight {
+        // columns) are always upright. In float mode the fleet solves flotation
+        // to the derived weight; otherwise it situates at a fixed cut. `gz0` is
+        // the upright righting arm (nonzero only for a laterally asymmetric CG).
+        let (state, sinkage, trim_deg, volume, lcb, gz0) = if float_mode {
+            if cg.mass <= 0.0 {
+                return Err(format!(
+                    "point {}: fleet carries no mass (all hull and point masses are zero)",
+                    point + 1
+                ));
+            }
             let eq = solve_equilibrium_heeled(
                 &bodies,
                 0.0,
                 &poses,
-                &LoadCase { mass, lcg },
+                &LoadCase {
+                    mass: cg.mass,
+                    lcg: Some(cg.lcg),
+                },
                 density,
                 0.0,
-                vcg.unwrap_or(0.0),
+                cg.vcg,
+                cg.tcg,
                 &bopts,
                 incl_grid,
             )
@@ -608,6 +785,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 eq.trim.to_degrees(),
                 eq.volume,
                 eq.lcb,
+                eq.gz,
             )
         } else {
             let mut members = Vec::new();
@@ -641,34 +819,38 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 0.0,
                 volume,
                 lcb,
+                0.0,
             )
         };
 
-        // Heel roll-up metrics (vcg/equilibrium mode only). GZ is speed-
-        // independent, so its curve — and the heeled equilibria used for the
-        // resistance rise — are solved once per point here. vcg_mode implies a
-        // weight axis, so `weight` is always present in this branch.
-        let (gz_stats, heeled): (Option<GzStats>, Vec<Option<HeeledEquilibrium>>) = if vcg_mode {
-            let mass = weight.expect("vcg mode implies a weight axis");
-            let vcg_v = vcg.unwrap_or(0.0);
+        // Heel roll-up metrics (equilibrium mode only). GZ is speed-independent,
+        // so its curve — and the heeled equilibria used for the resistance rise
+        // — are solved once per point here, riding on the derived fleet CG.
+        let (gz_stats, heeled): (Option<GzStats>, Vec<Option<HeeledEquilibrium>>) = if float_mode {
+            let load = LoadCase {
+                mass: cg.mass,
+                lcg: Some(cg.lcg),
+            };
             let solve_at = |deg: f64| {
                 solve_equilibrium_heeled(
                     &bodies,
                     0.0,
                     &poses,
-                    &LoadCase { mass, lcg },
+                    &load,
                     density,
                     deg.to_radians(),
-                    vcg_v,
+                    cg.vcg,
+                    cg.tcg,
                     &bopts,
                     incl_grid,
                 )
             };
-            // Scan the GZ curve from upright until it crosses zero (the angle of
-            // vanishing stability) or hits the cap. The inclined solver is only
-            // valid below 90°, so the cap is bounded there.
+            // Scan the GZ curve from the upright arm (`gz0`; zero for a symmetric
+            // CG, nonzero when the load is laterally offset) until it crosses
+            // zero (the angle of vanishing stability) or hits the cap. The
+            // inclined solver is only valid below 90°, so the cap is bounded.
             let cap = heel_cfg.gz_max.min(89.5);
-            let mut samples = vec![(0.0f64, 0.0f64)];
+            let mut samples = vec![(0.0f64, gz0)];
             let mut deg = heel_cfg.gz_step;
             let mut stopped_early = false;
             while deg <= cap + 1e-9 {
@@ -688,7 +870,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 }
                 deg += heel_cfg.gz_step;
             }
-            let (stats, capped) = gz_curve_stats(&samples, mass * gravity);
+            let (stats, capped) = gz_curve_stats(&samples, cg.mass * gravity);
             if capped {
                 // `capped` means GZ never crossed zero within the samples, so
                 // `gz_vanish_deg`/`gz_area` only reach the last scanned angle —
@@ -776,6 +958,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .iter()
                 .cloned()
                 .chain([sinkage, trim_deg, volume, lcb])
+                .chain(
+                    float_mode
+                        .then_some([cg.mass, cg.lcg, cg.vcg, cg.tcg])
+                        .into_iter()
+                        .flatten(),
+                )
                 .chain(
                     gz_stats
                         .map(|s| [s.peak_deg, s.rm_peak, s.area, s.vanish_deg])
