@@ -5,9 +5,12 @@
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
-use michell::float::{fleet_cg, solve_equilibrium_heeled, FleetState, HullLoad, LoadCase, PointLoad};
-use michell::inclined::InclinedGrid;
+use michell::float::{
+    fleet_cg, solve_equilibrium_heeled, FleetState, HeeledEquilibrium, HullLoad, LoadCase,
+    PointLoad,
+};
 use michell::iges::{HullPose, Platform};
+use michell::inclined::InclinedGrid;
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
 const KNOT: f64 = 1852.0 / 3600.0;
@@ -43,7 +46,6 @@ enum PointParam {
 }
 
 enum Target {
-    HeelDeg,
     Waterline,
     Pose(Vec<usize>, PoseParam),
     Load(Vec<usize>, LoadParam),
@@ -79,6 +81,124 @@ struct MHull {
     point_ids: Vec<String>,
 }
 
+/// Configuration for the heel roll-up metrics (active in vcg/equilibrium mode).
+/// Heel is no longer a sweep axis; instead each row carries the resistance rise
+/// at a few fixed angles plus GZ-curve summaries.
+struct HeelCfg {
+    /// Heel angles (deg) at which to report the fractional resistance rise.
+    res_angles: Vec<f64>,
+    /// GZ-curve scan step (deg).
+    gz_step: f64,
+    /// GZ-curve scan cap (deg) — the search for the angle of vanishing
+    /// stability stops here (also bounded below 90° by the inclined solver).
+    gz_max: f64,
+}
+
+impl Default for HeelCfg {
+    fn default() -> Self {
+        HeelCfg {
+            res_angles: vec![5.0, 10.0],
+            gz_step: 2.5,
+            gz_max: 90.0,
+        }
+    }
+}
+
+/// Summaries rolled up from a hull's GZ (righting-arm) curve.
+#[derive(Clone, Copy)]
+struct GzStats {
+    /// Heel angle of peak righting moment [deg].
+    peak_deg: f64,
+    /// Peak righting moment [N·m].
+    rm_peak: f64,
+    /// Area under the GZ curve to the vanishing angle [m·rad].
+    area: f64,
+    /// Angle of vanishing stability (first GZ zero-crossing) [deg].
+    vanish_deg: f64,
+}
+
+/// Reduce a sampled GZ curve to its summary metrics. `samples` are
+/// `(heel_rad, gz_m)` pairs, ascending in heel and starting at `(0, 0)`, at a
+/// uniform step. `weight_times_g` [N] converts GZ to righting moment.
+///
+/// Returns the stats and a `capped` flag that is `true` when the curve never
+/// crossed zero within the samples (so `vanish_deg` is the scan cap, not a real
+/// angle of vanishing stability). The area is integrated (trapezoid, in
+/// radians) only up to the interpolated zero-crossing.
+fn gz_curve_stats(samples: &[(f64, f64)], weight_times_g: f64) -> (GzStats, bool) {
+    // Locate the first positive→negative crossing and its interpolated angle.
+    let mut vanish_rad = samples.last().map(|s| s.0).unwrap_or(0.0);
+    let mut cross_idx = None; // index i such that the crossing is in [i, i+1]
+    let mut capped = true;
+    for i in 0..samples.len().saturating_sub(1) {
+        let (x0, y0) = samples[i];
+        let (x1, y1) = samples[i + 1];
+        if y0 >= 0.0 && y1 < 0.0 {
+            let t = y0 / (y0 - y1); // y0 - y1 > 0 here
+            vanish_rad = x0 + t * (x1 - x0);
+            cross_idx = Some(i);
+            capped = false;
+            break;
+        }
+    }
+
+    // Area under the curve up to the vanishing angle (trapezoid, m·rad).
+    let last = cross_idx.map(|i| i + 1).unwrap_or(samples.len());
+    let mut area = 0.0;
+    for w in samples[..last].windows(2) {
+        area += 0.5 * (w[0].1 + w[1].1) * (w[1].0 - w[0].0);
+    }
+    if let Some(i) = cross_idx {
+        // Final wedge from the last positive sample to (vanish_rad, 0).
+        let (x0, y0) = samples[i];
+        area += 0.5 * y0 * (vanish_rad - x0);
+    }
+
+    // Peak righting moment: argmax GZ over the pre-vanishing samples, with a
+    // parabolic refinement when the max is interior and the neighbours dip.
+    let scan = &samples[..last.max(1)];
+    let mut pk = 0usize;
+    for (i, &(_, y)) in scan.iter().enumerate() {
+        if y > scan[pk].1 {
+            pk = i;
+        }
+    }
+    let (mut peak_rad, mut peak_gz) = scan[pk];
+    if pk > 0 && pk + 1 < scan.len() {
+        let (xm, ym) = scan[pk - 1];
+        let (x0, y0) = scan[pk];
+        let (xp, yp) = scan[pk + 1];
+        let denom = ym - 2.0 * y0 + yp;
+        let h = 0.5 * ((x0 - xm) + (xp - x0)); // uniform step
+        if denom < 0.0 {
+            let delta = 0.5 * (ym - yp) / denom; // vertex offset in units of h
+            if delta.abs() <= 1.0 {
+                peak_rad = x0 + delta * h;
+                peak_gz = y0 - 0.25 * (ym - yp) * delta;
+            }
+        }
+    }
+
+    (
+        GzStats {
+            peak_deg: peak_rad.to_degrees(),
+            rm_peak: weight_times_g * peak_gz,
+            area,
+            vanish_deg: vanish_rad.to_degrees(),
+        },
+        capped,
+    )
+}
+
+/// Format an angle for a column name: `5` not `5.0`, but `7.5` kept.
+fn fmt_num(v: f64) -> String {
+    if v.fract().abs() < 1e-9 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
+}
+
 pub fn run(manifest_path: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(manifest_path)
         .map_err(|e| format!("cannot read {manifest_path}: {e}"))?;
@@ -95,6 +215,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let mut gravity = STANDARD_GRAVITY;
     let mut rho_override = None;
     let mut nu_override = None;
+    let mut heel_cfg = HeelCfg::default();
     if let Some(o) = doc.get("options") {
         if let Some(v) = o.get("samples").and_then(Json::as_str) {
             settings.samples = parse_pair(v)?;
@@ -122,6 +243,36 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         }
         rho_override = o.get("rho").and_then(Json::as_f64);
         nu_override = o.get("nu").and_then(Json::as_f64);
+        if let Some(h) = o.get("heel") {
+            if let Some(a) = h.get("resistance_angles").and_then(Json::as_arr) {
+                heel_cfg.res_angles = a
+                    .iter()
+                    .map(|v| {
+                        v.as_f64()
+                            .ok_or("options.heel.resistance_angles must be numbers")
+                    })
+                    .collect::<Result<_, _>>()?;
+            }
+            if let Some(v) = h.get("gz_step").and_then(Json::as_f64) {
+                heel_cfg.gz_step = v;
+            }
+            if let Some(v) = h.get("gz_max").and_then(Json::as_f64) {
+                heel_cfg.gz_max = v;
+            }
+        }
+    }
+    for &a in &heel_cfg.res_angles {
+        if !a.is_finite() || a.abs() >= 90.0 {
+            return Err(format!(
+                "options.heel.resistance_angles: {a} must be finite and within ±90 degrees"
+            ));
+        }
+    }
+    if heel_cfg.gz_step <= 0.0 || !heel_cfg.gz_step.is_finite() {
+        return Err("options.heel.gz_step must be a positive number".into());
+    }
+    if heel_cfg.gz_max <= 0.0 || !heel_cfg.gz_max.is_finite() {
+        return Err("options.heel.gz_max must be a positive number".into());
     }
     let bopts: BodyOptions = body_options(&settings);
     let fluid_name = doc
@@ -294,14 +445,6 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     speed_axis = Some((values, unit));
                     continue;
                 }
-                "heel" => {
-                    axes.push(Axis {
-                        label: "heel".into(),
-                        values,
-                        target: Target::HeelDeg,
-                    });
-                    continue;
-                }
                 "waterline" => {
                     axes.push(Axis {
                         label: "waterline".into(),
@@ -317,9 +460,8 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         // whether they are hulls (pose / load params) or point loads
         // (mass/dx/dy/dz). A list must be all one kind so the param is
         // unambiguous.
-        let param = param.ok_or_else(|| {
-            format!("sweep entry targeting {targets:?} needs a \"param\"")
-        })?;
+        let param =
+            param.ok_or_else(|| format!("sweep entry targeting {targets:?} needs a \"param\""))?;
         let kinds: Vec<TargetKind> = targets
             .iter()
             .map(|t| {
@@ -400,8 +542,9 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         return Err("the sweep needs a speed axis (target \"speed\")".into());
     };
     // The fleet floats (solves sinkage/pitch to its weight) whenever it carries
-    // mass — a base hull mass or a swept mass axis. Its CG is always derived
-    // from the per-hull loads, so there is no global weight/lcg/vcg axis.
+    // mass — a base hull/point mass or a swept mass axis. Its CG is always
+    // derived from the per-hull loads, so there is no global weight/lcg/vcg
+    // axis, and the heel roll-up rides on any floated sweep.
     let base_mass: f64 = hulls
         .iter()
         .map(|h| h.load.mass + h.load.points.iter().map(|p| p.mass).sum::<f64>())
@@ -424,12 +567,6 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     if has_cg_axis && !float_mode {
         return Err("an lcg/vcg axis needs the fleet to carry mass; give a hull a \
                     \"load\": { \"mass\": ... } or sweep a mass axis"
-            .into());
-    }
-    if axes.iter().any(|a| matches!(a.target, Target::HeelDeg)) && !float_mode {
-        return Err("a heel axis needs the fleet to carry mass so the righting \
-                    arm is computed at a solved equilibrium; give a hull a \
-                    \"load\": { \"mass\": ... }"
             .into());
     }
 
@@ -456,7 +593,11 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         })
         .collect();
 
-    let points: usize = axes.iter().map(|a| a.values.len()).product::<usize>().max(1);
+    let points: usize = axes
+        .iter()
+        .map(|a| a.values.len())
+        .product::<usize>()
+        .max(1);
     if points * speeds.len() > 100_000 {
         return Err(format!(
             "sweep would produce {} rows; narrow the axes",
@@ -486,19 +627,45 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     if format != "csv" && format != "json" {
         return Err(format!("output format {format:?}: expected csv or json"));
     }
+    // Derived fleet-CG columns (equilibrium mode): the mass-weighted CG that
+    // the solve and roll-up ride on, so it is visible as the hulls/loads move.
+    let cg_cols: Vec<String> = if float_mode {
+        ["mass", "lcg", "vcg", "tcg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    // Heel roll-up columns (equilibrium mode only): per-point GZ summaries
+    // and a per-(point×speed) resistance rise at each configured angle.
+    let gz_cols: Vec<String> = if float_mode {
+        ["gz_peak_deg", "rm_peak", "gz_area", "gz_vanish_deg"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let rise_cols: Vec<String> = if float_mode {
+        heel_cfg
+            .res_angles
+            .iter()
+            .map(|a| format!("rt_rise_{}deg", fmt_num(*a)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let header: Vec<String> = axes
         .iter()
         .map(|a| a.label.clone())
-        .chain(["sinkage", "trim_deg", "volume", "lcb"].iter().map(|s| s.to_string()))
         .chain(
-            if float_mode {
-                &["mass", "lcg", "vcg", "tcg", "gz", "rm"][..]
-            } else {
-                &[]
-            }
-            .iter()
-            .map(|s| s.to_string()),
+            ["sinkage", "trim_deg", "volume", "lcb"]
+                .iter()
+                .map(|s| s.to_string()),
         )
+        .chain(cg_cols.iter().cloned())
+        .chain(gz_cols.iter().cloned())
         .chain(
             [
                 "dry",
@@ -516,6 +683,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             .iter()
             .map(|s| s.to_string()),
         )
+        .chain(rise_cols.iter().cloned())
         .collect();
     let mut out = String::new();
     if format == "json" {
@@ -536,11 +704,9 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         let mut poses: Vec<HullPose> = hulls.iter().map(|h| h.base).collect();
         let mut loads: Vec<HullLoad> = hulls.iter().map(|h| h.load.clone()).collect();
         let mut waterline = 0.0f64;
-        let mut heel = 0.0f64;
         for (a, &v) in axes.iter().zip(&vals) {
             match &a.target {
                 Target::Waterline => waterline = v,
-                Target::HeelDeg => heel = v.to_radians(),
                 Target::Pose(idxs, pp) => {
                     for &hi in idxs {
                         let pose = &mut poses[hi];
@@ -552,9 +718,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                                 let side = hulls[hi].body.centerplane() + hulls[hi].base.dy;
                                 pose.dy = hulls[hi].base.dy + if side < 0.0 { -v } else { v };
                             }
-                            PoseParam::TrimDeg => {
-                                pose.trim = hulls[hi].base.trim + v.to_radians()
-                            }
+                            PoseParam::TrimDeg => pose.trim = hulls[hi].base.trim + v.to_radians(),
                         }
                     }
                 }
@@ -582,14 +746,17 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 }
             }
         }
-        // The fleet CG is always derived by summing the per-hull loads carried
-        // through their poses — so it tracks dx/dy/dz and the swept masses.
+        // The fleet CG is always derived by summing the per-hull loads (and
+        // point loads) carried through their poses — so it tracks dx/dy/dz and
+        // the swept masses.
         let cg = fleet_cg(&bodies, &loads, &poses);
 
-        // In float mode the fleet solves its sinkage/pitch to the derived
-        // weight, and heel (if any) enters as a true inclined-waterplane cut
-        // inside the solve; the righting arm uses the derived vcg/tcg.
-        let (state, sinkage, trim_deg, volume, lcb, gz_solved) = if float_mode {
+        // Upright equilibrium. Heel is no longer a sweep axis — it is rolled up
+        // into the per-row metrics below — so this solve (and the resistance
+        // columns) are always upright. In float mode the fleet solves flotation
+        // to the derived weight; otherwise it situates at a fixed cut. `gz0` is
+        // the upright righting arm (nonzero only for a laterally asymmetric CG).
+        let (state, sinkage, trim_deg, volume, lcb, gz0) = if float_mode {
             if cg.mass <= 0.0 {
                 return Err(format!(
                     "point {}: fleet carries no mass (all hull and point masses are zero)",
@@ -605,7 +772,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     lcg: Some(cg.lcg),
                 },
                 density,
-                heel,
+                0.0,
                 cg.vcg,
                 cg.tcg,
                 &bopts,
@@ -634,8 +801,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 {
                     Some(sb) => {
                         volume += sb.hull.displaced_volume();
-                        moment +=
-                            (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
+                        moment += (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
                         band_exceeded += sb.band_exceeded;
                         members.push((sb.hull, sb.placement));
                     }
@@ -656,46 +822,99 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 0.0,
             )
         };
-        // Derived-CG columns, reported in float mode: the mass-weighted fleet
-        // CG (mass, lcg, vcg, tcg), the inclined-cut righting arm gz, and the
-        // righting moment rm = m·g·gz.
-        let cg_cols = if float_mode {
-            Some([
-                cg.mass,
-                cg.lcg,
-                cg.vcg,
-                cg.tcg,
-                gz_solved,
-                cg.mass * gravity * gz_solved,
-            ])
+
+        // Heel roll-up metrics (equilibrium mode only). GZ is speed-independent,
+        // so its curve — and the heeled equilibria used for the resistance rise
+        // — are solved once per point here, riding on the derived fleet CG.
+        let (gz_stats, heeled): (Option<GzStats>, Vec<Option<HeeledEquilibrium>>) = if float_mode {
+            let load = LoadCase {
+                mass: cg.mass,
+                lcg: Some(cg.lcg),
+            };
+            let solve_at = |deg: f64| {
+                solve_equilibrium_heeled(
+                    &bodies,
+                    0.0,
+                    &poses,
+                    &load,
+                    density,
+                    deg.to_radians(),
+                    cg.vcg,
+                    cg.tcg,
+                    &bopts,
+                    incl_grid,
+                )
+            };
+            // Scan the GZ curve from the upright arm (`gz0`; zero for a symmetric
+            // CG, nonzero when the load is laterally offset) until it crosses
+            // zero (the angle of vanishing stability) or hits the cap. The
+            // inclined solver is only valid below 90°, so the cap is bounded.
+            let cap = heel_cfg.gz_max.min(89.5);
+            let mut samples = vec![(0.0f64, gz0)];
+            let mut deg = heel_cfg.gz_step;
+            let mut stopped_early = false;
+            while deg <= cap + 1e-9 {
+                match solve_at(deg) {
+                    Ok(eq) => {
+                        let vanished = eq.gz < 0.0;
+                        samples.push((deg.to_radians(), eq.gz));
+                        if vanished {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("point {}: GZ scan stopped at {deg}°: {e}", point + 1);
+                        stopped_early = true;
+                        break;
+                    }
+                }
+                deg += heel_cfg.gz_step;
+            }
+            let (stats, capped) = gz_curve_stats(&samples, cg.mass * gravity);
+            if capped {
+                // `capped` means GZ never crossed zero within the samples, so
+                // `gz_vanish_deg`/`gz_area` only reach the last scanned angle —
+                // whether the scan hit the cap or stopped early on a
+                // non-converged solve. Report the real last angle either way.
+                let last_deg = samples.last().map(|s| s.0.to_degrees()).unwrap_or(0.0);
+                let why = if stopped_early {
+                    "the heeled solve stopped converging"
+                } else {
+                    "GZ was still positive at the scan cap"
+                };
+                eprintln!(
+                    "point {}: {why} — gz_vanish_deg/gz_area truncated at {last_deg:.1}°",
+                    point + 1
+                );
+            }
+            // Heeled equilibria at the resistance angles (flotation only; the
+            // wave rise per speed is computed from each fleet in the loop).
+            let heeled = heel_cfg
+                .res_angles
+                .iter()
+                .map(|&a| match solve_at(a) {
+                    Ok(eq) => Some(eq),
+                    Err(e) => {
+                        eprintln!("point {}: heeled solve at {a}° failed: {e}", point + 1);
+                        None
+                    }
+                })
+                .collect();
+            (Some(stats), heeled)
         } else {
-            None
+            (None, Vec::new())
         };
 
-        let members: Vec<(&Hull, Placement)> =
-            state.members.iter().map(|(h, p)| (h, *p)).collect();
+        let members: Vec<(&Hull, Placement)> = state.members.iter().map(|(h, p)| (h, *p)).collect();
 
         for &u in &speeds {
             let cond = make_cond(u)?;
             let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                // The heel axis repositions each demihull (transverse offset +
-                // immersion via `heel_poses`); the heel wave kernel adds the
-                // remaining rotation-about-own-axis effect, so the resistance
-                // column is consistent with the heeled GZ state.
-                let r = if heel != 0.0 {
-                    michell::multihull_resistance_heeled(
-                        &members,
-                        &cond,
-                        &wave_opts,
-                        form_factor,
-                        heel,
-                    )
-                } else {
+                let r =
                     michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
-                }
-                .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
                     r.viscous_total,
@@ -706,12 +925,51 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     r.ct,
                 )
             };
+            // Fractional total-resistance rise at each heel angle, relative to
+            // the upright total at this speed. Uses the asymmetric heel wave
+            // kernel on the heeled-flotation fleet. NaN if the fleet is dry, the
+            // upright total is non-positive, or the heeled solve failed.
+            let mut rises: Vec<f64> = Vec::with_capacity(heeled.len());
+            for (he, &angle) in heeled.iter().zip(&heel_cfg.res_angles) {
+                let rise = match he {
+                    Some(eq) if rt > 0.0 => {
+                        let hm: Vec<(&Hull, Placement)> =
+                            eq.fleet.members.iter().map(|(h, p)| (h, *p)).collect();
+                        if hm.is_empty() {
+                            f64::NAN
+                        } else {
+                            let rh = michell::multihull_resistance_heeled(
+                                &hm,
+                                &cond,
+                                &wave_opts,
+                                form_factor,
+                                angle.to_radians(),
+                            )
+                            .map_err(|e| format!("point {} U={u} heel {angle}°: {e}", point + 1))?;
+                            rh.total / rt - 1.0
+                        }
+                    }
+                    _ => f64::NAN,
+                };
+                rises.push(rise);
+            }
             let froude = u / (gravity * l_ref).sqrt();
             let nums: Vec<f64> = vals
                 .iter()
                 .cloned()
                 .chain([sinkage, trim_deg, volume, lcb])
-                .chain(cg_cols.into_iter().flatten())
+                .chain(
+                    float_mode
+                        .then_some([cg.mass, cg.lcg, cg.vcg, cg.tcg])
+                        .into_iter()
+                        .flatten(),
+                )
+                .chain(
+                    gz_stats
+                        .map(|s| [s.peak_deg, s.rm_peak, s.area, s.vanish_deg])
+                        .into_iter()
+                        .flatten(),
+                )
                 .chain([
                     state.dry as f64,
                     state.band_exceeded as f64,
@@ -725,6 +983,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     cw,
                     ct,
                 ])
+                .chain(rises)
                 .collect();
             if format == "json" {
                 if !first_row {
@@ -766,6 +1025,72 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         None => print!("{out}"),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f64, b: f64, tol: f64) {
+        assert!((a - b).abs() < tol, "expected {b}, got {a}");
+    }
+
+    #[test]
+    fn fmt_num_trims_integers() {
+        assert_eq!(fmt_num(5.0), "5");
+        assert_eq!(fmt_num(10.0), "10");
+        assert_eq!(fmt_num(7.5), "7.5");
+    }
+
+    #[test]
+    fn gz_stats_triangle_curve() {
+        // Symmetric triangle peaking at 0.5 rad, back to 0 at 1.0 rad, then
+        // negative. Vanishing angle = 1.0 rad; area to there = 0.5 m·rad.
+        let s = [
+            (0.0, 0.0),
+            (0.25, 0.5),
+            (0.5, 1.0),
+            (0.75, 0.5),
+            (1.0, 0.0),
+            (1.25, -0.5),
+        ];
+        let (st, capped) = gz_curve_stats(&s, 2.0); // W·g = 2 N
+        assert!(!capped);
+        approx(st.vanish_deg, 1.0_f64.to_degrees(), 1e-6);
+        approx(st.area, 0.5, 1e-9);
+        approx(st.peak_deg, 0.5_f64.to_degrees(), 1e-6); // symmetric → sample apex
+        approx(st.rm_peak, 2.0 * 1.0, 1e-9);
+    }
+
+    #[test]
+    fn gz_stats_interpolates_zero_crossing() {
+        // Crossing lands between samples: gz 0.2 → -0.2 over 0.4→0.6 rad ⇒ 0.5 rad.
+        let s = [(0.0, 0.0), (0.2, 0.4), (0.4, 0.2), (0.6, -0.2)];
+        let (st, capped) = gz_curve_stats(&s, 1.0);
+        assert!(!capped);
+        approx(st.vanish_deg, 0.5_f64.to_degrees(), 1e-9);
+    }
+
+    #[test]
+    fn gz_stats_capped_when_never_vanishes() {
+        // Monotonic-ish, always positive within the samples.
+        let s = [(0.0, 0.0), (0.3, 0.3), (0.6, 0.5), (0.9, 0.6)];
+        let (st, capped) = gz_curve_stats(&s, 1.0);
+        assert!(capped);
+        approx(st.vanish_deg, 0.9_f64.to_degrees(), 1e-9); // last sample = cap
+        assert!(st.area > 0.0);
+    }
+
+    #[test]
+    fn gz_stats_parabolic_peak_refines_off_sample() {
+        // Peak between samples: parabola apex should land near 0.55 rad, above
+        // the nearest sample value.
+        let s = [(0.0, 0.0), (0.4, 0.8), (0.6, 0.9), (0.8, 0.7), (1.0, -0.1)];
+        let (st, _) = gz_curve_stats(&s, 1.0);
+        let peak_rad = st.peak_deg.to_radians();
+        assert!(peak_rad > 0.4 && peak_rad < 0.8, "peak_rad = {peak_rad}");
+        assert!(st.rm_peak >= 0.9, "rm_peak = {}", st.rm_peak);
+    }
 }
 
 /// Resolve an axis's values: `value`, `values`, or `range: [a, b]` with an

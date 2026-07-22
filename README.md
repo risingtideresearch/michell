@@ -355,35 +355,56 @@ A target list moves several targets as one coupled axis (e.g. sweep both amas'
 all points. Hull files load relative to the manifest. A flag-based sweep over
 raw IGES (`--axis`, `--float`) remains for one-liners.
 
-**GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
-platform rigidly about the centerline at the design floatplane and re-solves
-the equilibrium at every angle, so the displaced volume is held while
-buoyancy transfers between hulls — the windward hull flying shows up in the
-`dry` column, and resistance is computed on the heeled fleet with the
-tilted-centreplane wave kernel (`multihull_heel_wave_resistance`), so the `rw`
-column reflects the heel's wave-making, not just the reposition. It requires
-the fleet to carry mass; every floated row then carries `gz` (righting arm, m;
-positive rights the boat) and `rm` (righting moment, N·m). The arm is
-`GZ = TCB − vcg·sinφ − tcg·cosφ`: `TCB` is the **true inclined-waterplane cut**
-of the heeled fleet (each section clipped by the tilted free surface — see the
-`inclined` module), so both the inter-hull buoyancy transfer *and* each hull's
-own form stability are integrated exactly — a genuinely nonlinear GZ curve,
-with the deck-edge knee where topsides down-flood. The gravity terms use the
+**Heel metrics**: heel is *not* a sweep axis — it would multiply the row count
+with a whole GZ curve per point. Instead, whenever the fleet carries mass
+(equilibrium mode), every row rolls the heel behaviour up into a few columns,
+alongside the derived fleet CG (`mass`, `lcg`, `vcg`, `tcg`):
+
+- `gz_peak_deg` — heel angle of peak righting moment [deg]
+- `rm_peak` — peak righting moment [N·m]
+- `gz_area` — area under the GZ curve to the angle of vanishing stability
+  [m·rad] (the dynamic-stability measure)
+- `gz_vanish_deg` — angle of vanishing stability, the first GZ zero-crossing
+  [deg]
+- `rt_rise_<A>deg` — the fractional rise in **total** resistance at `A°` of
+  heel relative to upright, one column per configured angle (per speed)
+
+The GZ curve is scanned by re-solving the heeled equilibrium at each angle
+(displacement held, buoyancy transferring between hulls) and taking the **true
+inclined-waterplane cut** of the fleet — each section clipped by the tilted free
+surface (see the `inclined` module) — so both inter-hull buoyancy transfer *and*
+each hull's own form stability are integrated exactly, up to the deck-edge knee
+where topsides down-flood. The arm is `GZ = TCB − vcg·sinφ − tcg·cosφ` on the
 derived fleet CG, so a **laterally asymmetric load** (heavier ama, offset
-ballast) carries a non-zero `tcg` and gives a real static heel (`gz(0) ≠ 0`).
-(Sinkage and trim are still balanced on the upright reposition, so
-`dry`/`volume` read as before; only the righting arm uses the tilted cut.)
+ballast) carries a non-zero `tcg` and a real static heel — the GZ curve starts
+off-zero (`gz(0) ≠ 0`). The resistance rise re-solves flotation at each heel
+angle and evaluates the tilted-centreplane wave kernel
+(`multihull_resistance_heeled`), so it reflects the heel's own wave-making, not
+just the reposition. The upright rows (`rw`/`rv`/`rt`/…) are unchanged.
+
+Tune the roll-up under `options.heel` (all optional):
 
 ```json
+  "options": {
+    "heel": {
+      "resistance_angles": [5, 10],
+      "gz_step": 2.5,
+      "gz_max": 90
+    }
+  },
   "hulls": [
     { "id": "port", "file": "boat-port.hull", "load": { "mass": 1100, "vcg": 1.1 } },
     { "id": "stbd", "file": "boat-starboard.hull", "load": { "mass": 1100, "vcg": 1.1 } }
   ],
   "sweep": [
-    { "target": "speed", "unit": "knots", "value": 8 },
-    { "target": "heel", "range": [-15, 15], "step": 1 }
+    { "target": "speed", "unit": "knots", "value": 8 }
   ]
 ```
+
+`resistance_angles` defaults to `[5, 10]`; `gz_step` (deg, default 2.5) sets the
+scan resolution and `gz_max` (deg, default 90, bounded below 90° by the inclined
+solver) caps the search for the vanishing angle. If GZ is still positive at the
+cap, `gz_vanish_deg`/`gz_area` are reported at the cap and a note is logged.
 
 **Bodies**: sweep manifests reference **full-band** `.hull` files — the
 half-breadth spline over the hull's band from keel to above the design
@@ -507,11 +528,10 @@ optional `centerplane`.
 
 ## Roadmap
 
-1. Parallel sweep evaluation (each equilibrium point is independent).
-2. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
+1. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
    path.
-3. Transom closure, Python bindings.
-4. Longitudinal wave cuts against published Wigley measurements; wake
+2. Transom closure, Python bindings.
+3. Longitudinal wave cuts against published Wigley measurements; wake
    animation over a speed range.
 
 ## References
