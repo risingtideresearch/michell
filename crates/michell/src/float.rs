@@ -21,6 +21,7 @@ use crate::body::{Body, BodyOptions};
 use crate::error::{Error, Result};
 use crate::hull::Hull;
 use crate::iges::{HullPose, ImportOptions, Platform, SourceFleet};
+use crate::inclined::{fleet_inclined, InclinedGrid};
 use crate::michell::Placement;
 
 /// What the platform must carry.
@@ -448,4 +449,249 @@ pub fn solve_equilibrium_bodies(
         load,
         density,
     )
+}
+
+/// A solved heeled floating condition with a true inclined-waterplane righting
+/// arm (see [`crate::inclined`]).
+#[derive(Debug)]
+pub struct HeeledEquilibrium {
+    /// Solved additional immersion below the design floatplane [m].
+    pub sinkage: f64,
+    /// Solved platform pitch [rad]; positive raises the +x end.
+    pub trim: f64,
+    /// Heel the fleet was solved at [rad].
+    pub heel: f64,
+    /// Displaced volume at the solution (inclined cut) [m³].
+    pub volume: f64,
+    /// Longitudinal centre of buoyancy at the solution [m].
+    pub lcb: f64,
+    /// Righting arm `GZ` [m] from the inclined cut — form stability included,
+    /// no metacentric approximation. Positive rights the platform.
+    pub gz: f64,
+    /// Wetted fleet for the resistance path, situated at the solved attitude.
+    /// (Heel enters the geometry as the rigid reposition of [`heel_poses`];
+    /// the tilt of each hull is carried by the wave kernel, not re-clipped —
+    /// the hydrostatics above use the exact inclined cut instead.)
+    pub fleet: FleetState,
+    /// Newton iterations used.
+    pub iterations: usize,
+    /// |∇ − target| / target at the solution.
+    pub volume_residual: f64,
+    /// |LCB − lcg| [m] at the solution (0 when lcg is None).
+    pub lcb_residual: f64,
+    /// Band-top-immersed samples in the inclined cut (deck under water).
+    pub band_exceeded: usize,
+}
+
+/// Heel-aware equilibrium of an assembly of full-band bodies, holding the
+/// load's displacement (and LCG, if given) at a **prescribed** heel angle, with
+/// the hydrostatics — volume, trim balance, and the righting arm `gz` for the
+/// centre of gravity `vcg` — taken from the true inclined-waterplane cut
+/// ([`crate::inclined`]) rather than the metacentric approximation of
+/// [`heel_poses`] + [`righting_arm`].
+///
+/// `poses` are the design (un-heeled) poses; heel is applied inside the
+/// inclined hydrostatics as a rigid platform rotation. `grid` sets the section
+/// integration resolution. `heel = 0` reproduces [`solve_equilibrium_bodies`]
+/// (to the loft/integration tolerance) with `gz = 0`.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_equilibrium_heeled(
+    bodies: &[&Body],
+    water_offset: f64,
+    poses: &[HullPose],
+    load: &LoadCase,
+    density: f64,
+    heel: f64,
+    vcg: f64,
+    opts: &BodyOptions,
+    grid: InclinedGrid,
+) -> Result<HeeledEquilibrium> {
+    if bodies.len() != poses.len() {
+        return Err(Error::InvalidInput(format!(
+            "{} poses supplied for {} bodies",
+            poses.len(),
+            bodies.len()
+        )));
+    }
+    if !(load.mass.is_finite() && load.mass > 0.0) {
+        return Err(Error::InvalidConditions(format!(
+            "load mass must be finite and positive, got {}",
+            load.mass
+        )));
+    }
+    if !(density.is_finite() && density > 0.0) {
+        return Err(Error::InvalidConditions("density must be positive".into()));
+    }
+    if !heel.is_finite() || heel.abs() >= std::f64::consts::FRAC_PI_2 {
+        return Err(Error::InvalidConditions(format!(
+            "heel angle must be finite and within ±90 degrees, got {heel} rad"
+        )));
+    }
+    if let Some(l) = load.lcg {
+        if !l.is_finite() {
+            return Err(Error::InvalidConditions("lcg must be finite".into()));
+        }
+    }
+
+    let v_target = load.mass / density;
+    let z_guess = v_target.cbrt().max(1e-3);
+    let solve_trim = load.lcg.is_some();
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    let l_scale = bodies
+        .iter()
+        .map(|b| {
+            let (x0, x1) = b.surface().x_domain();
+            x1 - x0
+        })
+        .fold(0.0f64, f64::max)
+        .max(1e-6);
+
+    // The inclined cut is smooth (exact geometry, no loft roughness), so a
+    // finite-difference Newton on (sinkage, pitch) converges cleanly. Iterate
+    // on a coarse section grid, then polish on the requested one.
+    let coarse = InclinedGrid {
+        stations: (grid.stations / 2).max(21),
+        band: (grid.band / 2).max(31),
+    };
+    let hydro = |s: f64, tau: f64, g: InclinedGrid| {
+        let plat = Platform {
+            sinkage: s,
+            trim: tau,
+            pivot_x,
+        };
+        fleet_inclined(bodies, water_offset, poses, &plat, heel, g)
+    };
+
+    let mut s = 0.0f64;
+    let mut tau = 0.0f64;
+    let mut iterations = 0usize;
+
+    for (g, max_iters, tol_v) in [(coarse, 40usize, 1e-3f64), (grid, 20, 2e-4)] {
+        let mut best = (f64::INFINITY, s, tau);
+        let mut converged = false;
+        for _ in 0..max_iters {
+            iterations += 1;
+            let f = hydro(s, tau, g);
+            if f.volume <= 0.0 {
+                s += 0.5 * z_guess; // everything dry: sink until wet
+                continue;
+            }
+            let r1 = f.volume - v_target;
+            let lcb = f.moment_x / f.volume;
+            // Finite-difference Jacobian of (V, M_x) in (sinkage, pitch).
+            let (es, et) = (1e-4 * z_guess, 1e-4);
+            let fs = hydro(s + es, tau, g);
+            let dv_ds = (fs.volume - f.volume) / es;
+            let (mut ds, mut dtau) = if !solve_trim || dv_ds.abs() < 1e-12 {
+                (if dv_ds.abs() < 1e-12 { 0.0 } else { r1 / dv_ds }, 0.0)
+            } else {
+                let lcg = pivot_x;
+                let r2 = f.moment_x - lcg * f.volume;
+                let ft = hydro(s, tau + et, g);
+                let dv_dt = (ft.volume - f.volume) / et;
+                let dm_ds = (fs.moment_x - f.moment_x) / es;
+                let dm_dt = (ft.moment_x - f.moment_x) / et;
+                let dr2_ds = dm_ds - lcg * dv_ds;
+                let dr2_dt = dm_dt - lcg * dv_dt;
+                let det = dv_ds * dr2_dt - dv_dt * dr2_ds;
+                if det.abs() < 1e-12 * (dv_ds.abs() * dr2_dt.abs()).max(1e-30) {
+                    (r1 / dv_ds, 0.0)
+                } else {
+                    (
+                        (r1 * dr2_dt - dv_dt * r2) / det,
+                        (dv_ds * r2 - dr2_ds * r1) / det,
+                    )
+                }
+            };
+            ds = ds.clamp(-0.3 * z_guess, 0.3 * z_guess);
+            dtau = dtau.clamp(-0.05, 0.05);
+
+            let done_v = r1.abs() <= tol_v * v_target;
+            let done_m = !solve_trim || (lcb - pivot_x).abs() <= 1e-4 * l_scale;
+            let metric = (r1.abs() / (tol_v * v_target)).max(if solve_trim {
+                (lcb - pivot_x).abs() / (1e-4 * l_scale)
+            } else {
+                0.0
+            });
+            if metric < best.0 {
+                best = (metric, s, tau);
+            }
+            if done_v && done_m {
+                converged = true;
+                break;
+            }
+            s -= ds;
+            tau -= dtau;
+            if tau.abs() > 0.35 {
+                return Err(Error::InvalidConditions(format!(
+                    "equilibrium trim exceeded 20 degrees at heel {:.1}°; lcg {:?} \
+                     appears unreachable (current LCB {lcb:.3} m)",
+                    heel.to_degrees(),
+                    load.lcg
+                )));
+            }
+        }
+        if !converged {
+            if best.0 <= 10.0 {
+                (_, s, tau) = best;
+            } else {
+                return Err(Error::InvalidConditions(format!(
+                    "heeled equilibrium did not converge after {iterations} iterations \
+                     (mass {} kg, heel {:.1}°, best residual {:.1}x tolerance)",
+                    load.mass,
+                    heel.to_degrees(),
+                    best.0
+                )));
+            }
+        }
+    }
+
+    // Hydrostatics at the solution (fine grid).
+    let f = hydro(s, tau, grid);
+    let volume = f.volume;
+    let lcb = if volume > 0.0 { f.moment_x / volume } else { 0.0 };
+    let gz = if volume > 0.0 {
+        f.moment_y / volume - vcg * heel.sin()
+    } else {
+        0.0
+    };
+
+    // Wetted hulls for the resistance path: the rigid heel reposition, situated
+    // at the solved attitude (the tilt itself is left to the wave kernel).
+    let heeled = heel_poses(bodies, poses, heel)?;
+    let platform = Platform {
+        sinkage: s,
+        trim: tau,
+        pivot_x,
+    };
+    let mut members = Vec::new();
+    let mut dry = 0usize;
+    let mut fleet_band = 0usize;
+    for (body, pose) in bodies.iter().zip(&heeled) {
+        match body.situate(water_offset, pose, &platform, opts)? {
+            Some(sb) => {
+                fleet_band += sb.band_exceeded;
+                members.push((sb.hull, sb.placement));
+            }
+            None => dry += 1,
+        }
+    }
+
+    Ok(HeeledEquilibrium {
+        sinkage: s,
+        trim: tau,
+        heel,
+        volume,
+        lcb,
+        gz,
+        fleet: FleetState {
+            members,
+            dry,
+            band_exceeded: fleet_band,
+        },
+        iterations,
+        volume_residual: (volume - v_target).abs() / v_target,
+        lcb_residual: load.lcg.map_or(0.0, |l| (lcb - l).abs()),
+        band_exceeded: f.band_exceeded,
+    })
 }

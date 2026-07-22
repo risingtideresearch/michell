@@ -76,6 +76,7 @@ pub mod grid;
 mod hull;
 pub mod hulls;
 pub mod iges;
+pub mod inclined;
 pub mod lifting;
 pub mod lifting3d;
 mod michell;
