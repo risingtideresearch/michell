@@ -2,6 +2,9 @@
 //! bodies, with every varying quantity (speed, load, waterline, hull poses)
 //! expressed as a sweep axis. See the README for the schema.
 
+use crate::archive::{
+    Archive, Rows, SpecSample, KIND_HULLFILE, KIND_MANIFEST, KIND_META, KIND_ROWS,
+};
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
@@ -11,7 +14,7 @@ use michell::float::{
 };
 use michell::iges::{HullPose, Platform};
 use michell::inclined::InclinedGrid;
-use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
+use michell::{Conditions, FreeWaveSpectrum, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
 const KNOT: f64 = 1852.0 / 3600.0;
 
@@ -117,6 +120,15 @@ struct GzStats {
     /// Angle of vanishing stability (first GZ zero-crossing) [deg].
     vanish_deg: f64,
 }
+
+/// Per-point heel roll-up: the GZ summary, the heeled equilibria solved at the
+/// resistance angles, and the raw GZ curve `(heel_rad, gz_m)` samples (retained
+/// for the binary archive; empty outside equilibrium mode).
+type HeelRollup = (
+    Option<GzStats>,
+    Vec<Option<HeeledEquilibrium>>,
+    Vec<(f64, f64)>,
+);
 
 /// Reduce a sampled GZ curve to its summary metrics. `samples` are
 /// `(heel_rad, gz_m)` pairs, ascending in heel and starting at `(0, 0)`, at a
@@ -307,6 +319,9 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         .and_then(Json::as_arr)
         .ok_or("manifest needs a \"hulls\" array")?;
     let mut hulls: Vec<MHull> = Vec::new();
+    // Raw bytes of each distinct referenced hull file, kept for the binary
+    // archive so a study is fully self-contained.
+    let mut hull_files: Vec<(String, Vec<u8>)> = Vec::new();
     for h in hull_specs {
         let id = h
             .get("id")
@@ -322,6 +337,11 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             .ok_or_else(|| format!("hull {id:?} needs a \"file\""))?;
         let path = dir.join(file);
         let body = load_body(path.to_str().unwrap_or(file))?;
+        if !hull_files.iter().any(|(f, _)| f == file) {
+            let raw = std::fs::read(&path)
+                .map_err(|e| format!("cannot re-read hull file {file}: {e}"))?;
+            hull_files.push((file.to_string(), raw));
+        }
         let mut base = HullPose::default();
         if let Some(pz) = h.get("pose") {
             base.dx = pz.get("dx").and_then(Json::as_f64).unwrap_or(0.0);
@@ -652,9 +672,21 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         ),
         None => ("csv".to_string(), None),
     };
-    if format != "csv" && format != "json" {
-        return Err(format!("output format {format:?}: expected csv or json"));
+    if format != "csv" && format != "json" && format != "binary" {
+        return Err(format!(
+            "output format {format:?}: expected csv, json, or binary"
+        ));
     }
+    let binary = format == "binary";
+    // Spectrum sampling for the binary archive (uniform over the significant
+    // angular range, matching `michell spectrum`). Ignored for csv/json.
+    let spec_points: usize = doc
+        .get("output")
+        .and_then(|o| o.get("spectrum"))
+        .and_then(|s| s.get("points"))
+        .and_then(Json::as_f64)
+        .map(|v| (v as usize).max(9))
+        .unwrap_or(721);
     // Derived fleet-CG columns (equilibrium mode): the mass-weighted CG that
     // the solve and roll-up ride on, so it is visible as the hulls/loads move.
     let cg_cols: Vec<String> = if float_mode {
@@ -721,6 +753,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         out.push('\n');
     }
     let mut first_row = true;
+    let mut rows = binary.then(|| Rows::new(axes.len(), header.len() - axes.len()));
 
     let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
     // Section-integration resolution for the heeled inclined-waterplane
@@ -855,7 +888,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         // Heel roll-up metrics (equilibrium mode only). GZ is speed-independent,
         // so its curve — and the heeled equilibria used for the resistance rise
         // — are solved once per point here, riding on the derived fleet CG.
-        let (gz_stats, heeled): (Option<GzStats>, Vec<Option<HeeledEquilibrium>>) = if float_mode {
+        let (gz_stats, heeled, gz_samples): HeelRollup = if float_mode {
             let load = LoadCase {
                 mass: cg.mass,
                 lcg: Some(cg.lcg),
@@ -938,9 +971,9 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     }
                 })
                 .collect();
-            (Some(stats), heeled)
+            (Some(stats), heeled, samples)
         } else {
-            (None, Vec::new())
+            (None, Vec::new(), Vec::new())
         };
 
         let members: Vec<(&Hull, Placement)> = state.members.iter().map(|(h, p)| (h, *p)).collect();
@@ -1023,7 +1056,11 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 ])
                 .chain(rises)
                 .collect();
-            if format == "json" {
+            if let Some(rows) = rows.as_mut() {
+                let (nu, twl, samples) = sample_spectrum(&members, &cond, spec_points)
+                    .map_err(|e| format!("point {} U={u} spectrum: {e}", point + 1))?;
+                rows.push(&vals, &nums[axes.len()..], &gz_samples, nu, twl, &samples);
+            } else if format == "json" {
                 if !first_row {
                     out.push(',');
                 }
@@ -1057,6 +1094,56 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
     if format == "json" {
         out.push(']');
     }
+
+    if let Some(rows) = rows {
+        // Assemble the self-contained binary archive.
+        let mut ar = Archive::default();
+        let manifest_name = std::path::Path::new(manifest_path)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("manifest.json");
+        ar.add(KIND_MANIFEST, manifest_name, text.into_bytes());
+        for (file, raw) in hull_files {
+            ar.add(KIND_HULLFILE, &file, raw);
+        }
+        ar.add(
+            KIND_META,
+            "meta.json",
+            build_meta(
+                doc.get("name").and_then(Json::as_str),
+                fluid_name,
+                gravity,
+                density,
+                l_ref,
+                &speeds,
+                &axes,
+                &header[axes.len()..],
+                spec_points,
+                &heel_cfg,
+                float_mode,
+            )
+            .into_bytes(),
+        );
+        ar.add(KIND_ROWS, "rows", rows.into_blob());
+        let bytes = ar.into_bytes();
+
+        // Binary must go to a file, never stdout. Default to the manifest stem.
+        let f = out_file.unwrap_or_else(|| {
+            let stem = std::path::Path::new(manifest_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("sweep");
+            format!("{stem}.msw")
+        });
+        let path = dir.join(&f);
+        std::fs::write(&path, &bytes).map_err(|e| format!("cannot write {f}: {e}"))?;
+        report(
+            &format!("wrote {} ({} bytes)", path.display(), bytes.len()),
+            None,
+        );
+        return Ok(String::new());
+    }
+
     match out_file {
         Some(f) => {
             let path = dir.join(&f);
@@ -1066,6 +1153,124 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         }
         None => Ok(out),
     }
+}
+
+/// Build the `META` blob: a JSON object naming the row columns and recording
+/// study-level scalars, so a reader can interpret `ROWS` without hard-coding
+/// the schema.
+#[allow(clippy::too_many_arguments)]
+fn build_meta(
+    name: Option<&str>,
+    fluid: &str,
+    gravity: f64,
+    density: f64,
+    l_ref: f64,
+    speeds: &[f64],
+    axes: &[Axis],
+    metric_labels: &[String],
+    spectrum_points: usize,
+    heel: &HeelCfg,
+    float_mode: bool,
+) -> String {
+    let arr = |xs: &[String]| -> String {
+        let items: Vec<String> = xs.iter().map(|s| json_str(s)).collect();
+        format!("[{}]", items.join(","))
+    };
+    let nums = |xs: &[f64]| -> String {
+        let items: Vec<String> = xs.iter().map(|v| format!("{v}")).collect();
+        format!("[{}]", items.join(","))
+    };
+    let axis_labels: Vec<String> = axes.iter().map(|a| a.label.clone()).collect();
+    let mut s = String::from("{");
+    s.push_str("\"format\":\"michell-sweep v1\"");
+    if let Some(n) = name {
+        s.push_str(&format!(",\"name\":{}", json_str(n)));
+    }
+    s.push_str(&format!(",\"fluid\":{}", json_str(fluid)));
+    s.push_str(&format!(",\"gravity\":{gravity}"));
+    s.push_str(&format!(",\"density\":{density}"));
+    s.push_str(&format!(",\"l_ref\":{l_ref}"));
+    s.push_str(&format!(",\"float_mode\":{float_mode}"));
+    s.push_str(&format!(",\"speeds_ms\":{}", nums(speeds)));
+    s.push_str(&format!(",\"axis_labels\":{}", arr(&axis_labels)));
+    s.push_str(&format!(",\"metric_labels\":{}", arr(metric_labels)));
+    s.push_str(&format!(",\"spectrum_points\":{spectrum_points}"));
+    s.push_str(&format!(
+        ",\"gz_scan\":{{\"step_deg\":{},\"max_deg\":{}}}",
+        heel.gz_step, heel.gz_max
+    ));
+    s.push_str(
+        ",\"row_layout\":\"per row: f64[axis_labels.len] params, \
+         f64[metric_labels.len] metrics, u32 gz_n, (f64 heel_rad, f64 gz_m)*gz_n, \
+         f64 wavenumber, f64 transverse_wavelength, u32 spec_n, \
+         (f64 theta, f64 amp_re, f64 amp_im, f64 drw_dtheta)*spec_n\"",
+    );
+    s.push('}');
+    s
+}
+
+/// Minimal JSON string escaping (quotes and backslashes; control chars are not
+/// expected in labels).
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Sample the free-wave spectrum uniformly over its significant angular range
+/// (the same detection `michell spectrum` uses), returning the wavenumber, the
+/// transverse wavelength, and `n` samples. Empty when the fleet is dry.
+fn sample_spectrum(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    n: usize,
+) -> Result<(f64, f64, Vec<SpecSample>), String> {
+    if members.is_empty() {
+        return Ok((0.0, 0.0, Vec::new()));
+    }
+    let mut spec = FreeWaveSpectrum::new(members, cond).map_err(|e| format!("{e}"))?;
+    let nu = spec.wavenumber();
+    let twl = spec.transverse_wavelength();
+
+    // Significant range: where dRw/dθ still matters (peak-relative threshold).
+    let lim = 89.5f64.to_radians();
+    let scan = 4096;
+    let mut peak = 0.0f64;
+    for i in 0..=scan {
+        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
+        peak = peak.max(spec.resistance_density(theta));
+    }
+    let mut theta_max = 0.0f64;
+    for i in 0..=scan {
+        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
+        if spec.resistance_density(theta) > 1e-5 * peak {
+            theta_max = theta_max.max(theta.abs());
+        }
+    }
+    let theta_max = (theta_max * 1.05).min(lim).max(1e-3);
+
+    let h = 2.0 * theta_max / (n - 1) as f64;
+    let mut samples = Vec::with_capacity(n);
+    for i in 0..n {
+        let theta = -theta_max + h * i as f64;
+        let a = spec.amplitude(theta);
+        let d = spec.resistance_density(theta);
+        samples.push(SpecSample {
+            theta,
+            amp_re: a.re,
+            amp_im: a.im,
+            drw_dtheta: d,
+        });
+    }
+    Ok((nu, twl, samples))
 }
 
 #[cfg(test)]
