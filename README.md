@@ -332,6 +332,22 @@ of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
 axis. Hull files load relative to the manifest. A flag-based sweep over raw
 IGES (`--axis`, `--float`) remains for one-liners.
 
+**PDF reports** (`"output": { "format": "pdf", "file": "study.pdf" }`): instead
+of a CSV/JSON table, write an illustrated report — an index page whose rows
+hyperlink to a page per sweep row. Each detail page shows the wetted fleet in
+**profile** (x–z) and **body-plan** (y–z) views against the waterline, the
+**righting-arm (GZ) curve**, a **plan view** of the hull waterplanes over the
+Kelvin **wave-amplitude field** at that speed, and a table of the row's values.
+The GZ curve is drawn only in equilibrium (`weight`) mode: the heeled
+equilibrium is re-solved from 0° to `gz_heel_max` (default 50°, step
+`gz_heel_step` = 5°, both `output` keys) and the operating heel (from a `heel`
+axis) is marked. Re-solving the equilibrium at every heel makes the report
+heavier than a plain table — narrow the axes for large studies. Writing is
+zero-dependency (the PDF, its vector views, and the embedded wave rasters are
+generated in-crate); `file` is required. Only hulls wetted at each row's
+attitude are drawn, so a flying (windward) hull — counted in `dry` — is absent
+from that row's views.
+
 **GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
 platform rigidly about the centerline at the design floatplane and re-solves
 the equilibrium at every angle, so the displaced volume is held while
