@@ -1976,6 +1976,9 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
     let band_flag = p.f64_flag("band")?;
     let mut lofted = Vec::new();
     for idx in 0..n {
+        // Per-hull progress (to stderr, like the sweep) so a front-end can show
+        // a bar; the dense band loft is the slow step.
+        eprintln!("lofting hull {}/{n}", idx + 1);
         let top = src.hull_z_top(idx);
         let bottom = src.hull_z_bottom(idx);
         let draft_est = design_wl - bottom;

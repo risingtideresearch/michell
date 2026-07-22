@@ -1,12 +1,24 @@
 //! The manifest form. `manifest_form` renders the whole editing surface into a
-//! panel and mutates the model in place; it returns `true` if anything changed
-//! this frame so the app can mark the document dirty and refresh the preview.
+//! panel and mutates the model in place; it returns what happened this frame
+//! (whether anything changed, and whether the user asked to import geometry) so
+//! the app can mark the document dirty, refresh the preview, and start a loft.
 
 use crate::model::*;
 use egui::{ComboBox, DragValue, Grid, RichText, Ui};
+use std::path::Path;
 
-pub fn manifest_form(ui: &mut Ui, m: &mut Manifest) -> bool {
-    let mut changed = false;
+/// What the form did this frame.
+#[derive(Default)]
+pub struct FormResponse {
+    pub changed: bool,
+    pub import_clicked: bool,
+}
+
+/// `dir` is the directory the manifest is (or will be) saved in — file paths
+/// picked via Browse are stored relative to it when possible, matching the
+/// "hull files load relative to the manifest" contract.
+pub fn manifest_form(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>) -> FormResponse {
+    let mut r = FormResponse::default();
 
     ui.heading("Study");
     Grid::new("study")
@@ -14,7 +26,7 @@ pub fn manifest_form(ui: &mut Ui, m: &mut Manifest) -> bool {
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
             ui.label("Name");
-            changed |= ui.text_edit_singleline(&mut m.name).changed();
+            r.changed |= ui.text_edit_singleline(&mut m.name).changed();
             ui.end_row();
 
             ui.label("Fluid");
@@ -22,35 +34,42 @@ pub fn manifest_form(ui: &mut Ui, m: &mut Manifest) -> bool {
                 .selected_text(m.fluid.as_str())
                 .show_ui(ui, |ui| {
                     for f in [Fluid::Seawater, Fluid::Freshwater] {
-                        changed |= ui.selectable_value(&mut m.fluid, f, f.as_str()).changed();
+                        r.changed |= ui.selectable_value(&mut m.fluid, f, f.as_str()).changed();
                     }
                 });
             ui.end_row();
         });
 
     ui.add_space(12.0);
-    changed |= hulls_section(ui, m);
+    r.changed |= hulls_section(ui, m, dir, &mut r.import_clicked);
 
     ui.add_space(12.0);
     let ids: Vec<String> = m.hulls.iter().map(|h| h.id.clone()).collect();
-    changed |= sweep_section(ui, &mut m.axes, &ids);
+    r.changed |= sweep_section(ui, &mut m.axes, &ids);
 
     ui.add_space(12.0);
-    changed |= output_section(ui, &mut m.output);
+    r.changed |= output_section(ui, &mut m.output, dir);
 
     ui.add_space(12.0);
-    changed |= options_section(ui, &mut m.options);
+    r.changed |= options_section(ui, &mut m.options);
 
-    changed
+    r
 }
 
-fn hulls_section(ui: &mut Ui, m: &mut Manifest) -> bool {
+fn hulls_section(ui: &mut Ui, m: &mut Manifest, dir: Option<&Path>, import: &mut bool) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.heading("Hulls");
         if ui.button("+ add hull").clicked() {
             m.hulls.push(HullSpec::new());
             changed = true;
+        }
+        if ui
+            .button("Import IGS/STL…")
+            .on_hover_text("Loft a CAD/mesh file into full-band .hull bodies and add them")
+            .clicked()
+        {
+            *import = true;
         }
     });
 
@@ -76,7 +95,15 @@ fn hulls_section(ui: &mut Ui, m: &mut Manifest) -> bool {
                     changed |= ui.text_edit_singleline(&mut h.id).changed();
                     ui.end_row();
                     ui.label("file");
-                    changed |= ui.text_edit_singleline(&mut h.file).changed();
+                    ui.horizontal(|ui| {
+                        changed |= ui.text_edit_singleline(&mut h.file).changed();
+                        if ui.button("Browse…").clicked() {
+                            if let Some(p) = pick_file_relative(dir, "hull body", &["hull"]) {
+                                h.file = p;
+                                changed = true;
+                            }
+                        }
+                    });
                     ui.end_row();
                 });
             changed |= ui.checkbox(&mut h.pose.enabled, "base pose").changed();
@@ -251,7 +278,7 @@ fn value_editor(ui: &mut Ui, i: usize, v: &mut ValueSpec) -> bool {
     changed
 }
 
-fn output_section(ui: &mut Ui, o: &mut Output) -> bool {
+fn output_section(ui: &mut Ui, o: &mut Output, dir: Option<&Path>) -> bool {
     let mut changed = false;
     ui.heading("Output");
     Grid::new("output")
@@ -268,7 +295,16 @@ fn output_section(ui: &mut Ui, o: &mut Output) -> bool {
                 });
             ui.end_row();
             ui.label("file");
-            changed |= ui.text_edit_singleline(&mut o.file).changed();
+            ui.horizontal(|ui| {
+                changed |= ui.text_edit_singleline(&mut o.file).changed();
+                if ui.button("Browse…").clicked() {
+                    let ext = o.format.as_str();
+                    if let Some(p) = save_file_relative(dir, ext, &format!("study.{ext}")) {
+                        o.file = p;
+                        changed = true;
+                    }
+                }
+            });
             ui.end_row();
         });
     ui.label(RichText::new("blank file → results print to stdout").weak());
@@ -318,4 +354,33 @@ fn labelled_drag(ui: &mut Ui, label: &str, v: &mut f64, speed: f64) -> bool {
 fn text(ui: &mut Ui, id: impl std::hash::Hash, s: &mut String, width: f32) -> bool {
     ui.add_sized([width, 20.0], egui::TextEdit::singleline(s).id_salt(id))
         .changed()
+}
+
+/// Express `target` relative to the manifest directory when it sits inside it,
+/// so the stored path stays portable; otherwise keep it absolute.
+pub fn rel_to(dir: Option<&Path>, target: &Path) -> String {
+    if let Some(d) = dir {
+        if let Ok(stripped) = target.strip_prefix(d) {
+            return stripped.to_string_lossy().into_owned();
+        }
+    }
+    target.to_string_lossy().into_owned()
+}
+
+fn pick_file_relative(dir: Option<&Path>, name: &str, exts: &[&str]) -> Option<String> {
+    let mut d = rfd::FileDialog::new().add_filter(name, exts);
+    if let Some(base) = dir {
+        d = d.set_directory(base);
+    }
+    d.pick_file().map(|p| rel_to(dir, &p))
+}
+
+fn save_file_relative(dir: Option<&Path>, ext: &str, suggested: &str) -> Option<String> {
+    let mut d = rfd::FileDialog::new()
+        .add_filter(ext, &[ext])
+        .set_file_name(suggested);
+    if let Some(base) = dir {
+        d = d.set_directory(base);
+    }
+    d.save_file().map(|p| rel_to(dir, &p))
 }
