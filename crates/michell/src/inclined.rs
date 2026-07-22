@@ -301,6 +301,47 @@ pub fn body_inclined_hydro(
     })
 }
 
+/// Aggregate inclined hydrostatics of a whole fleet at one attitude — the
+/// quantities an equilibrium solve and a righting-arm read off.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FleetInclined {
+    /// Total displaced volume [m³].
+    pub volume: f64,
+    /// Longitudinal buoyancy moment `Σ v·LCB` (earth `x`) [m⁴].
+    pub moment_x: f64,
+    /// Transverse buoyancy moment `Σ v·TCB` (earth `y`, from the heel axis)
+    /// [m⁴].
+    pub moment_y: f64,
+    /// Source bodies found entirely dry at this attitude.
+    pub dry: usize,
+    /// Total band-top-immersed samples across the fleet (deck under water).
+    pub band_exceeded: usize,
+}
+
+/// Inclined hydrostatics summed over a fleet of bodies at one attitude.
+pub fn fleet_inclined(
+    bodies: &[&Body],
+    water_offset: f64,
+    poses: &[HullPose],
+    platform: &Platform,
+    heel: f64,
+    grid: InclinedGrid,
+) -> FleetInclined {
+    let mut f = FleetInclined::default();
+    for (body, pose) in bodies.iter().zip(poses) {
+        match body_inclined_hydro(body, water_offset, pose, platform, heel, grid) {
+            Some(h) => {
+                f.volume += h.volume;
+                f.moment_x += h.volume * h.lcb;
+                f.moment_y += h.volume * h.tcb;
+                f.band_exceeded += h.band_exceeded;
+            }
+            None => f.dry += 1,
+        }
+    }
+    f
+}
+
 /// Righting arm `GZ` [m] of a heeled fleet by inclined-waterplane
 /// hydrostatics: the earth-frame transverse separation of the buoyancy and
 /// gravity lines of action. `vcg` is the centre of gravity on the platform
@@ -320,18 +361,11 @@ pub fn fleet_righting_arm(
     vcg: f64,
     grid: InclinedGrid,
 ) -> f64 {
-    let mut volume = 0.0;
-    let mut moment = 0.0;
-    for (body, pose) in bodies.iter().zip(poses) {
-        if let Some(h) = body_inclined_hydro(body, water_offset, pose, platform, heel, grid) {
-            volume += h.volume;
-            moment += h.volume * h.tcb;
-        }
-    }
-    if volume <= 0.0 {
+    let f = fleet_inclined(bodies, water_offset, poses, platform, heel, grid);
+    if f.volume <= 0.0 {
         return 0.0;
     }
-    moment / volume - vcg * heel.sin()
+    f.moment_y / f.volume - vcg * heel.sin()
 }
 
 /// Total displaced volume of a fleet at the given attitude — the vertical-force
@@ -344,12 +378,5 @@ pub fn fleet_volume(
     heel: f64,
     grid: InclinedGrid,
 ) -> f64 {
-    bodies
-        .iter()
-        .zip(poses)
-        .filter_map(|(body, pose)| {
-            body_inclined_hydro(body, water_offset, pose, platform, heel, grid)
-        })
-        .map(|h| h.volume)
-        .sum()
+    fleet_inclined(bodies, water_offset, poses, platform, heel, grid).volume
 }
