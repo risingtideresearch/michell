@@ -750,30 +750,17 @@ fn draw_geometry_view(ui: &mut egui::Ui, d: &mut ImportDialog) {
     let z_of = |py: f32| zmin + (rect.bottom() - py) / rect.height() * (zmax - zmin);
 
     let weak = ui.visuals().weak_text_color();
-    // Filled transverse silhouette. Each adjacent pair of height slices forms a
-    // convex trapezoid (port/starboard reach at the two heights); tiling those
-    // fills the section correctly even where it is concave (flare, keel).
+    // Midship section outline: the raw model's segments where the plane x=x_mid
+    // cut it (all hulls at that station, unclustered).
     let hull_col = Color32::from_rgb(120, 165, 205);
-    let hi_pt = |s: &[f32; 3]| Pos2::new(x_of(s[2] * scale), y_of(s[0] * scale));
-    let lo_pt = |s: &[f32; 3]| Pos2::new(x_of(s[1] * scale), y_of(s[0] * scale));
-    for w in preview.slices.windows(2) {
-        let quad = vec![hi_pt(&w[0]), hi_pt(&w[1]), lo_pt(&w[1]), lo_pt(&w[0])];
-        painter.add(egui::Shape::convex_polygon(
-            quad,
-            hull_col.gamma_multiply(0.30),
-            Stroke::NONE,
-        ));
-    }
-    if preview.slices.len() >= 2 {
-        let outline = Stroke::new(1.5_f32, hull_col);
-        painter.add(egui::Shape::line(
-            preview.slices.iter().map(hi_pt).collect(),
-            outline,
-        ));
-        painter.add(egui::Shape::line(
-            preview.slices.iter().map(lo_pt).collect(),
-            outline,
-        ));
+    for seg in &preview.segments {
+        painter.line_segment(
+            [
+                Pos2::new(x_of(seg[0][0] * scale), y_of(seg[0][1] * scale)),
+                Pos2::new(x_of(seg[1][0] * scale), y_of(seg[1][1] * scale)),
+            ],
+            Stroke::new(1.3_f32, hull_col),
+        );
     }
     if 0.0 >= ymin && 0.0 <= ymax {
         let x0 = x_of(0.0);

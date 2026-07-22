@@ -91,6 +91,13 @@ impl NurbsSurface3 {
         clip_domain(full, self.trim_uv.map(|t| (t[2], t[3])))
     }
 
+    /// Surface point at parameter `(u, v)` (see [`NurbsSurface3::u_domain`] /
+    /// [`NurbsSurface3::v_domain`] for the valid range). Assumes uniform
+    /// weights, like the rest of the sampler.
+    pub fn point(&self, u: f64, v: f64) -> [f64; 3] {
+        self.eval1(u, v).0
+    }
+
     /// Point and first partials. Assumes uniform weights (polynomial).
     #[allow(clippy::needless_range_loop)]
     fn eval1(&self, u: f64, v: f64) -> ([f64; 3], [f64; 3], [f64; 3]) {
