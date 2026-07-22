@@ -1,14 +1,11 @@
-//! Runs the `michell` CLI as a subprocess (loft, sweep) and streams its
-//! progress back to the UI over a channel. The CLI already prints
-//! machine-parseable progress to stderr — `sweep: N point(s) …` and
-//! `point k/N done` for sweeps, `lofting hull i/n` for lofts — so we parse
-//! those lines into a `(done, total)` fraction rather than reimplementing any
-//! of the numerics.
+//! Runs a loft or sweep on a background thread by calling the `michell_cli`
+//! library in-process — the editor is a standalone binary and does not shell
+//! out to the `michell` CLI. The library reports progress through a callback
+//! (a human-readable line plus an optional `(done, total)` fraction), which we
+//! forward to the UI over a channel; its return value is the text the CLI would
+//! have written to stdout (the loft summary table, or the sweep CSV/JSON).
 
-use std::ffi::OsString;
-use std::io::{BufRead, BufReader, Read};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 
@@ -18,9 +15,9 @@ pub enum JobKind {
     Sweep,
 }
 
-/// A successful run's captured stdout (the CLI writes its result tables / CSV
-/// there) plus the working directory it ran in, so the caller can resolve any
-/// files it produced.
+/// A successful run's captured stdout (the loft summary table / sweep CSV) plus
+/// the working directory it ran in, so the caller can resolve any files it
+/// produced.
 pub struct Success {
     pub stdout: String,
     pub cwd: PathBuf,
@@ -44,7 +41,7 @@ pub struct Job {
 
 impl Job {
     /// Drain any pending updates. Returns true if anything changed (so the app
-    /// can refresh), and leaves `outcome` set once the process exits.
+    /// can refresh), and leaves `outcome` set once the run finishes.
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(u) = self.rx.try_recv() {
@@ -70,99 +67,37 @@ impl Job {
     }
 }
 
-/// Interpret a CLI stderr line as progress, if it is one.
-fn parse_progress(line: &str) -> Option<(usize, usize)> {
-    // "point 3/9 done" — 3 of 9 points complete.
-    if let Some(rest) = line.strip_prefix("point ") {
-        let frac = rest.strip_suffix(" done")?;
-        let (a, b) = frac.split_once('/')?;
-        return Some((a.trim().parse().ok()?, b.trim().parse().ok()?));
-    }
-    // "sweep: 9 point(s) x 5 speed(s)" — total known up front, none done yet.
-    if let Some(rest) = line.strip_prefix("sweep: ") {
-        let n = rest.split_whitespace().next()?.parse().ok()?;
-        return Some((0, n));
-    }
-    // "lofting hull i/n" or "lofting hull i/n NN%" — hull i of n, optionally
-    // NN% through its own sampling. Reported in hundredths of a hull so the bar
-    // moves smoothly both within a hull and across hulls.
-    if let Some(rest) = line.strip_prefix("lofting hull ") {
-        let mut parts = rest.split_whitespace();
-        let (a, b) = parts.next()?.split_once('/')?;
-        let i: usize = a.trim().parse().ok()?;
-        let n: usize = b.trim().parse().ok()?;
-        let within = parts
-            .next()
-            .and_then(|p| p.strip_suffix('%'))
-            .and_then(|p| p.trim().parse::<usize>().ok())
-            .unwrap_or(0)
-            .min(100);
-        return Some((i.saturating_sub(1) * 100 + within, n * 100));
-    }
-    None
-}
-
-/// Spawn `bin` with `args` in `cwd`, streaming progress. Returns immediately;
-/// the process runs on a background thread.
-pub fn spawn(bin: &Path, args: Vec<OsString>, cwd: &Path, kind: JobKind, title: String) -> Job {
+/// Start a loft or sweep on a background thread, streaming progress. `args` is a
+/// CLI-style argument vector: for a loft, `["loft", <source>, ...]` (the `-o`
+/// output path should be absolute, since the work runs in-process with no
+/// per-job working directory); for a sweep, `["sweep", <manifest.json>]`. `cwd`
+/// is reported back on success so the caller can resolve produced files.
+pub fn spawn(args: Vec<String>, cwd: PathBuf, kind: JobKind, title: String) -> Job {
     let (tx, rx) = channel();
-    let bin = bin.to_owned();
-    let cwd = cwd.to_owned();
-    let cwd_report = cwd.clone();
+    let cwd_report = cwd;
 
     thread::spawn(move || {
-        let mut child = match Command::new(&bin)
-            .args(&args)
-            .current_dir(&cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = tx.send(Update::Finished(Err(format!(
-                    "cannot run {}: {e}",
-                    bin.display()
-                ))));
-                return;
-            }
-        };
-
-        // Drain stdout on its own thread so a large CSV (sweep with no output
-        // file) can't deadlock the pipe while we read stderr.
-        let mut stdout = child.stdout.take().expect("piped stdout");
-        let out_handle = thread::spawn(move || {
-            let mut s = String::new();
-            let _ = stdout.read_to_string(&mut s);
-            s
-        });
-
-        let stderr = child.stderr.take().expect("piped stderr");
-        let mut last_err = String::new();
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if let Some((done, total)) = parse_progress(&line) {
+        // The library's progress callback: forward the fraction (if any) and
+        // the human-readable line to the UI channel.
+        let mut report = |line: &str, frac: Option<(usize, usize)>| {
+            if let Some((done, total)) = frac {
                 let _ = tx.send(Update::Progress { done, total });
             }
-            if line.starts_with("error:") {
-                last_err = line.clone();
-            }
-            let _ = tx.send(Update::Log(line));
-        }
-
-        let status = child.wait();
-        let stdout_str = out_handle.join().unwrap_or_default();
-        let msg = match status {
-            Ok(s) if s.success() => Ok(Success {
-                stdout: stdout_str,
-                cwd: cwd_report,
-            }),
-            Ok(s) => Err(if last_err.is_empty() {
-                format!("michell exited with {s}")
-            } else {
-                last_err.trim_start_matches("error:").trim().to_string()
-            }),
-            Err(e) => Err(e.to_string()),
+            let _ = tx.send(Update::Log(line.to_string()));
         };
+
+        let result = match kind {
+            JobKind::Loft => michell_cli::loft(&args[1..], &mut report),
+            JobKind::Sweep => match args.get(1) {
+                Some(path) => michell_cli::run_manifest(path, &mut report),
+                None => Err("sweep: no manifest path".to_string()),
+            },
+        };
+
+        let msg = result.map(|stdout| Success {
+            stdout,
+            cwd: cwd_report,
+        });
         let _ = tx.send(Update::Finished(msg));
     });
 
@@ -173,60 +108,5 @@ pub fn spawn(bin: &Path, args: Vec<OsString>, cwd: &Path, kind: JobKind, title: 
         progress: None,
         outcome: None,
         rx,
-    }
-}
-
-/// Locate the `michell` binary: prefer the one shipped next to this editor
-/// (same `target/…` dir), then fall back to the bare name on `PATH`.
-pub fn default_michell_bin() -> PathBuf {
-    let exe_name = if cfg!(windows) {
-        "michell.exe"
-    } else {
-        "michell"
-    };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join(exe_name);
-            if sibling.exists() {
-                return sibling;
-            }
-        }
-    }
-    PathBuf::from("michell")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_progress;
-
-    #[test]
-    fn parses_sweep_point_lines() {
-        assert_eq!(parse_progress("point 3/9 done"), Some((3, 9)));
-        assert_eq!(
-            parse_progress("sweep: 9 point(s) x 5 speed(s)"),
-            Some((0, 9))
-        );
-        assert_eq!(
-            parse_progress("sweep: 12 point(s) x 3 speed(s), equilibrium mode"),
-            Some((0, 12))
-        );
-    }
-
-    #[test]
-    fn parses_loft_lines() {
-        // Without a percent: start of hull i (in hundredths-of-a-hull units).
-        assert_eq!(parse_progress("lofting hull 1/3"), Some((0, 300)));
-        assert_eq!(parse_progress("lofting hull 3/3"), Some((200, 300)));
-        // With a percent: partway through a hull's own sampling.
-        assert_eq!(parse_progress("lofting hull 1/3 0%"), Some((0, 300)));
-        assert_eq!(parse_progress("lofting hull 1/3 45%"), Some((45, 300)));
-        assert_eq!(parse_progress("lofting hull 2/3 100%"), Some((200, 300)));
-    }
-
-    #[test]
-    fn ignores_other_lines() {
-        assert_eq!(parse_progress("study: ama placement"), None);
-        assert_eq!(parse_progress("hull h: ama.hull (centerplane 0.0)"), None);
-        assert_eq!(parse_progress(""), None);
     }
 }

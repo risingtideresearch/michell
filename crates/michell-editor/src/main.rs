@@ -1,8 +1,10 @@
 //! A small egui app for authoring `michell` sweep-study manifests. It edits a
 //! typed model with a form, shows a live JSON preview and validation, reads and
-//! writes the `.json` files the CLI consumes, and can drive the CLI itself:
-//! import CAD/mesh geometry (lofting it to full-band `.hull` bodies) and run the
-//! sweep, both with live progress.
+//! writes the `.json` files the sweep runner consumes, and does the heavy work
+//! itself — importing CAD/mesh geometry (lofting it to full-band `.hull`
+//! bodies) and running the sweep in-process via the `michell_cli` library, both
+//! with live progress. It is a standalone binary: no separate `michell` CLI
+//! binary is required at runtime.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -12,9 +14,7 @@ use michell_editor::runner::{self, Job, JobKind};
 use michell_editor::validate::Level;
 use michell_editor::{jsonio, ui, validate};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 fn main() -> eframe::Result<()> {
@@ -94,8 +94,7 @@ struct EditorApp {
     status: String,
     preview: Result<String, String>,
     show_preview: bool,
-    michell_bin: PathBuf,
-    /// A running loft/sweep subprocess, if any (one at a time).
+    /// A running loft/sweep job, if any (one at a time).
     job: Option<Job>,
     import: Option<ImportDialog>,
     /// Cached `michell info` results per resolved hull path, with the file's
@@ -114,7 +113,6 @@ impl Default for EditorApp {
             status: "new manifest".into(),
             preview,
             show_preview: true,
-            michell_bin: runner::default_michell_bin(),
             job: None,
             import: None,
             hull_info: HashMap::new(),
@@ -160,7 +158,7 @@ impl EditorApp {
                 // path caches an error without a subprocess (so typing a path
                 // doesn't fire one off per keystroke).
                 let result = if mtime.is_some() {
-                    fetch_hull_info(&self.michell_bin, &path)
+                    fetch_hull_info(&path)
                 } else {
                     Err("file not found".into())
                 };
@@ -333,9 +331,14 @@ impl EditorApp {
             .or_else(|| d.source.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let mut args: Vec<OsString> = vec![
+        // The loft runs in-process, so a relative `-o` prefix would resolve
+        // against the editor's own working directory. Anchor it to `cwd` (next
+        // to the manifest, or the source file) so the bodies land where the
+        // subprocess used to write them.
+        let out_prefix = cwd.join(d.prefix.trim());
+        let mut args: Vec<String> = vec![
             "loft".into(),
-            d.source.clone().into_os_string(),
+            d.source.to_string_lossy().into_owned(),
             "--waterline".into(),
             d.waterline.trim().into(),
         ];
@@ -348,13 +351,12 @@ impl EditorApp {
             args.push(d.units.as_str().into());
         }
         args.push("-o".into());
-        args.push(d.prefix.trim().into());
+        args.push(out_prefix.to_string_lossy().into_owned());
 
         self.status = format!("lofting {}…", d.source.display());
         self.job = Some(runner::spawn(
-            &self.michell_bin,
             args,
-            &cwd,
+            cwd,
             JobKind::Loft,
             "Lofting geometry".into(),
         ));
@@ -380,12 +382,11 @@ impl EditorApp {
             return; // save failed or was cancelled
         }
         let cwd = self.manifest_dir().unwrap_or_else(|| PathBuf::from("."));
-        let args: Vec<OsString> = vec!["sweep".into(), path.into_os_string()];
+        let args: Vec<String> = vec!["sweep".into(), path.to_string_lossy().into_owned()];
         self.status = "running sweep…".into();
         self.job = Some(runner::spawn(
-            &self.michell_bin,
             args,
-            &cwd,
+            cwd,
             JobKind::Sweep,
             "Running sweep".into(),
         ));
@@ -443,22 +444,13 @@ impl EditorApp {
     }
 }
 
-/// Run `michell info <path> --json` and parse the hydrostatics. A `.hull` body
-/// is one member; a multi-body file is aggregated (summed area/volume, max
-/// length/beam/draft) so the row still reads sensibly.
-fn fetch_hull_info(bin: &Path, path: &Path) -> Result<HullInfo, String> {
-    let out = Command::new(bin)
-        .arg("info")
-        .arg(path)
-        .arg("--json")
-        .output()
-        .map_err(|e| format!("cannot run {}: {e}", bin.display()))?;
-    if !out.status.success() {
-        let msg = String::from_utf8_lossy(&out.stderr);
-        return Err(msg.trim().trim_start_matches("error:").trim().to_string());
-    }
+/// Compute hull hydrostatics in-process (the `michell info --json` path) and
+/// parse them. A `.hull` body is one member; a multi-body file is aggregated
+/// (summed area/volume, max length/beam/draft) so the row still reads sensibly.
+fn fetch_hull_info(path: &Path) -> Result<HullInfo, String> {
+    let json = michell_cli::info(&[path.to_string_lossy().into_owned(), "--json".to_string()])?;
     let v: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("info JSON: {e}"))?;
+        serde_json::from_str(&json).map_err(|e| format!("info JSON: {e}"))?;
     let arr = v
         .as_array()
         .filter(|a| !a.is_empty())
@@ -533,7 +525,6 @@ impl eframe::App for EditorApp {
 
         let mut want_import = false;
         let mut want_run = false;
-        let mut want_locate = false;
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
@@ -557,17 +548,6 @@ impl eframe::App for EditorApp {
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_preview, "JSON preview");
-                });
-                ui.menu_button("Tools", |ui| {
-                    if ui.button("Locate michell binary…").clicked() {
-                        want_locate = true;
-                        ui.close_menu();
-                    }
-                    ui.label(
-                        egui::RichText::new(format!("using: {}", self.michell_bin.display()))
-                            .weak()
-                            .small(),
-                    );
                 });
 
                 ui.separator();
@@ -667,12 +647,6 @@ impl eframe::App for EditorApp {
         self.job_window(ctx);
 
         // Act on intents gathered above, now that the panel borrows are gone.
-        if want_locate {
-            if let Some(p) = rfd::FileDialog::new().pick_file() {
-                self.michell_bin = p;
-                self.status = format!("michell binary: {}", self.michell_bin.display());
-            }
-        }
         if want_import {
             self.begin_import();
         }
