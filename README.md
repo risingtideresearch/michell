@@ -336,7 +336,8 @@ All poses are hydrostatic (no speed-dependent squat).
     { "target": "vaka", "param": "mass", "range": [0, 800], "step": 200 },
     { "target": "battery", "param": "dz", "values": [0.0, 0.6, 1.2] },
     { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
-    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] }
+    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] },
+    { "target": "vaka", "param": "scale", "values": [0.9, 1.0, 1.1] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
   "options": { "rel_tol": 1e-5, "form_factor": 0.05 }
@@ -346,14 +347,18 @@ All poses are hydrostatic (no speed-dependent squat).
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
 (`ms` | `knots` | `froude`). Axis targets name hull ids or point-load ids
-(all ids are unique) and **offset the base value** — for a **hull**, pose:
-`dx`, `dy`, `dz` (+down), `spread` (outboard, sign follows each hull's side),
-`trim` (degrees, + raises the +x end), and load: `mass`, `lcg`, `vcg`; for a
-**point load**, `mass`, `dx`, `dy`, `dz` (relative to the hull centerpoint).
-A target list moves several targets as one coupled axis (e.g. sweep both amas'
-`mass` together, or two symmetric ballast points), but must be all hulls or
-all points. Hull files load relative to the manifest. A flag-based sweep over
-raw IGES (`--axis`, `--float`) remains for one-liners.
+(all ids are unique) and **offset the base value** (a `scale` axis instead
+*multiplies* the base) — for a **hull**, pose: `dx`, `dy`, `dz` (+down),
+`spread` (outboard, sign follows each hull's side), `trim` (degrees, + raises
+the +x end), `scale` (uniform size factor, `> 0`; grows or shrinks the hull in
+place — length, beam, and draft all scale together — about its design waterline
+and centre, so `1.0` leaves it unchanged and displacement goes as the cube),
+and load: `mass`, `lcg`, `vcg`; for a **point load**, `mass`, `dx`, `dy`, `dz`
+(relative to the hull centerpoint). A target list moves several targets as one
+coupled axis (e.g. sweep both amas' `mass` together, or two symmetric ballast
+points), but must be all hulls or all points. A `scale` in a hull's base `pose`
+sets its built size. Hull files load relative to the manifest. A flag-based
+sweep over raw IGES (`--axis`, `--float`) remains for one-liners.
 
 **Heel metrics**: heel is *not* a sweep axis — it would multiply the row count
 with a whole GZ curve per point. Instead, whenever the fleet carries mass

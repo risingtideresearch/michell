@@ -620,6 +620,53 @@ fn situate_dz_equals_waterline_shift() {
 }
 
 #[test]
+fn situate_scale_is_geometrically_similar() {
+    use michell::iges::{HullPose, Platform};
+    // A uniform pose scale must grow the wetted hull similarly: length and
+    // draft as s, displaced volume as s^3.
+    let text = iges_file_meters(&wigley_shell_bodies(7.0));
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    let opts = import_opts();
+    let base = src
+        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
+        .unwrap();
+    let b = &base.members[0].hull;
+    for &s in &[0.6, 1.4] {
+        let scaled = src
+            .situate(
+                0.7,
+                &[HullPose {
+                    scale: s,
+                    ..Default::default()
+                }],
+                &Platform::default(),
+                &opts,
+            )
+            .unwrap();
+        let c = &scaled.members[0].hull;
+        let rel = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs();
+        assert!(
+            rel(c.length(), s * b.length()),
+            "s={s}: length {} vs {}",
+            c.length(),
+            s * b.length()
+        );
+        assert!(
+            rel(c.draft(), s * b.draft()),
+            "s={s}: draft {} vs {}",
+            c.draft(),
+            s * b.draft()
+        );
+        assert!(
+            rel(c.displaced_volume(), s * s * s * b.displaced_volume()),
+            "s={s}: volume {} vs {}",
+            c.displaced_volume(),
+            s * s * s * b.displaced_volume()
+        );
+    }
+}
+
+#[test]
 fn situate_trim_is_symmetric_for_symmetric_hull() {
     use michell::iges::{HullPose, Platform};
     let text = iges_file_meters(&wigley_shell_bodies(0.0));

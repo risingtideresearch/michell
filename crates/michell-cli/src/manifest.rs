@@ -22,6 +22,7 @@ enum PoseParam {
     Dz,
     Spread,
     TrimDeg,
+    Scale,
 }
 
 /// Per-hull load parameters, swept independently per hull (offsets from the
@@ -327,6 +328,14 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .and_then(Json::as_f64)
                 .unwrap_or(0.0)
                 .to_radians();
+            if let Some(s) = pz.get("scale").and_then(Json::as_f64) {
+                if !(s > 0.0 && s.is_finite()) {
+                    return Err(format!(
+                        "hull {id:?} pose scale must be positive and finite; got {s}"
+                    ));
+                }
+                base.scale = s;
+            }
         }
         // Per-hull load: mass and local CG. The fleet CG is derived by summing
         // these across hulls (carried through each pose), never set directly.
@@ -510,6 +519,15 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 "dy" => Target::Pose(idxs, PoseParam::Dy),
                 "dz" => Target::Pose(idxs, PoseParam::Dz),
                 "trim" => Target::Pose(idxs, PoseParam::TrimDeg),
+                "scale" => {
+                    if values.iter().any(|&v| !(v > 0.0 && v.is_finite())) {
+                        return Err(format!(
+                            "sweep entry targeting {targets:?}: scale factors must be \
+                             positive and finite"
+                        ));
+                    }
+                    Target::Pose(idxs, PoseParam::Scale)
+                }
                 "spread" => {
                     for &i in &idxs {
                         let y = hulls[i].body.centerplane() + hulls[i].base.dy;
@@ -719,6 +737,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                                 pose.dy = hulls[hi].base.dy + if side < 0.0 { -v } else { v };
                             }
                             PoseParam::TrimDeg => pose.trim = hulls[hi].base.trim + v.to_radians(),
+                            PoseParam::Scale => pose.scale = hulls[hi].base.scale * v,
                         }
                     }
                 }

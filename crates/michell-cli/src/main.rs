@@ -206,7 +206,8 @@ SWEEPS (flag form, IGES inputs; hulls modelled in position)
                                 by transverse position); PARAM one of
                                 dz (immersion, +down), dx, dy,
                                 spread (outboard shift, sign follows side),
-                                trim (degrees, + raises the +x end)
+                                trim (degrees, + raises the +x end),
+                                scale (uniform size factor, >0; 1 = unchanged)
   --float weight=A[:B:S]        solve sinkage (and pitch, with lcg) so the
   --float lcg=A[:B:S]           fleet floats each load; excludes a waterline
                                 axis; single input file only
@@ -817,6 +818,7 @@ enum PoseParam {
     Dy,
     Spread,
     TrimDeg,
+    Scale,
 }
 
 enum Target {
@@ -850,7 +852,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     }
     if p.positional.iter().any(|s| s.contains('@')) {
         return Err(
-            "sweep does not accept @ placement suffixes; use --axis with dz/dx/dy/spread/trim"
+            "sweep does not accept @ placement suffixes; use --axis with dz/dx/dy/spread/trim/scale"
                 .into(),
         );
     }
@@ -957,12 +959,18 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 "dy" => PoseParam::Dy,
                 "spread" => PoseParam::Spread,
                 "trim" => PoseParam::TrimDeg,
+                "scale" => PoseParam::Scale,
                 other => {
                     return Err(format!(
-                        "unknown pose parameter {other:?} (dz, dx, dy, spread, trim)"
+                        "unknown pose parameter {other:?} (dz, dx, dy, spread, trim, scale)"
                     ))
                 }
             };
+            if pname.trim() == "scale" && values.iter().any(|&v| !(v > 0.0 && v.is_finite())) {
+                return Err(format!(
+                    "--axis {key:?}: scale factors must be positive and finite"
+                ));
+            }
             let (stem, idx_spec) = match sel.split_once('#') {
                 None => (sel.trim(), None),
                 Some((st, is)) => (st.trim(), Some(is)),
@@ -1139,6 +1147,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                                 pose.dy = if files[*file].base_y[h] < 0.0 { -v } else { v }
                             }
                             PoseParam::TrimDeg => pose.trim = v.to_radians(),
+                            PoseParam::Scale => pose.scale = v,
                         }
                     }
                 }
