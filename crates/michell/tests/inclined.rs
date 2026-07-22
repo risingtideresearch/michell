@@ -185,6 +185,34 @@ fn catamaran_gz_beats_metacentric() {
     assert!((plus + minus).abs() < 1e-6 * plus.abs(), "not antisymmetric: {plus} vs {minus}");
 }
 
+/// A curved (Wigley) section is approximated by the outline polygon, so the
+/// inclined hydrostatics must converge as the band resolution rises — and the
+/// default grid must already be close to converged.
+#[test]
+fn curved_section_converges() {
+    let hull = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    // z = 0 is the Wigley waterline; use it as the band top and rise slightly
+    // so the hull is partially immersed, then heel it.
+    let body = Body::new(hull.surface().clone(), 0.0, 0.0).unwrap();
+    let heel = 8.0f64.to_radians();
+    let (pose, plat) = (HullPose::default(), Platform::default());
+    let at = |g| body_inclined_hydro(&body, -0.15, &pose, &plat, heel, g).unwrap();
+
+    let reference = at(InclinedGrid { stations: 401, band: 401 });
+    let default = at(InclinedGrid::default());
+    let coarse = at(InclinedGrid { stations: 41, band: 21 });
+
+    let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-9);
+    // The default grid is essentially converged; the coarse grid is close but
+    // measurably worse — confirming genuine convergence, not a fluke.
+    assert!(rel(default.volume, reference.volume) < 1e-3, "default V {} vs {}", default.volume, reference.volume);
+    assert!((default.tcb - reference.tcb).abs() < 1e-3, "default tcb {} vs {}", default.tcb, reference.tcb);
+    assert!(
+        rel(default.volume, reference.volume) <= rel(coarse.volume, reference.volume) + 1e-9,
+        "default not better than coarse"
+    );
+}
+
 /// Refining the grid drives the volume toward the exact wall-sided value.
 #[test]
 fn resolution_converges() {

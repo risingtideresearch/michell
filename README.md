@@ -286,9 +286,8 @@ platform rotation — the demihulls change immersion and shift transversely (an
 ama digs in as the other lifts clear, going dry) while each half-breadth hull
 stays upright about its own centreplane, so the superposition still holds. Wave
 and total resistance, the interference factor, effective power, and — with a
-**vcg** control — the righting arm GZ and moment update live (GZ carries a
-first-order metacentric correction for the hull-local tilt the half-breadth
-model can't rotate). Same physicality caveat as `wake`: the field is faded ahead
+**vcg** control — the righting arm GZ and moment update live (GZ is the true
+inclined-waterplane cut of the heeled fleet, form stability included). Same physicality caveat as `wake`: the field is faded ahead
 of the aft-most stern. The server is dependency-free, in the spirit of the rest
 of the crate. Build with `--release`; a debug build runs the integrals ~40×
 slower and the viewer warns about it.
@@ -343,12 +342,13 @@ column reflects the heel's wave-making, not just the reposition. It requires a
 `weight` axis and a `vcg` axis (centre of gravity in metres above the design
 floatplane — itself sweepable for KG studies); with `vcg` present every row
 carries `gz` (righting arm, m; positive rights the boat) and `rm` (righting
-moment, N·m). The inter-hull buoyancy transfer — the dominant multihull
-mechanism — is exact; each hull's *own* heel cannot be represented by a
-symmetric half-breadth surface and enters metacentrically, as
-`sin φ·(I_T/∇ − KB)` per hull, so a single slender monohull reduces to
-`GZ = GM_T·sin φ` and hard-chine form stability at large heel is
-underestimated.
+moment, N·m). `gz` is the **true inclined-waterplane cut** of the heeled fleet
+(each section clipped by the tilted free surface — see the `inclined` module),
+so both the inter-hull buoyancy transfer *and* each hull's own form stability
+are integrated exactly — a genuinely nonlinear GZ curve, with the deck-edge
+knee where topsides down-flood. (Sinkage and trim are still balanced on the
+upright reposition, so `dry`/`volume` read as before; only the righting arm uses
+the tilted cut.)
 
 ```json
   "sweep": [
@@ -465,9 +465,14 @@ optional `centerplane`.
 - `float::solve_equilibrium[_bodies|_with]` — hydrostatic sinkage/pitch
   balance for a mass + LCG load case, over IGES fleets, body assemblies, or
   any custom situate closure.
-- `float::heel_poses` + `float::righting_arm` — rigid platform heel and the
-  GZ of the re-solved fleet (exact inter-hull transfer, metacentric per-hull
-  term).
+- `float::solve_equilibrium_heeled` — the same balance at a prescribed heel,
+  reporting the righting arm `gz` from the **true inclined-waterplane cut**
+  (`inclined` module): form stability integrated exactly, not metacentric.
+- `inclined::{body_inclined_hydro, fleet_inclined, fleet_righting_arm}` —
+  displaced volume, centre of buoyancy, and GZ of a heeled body/fleet by
+  clipping each section polygon against the tilted free surface.
+- `float::heel_poses` — the rigid platform heel reposition (used to build the
+  wetted geometry at heel, e.g. for resistance).
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `FreeWaveSpectrum::new(&members, &cond)` — far-field spectrum of a fleet:
   `amplitude(θ)`, `resistance_density(θ)` (dR_w/dθ), and Kelvin-wake

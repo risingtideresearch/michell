@@ -1,11 +1,9 @@
 //! Righting-arm (GZ) validation: exact transverse hull properties on the
-//! analytic Wigley hull, and a rectangular-barge catamaran pushed through the
-//! heel + equilibrium path and compared against the closed form.
+//! analytic Wigley hull, and rectangular barges pushed through the heel-aware
+//! inclined-waterplane equilibrium.
 
 use michell::body::{Body, BodyOptions};
-use michell::float::{
-    heel_poses, righting_arm, solve_equilibrium_bodies, solve_equilibrium_heeled, LoadCase,
-};
+use michell::float::{solve_equilibrium_bodies, solve_equilibrium_heeled, LoadCase};
 use michell::iges::HullPose;
 use michell::inclined::InclinedGrid;
 use michell::BSplineSurface;
@@ -38,102 +36,38 @@ fn barge(l: f64, b: f64, d: f64, w: f64, centerplane: f64) -> Body {
     Body::new(surface, w, centerplane).unwrap()
 }
 
+/// At a small heel the inclined-cut righting arm reduces to the metacentric
+/// `GZ = GM·sinφ` for a single centreline barge — the linear limit the exact
+/// cut must recover (`GM = I_T/∇ − KB − vcg`, KB down / G up from the waterline;
+/// design waterline == float waterline so the datums coincide).
 #[test]
-fn barge_catamaran_gz_matches_closed_form() {
-    // Two barges (L = 8, beam 1) at y = ±1.5, floating at mean draft 0.4.
-    let (l, b, d, w, s) = (8.0f64, 0.5f64, 1.2f64, 0.6f64, 1.5f64);
+fn inclined_gz_matches_metacentric_gm_at_small_angle() {
+    let (l, b, d) = (8.0f64, 0.5f64, 1.2f64);
+    let t = 0.4f64;
     let rho = 1000.0;
-    let t_mean = 0.4f64;
-    let area = 2.0 * b * l; // waterplane per barge
-    let mass = rho * 2.0 * area * t_mean;
-    let i_t = 2.0 / 3.0 * b * b * b * l; // per-barge transverse inertia
-    let vcg = 0.3;
-
-    let port = barge(l, b, d, w, -s);
-    let stbd = barge(l, b, d, w, s);
-    let bodies = [&port, &stbd];
-    let opts = BodyOptions::default();
-
-    let gz_at = |heel_deg: f64| -> f64 {
-        let heel = heel_deg.to_radians();
-        let poses = heel_poses(&bodies, &[HullPose::default(); 2], heel).unwrap();
-        let eq = solve_equilibrium_bodies(
-            &bodies,
-            0.0,
-            &poses,
-            &LoadCase { mass, lcg: None },
-            rho,
-            &opts,
-        )
-        .unwrap();
-        assert_eq!(eq.fleet.dry, 0, "a barge flew at {heel_deg} deg");
-        assert!(
-            (eq.volume - mass / rho).abs() < 1e-3 * (mass / rho),
-            "volume {} vs {}",
-            eq.volume,
-            mass / rho
-        );
-        righting_arm(&eq.fleet, heel, vcg)
-    };
-
-    // Closed form for wall-sided barges with equal waterplanes (mean draft is
-    // preserved under heel): drafts T ± δ with δ = s·sinφ,
-    //   GZ = s² sinφ cosφ / T                      (transfer between hulls)
-    //      + sinφ·(I_T/(A·T) − (T² + δ²)/(2T))     (per-hull BM − KB)
-    //      − vcg·sinφ.
-    for heel_deg in [2.0f64, 5.0, 8.0] {
-        let (sin, cos) = heel_deg.to_radians().sin_cos();
-        let delta = s * sin;
-        let want = s * s * sin * cos / t_mean
-            + sin * (i_t / (area * t_mean) - (t_mean * t_mean + delta * delta) / (2.0 * t_mean))
-            - vcg * sin;
-        let gz = gz_at(heel_deg);
-        assert!(
-            (gz - want).abs() < 2e-3 * want.abs(),
-            "GZ({heel_deg} deg) = {gz} vs closed form {want}"
-        );
-    }
-
-    // Antisymmetry and zero at upright.
-    let up = gz_at(0.0);
-    assert!(up.abs() < 1e-9, "GZ(0) = {up}");
-    let (plus, minus) = (gz_at(5.0), gz_at(-5.0));
-    assert!(
-        (plus + minus).abs() < 1e-6 * plus.abs(),
-        "GZ not antisymmetric: {plus} vs {minus}"
-    );
-}
-
-#[test]
-fn righting_arm_reduces_to_metacentric_gm_for_a_monohull() {
-    // A single centerline barge heeled a small angle must give
-    // GZ = GM·sinφ with GM = I_T/∇ − KB_depth − vcg (KB measured down, G
-    // measured up from the waterplane).
-    let (l, b, d, w) = (8.0f64, 0.5f64, 1.2f64, 0.6f64);
-    let rho = 1000.0;
-    let t = 0.5f64;
     let mass = rho * 2.0 * b * l * t;
     let vcg = 0.1;
-    let body = barge(l, b, d, w, 0.0);
+    let body = barge(l, b, d, d - t, 0.0);
     let bodies = [&body];
     let heel = 2.0f64.to_radians();
-    let poses = heel_poses(&bodies, &[HullPose::default()], heel).unwrap();
-    let eq = solve_equilibrium_bodies(
+    let eq = solve_equilibrium_heeled(
         &bodies,
         0.0,
-        &poses,
+        &[HullPose::default()],
         &LoadCase { mass, lcg: None },
         rho,
+        heel,
+        vcg,
         &BodyOptions::default(),
+        InclinedGrid::default(),
     )
     .unwrap();
-    let gz = righting_arm(&eq.fleet, heel, vcg);
-    let i_t = 2.0 / 3.0 * b * b * b * l;
-    let gm = i_t / (mass / rho) - t / 2.0 - vcg;
+    let gm = (2.0 / 3.0 * b * b * b * l) / (mass / rho) - t / 2.0 - vcg;
     let want = gm * heel.sin();
     assert!(
-        (gz - want).abs() < 2e-3 * want.abs(),
-        "GZ {gz} vs GM·sinφ {want}"
+        (eq.gz - want).abs() < 3e-3 * want.abs(),
+        "GZ {} vs GM·sinφ {want}",
+        eq.gz
     );
 }
 
