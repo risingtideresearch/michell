@@ -19,6 +19,7 @@ enum PoseParam {
     Dz,
     Spread,
     TrimDeg,
+    Scale,
 }
 
 enum Target {
@@ -146,6 +147,14 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .and_then(Json::as_f64)
                 .unwrap_or(0.0)
                 .to_radians();
+            if let Some(s) = pz.get("scale").and_then(Json::as_f64) {
+                if !(s > 0.0 && s.is_finite()) {
+                    return Err(format!(
+                        "hull {id:?} pose scale must be positive and finite; got {s}"
+                    ));
+                }
+                base.scale = s;
+            }
         }
         eprintln!(
             "hull {id}: {file} (centerplane {:.4}, base y {:.4})",
@@ -248,8 +257,14 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             "dz" => PoseParam::Dz,
             "spread" => PoseParam::Spread,
             "trim" => PoseParam::TrimDeg,
+            "scale" => PoseParam::Scale,
             other => return Err(format!("unknown pose param {other:?}")),
         };
+        if pp == PoseParam::Scale && values.iter().any(|&v| !(v > 0.0 && v.is_finite())) {
+            return Err(format!(
+                "sweep entry targeting {targets:?}: scale factors must be positive and finite"
+            ));
+        }
         let idxs: Vec<usize> = targets
             .iter()
             .map(|t| {
@@ -420,6 +435,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                             PoseParam::TrimDeg => {
                                 pose.trim = hulls[hi].base.trim + v.to_radians()
                             }
+                            PoseParam::Scale => pose.scale = hulls[hi].base.scale * v,
                         }
                     }
                 }

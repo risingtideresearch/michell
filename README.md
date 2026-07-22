@@ -317,7 +317,8 @@ are hydrostatic (no speed-dependent squat).
     { "target": "weight", "range": [1800, 2600], "step": 200 },
     { "target": "lcg", "value": -5.8 },
     { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
-    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] }
+    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] },
+    { "target": "vaka", "param": "scale", "values": [0.9, 1.0, 1.1] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
   "options": { "rel_tol": 1e-5, "form_factor": 0.05 }
@@ -328,9 +329,13 @@ Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
 (`ms` | `knots` | `froude`). Pose params: `dx`, `dy`, `dz` (+down),
 `spread` (outboard, sign follows each hull's side), `trim` (degrees,
-+ raises the +x end); a target list moves several hulls as one coupled
-axis. Hull files load relative to the manifest. A flag-based sweep over raw
-IGES (`--axis`, `--float`) remains for one-liners.
++ raises the +x end), `scale` (uniform size factor, `> 0`; grows or shrinks
+the hull in place — length, beam, and draft all scale together — about its
+design waterline and centre, so `1.0` leaves it unchanged and displacement
+goes as the cube); a target list moves several hulls as one coupled
+axis. A `scale` in a hull's base `pose` sets its built size, and a `scale`
+axis multiplies that. Hull files load relative to the manifest. A flag-based
+sweep over raw IGES (`--axis`, `--float`) remains for one-liners.
 
 **GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
 platform rigidly about the centerline at the design floatplane and re-solves

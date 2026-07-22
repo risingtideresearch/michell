@@ -700,7 +700,7 @@ pub struct ImportedHull {
 /// Per-hull **design** pose: how a hull is mounted relative to the platform.
 /// Applied to the source geometry before the waterline clip, so all fields
 /// change the wetted shape exactly (affine maps of the control nets).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HullPose {
     /// Longitudinal shift [m].
     pub dx: f64,
@@ -710,9 +710,27 @@ pub struct HullPose {
     pub dz: f64,
     /// Pitch rotation [rad]; positive raises the hull's +x end.
     pub trim: f64,
+    /// Uniform geometric scale factor (default `1.0`). Applied before every
+    /// other field, about the hull's design waterline and transverse centre
+    /// and the `pivot_x` station, so it grows or shrinks the whole hull in
+    /// place (length, beam, and draft all scale together). Must be positive.
+    pub scale: f64,
     /// Pivot station for `trim` (default: the hull's x mid); the pivot height
     /// is the base waterline.
     pub pivot_x: Option<f64>,
+}
+
+impl Default for HullPose {
+    fn default() -> Self {
+        HullPose {
+            dx: 0.0,
+            dy: 0.0,
+            dz: 0.0,
+            trim: 0.0,
+            scale: 1.0,
+            pivot_x: None,
+        }
+    }
 }
 
 /// Whole-platform **state**: rigid-body sinkage and pitch, normally solved
@@ -1032,12 +1050,25 @@ pub fn apply_pose(
 }
 
 /// The transform [`SourceFleet::situate`] applies before clipping at the
-/// effective waterline `waterline_z + sinkage`: design trim about
+/// effective waterline `waterline_z + sinkage`: uniform `scale` about
+/// `(pose.pivot_x, y-mid, waterline_z)`, then design trim about
 /// `(pose.pivot_x, waterline_z)`, then the `dx`/`dy`/`dz` shifts
 /// (`dz` positive lowers the hull), then platform pitch about
 /// `(platform.pivot_x, waterline_z + sinkage)`.
 fn pose_ctrl(surfs: &mut [NurbsSurface3], waterline_z: f64, pose: &HullPose, platform: &Platform) {
     let wl = waterline_z + platform.sinkage;
+    if pose.scale != 1.0 {
+        let s = pose.scale;
+        let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+        let py = ctrl_y_mid(surfs);
+        for surf in surfs.iter_mut() {
+            for p in surf.ctrl.iter_mut() {
+                p[0] = px + s * (p[0] - px);
+                p[1] = py + s * (p[1] - py);
+                p[2] = waterline_z + s * (p[2] - waterline_z);
+            }
+        }
+    }
     if pose.trim != 0.0 {
         let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
         let (sin, cos) = pose.trim.sin_cos();
@@ -1081,6 +1112,19 @@ fn ctrl_x_mid(surfs: &[NurbsSurface3]) -> f64 {
         for p in &s.ctrl {
             lo = lo.min(p[0]);
             hi = hi.max(p[0]);
+        }
+    }
+    0.5 * (lo + hi)
+}
+
+/// Transverse mid of a hull's control net — the pivot `scale` shrinks toward,
+/// so a symmetric hull scales about its centreplane and stays in place.
+fn ctrl_y_mid(surfs: &[NurbsSurface3]) -> f64 {
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for s in surfs {
+        for p in &s.ctrl {
+            lo = lo.min(p[1]);
+            hi = hi.max(p[1]);
         }
     }
     0.5 * (lo + hi)

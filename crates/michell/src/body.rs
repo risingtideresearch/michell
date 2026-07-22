@@ -138,6 +138,12 @@ impl Body {
                 "need at least 8 stations and 6 waterlines to sample".into(),
             ));
         }
+        if !(pose.scale > 0.0 && pose.scale.is_finite()) {
+            return Err(Error::InvalidInput(format!(
+                "hull scale must be a positive, finite factor; got {}",
+                pose.scale
+            )));
+        }
         // Water surface position in assembly coordinates (down-positive):
         // sinking the platform (positive) puts the water ABOVE the design
         // floatplane, i.e. at negative z_a.
@@ -250,11 +256,15 @@ impl Body {
                     continue;
                 }
                 let (xb, zb) = (xb.clamp(x0, x1), zb.clamp(0.0, depth));
-                grid[s] = self.surface.eval(xb, zb).max(0.0);
+                // The half-beam scales with the hull; the water→body map (hence
+                // the Jacobian below) already carries the reciprocal, so the
+                // chain rule leaves one factor of `scale` on both slopes.
+                let sc = pose.scale;
+                grid[s] = self.surface.eval(xb, zb).max(0.0) * sc;
                 let fxb = self.surface.eval_deriv(xb, zb, 1, 0);
                 let fzb = self.surface.eval_deriv(xb, zb, 0, 1);
-                fx[s] = fxb * jxx + fzb * jzx;
-                fz[s] = fxb * jxz + fzb * jzz;
+                fx[s] = (fxb * jxx + fzb * jzx) * sc;
+                fz[s] = (fxb * jxz + fzb * jzz) * sc;
             }
         }
 
@@ -299,8 +309,12 @@ fn rot_down(x: f64, zd: f64, px: f64, pzd: f64, sin: f64, cos: f64) -> (f64, f64
 
 impl FrameMap {
     fn body_to_water(&self, xb: f64, zb: f64) -> (f64, f64) {
-        let mut x = xb;
-        let mut z = zb - self.waterline;
+        // Uniform scale first, about the pivot station and the design
+        // waterline (z = 0 in this design frame): the hull grows or shrinks
+        // in place, then the pose/state transforms position it.
+        let sc = self.pose.scale;
+        let mut x = self.pose_pivot_x + sc * (xb - self.pose_pivot_x);
+        let mut z = sc * (zb - self.waterline);
         if self.pose.trim != 0.0 {
             let (s, c) = self.pose.trim.sin_cos();
             (x, z) = rot_down(x, z, self.pose_pivot_x, 0.0, s, c);
@@ -327,6 +341,10 @@ impl FrameMap {
             let (s, c) = (-self.pose.trim).sin_cos();
             (x, z) = rot_down(x, z, self.pose_pivot_x, 0.0, s, c);
         }
+        // Undo the uniform scale (inverse of `body_to_water`'s first step).
+        let sc = self.pose.scale;
+        let x = self.pose_pivot_x + (x - self.pose_pivot_x) / sc;
+        let z = z / sc;
         (x, z + self.waterline)
     }
 }
@@ -345,6 +363,7 @@ mod tests {
                 dz: -0.07,
                 trim: 0.03,
                 pivot_x: Some(3.0),
+                ..Default::default()
             },
             pose_pivot_x: 3.0,
             platform: Platform {
@@ -465,6 +484,106 @@ mod tests {
             let a = sunk.body_to_water(xb, zb);
             let b = lowered.body_to_water(xb, zb);
             assert!((a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn scale_maps_roundtrip() {
+        // A scaled frame map must still invert exactly.
+        let map = FrameMap {
+            waterline: 0.4,
+            pose: HullPose {
+                dx: 1.2,
+                dz: -0.07,
+                trim: 0.03,
+                scale: 1.7,
+                pivot_x: Some(3.0),
+                ..Default::default()
+            },
+            pose_pivot_x: 3.0,
+            platform: Platform {
+                sinkage: 0.05,
+                trim: -0.02,
+                pivot_x: 5.5,
+            },
+            zw: -0.11,
+        };
+        for &(xb, zb) in &[(0.0, 0.0), (2.7, 0.31), (10.0, 0.65), (-4.0, 1.0)] {
+            let (xw, zw) = map.body_to_water(xb, zb);
+            let (xb2, zb2) = map.water_to_body(xw, zw);
+            assert!((xb - xb2).abs() < 1e-12 && (zb - zb2).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn scale_is_geometrically_similar() {
+        // Uniform scale must reproduce a geometrically similar hull: length
+        // and draft go as s, wetted area as s^2, displaced volume as s^3.
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let body = Body::new(hull.surface().clone(), 0.4, 0.0).unwrap();
+        let opts = BodyOptions::default();
+        let base = body
+            .situate(0.0, &HullPose::default(), &Platform::default(), &opts)
+            .unwrap()
+            .expect("wet");
+        for &s in &[0.5, 1.5, 2.0] {
+            let scaled = body
+                .situate(
+                    0.0,
+                    &HullPose {
+                        scale: s,
+                        ..Default::default()
+                    },
+                    &Platform::default(),
+                    &opts,
+                )
+                .unwrap()
+                .expect("wet");
+            assert_eq!(scaled.band_exceeded, 0);
+            let (b, c) = (&base.hull, &scaled.hull);
+            let rel = |got: f64, want: f64| (got - want).abs() <= 1e-4 * want.abs().max(1e-9);
+            assert!(
+                rel(c.length(), s * b.length()),
+                "s={s}: length {} vs {}",
+                c.length(),
+                s * b.length()
+            );
+            assert!(
+                rel(c.draft(), s * b.draft()),
+                "s={s}: draft {} vs {}",
+                c.draft(),
+                s * b.draft()
+            );
+            assert!(
+                rel(c.wetted_surface(), s * s * b.wetted_surface()),
+                "s={s}: wetted {} vs {}",
+                c.wetted_surface(),
+                s * s * b.wetted_surface()
+            );
+            assert!(
+                rel(c.displaced_volume(), s * s * s * b.displaced_volume()),
+                "s={s}: volume {} vs {}",
+                c.displaced_volume(),
+                s * s * s * b.displaced_volume()
+            );
+        }
+    }
+
+    #[test]
+    fn nonpositive_scale_is_rejected() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let body = Body::new(hull.surface().clone(), 0.4, 0.0).unwrap();
+        for bad in [0.0, -1.0, f64::NAN] {
+            let r = body.situate(
+                0.0,
+                &HullPose {
+                    scale: bad,
+                    ..Default::default()
+                },
+                &Platform::default(),
+                &BodyOptions::default(),
+            );
+            assert!(r.is_err(), "scale {bad} should be rejected");
         }
     }
 }
