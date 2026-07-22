@@ -297,11 +297,14 @@ Cartesian product of axes — every varying quantity (speed, hull loads,
 waterline, hull poses) is an axis, with fixed values as single-valued axes.
 Each hull carries its own **load** — `mass` [kg] and a centre of gravity
 (`lcg` longitudinal, `vcg` metres above the design floatplane) in the hull's
-own frame. The **fleet CG is never set directly**: it is always the
-mass-weighted sum of the per-hull loads, carried through each hull's pose, so
-mounting a hull moves its weight with it (`dx`/`dz` translate its CG, design
-`trim` rotates it) and the platform CG tracks the geometry automatically. An
-unspecified `lcg` defaults to the hull's midship.
+own frame — plus any number of discrete **point loads** (`points`: batteries,
+crew, ballast), each a `mass` at an offset from the hull's centerpoint
+(`dx` forward, `dy` to +y, `dz` **down**). The **fleet CG is never set
+directly**: it is always the mass-weighted sum of every hull load and point
+load, carried through each hull's pose, so mounting a hull moves its weight
+with it (`dx`/`dz` translate each CG, design `trim` rotates it) and the
+platform CG tracks the geometry automatically. An unspecified `lcg` defaults
+to the hull's midship.
 
 When the fleet carries mass it runs in **equilibrium mode**: each point's
 platform sinkage (and pitch, from the derived LCG) is solved by a Newton
@@ -318,7 +321,11 @@ All poses are hydrostatic (no speed-dependent squat).
   "fluid": "seawater",
   "hulls": [
     { "id": "vaka",  "file": "boat-center.hull",
-      "load": { "mass": 1800, "lcg": -5.8, "vcg": 1.1 } },
+      "load": { "mass": 1800, "lcg": -5.8, "vcg": 1.1 },
+      "points": [
+        { "id": "battery", "mass": 200, "dx": 1.0, "dz": 0.6 },
+        { "id": "crew",    "mass": 160, "dx": -2.0, "dz": -0.4 }
+      ] },
     { "id": "ama_s", "file": "boat-starboard.hull",
       "load": { "mass": 120, "vcg": 0.4 } },
     { "id": "ama_p", "file": "boat-port.hull", "pose": { "trim": 0.5 },
@@ -327,6 +334,7 @@ All poses are hydrostatic (no speed-dependent squat).
   "sweep": [
     { "target": "speed", "unit": "knots", "range": [4, 10], "step": 0.5 },
     { "target": "vaka", "param": "mass", "range": [0, 800], "step": 200 },
+    { "target": "battery", "param": "dz", "values": [0.0, 0.6, 1.2] },
     { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
     { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] }
   ],
@@ -337,13 +345,15 @@ All poses are hydrostatic (no speed-dependent squat).
 
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
-(`ms` | `knots` | `froude`). Per-hull params target hull ids and **offset the
-hull's base value** — pose: `dx`, `dy`, `dz` (+down), `spread` (outboard, sign
-follows each hull's side), `trim` (degrees, + raises the +x end); load:
-`mass`, `lcg`, `vcg`. A target list moves several hulls as one coupled axis
-(e.g. sweep both amas' `mass` together to vary payload symmetrically). Hull
-files load relative to the manifest. A flag-based sweep over raw IGES
-(`--axis`, `--float`) remains for one-liners.
+(`ms` | `knots` | `froude`). Axis targets name hull ids or point-load ids
+(all ids are unique) and **offset the base value** — for a **hull**, pose:
+`dx`, `dy`, `dz` (+down), `spread` (outboard, sign follows each hull's side),
+`trim` (degrees, + raises the +x end), and load: `mass`, `lcg`, `vcg`; for a
+**point load**, `mass`, `dx`, `dy`, `dz` (relative to the hull centerpoint).
+A target list moves several targets as one coupled axis (e.g. sweep both amas'
+`mass` together, or two symmetric ballast points), but must be all hulls or
+all points. Hull files load relative to the manifest. A flag-based sweep over
+raw IGES (`--axis`, `--float`) remains for one-liners.
 
 **GZ curves**: a `heel` axis (degrees, + puts the +y side down) heels the
 platform rigidly about the centerline at the design floatplane and re-solves

@@ -165,7 +165,8 @@ SWEEPS
   michell sweep study.json      preferred: a JSON manifest referencing
                                 full-band .hull bodies (from `michell loft`),
                                 with speed/waterline axes, per-hull load
-                                (mass/lcg/vcg) and pose axes, and a derived
+                                (mass/lcg/vcg), point loads (mass at an
+                                offset from a hull), pose axes, and a derived
                                 fleet CG — see the README for the schema; a
                                 heel axis (with hull mass) re-solves the
                                 equilibrium at each angle and emits gz/rm

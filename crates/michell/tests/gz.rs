@@ -4,7 +4,7 @@
 
 use michell::body::{Body, BodyOptions};
 use michell::float::{
-    fleet_cg, solve_equilibrium_bodies, solve_equilibrium_heeled, HullLoad, LoadCase,
+    fleet_cg, solve_equilibrium_bodies, solve_equilibrium_heeled, HullLoad, LoadCase, PointLoad,
 };
 use michell::iges::HullPose;
 use michell::inclined::InclinedGrid;
@@ -51,6 +51,7 @@ fn fleet_cg_is_mass_weighted_and_tracks_pose() {
         mass,
         lcg: 5.0,
         vcg: 0.3,
+        points: vec![],
     };
 
     // Symmetric equal masses: transverse cancels, vertical/longitudinal shared.
@@ -93,6 +94,32 @@ fn fleet_cg_is_mass_weighted_and_tracks_pose() {
     // Massless hulls drop out entirely.
     let cg = fleet_cg(&bodies, &[load(0.0), load(1000.0)], &[HullPose::default(); 2]);
     assert!((cg.tcg - 1.5).abs() < 1e-9 && (cg.mass - 1000.0).abs() < 1e-9);
+
+    // A point load adds a mass at an offset from the hull centerpoint (midship
+    // x=5, centreplane y=0, floatplane): dz is +down, so it lowers the CG.
+    let mut hl = load(1000.0); // structural: 1000 kg at (5, 0, +0.3)
+    hl.points.push(PointLoad {
+        mass: 1000.0,
+        dx: 1.0,  // → local x = 5 + 1 = 6
+        dy: 0.4,  // → transverse offset +0.4
+        dz: 0.8,  // +down → vcg = −0.8
+    });
+    let cg = fleet_cg(&[&center], &[hl.clone()], &[HullPose::default()]);
+    assert!((cg.mass - 2000.0).abs() < 1e-9, "mass {}", cg.mass);
+    assert!((cg.lcg - 5.5).abs() < 1e-9, "lcg {}", cg.lcg); // (5+6)/2
+    assert!((cg.tcg - 0.2).abs() < 1e-9, "tcg {}", cg.tcg); // (0+0.4)/2
+    assert!((cg.vcg - (-0.25)).abs() < 1e-9, "vcg {}", cg.vcg); // (0.3−0.8)/2
+
+    // A point load rides with the hull's pose (dx shifts it too).
+    let cg = fleet_cg(
+        &[&center],
+        &[hl],
+        &[HullPose {
+            dx: 2.0,
+            ..HullPose::default()
+        }],
+    );
+    assert!((cg.lcg - 7.5).abs() < 1e-9, "lcg {}", cg.lcg); // 5.5 + 2
 }
 
 /// At a small heel the inclined-cut righting arm reduces to the metacentric
