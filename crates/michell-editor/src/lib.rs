@@ -4,6 +4,7 @@
 
 pub mod jsonio;
 pub mod model;
+pub mod preview;
 pub mod runner;
 pub mod ui;
 pub mod validate;

@@ -10,6 +10,7 @@ name = "michell-editor"
 path = "src/main.rs"
 
 [dependencies]
+michell = { path = "../michell" }
 eframe = "0.29"
 egui = "0.29"
 rfd = "0.15"

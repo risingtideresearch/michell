@@ -7,6 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use michell_editor::model::{HullSpec, Manifest};
+use michell_editor::preview::Preview;
 use michell_editor::runner::{self, Job, JobKind};
 use michell_editor::validate::Level;
 use michell_editor::{jsonio, ui, validate};
@@ -56,6 +57,17 @@ impl StlUnits {
             StlUnits::Ft => "ft",
         }
     }
+
+    /// Metres per file unit.
+    fn scale(self) -> f32 {
+        match self {
+            StlUnits::Mm => 0.001,
+            StlUnits::Cm => 0.01,
+            StlUnits::M => 1.0,
+            StlUnits::In => 0.0254,
+            StlUnits::Ft => 0.3048,
+        }
+    }
 }
 
 /// Parameters for an in-progress "import & loft" the user is filling in.
@@ -67,6 +79,10 @@ struct ImportDialog {
     units: StlUnits,
     prefix: String,
     error: Option<String>,
+    /// Transverse silhouette of the source, for placing the waterline/band.
+    preview: Result<Preview, String>,
+    /// Which handle is being dragged in the preview (0 = DWL, 1 = band top).
+    dragging: Option<u8>,
 }
 
 struct EditorApp {
@@ -236,6 +252,7 @@ impl EditorApp {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "hull".into());
+        let preview = Preview::load(&src, is_stl);
         self.import = Some(ImportDialog {
             source: src,
             is_stl,
@@ -244,6 +261,8 @@ impl EditorApp {
             units: StlUnits::Mm,
             prefix,
             error: None,
+            preview,
+            dragging: None,
         });
     }
 
@@ -621,6 +640,15 @@ impl EditorApp {
                             ui.text_edit_singleline(&mut d.prefix);
                             ui.end_row();
                         });
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "forward view — drag the lines to set the waterline and band",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                    draw_geometry_view(ui, d);
                     if let Some(e) = &d.error {
                         ui.colored_label(ui.visuals().error_fg_color, e);
                     }
@@ -672,4 +700,140 @@ impl EditorApp {
                     });
             });
     }
+}
+
+/// A forward (body-plan) view of the import source: the geometry's transverse
+/// silhouette with draggable design-waterline and band lines. Dragging writes
+/// back into the dialog's `waterline`/`band` fields (and typing moves the
+/// lines, since they are read from those fields each frame).
+fn draw_geometry_view(ui: &mut egui::Ui, d: &mut ImportDialog) {
+    use egui::{Align2, Color32, FontId, Pos2, Sense, Stroke, Vec2};
+
+    let preview = match &d.preview {
+        Ok(p) => p,
+        Err(e) => {
+            ui.weak(format!("(no preview: {e})"));
+            return;
+        }
+    };
+
+    let scale = if d.is_stl { d.units.scale() } else { 1.0 };
+    let dwl = d.waterline.trim().parse::<f32>().unwrap_or(0.0);
+    let keel = preview.z_min * scale;
+    let band_blank = d.band.trim().is_empty();
+    // Blank band → the loft's default of half the design draft; show it so the
+    // user sees (and can grab) the effective band.
+    let band = if band_blank {
+        (0.5 * (dwl - keel)).max(0.0)
+    } else {
+        d.band.trim().parse::<f32>().unwrap_or(0.0).max(0.0)
+    };
+    let band_top = dwl + band;
+
+    // Display bounds, expanded to include both lines, with padding.
+    let ymin0 = preview.y_min * scale;
+    let ymax0 = preview.y_max * scale;
+    let zmin0 = (preview.z_min * scale).min(dwl);
+    let zmax0 = (preview.z_max * scale).max(band_top);
+    let ypad = ((ymax0 - ymin0) * 0.08).max(1e-3);
+    let zpad = ((zmax0 - zmin0) * 0.08).max(1e-3);
+    let (ymin, ymax) = (ymin0 - ypad, ymax0 + ypad);
+    let (zmin, zmax) = (zmin0 - zpad, zmax0 + zpad);
+
+    let (resp, painter) = ui.allocate_painter(Vec2::new(400.0, 240.0), Sense::click_and_drag());
+    let rect = resp.rect;
+    painter.rect_filled(rect, 2.0, ui.visuals().extreme_bg_color);
+
+    // y (transverse) → x across the width; z (up) → screen y, inverted.
+    let x_of = |y: f32| rect.left() + (y - ymin) / (ymax - ymin) * rect.width();
+    let y_of = |z: f32| rect.bottom() - (z - zmin) / (zmax - zmin) * rect.height();
+    let z_of = |py: f32| zmin + (rect.bottom() - py) / rect.height() * (zmax - zmin);
+
+    let weak = ui.visuals().weak_text_color();
+    for p in &preview.pts {
+        painter.circle_filled(
+            Pos2::new(x_of(p[0] * scale), y_of(p[1] * scale)),
+            1.0,
+            weak.gamma_multiply(0.9),
+        );
+    }
+    if 0.0 >= ymin && 0.0 <= ymax {
+        let x0 = x_of(0.0);
+        painter.line_segment(
+            [Pos2::new(x0, rect.top()), Pos2::new(x0, rect.bottom())],
+            Stroke::new(1.0_f32, weak.gamma_multiply(0.4)),
+        );
+    }
+
+    let dwl_col = Color32::from_rgb(70, 150, 240);
+    let band_col = Color32::from_rgb(90, 190, 110);
+    painter.line_segment(
+        [
+            Pos2::new(rect.left(), y_of(dwl)),
+            Pos2::new(rect.right(), y_of(dwl)),
+        ],
+        Stroke::new(2.0_f32, dwl_col),
+    );
+    let band_w: f32 = if band_blank { 1.0 } else { 2.0 };
+    let band_a: f32 = if band_blank { 0.6 } else { 1.0 };
+    painter.line_segment(
+        [
+            Pos2::new(rect.left(), y_of(band_top)),
+            Pos2::new(rect.right(), y_of(band_top)),
+        ],
+        Stroke::new(band_w, band_col.gamma_multiply(band_a)),
+    );
+    painter.text(
+        Pos2::new(rect.left() + 4.0, y_of(dwl) - 2.0),
+        Align2::LEFT_BOTTOM,
+        format!("DWL  z = {dwl:.3}"),
+        FontId::proportional(11.0),
+        dwl_col,
+    );
+    painter.text(
+        Pos2::new(rect.left() + 4.0, y_of(band_top) - 2.0),
+        Align2::LEFT_BOTTOM,
+        format!(
+            "band top  z = {band_top:.3}   (band {band:.3}{})",
+            if band_blank { ", default" } else { "" }
+        ),
+        FontId::proportional(11.0),
+        band_col,
+    );
+
+    // Grab the nearer handle on press, then track the pointer.
+    if resp.drag_started() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let near_band = (pos.y - y_of(band_top)).abs();
+            let near_dwl = (pos.y - y_of(dwl)).abs();
+            d.dragging = Some(if near_band < near_dwl { 1 } else { 0 });
+        }
+    }
+    if resp.dragged() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let z = z_of(pos.y);
+            match d.dragging {
+                Some(1) => d.band = fmt3((z - dwl).max(0.0)),
+                _ => d.waterline = fmt3(z),
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        d.dragging = None;
+    }
+}
+
+/// Format a coordinate for a text field: up to 3 decimals, trailing zeros
+/// trimmed.
+fn fmt3(v: f32) -> String {
+    let mut s = format!("{v:.3}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    s
 }
