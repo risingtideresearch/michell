@@ -481,11 +481,10 @@ optional `centerplane`.
 
 ## Roadmap
 
-1. Parallel sweep evaluation (each equilibrium point is independent).
-2. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
+1. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
    path.
-3. Transom closure, Python bindings.
-4. Longitudinal wave cuts against published Wigley measurements; wake
+2. Transom closure, Python bindings.
+3. Longitudinal wave cuts against published Wigley measurements; wake
    animation over a speed range.
 
 ## References
