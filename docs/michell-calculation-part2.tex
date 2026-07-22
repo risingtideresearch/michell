@@ -1,0 +1,489 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\emergencystretch=3em
+
+\newcommand{\ii}{\mathrm{i}}
+\newcommand{\dd}{\,\mathrm{d}}
+\newcommand{\Rw}{R_{\mathrm{w}}}
+\DeclareMathOperator{\sech}{sech}
+
+\title{Beyond the Symmetric Thin Ship:\\
+Asymmetry, Centreplane Lifting, and Heel\\
+\large (Part~II of the \texttt{michell} calculation notes)}
+\author{\texttt{michell}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Part~I documented the classical Michell wave-resistance integral for a hull
+that is symmetric about its centerplane: a thin \emph{thickness} distribution
+radiating a \emph{source} wave system, evaluated exactly per B-spline knot span.
+This second note documents the three extensions built on top of that kernel, all
+of which reuse the Part~I machinery essentially unchanged. First, a
+\emph{port/starboard-asymmetric} hull is decomposed into a symmetric thickness
+part and an antisymmetric \emph{camber} part; the camber radiates a centreplane
+\emph{y-dipole} wave system that superposes on the source system without a cross
+term. Second, the dipole \emph{magnitude} --- which no pointwise boundary
+condition fixes, because the doublet density is a non-local functional of the
+camber slope --- is obtained honestly by \emph{solving} a centreplane
+lifting-surface problem with a horseshoe vortex lattice, replacing the crude
+strip closure $\mu = 2U f_a$. Third, a \emph{heeled} hull is handled by tilting
+the source centreplane, which turns the vertical decay rate \emph{complex} and
+otherwise leaves the exact per-span kernel untouched. Throughout, section
+references point at the Rust source. All notation and constants are inherited
+from Part~I; in particular $\nu = g/U^2$, $k_x = \nu\lambda$,
+$\kappa = \nu\lambda^2$, and $F(\lambda) = I + \ii J$ is the source free-wave
+amplitude of Part~I, Eq.~(inner).
+\end{abstract}
+
+\tableofcontents
+
+\section{Why the symmetric integral is not enough}
+\label{sec:motivation}
+
+The classical Michell integral of Part~I represents the hull by a single-valued
+half-breadth $f(x,z)\ge 0$ and a sheet of \emph{sources} of strength
+$\sigma = 2U\,\partial f/\partial x$ on the centerplane. That model is blind to
+three physically important situations:
+
+\begin{enumerate}
+  \item \textbf{Port/starboard asymmetry.} A hull whose two sides differ ---
+        a cambered demihull, an asymmetric catamaran float, a hull at a small
+        drift (yaw) angle --- carries a transverse \emph{lift} in addition to
+        its thickness. Its wave system has an antisymmetric component that a
+        single half-breadth cannot express.
+  \item \textbf{The lifting closure.} The strength of the antisymmetric
+        (dipole) system is \emph{not} fixed pointwise by the body boundary
+        condition, unlike the source strength. Getting its magnitude right
+        requires solving a lifting-surface integral equation.
+  \item \textbf{Heel.} A hull rolled about its longitudinal axis is asymmetric
+        \emph{relative to the horizontal free surface}, even if it is
+        geometrically symmetric about its own centreplane. Its keel swings off
+        the earth-vertical plane and it can no longer be written as
+        port/starboard half-beams there.
+\end{enumerate}
+
+The unifying idea is that all three are small perturbations that enter through
+the \emph{same} inner integral and the \emph{same} outer $\theta$-quadrature as
+Part~I. The only new ingredients are (a) a second coefficient field for the
+antisymmetric slope, (b) a real spectral \emph{weight} coupling that field to a
+transverse-wavenumber factor, (c) a linear solve for the lifting density, and
+(d) a complex generalisation of the vertical-decay moment. Table~\ref{tab:map}
+maps each extension to its entry point in the crate.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lll}
+    \toprule
+    Extension & Entry point & Kernel change \\
+    \midrule
+    Asymmetry (strip closure)
+      & \texttt{multihull\_wave\_resistance\_with}
+      & second slope field $\partial f_a/\partial x$ \\
+    Asymmetry (solved lift)
+      & \texttt{asymmetric\_wave\_resistance\_lifting}
+      & centreplane vortex lattice \\
+      & \texttt{multihull\_wave\_resistance\_lifting} & \\
+    Heel
+      & \texttt{heel\_wave\_resistance}
+      & complex vertical decay $\kappa$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{The three extensions and where they attach to the Part~I kernel
+  (\texttt{michell.rs}).}
+  \label{tab:map}
+\end{table}
+
+\section{Decomposition of an asymmetric hull}
+\label{sec:decomp}
+
+An asymmetric hull is built from \emph{two} half-breadth surfaces
+(\texttt{Hull::new\_asymmetric}, \texttt{hull.rs}): a starboard side
+$y = +f_+(x,z)\ge 0$ and a port side $y = -f_-(x,z)\le 0$, both stored as
+non-negative magnitudes. The two surfaces must share identical degrees and knot
+vectors --- only their control nets may differ --- so that both live on the same
+grid of knot spans. On that shared parametrisation the hull splits linearly into
+a \emph{symmetric} (thickness) part and an \emph{antisymmetric} (camber) part,
+\begin{equation}
+  f_{\mathrm{sym}}(x,z) = \tfrac12\bigl(f_+ + f_-\bigr),
+  \qquad
+  f_a(x,z) = \tfrac12\bigl(f_+ - f_-\bigr).
+  \label{eq:split}
+\end{equation}
+Because a B-spline is linear in its control net, \eqref{eq:split} is applied
+directly to the control points: $P^{\mathrm{sym}}_{ij} = \tfrac12(P^{+}_{ij} +
+P^{-}_{ij})$ and $P^{a}_{ij} = \tfrac12(P^{+}_{ij} - P^{-}_{ij})$. The symmetric
+net is itself a valid non-negative half-breadth (a mean of two non-negative
+nets), so the base hull is constructed from it and \emph{every} validated
+symmetric quantity of Part~I --- volume, LCB/VCB, the source slope field
+$c_{ab}$ --- is reused verbatim. The antisymmetric net produces a second
+per-span slope field
+\begin{equation}
+  \frac{\partial f_a}{\partial x}(x,z)
+    = \sum_{a,b} c^{a}_{ab}\,(x-x_0)^a (z-z_0)^b,
+  \qquad
+  \text{(\texttt{fx\_a\_coeff}),}
+  \label{eq:fxa}
+\end{equation}
+computed by exactly the same \texttt{compute\_fx\_coeff} routine as the source
+field, and stored with the identical flattened layout. When $f_+ \equiv f_-$ the
+antisymmetric net is zero and the hull is bit-for-bit the symmetric
+\texttt{Hull::new} of Part~I.
+
+Two integrated quantities do \emph{not} reduce to twice the mean and are
+corrected for the two sides separately: the wetted surface area and the
+centreplane transverse (waterplane) inertia both see $f_+$ and $f_-$
+individually. Volume, LCB/VCB, and waterplane area depend only on the sum
+$f_+ + f_- = 2 f_{\mathrm{sym}}$ and are already correct from the base hull.
+
+\section{The centreplane dipole wave system}
+\label{sec:dipole}
+
+\subsection{Source plus dipole}
+
+The symmetric part $f_{\mathrm{sym}}$ radiates the classical source system with
+the Part~I free-wave amplitude
+\begin{equation}
+  F(\lambda) = \iint \frac{\partial f_{\mathrm{sym}}}{\partial x}\,
+    e^{-\kappa z}\, e^{\,\ii k_x x}\dd x\dd z,
+  \qquad k_x = \nu\lambda,\; \kappa = \nu\lambda^2.
+\end{equation}
+The antisymmetric part $f_a$ is a \emph{camber} distribution on the centreplane.
+Physically it is a sheet of transverse (\,$y$-normal\,) \emph{doublets} of density
+$\mu(x,z)$: the potential jump across the centreplane. Such a doublet sheet
+radiates a free wave carrying \emph{one extra factor of the transverse
+wavenumber} $k_y = \nu\lambda\sqrt{\lambda^2-1}$ relative to a source of the same
+integrated strength,
+\begin{equation}
+  A_d(\theta) = \ii\,k_y \iint \mu(x,z)\, e^{-\kappa z}\, e^{\,\ii k_x x}
+    \dd x\dd z.
+  \label{eq:Ad-raw}
+\end{equation}
+Everything downstream is a matter of fixing $\mu$ and reducing
+\eqref{eq:Ad-raw} to a weight on a familiar integral.
+
+\subsection{The strip closure and the real dipole weight}
+\label{sec:stripweight}
+
+The crudest way to fix the density is the \emph{strip closure} $\mu = 2U f_a$
+--- the direct antisymmetric analogue of Michell's source strength
+$\sigma = 2U\,\partial f_{\mathrm{sym}}/\partial x$. Substituting it into
+\eqref{eq:Ad-raw} and integrating by parts in $x$, using that $f_a$ closes
+(vanishes) at bow and stern so the boundary term drops,
+\begin{equation}
+  \iint f_a\, e^{-\kappa z} e^{\,\ii k_x x}\dd x\dd z
+   = \frac{\ii}{\nu\lambda}
+     \underbrace{\iint \frac{\partial f_a}{\partial x}\,
+       e^{-\kappa z} e^{\,\ii k_x x}\dd x\dd z}_{\textstyle G(\lambda)},
+  \label{eq:ibp}
+\end{equation}
+which introduces the companion amplitude $G(\lambda)$ --- the \emph{same} inner
+integral as the source, but over the antisymmetric slope field \eqref{eq:fxa}.
+The two factors of $\ii$ (one from the dipole, one from the integration by
+parts) collapse to a \emph{real} weight in this crate's amplitude units
+(dividing by $2U$),
+\begin{equation}
+  \boxed{\;
+  A_d(\lambda) = -\,w(\lambda)\,G(\lambda),
+  \qquad
+  w(\lambda) = C_{\mathrm{dip}}\,\sqrt{\lambda^2 - 1}. \;}
+  \label{eq:dipoleweight}
+\end{equation}
+This is \texttt{dipole\_weight} in the source; the closure constant
+$C_{\mathrm{dip}} = 1$ (\texttt{DIPOLE\_WEIGHT\_C}) is the value self-consistent
+with the source normalisation under the strip closure. The weight vanishes as
+$\lambda\to 1$ ($\theta\to 0$): a wave running dead ahead carries no transverse
+wavenumber and is blind to side-to-side asymmetry, so the whole dipole
+contribution is fed by the diverging (large-$\lambda$) part of the spectrum.
+
+\paragraph{Warning on magnitude.} The \emph{structure} of
+\eqref{eq:dipoleweight} --- the $\sqrt{\lambda^2-1}$ weight, the odd-in-$\theta$
+parity, the additive separation below --- is exact. The overall
+\emph{constant} $C_{\mathrm{dip}}$ is not. Unlike the source strength, which the
+boundary condition fixes pointwise (a source sheet's normal-velocity
+\emph{jump} equals its local strength), the doublet density is fixed by the
+\emph{mean} of the two-sided normal velocities, and a doublet sheet's mean
+normal velocity is a hypersingular (finite-part) integral of $\mu$. So $\mu$ is
+genuinely \emph{non-local} in $\partial f_a/\partial x$: no exact pointwise
+closure exists, and $\mu = 2U f_a$ is only the crudest strip estimate. Getting
+the magnitude right is the subject of Section~\ref{sec:lifting}.
+
+\subsection{Additive resistance and the $\theta$-parity argument}
+\label{sec:parity}
+
+Combining the two systems, hull member $j$ (at fleet offset $\Delta x_j$,
+transverse position $y_j$) contributes to the $\pm\theta$ wave systems the
+amplitudes
+\begin{equation}
+  A_{\pm,j} = \bigl(F_j \mp w\,G_j\bigr)\,
+    \exp\!\bigl[\ii\,(k_x\Delta x_j \pm k_y y_j)\bigr],
+\end{equation}
+and the resistance integrand is the mean of the two signed systems, exactly as
+for a symmetric fleet in Part~I:
+\begin{equation}
+  \Rw = \frac{4\rho g^2}{\pi U^2}\int_0^{\pi/2}
+    \tfrac12\bigl(|A_+|^2 + |A_-|^2\bigr)\,\sec^3\theta\dd\theta,
+  \label{eq:Rasym}
+\end{equation}
+with $A_\pm = \sum_j A_{\pm,j}$ (\texttt{amp\_sq} in
+\texttt{multihull\_wave\_resistance\_with}). The source amplitude $F$ is
+\emph{even} in $\theta$ and the dipole term $wG$ is \emph{odd} (the $+\theta$
+system carries $-wG$, the $-\theta$ system $+wG$). Their cross term therefore
+integrates to zero over the symmetric Kelvin fan, and for a single hull
+\eqref{eq:Rasym} separates cleanly:
+\begin{equation}
+  \boxed{\;\Rw = R_{\mathrm{source}}(f_{\mathrm{sym}})
+    + R_{\mathrm{dipole}}(f_a).\;}
+  \label{eq:additive}
+\end{equation}
+A symmetric hull ($f_a\equiv 0$) recovers classical Michell exactly. For a fleet
+the dipole amplitudes superpose and interfere with the source amplitudes through
+the placement phases, so an asymmetric-demihull catamaran's asymmetry and its
+demihull interference are handled together in one spectrum.
+
+\paragraph{Kernel cost.} The source and dipole amplitudes share a single pass of
+the $z$-moments (Part~I, Eqs.~(N)): only the $x$-span accumulation is repeated
+against the second coefficient array. \texttt{InnerIntegral::eval\_pair} returns
+$(F, G)$ together, so an asymmetric evaluation costs barely more than a
+symmetric one.
+
+\section{The centreplane lifting solve (``level~2'')}
+\label{sec:lifting}
+
+To replace the strip constant with a physically grounded density we
+\emph{solve} the lifting-surface problem for $\mu(x,z)$. The centreplane
+$x\in[0,L]$, $z\in[0,T]$ carries the camber surface $f_a$, whose streamwise
+slope $\partial f_a/\partial x$ is the downwash the transverse doublet sheet must
+produce --- the direct analogue of a wing's camber-slope condition.
+
+\subsection{Two-dimensional proving ground}
+\label{sec:2d}
+
+Before the delicate 3D free-surface solve, the crate builds and validates its
+2D ancestor --- classical thin-airfoil theory (\texttt{lifting.rs}) --- which
+exercises the same machinery: discretising a lifting sheet, imposing the Kutta
+condition, and recovering the loading. A thin airfoil of unit chord with
+camber-line slope $\dd\eta/\dd x$ is represented by a bound-vortex sheet
+$\gamma(x)$ satisfying the Cauchy singular integral equation
+\begin{equation}
+  \frac{1}{2\pi}\;\text{p.v.}\!\!\int_0^1
+    \frac{\gamma(\xi)}{x - \xi}\dd\xi
+    = U\Bigl(\alpha - \frac{\dd\eta}{\dd x}(x)\Bigr).
+\end{equation}
+Two independent solvers cross-check each other and closed-form results:
+\begin{itemize}
+  \item \textbf{Glauert Fourier series} (\texttt{glauert}), with
+        $x = \tfrac12(1-\cos\theta)$ and
+        $\gamma/U = 2\bigl[A_0\frac{1+\cos\theta}{\sin\theta} +
+        \sum_{k\ge1}A_k\sin k\theta\bigr]$; the $\sin k\theta$ terms vanish at
+        both edges so the Kutta condition is built in, and
+        $C_L = \pi(2A_0 + A_1)$. A flat plate gives $A_0 = \alpha$, hence the
+        canonical $C_L = 2\pi\alpha$.
+  \item \textbf{Lumped-vortex lattice} (\texttt{solve\_vortex\_lattice}) with
+        the Pistolesi $\tfrac14$--$\tfrac34$ rule: a point vortex at each
+        panel's quarter-point, flow tangency collocated at its three-quarter
+        point, which enforces the Kutta condition automatically. This is the
+        desingularised 2D form of the hypersingular kernel the 3D solve must
+        integrate.
+\end{itemize}
+In hull terms the camber line is the antisymmetric half-beam $f_a$ at a
+waterline strip and the forcing is $-U\,\partial f_a/\partial x$ (no separate
+incidence). The solved loading integrates to the doublet density
+$\mu(x) = \int_0^x \gamma\dd\xi$ --- exactly the quantity the free-wave
+amplitude carries.
+
+\subsection{Three-dimensional horseshoe vortex lattice}
+\label{sec:3d}
+
+The 3D engine (\texttt{lifting3d.rs}) generalises the lattice: each panel carries
+a \emph{horseshoe vortex} --- a bound segment at the quarter-chord plus two
+trailing legs running downstream to $+\infty$ along $\hat{x}$ --- and flow
+tangency is collocated at the three-quarter-chord point. The trailing legs make
+the Kutta condition automatic. Assembling the normal-wash influence
+coefficients $A_{ij} = (\mathbf{v}_{j\to i}\cdot\hat{n}_i)$ from the
+Biot--Savart law (finite-segment and semi-infinite closed forms, after Katz \&
+Plotkin) and solving
+\begin{equation}
+  A\,\Gamma = b, \qquad b_i = -\,\mathbf{U}_\infty\cdot\hat{n}_i,
+\end{equation}
+gives the bound circulation $\Gamma$ on every panel. Lift follows from
+Kutta--Joukowski, $C_L = 2\sum_j \Gamma_j\,\Delta y_j / S$. The engine is
+validated on a flat rectangular wing against the two exact asymptotic limits
+that bracket the lift-curve slope: $\dd C_L/\dd\alpha\to 2\pi$ as
+$\mathrm{AR}\to\infty$ (2D limit) and $\to \tfrac{\pi}{2}\mathrm{AR}$ as
+$\mathrm{AR}\to 0$ (R.T.\ Jones slender-wing limit), with the Prandtl
+lifting-line estimate $2\pi/(1+2/\mathrm{AR})$ in between.
+
+\subsection{Free surface as a rigid wall (double body)}
+\label{sec:doublebody}
+
+The hull-specific step (\texttt{centerplane.rs}) applies this lattice to the
+\emph{vertical} centreplane. In the low-Froude near field the free surface
+$z=0$ behaves as a rigid wall ($\partial\phi/\partial z = 0$), consistent with
+how Michell's source strength is set on the double-body flow. This is enforced
+by \textbf{reflecting the centreplane about $z=0$} with the same circulation
+sign, so the bound vortices run continuously through the waterline. The
+consequences:
+\begin{itemize}
+  \item the waterline acts as a wing \emph{root} (maximum loading) and the keel
+        $z=T$ as a free \emph{tip} (loading relieved to zero);
+  \item a surface-piercing lifting surface of draft $T$ therefore behaves as a
+        wing of span $2T$ --- the classical \emph{effective-aspect-ratio
+        doubling}, checked in the tests against a full wing of span $2T$ to
+        $\sim0.1\%$ at $\alpha = \SI{3}{\degree}$.
+\end{itemize}
+The camber enters through the panel \emph{normal}
+$\hat{n} = (-f_{a,x}, 1, 0)/\sqrt{1 + f_{a,x}^2}$, so the freestream stays
+$(1,0,0)$ and the solve is called at zero incidence. Solving for $\Gamma$ and
+accumulating from the leading edge gives the doublet density
+$\mu(x,z) = \int\gamma$ on the physical half $z\ge 0$, together with a
+side-force coefficient $C_Y = 2\sum_{\mathrm{phys}}\Gamma\,\Delta z/(LT)$.
+
+\subsection{From the solved density to the wave amplitude}
+\label{sec:solvedamp}
+
+The solved density feeds the dipole free-wave amplitude by midpoint quadrature
+over the panel grid (\texttt{doublet\_free\_wave\_amplitude}, each sample
+carrying cell area $\Delta x\,\Delta z$),
+\begin{equation}
+  G_\mu(\lambda) = \iint \frac{\mu(x,z)}{U}\,
+    e^{-\kappa z}\, e^{\,\ii k_x x}\dd x\dd z,
+\end{equation}
+from which the dipole amplitude is
+\begin{equation}
+  \boxed{\;
+  A_d(\lambda) = \ii\,\tfrac12\,k_y\,G_\mu(\lambda),
+  \qquad k_y = \nu\lambda\sqrt{\lambda^2-1}. \;}
+  \label{eq:Ad-solved}
+\end{equation}
+Note that here $G_\mu$ integrates $\mu$ \emph{directly} (not the slope), so no
+integration by parts is applied and the amplitude stays imaginary --- contrast
+the strip form \eqref{eq:dipoleweight}, where the by-parts step made it real.
+The two paths share \emph{one} normalisation: substituting the strip closure
+$\mu/U = 2 f_a$ into \eqref{eq:Ad-solved} and integrating by parts via
+\eqref{eq:ibp} reproduces $A_d = -\sqrt{\lambda^2-1}\,G$ exactly. The factor
+$\tfrac12$ is precisely what makes the closure $\mu/U = 2 f_a$ collapse onto the
+$C_{\mathrm{dip}} = 1$ weight. The solved $\mu$ has a different
+chordwise/vertical \emph{shape} than $2 f_a$, giving a dipole of the same order
+but a speed-dependent ratio; for a 2D flat plate $\mu_{\mathrm{lift}} /
+\mu_{\mathrm{strip}} = \pi/2$.
+
+The single-hull entry point \texttt{asymmetric\_wave\_resistance\_lifting} and
+the fleet form \texttt{multihull\_wave\_resistance\_lifting} solve each
+asymmetric member's centreplane \emph{once} (up front, not per $\lambda$), then
+superpose the source amplitude $F_j$ and the solved dipole $A_{d,j}$ with the
+member's placement phase, exactly as in \eqref{eq:Rasym}. The dipole phase is
+re-centred to the hull midpoint (the solver works on $x\in[0,L]$) so it shares
+the source's origin. This is the far-field coupling: each member's lifting
+problem is solved independently with its own free-surface image, and their
+dipole \emph{wave} systems interfere through the superposition --- so an
+asymmetric-demihull catamaran's demihull interference is captured. Near-field
+lifting cross-induction between close demihulls is \emph{not} (that would need
+one coupled lifting solve over all centreplanes at once). The default grid is
+$n_x = 48$ streamwise $\times\ n_z = 16$ vertical panels (\texttt{LiftingGrid}).
+
+\section{Heeled hulls}
+\label{sec:heel}
+
+A hull heeled by an angle $\varphi$ about its longitudinal axis is asymmetric
+relative to the horizontal free surface, but its keel swings off the
+earth-vertical centreplane, so it cannot be written as port/starboard half-beams
+there. Thin-ship theory instead keeps the sources on the ship's \emph{own}
+(now tilted) centreplane: a strip at ship-depth $z$ sits at earth depth
+$z\cos\varphi$ and transverse offset $-z\sin\varphi$. The transverse offset
+contributes a transverse-wavenumber phase $e^{-\ii k_y\,(-z\sin\varphi)}$ to the
+kernel, which combines with the earth-vertical decay $e^{-\nu\lambda^2
+z\cos\varphi}$ into a single \textbf{complex vertical decay}
+\begin{equation}
+  \boxed{\;
+  \kappa = \nu\lambda^2\cos\varphi
+    \;+\; \ii\,\nu\lambda\sqrt{\lambda^2-1}\,\sin\varphi
+    \;=\; \nu\lambda^2\cos\varphi + \ii\,k_y\sin\varphi. \;}
+  \label{eq:heelkappa}
+\end{equation}
+The imaginary part is the same transverse-wavenumber coupling as the asymmetric
+dipole, arising here purely from geometry.
+
+This is the \emph{only} change to the Part~I kernel. The $x$-oscillation moments
+$M_a$ and the per-span accumulation are identical; only the $z$-moment
+$N_b = \int_0^{h_z} Z^b e^{-\kappa Z}\dd Z$ becomes complex, evaluated by
+\texttt{exp\_moments\_complex} --- the \emph{same} series and integration-by-parts
+recurrence as the real routine (Part~I, Eqs.~(Nrec)--(Nseries)), promoted to
+$\mathbb{C}$ with $\mathrm{Re}\,\kappa\ge 0$ so the decay never grows. The real
+path is left entirely untouched, so $\varphi = 0$ reproduces
+\texttt{wave\_resistance} exactly (\texttt{HeelInner} in \texttt{michell.rs}).
+
+The tilt makes the amplitude $F$ depend on the \emph{sign} of $\theta$ (through
+the $\pm$ in $k_y\sin\varphi$), so the resistance averages the two signed
+systems,
+\begin{equation}
+  \Rw = \frac{4\rho g^2}{\pi U^2}\int_0^{\pi/2}
+    \tfrac12\bigl(|F_+|^2 + |F_-|^2\bigr)\,\sec^3\theta\dd\theta,
+\end{equation}
+where $F_\pm$ uses $\kappa$ with $\pm\ii k_y\sin\varphi$. The result is
+\emph{even} in $\varphi$: port and starboard heel are mirror images. Because the
+tilt spreads the centreplane transversely by up to $T|\sin\varphi|$, the
+outer-quadrature panels are sized with an effective transverse half-extent
+$y_{1/2} = T|\sin\varphi|$ to resolve the heel-induced oscillation.
+
+This captures the asymmetric \emph{wave-making} of the tilted thickness
+distribution --- the leading heel effect. It does \emph{not} include the lifting
+side-force that a heeled-and-yawed (drifting) hull develops; that would enter as
+a separate forcing into the centreplane lifting solve of
+Section~\ref{sec:lifting}.
+
+\section{Data-flow summary}
+\label{sec:dataflow2}
+
+\begin{center}
+\begin{tabular}{r c l}
+  \toprule
+  \multicolumn{3}{c}{\textbf{Asymmetry --- strip closure}} \\
+  \midrule
+  two nets $P^\pm_{ij}$ & $\longrightarrow$ & $f_{\mathrm{sym}}, f_a$ (Eq.~\ref{eq:split}); slope fields $c_{ab}, c^a_{ab}$ \\
+  $c_{ab}, c^a_{ab}$ & $\longrightarrow$ & $(F, G)$ together (\texttt{eval\_pair}) \\
+  $G$, weight $w=\sqrt{\lambda^2-1}$ & $\longrightarrow$ & dipole $A_d = -wG$ (Eq.~\ref{eq:dipoleweight}) \\
+  $\tfrac12(|F{-}wG|^2 + |F{+}wG|^2)$ & $\longrightarrow$ & outer $\theta$-quadrature \;$\Rightarrow\; \Rw = R_{\mathrm{src}} + R_{\mathrm{dip}}$ \\
+  \midrule
+  \multicolumn{3}{c}{\textbf{Asymmetry --- solved lift}} \\
+  \midrule
+  $\partial f_a/\partial x$ on centreplane & $\longrightarrow$ & vortex-lattice solve $\Gamma$ (double body) \\
+  $\Gamma$ & $\longrightarrow$ & doublet density $\mu = \int\gamma$, side force $C_Y$ \\
+  $\mu$ & $\longrightarrow$ & $G_\mu$; dipole $A_d = \ii\tfrac12 k_y G_\mu$ (Eq.~\ref{eq:Ad-solved}) \\
+  $F_j + A_{d,j}$, placements & $\longrightarrow$ & outer $\theta$-quadrature $\Rightarrow \Rw$ \\
+  \midrule
+  \multicolumn{3}{c}{\textbf{Heel}} \\
+  \midrule
+  heel $\varphi$ & $\longrightarrow$ & complex $\kappa$ (Eq.~\ref{eq:heelkappa}) \\
+  $\kappa$ & $\longrightarrow$ & complex $z$-moments $N_b$ (\texttt{exp\_moments\_complex}) \\
+  $\tfrac12(|F_+|^2 + |F_-|^2)$ & $\longrightarrow$ & outer $\theta$-quadrature $\Rightarrow \Rw$ (even in $\varphi$) \\
+  \bottomrule
+\end{tabular}
+\end{center}
+
+\noindent All three extensions share the exact per-span inner kernel and the
+single smooth outer $\theta$-quadrature of Part~I. The only approximations added
+are the strip closure constant $C_{\mathrm{dip}}$ (Section~\ref{sec:stripweight},
+removed by the lifting solve), the panel discretisation of the lifting solve and
+its midpoint quadrature (Section~\ref{sec:lifting}), and --- as in Part~I --- the
+one-dimensional angular quadrature. The wave-pattern (wake) branch of Part~I is
+unchanged: the free-wave elevation grid is still built from the symmetric source
+amplitudes.
+
+\paragraph{References.} Tuck (1989); Dambrine, Pierre \& Rousseaux (2016);
+Tuck, Scullen \& Lazauskas (2001, 2002); Katz \& Plotkin, \emph{Low-Speed
+Aerodynamics} (horseshoe-lattice \texttt{VORTXL}); Glauert, \emph{The Elements of
+Aerofoil and Airscrew Theory}; Kaklis \& Papanikolaou (21st Symp.\ Naval Hydro.,
+Appendix~A, on the hypersingular doublet closure).
+
+\end{document}
