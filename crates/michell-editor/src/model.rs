@@ -1,9 +1,14 @@
 //! The in-memory editing model for a sweep-study manifest. It mirrors the
 //! schema consumed by `michell sweep <study.json>` (see the CLI's
 //! `manifest.rs`), but is shaped for editing rather than for a direct
-//! (de)serialize — axes are a tagged union, and every "one of value / values /
-//! range" choice is an explicit mode so the form can round-trip a partially
-//! filled entry without losing what the user typed.
+//! (de)serialize.
+//!
+//! The schema, in brief: each hull carries a `pose`, a `load` (mass + centre of
+//! gravity), and any number of `points` (discrete masses). A sweep axis is
+//! either the reserved `speed`/`waterline`, or it targets one or more hull ids
+//! (pose/load params) or point-load ids (mass/offset params) and offsets their
+//! base value. Heel is not an axis — it is a roll-up configured under
+//! `options.heel`.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fluid {
@@ -20,15 +25,53 @@ impl Fluid {
     }
 }
 
-/// A hull's base pose. The manifest omits `pose` entirely when it is all
-/// zeros, so `enabled` tracks whether to emit the object.
-#[derive(Clone, Default)]
+/// A hull's base pose. The manifest omits `pose` entirely when it is at rest, so
+/// `enabled` tracks whether to emit the object. `scale` multiplies the built
+/// size (default 1.0); the others are offsets.
+#[derive(Clone)]
 pub struct Pose {
     pub enabled: bool,
     pub dx: f64,
     pub dy: f64,
     pub dz: f64,
     pub trim_deg: f64,
+    pub scale: f64,
+}
+
+impl Default for Pose {
+    fn default() -> Self {
+        Pose {
+            enabled: false,
+            dx: 0.0,
+            dy: 0.0,
+            dz: 0.0,
+            trim_deg: 0.0,
+            scale: 1.0,
+        }
+    }
+}
+
+/// A hull's load: total mass and centre of gravity in the hull's own frame.
+/// `lcg` defaults to the hull's midship (which only the CLI can compute), so it
+/// is written only when `lcg_set`.
+#[derive(Clone, Default)]
+pub struct Load {
+    pub enabled: bool,
+    pub mass: f64,
+    pub lcg_set: bool,
+    pub lcg: f64,
+    pub vcg: f64,
+}
+
+/// A discrete point mass mounted on a hull, offset from its centerpoint
+/// (`dx` forward, `dy` to +y, `dz` down).
+#[derive(Clone, Default)]
+pub struct PointLoad {
+    pub id: String,
+    pub mass: f64,
+    pub dx: f64,
+    pub dy: f64,
+    pub dz: f64,
 }
 
 #[derive(Clone, Default)]
@@ -36,6 +79,8 @@ pub struct HullSpec {
     pub id: String,
     pub file: String,
     pub pose: Pose,
+    pub load: Load,
+    pub points: Vec<PointLoad>,
 }
 
 impl HullSpec {
@@ -44,39 +89,30 @@ impl HullSpec {
     }
 }
 
-/// What an axis drives. `Pose` carries its own target/param; the scalar kinds
-/// map straight onto the reserved manifest targets.
+/// What an axis drives. `Speed`/`Waterline` are reserved global axes; `Hull`
+/// and `Point` target ids and carry their own param.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AxisKind {
     Speed,
-    Weight,
-    Lcg,
-    Vcg,
-    Heel,
     Waterline,
-    Pose,
+    Hull,
+    Point,
 }
 
 impl AxisKind {
-    pub const ALL: [AxisKind; 7] = [
+    pub const ALL: [AxisKind; 4] = [
         AxisKind::Speed,
-        AxisKind::Weight,
-        AxisKind::Lcg,
-        AxisKind::Vcg,
-        AxisKind::Heel,
         AxisKind::Waterline,
-        AxisKind::Pose,
+        AxisKind::Hull,
+        AxisKind::Point,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             AxisKind::Speed => "speed",
-            AxisKind::Weight => "weight",
-            AxisKind::Lcg => "lcg",
-            AxisKind::Vcg => "vcg",
-            AxisKind::Heel => "heel",
             AxisKind::Waterline => "waterline",
-            AxisKind::Pose => "hull pose",
+            AxisKind::Hull => "hull param",
+            AxisKind::Point => "point-load param",
         }
     }
 }
@@ -91,7 +127,6 @@ pub enum SpeedUnit {
 impl SpeedUnit {
     pub const ALL: [SpeedUnit; 3] = [SpeedUnit::Ms, SpeedUnit::Knots, SpeedUnit::Froude];
 
-    /// The token written to the manifest.
     pub fn as_str(self) -> &'static str {
         match self {
             SpeedUnit::Ms => "ms",
@@ -101,31 +136,72 @@ impl SpeedUnit {
     }
 }
 
+/// A parameter swept on a hull target. Pose params offset (or, for `Scale`,
+/// multiply) the base pose; load params offset the base load.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PoseParam {
+pub enum HullParam {
     Dx,
     Dy,
     Dz,
-    Spread,
     Trim,
+    Spread,
+    Scale,
+    Mass,
+    Lcg,
+    Vcg,
 }
 
-impl PoseParam {
-    pub const ALL: [PoseParam; 5] = [
-        PoseParam::Dx,
-        PoseParam::Dy,
-        PoseParam::Dz,
-        PoseParam::Spread,
-        PoseParam::Trim,
+impl HullParam {
+    pub const ALL: [HullParam; 9] = [
+        HullParam::Dx,
+        HullParam::Dy,
+        HullParam::Dz,
+        HullParam::Trim,
+        HullParam::Spread,
+        HullParam::Scale,
+        HullParam::Mass,
+        HullParam::Lcg,
+        HullParam::Vcg,
     ];
 
     pub fn as_str(self) -> &'static str {
         match self {
-            PoseParam::Dx => "dx",
-            PoseParam::Dy => "dy",
-            PoseParam::Dz => "dz",
-            PoseParam::Spread => "spread",
-            PoseParam::Trim => "trim",
+            HullParam::Dx => "dx",
+            HullParam::Dy => "dy",
+            HullParam::Dz => "dz",
+            HullParam::Trim => "trim",
+            HullParam::Spread => "spread",
+            HullParam::Scale => "scale",
+            HullParam::Mass => "mass",
+            HullParam::Lcg => "lcg",
+            HullParam::Vcg => "vcg",
+        }
+    }
+}
+
+/// A parameter swept on a point-load target.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PointParam {
+    Mass,
+    Dx,
+    Dy,
+    Dz,
+}
+
+impl PointParam {
+    pub const ALL: [PointParam; 4] = [
+        PointParam::Mass,
+        PointParam::Dx,
+        PointParam::Dy,
+        PointParam::Dz,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PointParam::Mass => "mass",
+            PointParam::Dx => "dx",
+            PointParam::Dy => "dy",
+            PointParam::Dz => "dz",
         }
     }
 }
@@ -168,9 +244,11 @@ impl Default for ValueSpec {
 pub struct AxisSpec {
     pub kind: AxisKind,
     pub unit: SpeedUnit,
-    /// Hull ids driven by a pose axis (a multi-hull list is a coupled axis).
+    /// Target ids: hull ids for a `Hull` axis, point-load ids for a `Point`
+    /// axis (a multi-id list is a coupled axis). Unused for speed/waterline.
     pub targets: Vec<String>,
-    pub param: PoseParam,
+    pub hull_param: HullParam,
+    pub point_param: PointParam,
     pub values: ValueSpec,
 }
 
@@ -180,13 +258,14 @@ impl AxisSpec {
             kind,
             unit: SpeedUnit::Knots,
             targets: Vec::new(),
-            param: PoseParam::Spread,
+            hull_param: HullParam::Mass,
+            point_param: PointParam::Mass,
             values: ValueSpec::default(),
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Csv,
     Json,
@@ -233,6 +312,28 @@ impl OptField {
     }
 }
 
+/// The heel roll-up config (`options.heel`). Written only when `enabled`; each
+/// field is emitted only when non-empty, else the CLI default applies.
+#[derive(Clone)]
+pub struct Heel {
+    pub enabled: bool,
+    /// Comma-separated heel angles (deg) for the resistance-rise columns.
+    pub resistance_angles: String,
+    pub gz_step: String,
+    pub gz_max: String,
+}
+
+impl Default for Heel {
+    fn default() -> Self {
+        Heel {
+            enabled: false,
+            resistance_angles: "5, 10".into(),
+            gz_step: "2.5".into(),
+            gz_max: "90".into(),
+        }
+    }
+}
+
 /// The `options` object. `samples`/`fit_degree`/`fit_control` are `"NxM"`
 /// strings; the rest are scalars.
 #[derive(Clone)]
@@ -245,6 +346,7 @@ pub struct Options {
     pub gravity: OptField,
     pub rho: OptField,
     pub nu: OptField,
+    pub heel: Heel,
 }
 
 impl Default for Options {
@@ -258,6 +360,7 @@ impl Default for Options {
             gravity: OptField::off("9.80665"),
             rho: OptField::off("1025"),
             nu: OptField::off("1.19e-6"),
+            heel: Heel::default(),
         }
     }
 }
@@ -272,7 +375,8 @@ impl Options {
             || self.form_factor.enabled
             || self.gravity.enabled
             || self.rho.enabled
-            || self.nu.enabled)
+            || self.nu.enabled
+            || self.heel.enabled)
     }
 }
 
@@ -296,5 +400,16 @@ impl Default for Manifest {
             output: Output::default(),
             options: Options::default(),
         }
+    }
+}
+
+impl Manifest {
+    /// All point-load ids across every hull (for point-axis target pickers and
+    /// uniqueness checks).
+    pub fn point_ids(&self) -> Vec<String> {
+        self.hulls
+            .iter()
+            .flat_map(|h| h.points.iter().map(|p| p.id.clone()))
+            .collect()
     }
 }

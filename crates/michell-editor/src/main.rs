@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use michell_editor::model::{HullSpec, Manifest, Pose};
+use michell_editor::model::{HullSpec, Manifest};
 use michell_editor::runner::{self, Job, JobKind};
 use michell_editor::validate::Level;
 use michell_editor::{jsonio, ui, validate};
@@ -353,7 +353,7 @@ impl EditorApp {
                     self.manifest.hulls.push(HullSpec {
                         id,
                         file,
-                        pose: Pose::default(),
+                        ..Default::default()
                     });
                 }
                 self.dirty = true;

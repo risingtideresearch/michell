@@ -1,7 +1,7 @@
 //! Load a manifest into the editing model and write it back out. `serde_json`
 //! is used only as the JSON substrate — the mapping to and from the schema is
-//! by hand, because the axis shape is a tagged union that no derive expresses
-//! cleanly.
+//! by hand, because axes are a tagged union and their hull-vs-point kind is
+//! resolved against the declared ids.
 
 use crate::model::*;
 use serde_json::{json, Map, Value};
@@ -40,10 +40,17 @@ fn from_value(doc: &Value) -> Result<Manifest, String> {
         }
     }
 
+    // Axis kind (hull vs point) is resolved against the declared ids.
+    let hull_ids: Vec<String> = hulls.iter().map(|h| h.id.clone()).collect();
+    let point_ids: Vec<String> = hulls
+        .iter()
+        .flat_map(|h| h.points.iter().map(|p| p.id.clone()))
+        .collect();
+
     let mut axes = Vec::new();
     if let Some(arr) = obj.get("sweep").and_then(Value::as_array) {
         for a in arr {
-            axes.push(axis_from(a)?);
+            axes.push(axis_from(a, &hull_ids, &point_ids)?);
         }
     }
 
@@ -84,6 +91,7 @@ fn hull_from(h: &Value) -> Result<HullSpec, String> {
         .get("file")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("hull {id:?} needs a \"file\""))?;
+
     let mut pose = Pose::default();
     if let Some(p) = h.get("pose") {
         pose.enabled = true;
@@ -91,16 +99,47 @@ fn hull_from(h: &Value) -> Result<HullSpec, String> {
         pose.dy = p.get("dy").and_then(Value::as_f64).unwrap_or(0.0);
         pose.dz = p.get("dz").and_then(Value::as_f64).unwrap_or(0.0);
         pose.trim_deg = p.get("trim").and_then(Value::as_f64).unwrap_or(0.0);
+        pose.scale = p.get("scale").and_then(Value::as_f64).unwrap_or(1.0);
     }
+
+    let mut load = Load::default();
+    if let Some(l) = h.get("load") {
+        load.enabled = true;
+        load.mass = l.get("mass").and_then(Value::as_f64).unwrap_or(0.0);
+        load.vcg = l.get("vcg").and_then(Value::as_f64).unwrap_or(0.0);
+        if let Some(lcg) = l.get("lcg").and_then(Value::as_f64) {
+            load.lcg_set = true;
+            load.lcg = lcg;
+        }
+    }
+
+    let mut points = Vec::new();
+    if let Some(arr) = h.get("points").and_then(Value::as_array) {
+        for p in arr {
+            let pid = p
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("hull {id:?}: every point load needs an \"id\""))?;
+            points.push(PointLoad {
+                id: pid.to_string(),
+                mass: p.get("mass").and_then(Value::as_f64).unwrap_or(0.0),
+                dx: p.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
+                dy: p.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
+                dz: p.get("dz").and_then(Value::as_f64).unwrap_or(0.0),
+            });
+        }
+    }
+
     Ok(HullSpec {
         id: id.to_string(),
         file: file.to_string(),
         pose,
+        load,
+        points,
     })
 }
 
-fn axis_from(a: &Value) -> Result<AxisSpec, String> {
-    // Target is a string or a list of strings.
+fn axis_from(a: &Value, hull_ids: &[String], point_ids: &[String]) -> Result<AxisSpec, String> {
     let targets: Vec<String> = match a.get("target") {
         Some(Value::String(s)) => vec![s.clone()],
         Some(Value::Array(arr)) => arr
@@ -115,48 +154,64 @@ fn axis_from(a: &Value) -> Result<AxisSpec, String> {
     };
     let param = a.get("param").and_then(Value::as_str);
 
-    let mut axis = if targets.len() == 1 && param.is_none() {
+    // Reserved single-target global axes.
+    if targets.len() == 1 && param.is_none() {
         match targets[0].as_str() {
-            "speed" => AxisSpec::new(AxisKind::Speed),
-            "weight" => AxisSpec::new(AxisKind::Weight),
-            "lcg" => AxisSpec::new(AxisKind::Lcg),
-            "vcg" => AxisSpec::new(AxisKind::Vcg),
-            "heel" => AxisSpec::new(AxisKind::Heel),
-            "waterline" => AxisSpec::new(AxisKind::Waterline),
-            // A single hull id with no param is still a pose axis (but then it
-            // needs a param — leave that to the validator).
-            _ => pose_axis(targets, param)?,
+            "speed" => {
+                let mut axis = AxisSpec::new(AxisKind::Speed);
+                axis.unit = match a.get("unit").and_then(Value::as_str).unwrap_or("ms") {
+                    "ms" | "m/s" => SpeedUnit::Ms,
+                    "knots" | "kn" => SpeedUnit::Knots,
+                    "froude" | "fn" => SpeedUnit::Froude,
+                    other => return Err(format!("unknown speed unit {other:?}")),
+                };
+                axis.values = values_from(a)?;
+                return Ok(axis);
+            }
+            "waterline" => {
+                let mut axis = AxisSpec::new(AxisKind::Waterline);
+                axis.values = values_from(a)?;
+                return Ok(axis);
+            }
+            _ => {}
         }
-    } else {
-        pose_axis(targets, param)?
-    };
-
-    if axis.kind == AxisKind::Speed {
-        axis.unit = match a.get("unit").and_then(Value::as_str).unwrap_or("ms") {
-            "ms" | "m/s" => SpeedUnit::Ms,
-            "knots" | "kn" => SpeedUnit::Knots,
-            "froude" | "fn" => SpeedUnit::Froude,
-            other => return Err(format!("unknown speed unit {other:?}")),
-        };
     }
 
-    axis.values = values_from(a)?;
-    Ok(axis)
-}
-
-fn pose_axis(targets: Vec<String>, param: Option<&str>) -> Result<AxisSpec, String> {
-    let mut axis = AxisSpec::new(AxisKind::Pose);
+    // Otherwise a hull- or point-targeted axis: classify by the first target's
+    // id (unknown ids default to a hull axis so the user can fix them).
+    let is_point = point_ids.iter().any(|p| p == &targets[0]);
+    let mut axis = AxisSpec::new(if is_point {
+        AxisKind::Point
+    } else {
+        AxisKind::Hull
+    });
     axis.targets = targets;
     if let Some(p) = param {
-        axis.param = match p {
-            "dx" => PoseParam::Dx,
-            "dy" => PoseParam::Dy,
-            "dz" => PoseParam::Dz,
-            "spread" => PoseParam::Spread,
-            "trim" => PoseParam::Trim,
-            other => return Err(format!("unknown pose param {other:?}")),
-        };
+        if is_point {
+            axis.point_param = match p {
+                "mass" => PointParam::Mass,
+                "dx" => PointParam::Dx,
+                "dy" => PointParam::Dy,
+                "dz" => PointParam::Dz,
+                other => return Err(format!("unknown point-load param {other:?}")),
+            };
+        } else {
+            axis.hull_param = match p {
+                "dx" => HullParam::Dx,
+                "dy" => HullParam::Dy,
+                "dz" => HullParam::Dz,
+                "trim" => HullParam::Trim,
+                "spread" => HullParam::Spread,
+                "scale" => HullParam::Scale,
+                "mass" => HullParam::Mass,
+                "lcg" => HullParam::Lcg,
+                "vcg" => HullParam::Vcg,
+                other => return Err(format!("unknown hull param {other:?}")),
+            };
+        }
     }
+    let _ = hull_ids;
+    axis.values = values_from(a)?;
     Ok(axis)
 }
 
@@ -222,6 +277,20 @@ fn options_from(o: Option<&Value>) -> Options {
     set_num(&mut opts.gravity, o.get("gravity").and_then(Value::as_f64));
     set_num(&mut opts.rho, o.get("rho").and_then(Value::as_f64));
     set_num(&mut opts.nu, o.get("nu").and_then(Value::as_f64));
+
+    if let Some(h) = o.get("heel") {
+        opts.heel.enabled = true;
+        if let Some(arr) = h.get("resistance_angles").and_then(Value::as_array) {
+            let nums: Vec<String> = arr.iter().filter_map(Value::as_f64).map(fmt_num).collect();
+            opts.heel.resistance_angles = nums.join(", ");
+        }
+        if let Some(s) = h.get("gz_step").and_then(Value::as_f64) {
+            opts.heel.gz_step = fmt_num(s);
+        }
+        if let Some(s) = h.get("gz_max").and_then(Value::as_f64) {
+            opts.heel.gz_max = fmt_num(s);
+        }
+    }
     opts
 }
 
@@ -270,9 +339,9 @@ fn hull_to(h: &HullSpec) -> Value {
     let mut o = Map::new();
     o.insert("id".into(), json!(h.id));
     o.insert("file".into(), json!(h.file));
+
     if h.pose.enabled {
         let mut p = Map::new();
-        // Emit only the non-zero components to keep the file tidy.
         if h.pose.dx != 0.0 {
             p.insert("dx".into(), json!(h.pose.dx));
         }
@@ -285,39 +354,93 @@ fn hull_to(h: &HullSpec) -> Value {
         if h.pose.trim_deg != 0.0 {
             p.insert("trim".into(), json!(h.pose.trim_deg));
         }
+        if h.pose.scale != 1.0 {
+            p.insert("scale".into(), json!(h.pose.scale));
+        }
         o.insert("pose".into(), Value::Object(p));
     }
+
+    if h.load.enabled {
+        let mut l = Map::new();
+        l.insert("mass".into(), num_value(h.load.mass));
+        if h.load.lcg_set {
+            l.insert("lcg".into(), num_value(h.load.lcg));
+        }
+        if h.load.vcg != 0.0 {
+            l.insert("vcg".into(), num_value(h.load.vcg));
+        }
+        o.insert("load".into(), Value::Object(l));
+    }
+
+    if !h.points.is_empty() {
+        let pts: Vec<Value> = h
+            .points
+            .iter()
+            .map(|p| {
+                let mut po = Map::new();
+                po.insert("id".into(), json!(p.id));
+                po.insert("mass".into(), num_value(p.mass));
+                if p.dx != 0.0 {
+                    po.insert("dx".into(), json!(p.dx));
+                }
+                if p.dy != 0.0 {
+                    po.insert("dy".into(), json!(p.dy));
+                }
+                if p.dz != 0.0 {
+                    po.insert("dz".into(), json!(p.dz));
+                }
+                Value::Object(po)
+            })
+            .collect();
+        o.insert("points".into(), Value::Array(pts));
+    }
+
     Value::Object(o)
 }
 
 fn axis_to(a: &AxisSpec) -> Result<Value, String> {
     let mut o = Map::new();
-    match a.kind {
-        AxisKind::Pose => {
-            if a.targets.is_empty() {
-                return Err("a hull-pose axis needs at least one target hull".into());
-            }
-            if a.targets.len() == 1 {
-                o.insert("target".into(), json!(a.targets[0]));
-            } else {
-                o.insert("target".into(), json!(a.targets));
-            }
-            o.insert("param".into(), json!(a.param.as_str()));
-        }
+    let label: String = match a.kind {
         AxisKind::Speed => {
             o.insert("target".into(), json!("speed"));
             o.insert("unit".into(), json!(a.unit.as_str()));
+            "speed".into()
         }
-        kind => {
-            o.insert("target".into(), json!(kind.label()));
+        AxisKind::Waterline => {
+            o.insert("target".into(), json!("waterline"));
+            "waterline".into()
         }
-    }
-    write_values(&mut o, &a.values, a.kind)?;
+        AxisKind::Hull => {
+            if a.targets.is_empty() {
+                return Err("a hull-param axis needs at least one target hull".into());
+            }
+            insert_targets(&mut o, &a.targets);
+            o.insert("param".into(), json!(a.hull_param.as_str()));
+            a.hull_param.as_str().into()
+        }
+        AxisKind::Point => {
+            if a.targets.is_empty() {
+                return Err("a point-load axis needs at least one target point".into());
+            }
+            insert_targets(&mut o, &a.targets);
+            o.insert("param".into(), json!(a.point_param.as_str()));
+            a.point_param.as_str().into()
+        }
+    };
+    write_values(&mut o, &a.values, &label)?;
     Ok(Value::Object(o))
 }
 
-fn write_values(o: &mut Map<String, Value>, v: &ValueSpec, kind: AxisKind) -> Result<(), String> {
-    let ctx = |what: &str| format!("{} axis: {}", kind.label(), what);
+fn insert_targets(o: &mut Map<String, Value>, targets: &[String]) {
+    if targets.len() == 1 {
+        o.insert("target".into(), json!(targets[0]));
+    } else {
+        o.insert("target".into(), json!(targets));
+    }
+}
+
+fn write_values(o: &mut Map<String, Value>, v: &ValueSpec, label: &str) -> Result<(), String> {
+    let ctx = |what: &str| format!("{label} axis: {what}");
     match v.mode {
         ValueMode::Scalar => {
             let n = parse_num(&v.scalar).map_err(|e| ctx(&format!("value {e}")))?;
@@ -371,6 +494,28 @@ fn options_to(opts: &Options) -> Result<Value, String> {
     put_num(&mut o, "gravity", &opts.gravity)?;
     put_num(&mut o, "rho", &opts.rho)?;
     put_num(&mut o, "nu", &opts.nu)?;
+
+    if opts.heel.enabled {
+        let mut h = Map::new();
+        if !opts.heel.resistance_angles.trim().is_empty() {
+            let angles = parse_list(&opts.heel.resistance_angles)
+                .map_err(|e| format!("options.heel.resistance_angles: {e}"))?;
+            h.insert(
+                "resistance_angles".into(),
+                Value::Array(angles.into_iter().map(num_value).collect()),
+            );
+        }
+        if !opts.heel.gz_step.trim().is_empty() {
+            let s =
+                parse_num(&opts.heel.gz_step).map_err(|e| format!("options.heel.gz_step {e}"))?;
+            h.insert("gz_step".into(), num_value(s));
+        }
+        if !opts.heel.gz_max.trim().is_empty() {
+            let s = parse_num(&opts.heel.gz_max).map_err(|e| format!("options.heel.gz_max {e}"))?;
+            h.insert("gz_max".into(), num_value(s));
+        }
+        o.insert("heel".into(), Value::Object(h));
+    }
     Ok(Value::Object(o))
 }
 
