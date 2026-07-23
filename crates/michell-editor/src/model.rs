@@ -279,13 +279,30 @@ impl AxisSpec {
 pub enum OutputFormat {
     Csv,
     Json,
+    /// Self-contained binary sweep archive (`.msw`): manifest, hull files, and
+    /// per-row metrics + GZ curve + spectrum in one file, viewable in the app.
+    Binary,
 }
 
 impl OutputFormat {
+    pub const ALL: [OutputFormat; 3] =
+        [OutputFormat::Csv, OutputFormat::Json, OutputFormat::Binary];
+
+    /// The `output.format` token written to the manifest.
     pub fn as_str(self) -> &'static str {
         match self {
             OutputFormat::Csv => "csv",
             OutputFormat::Json => "json",
+            OutputFormat::Binary => "binary",
+        }
+    }
+
+    /// The file extension the format produces.
+    pub fn ext(self) -> &'static str {
+        match self {
+            OutputFormat::Csv => "csv",
+            OutputFormat::Json => "json",
+            OutputFormat::Binary => "msw",
         }
     }
 }
@@ -300,7 +317,10 @@ pub struct Output {
 impl Default for Output {
     fn default() -> Self {
         Output {
-            format: OutputFormat::Csv,
+            // The binary archive is the default: it captures everything a study
+            // produces (metrics, GZ curves, spectra) in one file the app can
+            // open and plot.
+            format: OutputFormat::Binary,
             file: String::new(),
         }
     }

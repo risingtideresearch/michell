@@ -59,7 +59,12 @@ fn from_value(doc: &Value) -> Result<Manifest, String> {
             format: match o.get("format").and_then(Value::as_str).unwrap_or("csv") {
                 "csv" => OutputFormat::Csv,
                 "json" => OutputFormat::Json,
-                other => return Err(format!("output format {other:?}: expected csv or json")),
+                "binary" => OutputFormat::Binary,
+                other => {
+                    return Err(format!(
+                        "output format {other:?}: expected csv, json, or binary"
+                    ))
+                }
             },
             file: o
                 .get("file")

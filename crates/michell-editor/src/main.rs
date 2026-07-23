@@ -8,10 +8,11 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use michell_editor::model::{HullInfo, HullSpec, Manifest};
+use michell_editor::model::{HullInfo, HullSpec, Manifest, OutputFormat};
 use michell_editor::preview::Preview;
 use michell_editor::runner::{self, Job, JobKind};
 use michell_editor::validate::Level;
+use michell_editor::viewer::Viewer;
 use michell_editor::{jsonio, ui, validate};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -96,6 +97,9 @@ struct EditorApp {
     show_preview: bool,
     /// A running loft/sweep job, if any (one at a time).
     job: Option<Job>,
+    /// The result viewer, shown when a binary sweep finishes or a `.msw` is
+    /// opened from the View menu.
+    viewer: Option<Viewer>,
     import: Option<ImportDialog>,
     /// Cached `michell info` results per resolved hull path, with the file's
     /// mtime so an edited/re-lofted body refreshes automatically.
@@ -114,6 +118,7 @@ impl Default for EditorApp {
             preview,
             show_preview: true,
             job: None,
+            viewer: None,
             import: None,
             hull_info: HashMap::new(),
         }
@@ -272,6 +277,38 @@ impl EditorApp {
         }
     }
 
+    /// The `.msw` filename a binary sweep produces: `output.file` if set, else
+    /// `<manifest stem>.msw` (mirroring the CLI's default).
+    fn msw_output_name(&self) -> String {
+        let file = self.manifest.output.file.trim();
+        if !file.is_empty() {
+            return file.to_string();
+        }
+        let stem = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "sweep".into());
+        format!("{stem}.msw")
+    }
+
+    /// Open a `.msw` archive of the user's choosing into the result viewer.
+    fn open_msw(&mut self) {
+        let mut dialog = rfd::FileDialog::new().add_filter("sweep archive", &["msw"]);
+        if let Some(dir) = self.manifest_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(path) = dialog.pick_file() {
+            let viewer = Viewer::load(&path);
+            self.status = match viewer.error() {
+                Some(e) => format!("could not open {}: {e}", path.display()),
+                None => format!("opened {}", path.display()),
+            };
+            self.viewer = Some(viewer);
+        }
+    }
+
     // --- running the CLI ---
 
     /// Prompt for a CAD/mesh file, then open the loft-parameters dialog.
@@ -424,19 +461,34 @@ impl EditorApp {
                 self.status = format!("lofted and added {} hull(s)", produced.len());
             }
             (JobKind::Sweep, Ok(success)) => {
-                self.status = match &self.manifest.output.file {
-                    f if f.trim().is_empty() => {
-                        let rows = success.stdout.lines().count().saturating_sub(1);
-                        format!("sweep done — {rows} row(s) printed to stdout (no output file set)")
-                    }
-                    f => {
-                        let where_ = self
-                            .manifest_dir()
-                            .map(|d| d.join(f))
-                            .unwrap_or_else(|| PathBuf::from(f));
-                        format!("sweep done — wrote {}", where_.display())
-                    }
-                };
+                if self.manifest.output.format == OutputFormat::Binary {
+                    // The archive lands where the CLI wrote it: the manifest's
+                    // `output.file`, or `<manifest stem>.msw` beside it.
+                    let f = self.msw_output_name();
+                    let path = success.cwd.join(&f);
+                    let viewer = Viewer::load(&path);
+                    self.status = match viewer.error() {
+                        Some(e) => format!("sweep done, but the archive would not open: {e}"),
+                        None => format!("sweep done — opened {}", path.display()),
+                    };
+                    self.viewer = Some(viewer);
+                } else {
+                    self.status = match &self.manifest.output.file {
+                        f if f.trim().is_empty() => {
+                            let rows = success.stdout.lines().count().saturating_sub(1);
+                            format!(
+                                "sweep done — {rows} row(s) printed to stdout (no output file set)"
+                            )
+                        }
+                        f => {
+                            let where_ = self
+                                .manifest_dir()
+                                .map(|d| d.join(f))
+                                .unwrap_or_else(|| PathBuf::from(f));
+                            format!("sweep done — wrote {}", where_.display())
+                        }
+                    };
+                }
             }
             (JobKind::Loft, Err(e)) => self.status = format!("loft failed: {e}"),
             (JobKind::Sweep, Err(e)) => self.status = format!("sweep failed: {e}"),
@@ -548,6 +600,11 @@ impl eframe::App for EditorApp {
                 });
                 ui.menu_button("View", |ui| {
                     ui.checkbox(&mut self.show_preview, "JSON preview");
+                    ui.separator();
+                    if ui.button("Open .msw archive…").clicked() {
+                        self.open_msw();
+                        ui.close_menu();
+                    }
                 });
 
                 ui.separator();
@@ -645,6 +702,7 @@ impl eframe::App for EditorApp {
 
         self.import_window(ctx);
         self.job_window(ctx);
+        self.viewer_window(ctx);
 
         // Act on intents gathered above, now that the panel borrows are gone.
         if want_import {
@@ -724,6 +782,26 @@ impl EditorApp {
         }
         if do_loft {
             self.start_loft();
+        }
+    }
+
+    fn viewer_window(&mut self, ctx: &egui::Context) {
+        let Some(viewer) = &mut self.viewer else {
+            return;
+        };
+        let mut open = true;
+        egui::Window::new(format!("Sweep results — {}", viewer.title()))
+            .id(egui::Id::new("sweep-viewer"))
+            .open(&mut open)
+            .default_size([720.0, 660.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| viewer.ui(ui));
+            });
+        if !open {
+            self.viewer = None;
         }
     }
 

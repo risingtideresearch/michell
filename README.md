@@ -438,6 +438,15 @@ JSON naming the columns, then a `ROWS` blob) — see
 `crates/michell-cli/src/archive.rs` for the byte layout. The companion Python
 package reads it with `pymichell.read_sweep("study.msw")`.
 
+**Viewing a `.msw`**: the format is the editor's default output, and `michell-editor`
+opens the archive in a result viewer as soon as a sweep finishes. The viewer is
+also a standalone binary — `michell-viewer study.msw`, or launch it bare and pick
+a file — showing the study metadata, an XY plot of any column against any other
+across all rows, a selectable rows table, and, for the selected row, the GZ curve
+and the free-wave spectrum. It decodes the archive through
+`michell_cli::archive::read` (the writer's inverse), so it needs nothing but the
+`.msw` file itself.
+
 **Bodies**: sweep manifests reference **full-band** `.hull` files — the
 half-breadth spline over the hull's band from keel to above the design
 waterline, written by `michell loft`:

@@ -6,7 +6,7 @@
 //! report progress through a [`Reporter`] and return the text they would
 //! otherwise have printed to stdout; every other command still prints directly.
 
-mod archive;
+pub mod archive;
 mod formats;
 mod gridio;
 mod json;
