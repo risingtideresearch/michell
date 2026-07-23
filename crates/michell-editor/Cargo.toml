@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 michell = { path = "../michell" }
+michell-cli = { path = "../michell-cli" }
 eframe = "0.29"
 egui = "0.29"
 rfd = "0.15"

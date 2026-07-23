@@ -200,7 +200,11 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-pub fn run(manifest_path: &str) -> Result<(), String> {
+/// Run a JSON sweep manifest. Progress and informational lines flow through
+/// `report` (the CLI echoes them to stderr); the returned string is the CSV/JSON
+/// the CLI prints to stdout, or empty when the manifest names an `output.file`
+/// (written here directly).
+pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, String> {
     let text = std::fs::read_to_string(manifest_path)
         .map_err(|e| format!("cannot read {manifest_path}: {e}"))?;
     let doc = parse_json(&text).map_err(|e| format!("{manifest_path}: {e}"))?;
@@ -383,13 +387,16 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
         }
         let point_mass: f64 = load.points.iter().map(|p| p.mass).sum();
-        eprintln!(
-            "hull {id}: {file} (centerplane {:.4}, base y {:.4}, mass {:.1} kg + {} point(s) {:.1} kg)",
-            body.centerplane(),
-            body.centerplane() + base.dy,
-            load.mass,
-            load.points.len(),
-            point_mass,
+        report(
+            &format!(
+                "hull {id}: {file} (centerplane {:.4}, base y {:.4}, mass {:.1} kg + {} point(s) {:.1} kg)",
+                body.centerplane(),
+                body.centerplane() + base.dy,
+                load.mass,
+                load.points.len(),
+                point_mass,
+            ),
+            None,
         );
         hulls.push(MHull {
             id,
@@ -623,12 +630,15 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         ));
     }
     if let Some(name) = doc.get("name").and_then(Json::as_str) {
-        eprintln!("study: {name}");
+        report(&format!("study: {name}"), None);
     }
-    eprintln!(
-        "sweep: {points} point(s) x {} speed(s){}",
-        speeds.len(),
-        if float_mode { ", equilibrium mode" } else { "" }
+    report(
+        &format!(
+            "sweep: {points} point(s) x {} speed(s){}",
+            speeds.len(),
+            if float_mode { ", equilibrium mode" } else { "" }
+        ),
+        Some((0, points)),
     );
 
     // Output setup.
@@ -882,7 +892,10 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         }
                     }
                     Err(e) => {
-                        eprintln!("point {}: GZ scan stopped at {deg}°: {e}", point + 1);
+                        report(
+                            &format!("point {}: GZ scan stopped at {deg}°: {e}", point + 1),
+                            None,
+                        );
                         stopped_early = true;
                         break;
                     }
@@ -901,9 +914,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 } else {
                     "GZ was still positive at the scan cap"
                 };
-                eprintln!(
-                    "point {}: {why} — gz_vanish_deg/gz_area truncated at {last_deg:.1}°",
-                    point + 1
+                report(
+                    &format!(
+                        "point {}: {why} — gz_vanish_deg/gz_area truncated at {last_deg:.1}°",
+                        point + 1
+                    ),
+                    None,
                 );
             }
             // Heeled equilibria at the resistance angles (flotation only; the
@@ -914,7 +930,10 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 .map(|&a| match solve_at(a) {
                     Ok(eq) => Some(eq),
                     Err(e) => {
-                        eprintln!("point {}: heeled solve at {a}° failed: {e}", point + 1);
+                        report(
+                            &format!("point {}: heeled solve at {a}° failed: {e}", point + 1),
+                            None,
+                        );
                         None
                     }
                 })
@@ -1023,7 +1042,10 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 out.push('\n');
             }
         }
-        eprintln!("point {}/{points} done", point + 1);
+        report(
+            &format!("point {}/{points} done", point + 1),
+            Some((point + 1, points)),
+        );
         for (i, a) in axes.iter().enumerate().rev() {
             idx[i] += 1;
             if idx[i] < a.values.len() {
@@ -1038,12 +1060,12 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     match out_file {
         Some(f) => {
             let path = dir.join(&f);
-            std::fs::write(&path, out).map_err(|e| format!("cannot write {f}: {e}"))?;
-            eprintln!("wrote {}", path.display());
+            std::fs::write(&path, &out).map_err(|e| format!("cannot write {f}: {e}"))?;
+            report(&format!("wrote {}", path.display()), None);
+            Ok(String::new())
         }
-        None => print!("{out}"),
+        None => Ok(out),
     }
-    Ok(())
 }
 
 #[cfg(test)]
