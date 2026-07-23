@@ -557,6 +557,123 @@ fn manifest_heel_rollup_metrics() {
     assert!(r24 > r12, "rise should grow with heel: {r24} vs {r12}");
 }
 
+// --- Minimal `.msw` archive reader for the binary-output test. Mirrors the
+// format documented in `archive.rs` (the module itself is private to the
+// binary crate, so integration tests re-implement the walk). ---
+
+struct Blob {
+    kind: u32,
+    name: String,
+    data: Vec<u8>,
+}
+
+fn parse_msw(bytes: &[u8]) -> Vec<Blob> {
+    assert_eq!(&bytes[0..4], b"MSWP", "bad magic");
+    assert_eq!(
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+        1,
+        "version"
+    );
+    let mut blobs = Vec::new();
+    let mut p = 8usize;
+    while p < bytes.len() {
+        let kind = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap());
+        p += 4;
+        let nl = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap()) as usize;
+        p += 4;
+        let name = String::from_utf8(bytes[p..p + nl].to_vec()).unwrap();
+        p += nl;
+        let dl = u64::from_le_bytes(bytes[p..p + 8].try_into().unwrap()) as usize;
+        p += 8;
+        let data = bytes[p..p + dl].to_vec();
+        p += dl;
+        blobs.push(Blob { kind, name, data });
+    }
+    blobs
+}
+
+/// The binary output format bundles the manifest, the referenced hull files,
+/// and per-row parameters + metrics + full GZ curve + spectrum into one `.msw`
+/// file that round-trips without re-running the study.
+#[test]
+fn manifest_binary_archive_bundles_everything() {
+    let iges_path = tmp("bin_arc.iges");
+    std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
+    run_ok(bin().args([
+        "loft",
+        iges_path.to_str().unwrap(),
+        "--waterline",
+        "0.5",
+        "-o",
+        tmp("bin_arc").to_str().unwrap(),
+        "--samples",
+        "61x21",
+        "--fit-control",
+        "9x7",
+        "--fit-degree",
+        "2x2",
+    ]));
+    let hull_bytes = std::fs::read(tmp("bin_arc.hull")).unwrap();
+
+    let manifest = r#"{
+  "name": "binary archive test",
+  "fluid": "seawater",
+  "hulls": [ { "id": "vaka", "file": "bin_arc.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
+  "sweep": [ { "target": "speed", "unit": "ms", "values": [2.5, 3.5] } ],
+  "output": { "format": "binary", "file": "study.msw", "spectrum": { "points": 129 } },
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2",
+               "heel": { "gz_step": 5, "gz_max": 70 } }
+}"#;
+    let man_path = tmp("bin_arc.json");
+    std::fs::write(&man_path, manifest).unwrap();
+    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
+
+    let bytes = std::fs::read(tmp("study.msw")).unwrap();
+    let blobs = parse_msw(&bytes);
+
+    // Manifest blob preserved verbatim.
+    let man = blobs.iter().find(|b| b.kind == 1).expect("manifest blob");
+    assert_eq!(man.name, "bin_arc.json");
+    assert_eq!(man.data, manifest.as_bytes());
+
+    // Hull file bundled byte-for-byte.
+    let hull = blobs.iter().find(|b| b.kind == 2).expect("hull blob");
+    assert_eq!(hull.name, "bin_arc.hull");
+    assert_eq!(hull.data, hull_bytes);
+
+    // Meta names the columns.
+    let meta = blobs.iter().find(|b| b.kind == 3).expect("meta blob");
+    let meta_txt = String::from_utf8(meta.data.clone()).unwrap();
+    assert!(meta_txt.contains("\"metric_labels\""), "{meta_txt}");
+    assert!(meta_txt.contains("gz_peak_deg"), "{meta_txt}");
+    assert!(meta_txt.contains("\"speeds_ms\":[2.5,3.5]"), "{meta_txt}");
+
+    // Rows: two speeds → two rows, each with a full GZ curve and spectrum.
+    let rows = blobs.iter().find(|b| b.kind == 4).expect("rows blob");
+    let d = &rows.data;
+    let mut p = 0usize;
+    let u32_at = |p: &mut usize| {
+        let v = u32::from_le_bytes(d[*p..*p + 4].try_into().unwrap());
+        *p += 4;
+        v
+    };
+    let n_rows = u32_at(&mut p);
+    let n_axes = u32_at(&mut p);
+    let n_metrics = u32_at(&mut p);
+    assert_eq!(n_rows, 2, "one row per speed");
+    assert_eq!(n_axes, 0, "no pose/load axes in this study");
+    assert!(n_metrics > 10, "metrics present: {n_metrics}");
+
+    // Walk row 0 and confirm the GZ curve and spectrum are non-empty.
+    p += (n_axes as usize + n_metrics as usize) * 8;
+    let gz_n = u32_at(&mut p);
+    assert!(gz_n >= 2, "GZ curve should have multiple points: {gz_n}");
+    p += gz_n as usize * 16; // (heel, gz) pairs
+    p += 16; // wavenumber + transverse wavelength
+    let spec_n = u32_at(&mut p);
+    assert_eq!(spec_n, 129, "spectrum sampled at the requested resolution");
+}
+
 /// A point load mounted on a hull adds to the derived fleet CG and rides with
 /// its own swept offset: lowering it (`dz` +down) pulls `vcg` down, and its
 /// mass shows up in the derived `mass` column — all pure CG arithmetic, so the

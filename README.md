@@ -411,6 +411,33 @@ scan resolution and `gz_max` (deg, default 90, bounded below 90° by the incline
 solver) caps the search for the vanishing angle. If GZ is still positive at the
 cap, `gz_vanish_deg`/`gz_area` are reported at the cap and a note is logged.
 
+**Output formats**: `output.format` is `csv` (default), `json`, or `binary`.
+The `csv`/`json` forms carry the row columns only. The `binary` form writes a
+single self-contained `.msw` archive that bundles the whole study — the
+manifest, the referenced hull files verbatim, and, **per row**, the swept
+parameter values, the scalar metrics, the **full GZ curve** (the same
+righting-arm scan the summary columns are reduced from, as `(heel, GZ)` pairs
+to the vanishing angle), and the **free-wave spectrum** `A(θ)` (with its
+`dR_w/dθ` density). Because the spectrum is the exact quantity `R_w` integrates,
+storing it is essentially free at compute time, and a stored sweep is enough to
+regenerate a wake elevation field at any resolution without re-running:
+
+```json
+  "output": {
+    "format": "binary",
+    "file": "study.msw",
+    "spectrum": { "points": 721 }
+  }
+```
+
+`spectrum.points` (default 721) sets the θ-sampling of the stored spectrum; the
+GZ-curve resolution follows `options.heel.gz_step`. If `file` is omitted the
+archive is written next to the manifest as `<stem>.msw`. The container is a
+hand-rolled, little-endian, length-prefixed blob stream (magic `MSWP`, a `META`
+JSON naming the columns, then a `ROWS` blob) — see
+`crates/michell-cli/src/archive.rs` for the byte layout. The companion Python
+package reads it with `pymichell.read_sweep("study.msw")`.
+
 **Bodies**: sweep manifests reference **full-band** `.hull` files — the
 half-breadth spline over the hull's band from keel to above the design
 waterline, written by `michell loft`:
