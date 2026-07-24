@@ -441,9 +441,11 @@ package reads it with `pymichell.read_sweep("study.msw")`.
 **Viewing a `.msw`**: the format is the editor's default output, and `michell-editor`
 opens the archive in a result viewer as soon as a sweep finishes. The viewer is
 also a standalone binary — `michell-viewer study.msw`, or launch it bare and pick
-a file — showing the study metadata, an XY plot of any column against any other
-across all rows, a selectable rows table, and, for the selected row, the GZ curve
-and the free-wave spectrum. It decodes the archive through
+a file — showing the study metadata, a scatter plot of any column against any
+other across all rows, a selectable rows table, and, for the selected row, the GZ
+curve and a **Kelvin-wake heatmap** reconstructed from the stored spectrum (the
+same free-wave field `michell wake` draws, with the same diverging colormap and a
+fade ahead of the hull). It decodes the archive through
 `michell_cli::archive::read` (the writer's inverse), so it needs nothing but the
 `.msw` file itself.
 

@@ -11,7 +11,7 @@ mod formats;
 mod gridio;
 mod json;
 pub mod manifest;
-mod png;
+pub mod png;
 mod render;
 mod view;
 

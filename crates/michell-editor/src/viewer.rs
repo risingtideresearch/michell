@@ -1,19 +1,23 @@
 //! An egui view of a `.msw` sweep archive. Decodes the self-contained binary
-//! format (via `michell_cli::archive`) and renders it: the study metadata, an
-//! XY plot of any column against any other across all rows, a selectable rows
-//! table, and — for the selected row — the righting-arm (GZ) curve and the
-//! free-wave spectrum. Plots are hand-drawn with an `egui::Painter`, matching
-//! the import-preview style and keeping the crate dependency-light.
+//! format (via `michell_cli::archive`) and renders it: the study metadata, a
+//! scatter plot of any column against any other across all rows, a selectable
+//! rows table, and — for the selected row — the righting-arm (GZ) curve and a
+//! Kelvin-wake heatmap reconstructed from the stored free-wave spectrum (the
+//! same wave field the `michell wake` CLI draws, with the same colormap). The
+//! scatter and GZ plots are hand-drawn with an `egui::Painter`; the wake is a
+//! reconstructed elevation grid uploaded as a texture.
 //!
 //! It is used two ways: embedded in the editor (a sweep that writes `binary`
 //! output pops this open on its result) and as the standalone `michell-viewer`
 //! binary.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, TextureHandle, Vec2};
 use michell_cli::archive::{self, Row, SweepArchive};
+use michell_cli::png;
 use std::path::{Path, PathBuf};
 
 const RAD: f64 = 180.0 / std::f64::consts::PI;
+const PI: f64 = std::f64::consts::PI;
 
 // Series palette (kept legible on both light and dark backgrounds).
 const C_PRIMARY: Color32 = Color32::from_rgb(70, 150, 240);
@@ -30,6 +34,9 @@ pub struct Viewer {
     /// plot's horizontal and vertical axes.
     x_col: usize,
     y_col: usize,
+    /// The reconstructed wake texture for the selected row, rebuilt lazily when
+    /// the selection changes (the reconstruction is too heavy for every frame).
+    wake: Option<WakeTex>,
 }
 
 impl Viewer {
@@ -41,6 +48,7 @@ impl Viewer {
             selected: 0,
             x_col: 0,
             y_col: 0,
+            wake: None,
         }
     }
 
@@ -53,6 +61,7 @@ impl Viewer {
             selected: 0,
             x_col: 0,
             y_col: 0,
+            wake: None,
         };
         v.pick_default_columns();
         v
@@ -138,10 +147,6 @@ impl Viewer {
                     .iter()
                     .map(|r| [col_value(r, x_col, n_axes), col_value(r, y_col, n_axes)])
                     .collect();
-                // Connect the line only when X is strictly increasing (a clean
-                // 1-D sweep); otherwise a multi-axis grid would draw zig-zags,
-                // so show markers alone.
-                let monotone = pts.windows(2).all(|w| w[1][0] > w[0][0]);
                 let highlight = a
                     .rows
                     .get(self.selected)
@@ -156,7 +161,7 @@ impl Viewer {
                         name: "",
                         color: C_PRIMARY,
                         pts,
-                        connect: monotone,
+                        connect: false,
                         markers: true,
                     }],
                     highlight,
@@ -211,46 +216,21 @@ impl Viewer {
                     egui::RichText::new("No free-wave spectrum for this row (dry fleet).").weak(),
                 );
             } else {
-                let amp: Vec<[f64; 2]> = row
-                    .spectrum
-                    .iter()
-                    .map(|s| [s.theta * RAD, (s.amp_re * s.amp_re + s.amp_im * s.amp_im).sqrt()])
-                    .collect();
-                draw_plot(
-                    ui,
-                    "spec-amp",
-                    180.0,
-                    "theta [deg]",
-                    "|A| [m/rad]",
-                    &[Series {
-                        name: "|A|",
-                        color: C_PRIMARY,
-                        pts: amp,
-                        connect: true,
-                        markers: false,
-                    }],
-                    None,
-                );
-                let drw: Vec<[f64; 2]> = row
-                    .spectrum
-                    .iter()
-                    .map(|s| [s.theta * RAD, s.drw_dtheta])
-                    .collect();
-                draw_plot(
-                    ui,
-                    "spec-drw",
-                    180.0,
-                    "theta [deg]",
-                    "dRw/dtheta [N/rad]",
-                    &[Series {
-                        name: "dRw/dθ",
-                        color: C_WARN,
-                        pts: drw,
-                        connect: true,
-                        markers: false,
-                    }],
-                    None,
-                );
+                ui.label("Kelvin wake — surface elevation reconstructed from the stored spectrum");
+                // Rebuild the texture when the selection changes.
+                let stale = self.wake.as_ref().map(|w| w.row) != Some(self.selected);
+                if stale {
+                    self.wake = reconstruct_wake(row, a.meta.l_ref)
+                        .map(|w| WakeTex::upload(ui.ctx(), self.selected, w));
+                }
+                if let Some(w) = &self.wake {
+                    draw_wake(ui, w);
+                } else {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "wake could not be reconstructed (degenerate spectrum)",
+                    );
+                }
             }
         }
     }
@@ -594,6 +574,382 @@ fn draw_plot_inner(
             y += 14.0;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Kelvin-wake reconstruction
+//
+// The free-wave elevation is the same superposition the CLI's `wake` command
+// integrates: ζ(x,y) = Re ∫ A(θ) e^{i(kx·x + ky·y)} dθ, with kx = ν secθ and
+// ky = ν secθ tanθ (θ over the stored range, both signs). The stored samples
+// are A(θ) at uniform θ already scaled to metres, so a trapezoidal sum
+// reproduces the field. x is measured from the fleet centroid (the writer's
+// phase reference cancels), so the source sits at x ≈ 0 and the wake trails
+// toward −x.
+// ---------------------------------------------------------------------------
+
+/// A reconstructed elevation field over a rectangle, in the fleet frame.
+struct Wake {
+    nx: usize,
+    ny: usize,
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+    /// Row-major `zeta[iy * nx + ix]` [m], iy from y0 to y1, ix from x0 to x1.
+    zeta: Vec<f64>,
+    /// Colour-scale saturation elevation (99.5th percentile of |ζ|) [m].
+    zmax: f64,
+    transverse_wavelength: f64,
+    /// Number of spectrum samples that contributed (after the resolution cut).
+    used_samples: usize,
+    /// Longitudinal fade band: full colour for x ≤ `x_solid`, fully neutral for
+    /// x ≥ `x_gone` — the free-wave field is only physical astern of the hull.
+    x_solid: f64,
+    x_gone: f64,
+}
+
+/// Quintic smoothstep on [0, 1] (zero slope at both ends).
+fn smoother(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+/// Reconstruct the wake for one row. `None` when the spectrum is degenerate or
+/// the wavenumber is unusable.
+fn reconstruct_wake(row: &Row, l_ref: f64) -> Option<Wake> {
+    let nu = row.wavenumber;
+    if !(nu.is_finite() && nu > 0.0) || row.spectrum.len() < 3 {
+        return None;
+    }
+    let twl = if row.transverse_wavelength > 0.0 {
+        row.transverse_wavelength
+    } else {
+        2.0 * PI / nu
+    };
+    // Window: a few reference lengths of wake astern, a little ahead of the
+    // source, and wide enough for the ±19.5° Kelvin wedge.
+    let base = if l_ref.is_finite() && l_ref > 0.0 {
+        l_ref
+    } else {
+        twl.max(1.0)
+    };
+    let (x0, x1) = (-3.2 * base, 0.6 * base);
+    let yext = 1.5 * base;
+    let (y0, y1) = (-yext, yext);
+
+    // A generous internal grid so divergent (short-wave) arms resolve without
+    // aliasing; the texture is scaled to the panel, so this sets quality, not
+    // size. Recomputed once per selection, not per frame.
+    let nx = 440usize;
+    let hx = (x1 - x0) / (nx - 1) as f64;
+    // Square pixels in metres: derive ny from the same spacing, then clamp.
+    let ny = (((y1 - y0) / hx).round() as usize).clamp(60, 360);
+    let hy = (y1 - y0) / (ny - 1) as f64;
+
+    // Uniform θ spacing → trapezoidal weight. Bail if it is not increasing.
+    let dtheta = row.spectrum[1].theta - row.spectrum[0].theta;
+    if !(dtheta.is_finite() && dtheta > 0.0) {
+        return None;
+    }
+    let theta_max = row.spectrum.last().unwrap().theta.abs().max(1e-6);
+
+    // Pre-scale each sample: weight = dθ × resolution taper (drop components
+    // whose wave the grid cannot resolve, cosine-tapering the marginal band,
+    // as the CLI's elevation grid does), then fold into the amplitude.
+    struct Comp {
+        kx: f64,
+        ky: f64,
+        ar: f64,
+        ai: f64,
+    }
+    let mut comps: Vec<Comp> = Vec::with_capacity(row.spectrum.len());
+    for s in &row.spectrum {
+        let c = s.theta.cos();
+        if !(c.is_finite() && c.abs() > 1e-6) {
+            continue;
+        }
+        let sec = 1.0 / c;
+        let kx = nu * sec;
+        let ky = nu * sec * s.theta.tan();
+        // Drop components the grid cannot resolve (aliasing), fully keeping
+        // only those with ≳4 px per wavelength and smoothly tapering the rest.
+        let res = (PI / (kx.abs() * hx + 1e-12)).min(PI / (ky.abs() * hy + 1e-12));
+        let taper = smoother((res - 1.5) / (2.8 - 1.5));
+        // Also soften the very edge of the sampled range to curb ringing.
+        let edge = {
+            let f = s.theta.abs() / theta_max;
+            if f > 0.8 {
+                0.5 * (1.0 + (PI * (f - 0.8) / 0.2).cos())
+            } else {
+                1.0
+            }
+        };
+        let w = dtheta * taper * edge;
+        if w <= 0.0 {
+            continue;
+        }
+        comps.push(Comp {
+            kx,
+            ky,
+            ar: s.amp_re * w,
+            ai: s.amp_im * w,
+        });
+    }
+    if comps.is_empty() {
+        return None;
+    }
+
+    // Accumulate ζ. For each component, march across x by complex recurrence
+    // (one cis() per row, a complex multiply per pixel).
+    let mut zeta = vec![0.0f64; nx * ny];
+    for comp in &comps {
+        let (sr, si) = (comp.kx * hx).sin_cos();
+        let (step_im, step_re) = (sr, si); // e^{i kx hx}
+        for iy in 0..ny {
+            let y = y0 + iy as f64 * hy;
+            let ph = comp.kx * x0 + comp.ky * y;
+            let (sph, cph) = ph.sin_cos();
+            let mut cur_re = comp.ar * cph - comp.ai * sph;
+            let mut cur_im = comp.ar * sph + comp.ai * cph;
+            let base = iy * nx;
+            for ix in 0..nx {
+                zeta[base + ix] += cur_re;
+                let nr = cur_re * step_re - cur_im * step_im;
+                let ni = cur_re * step_im + cur_im * step_re;
+                cur_re = nr;
+                cur_im = ni;
+            }
+        }
+    }
+
+    let zmax = percentile_abs(&zeta, 0.995).max(1e-9);
+    Some(Wake {
+        nx,
+        ny,
+        x0,
+        x1,
+        y0,
+        y1,
+        zeta,
+        zmax,
+        transverse_wavelength: twl,
+        used_samples: comps.len(),
+        x_solid: -0.5 * base,
+        x_gone: 0.15 * base,
+    })
+}
+
+/// The `p`-quantile (0..1) of `|values|`.
+fn percentile_abs(values: &[f64], p: f64) -> f64 {
+    let mut abs: Vec<f64> = values.iter().map(|v| v.abs()).collect();
+    if abs.is_empty() {
+        return 0.0;
+    }
+    abs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((abs.len() - 1) as f64 * p.clamp(0.0, 1.0)).round() as usize;
+    abs[idx]
+}
+
+/// A wake elevation field uploaded to the GPU, with the scalars needed to
+/// label it. Rebuilt only when the selected row changes.
+struct WakeTex {
+    row: usize,
+    tex: TextureHandle,
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+    zmax: f64,
+    transverse_wavelength: f64,
+    used_samples: usize,
+}
+
+impl WakeTex {
+    fn upload(ctx: &egui::Context, row: usize, w: Wake) -> WakeTex {
+        // Row 0 of the image is the top; put +y at the top, x0 at the left.
+        let hx = (w.x1 - w.x0) / (w.nx - 1) as f64;
+        let neutral = png::diverging(0.0); // undisturbed-water colour
+        let mut pixels = Vec::with_capacity(w.nx * w.ny);
+        for r in 0..w.ny {
+            let iy = w.ny - 1 - r;
+            for ix in 0..w.nx {
+                let t = (w.zeta[iy * w.nx + ix] / w.zmax).clamp(-1.0, 1.0);
+                // Fade toward neutral ahead of the hull — free waves only trail
+                // astern, so the forward field is not physical.
+                let x = w.x0 + ix as f64 * hx;
+                let vis = 1.0 - smoother((x - w.x_solid) / (w.x_gone - w.x_solid));
+                let [cr, cg, cb] = png::fade(png::diverging(t), neutral, 1.0 - vis);
+                pixels.push(Color32::from_rgb(cr, cg, cb));
+            }
+        }
+        let image = egui::ColorImage {
+            size: [w.nx, w.ny],
+            pixels,
+        };
+        let tex = ctx.load_texture(
+            format!("wake-{row}"),
+            image,
+            egui::TextureOptions::LINEAR,
+        );
+        WakeTex {
+            row,
+            tex,
+            x0: w.x0,
+            x1: w.x1,
+            y0: w.y0,
+            y1: w.y1,
+            zmax: w.zmax,
+            transverse_wavelength: w.transverse_wavelength,
+            used_samples: w.used_samples,
+        }
+    }
+}
+
+/// Draw the wake texture with axes, a Kelvin-wedge overlay, the source marker,
+/// and a colour bar.
+fn draw_wake(ui: &mut egui::Ui, w: &WakeTex) {
+    let aspect = ((w.x1 - w.x0) / (w.y1 - w.y0)).abs().max(0.1) as f32;
+    let (ml, mr, mt, mb) = (46.0f32, 64.0f32, 8.0f32, 24.0f32);
+    let avail = ui.available_width().max(280.0);
+    let mut img_w = avail - ml - mr;
+    let mut img_h = img_w / aspect;
+    let max_h = 360.0;
+    if img_h > max_h {
+        img_h = max_h;
+        img_w = img_h * aspect;
+    }
+    let total = Vec2::new(img_w + ml + mr, img_h + mt + mb);
+    let (resp, painter) = ui.allocate_painter(total, Sense::hover());
+    let rect = resp.rect;
+    let img_rect = Rect::from_min_size(
+        Pos2::new(rect.left() + ml, rect.top() + mt),
+        Vec2::new(img_w, img_h),
+    );
+    painter.image(
+        w.tex.id(),
+        img_rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let weak = ui.visuals().weak_text_color();
+    painter.rect_stroke(img_rect, 0.0, Stroke::new(1.0_f32, weak.gamma_multiply(0.6)));
+
+    // Screen mappings: x0..x1 → left..right; y1..y0 → top..bottom (+y up).
+    let x_of = |x: f64| img_rect.left() + ((x - w.x0) / (w.x1 - w.x0)) as f32 * img_rect.width();
+    let y_of = |y: f64| img_rect.top() + ((w.y1 - y) / (w.y1 - w.y0)) as f32 * img_rect.height();
+    let tick_font = FontId::proportional(9.5);
+
+    // Kelvin wedge (±19.47°) from the source, trailing aft (−x).
+    if w.x0 < 0.0 {
+        let half = 19.471_f64.to_radians().tan();
+        let wedge = Color32::from_rgba_unmultiplied(255, 255, 255, 120);
+        for sign in [-1.0f64, 1.0] {
+            let x_end = w.x0;
+            let y_end = (sign * (-x_end) * half).clamp(w.y0, w.y1);
+            painter.line_segment(
+                [
+                    Pos2::new(x_of(0.0), y_of(0.0)),
+                    Pos2::new(x_of(x_end), y_of(y_end)),
+                ],
+                Stroke::new(1.0_f32, wedge),
+            );
+        }
+    }
+    // Source marker at (0, 0).
+    if (w.x0..=w.x1).contains(&0.0) && (w.y0..=w.y1).contains(&0.0) {
+        painter.circle_stroke(
+            Pos2::new(x_of(0.0), y_of(0.0)),
+            3.0,
+            Stroke::new(1.5_f32, Color32::from_rgb(30, 30, 30)),
+        );
+    }
+
+    // Axis ticks.
+    for k in 0..=4 {
+        let fx = w.x0 + (w.x1 - w.x0) * k as f64 / 4.0;
+        painter.text(
+            Pos2::new(x_of(fx), img_rect.bottom() + 2.0),
+            Align2::CENTER_TOP,
+            fmt_sig(fx),
+            tick_font.clone(),
+            weak,
+        );
+    }
+    for k in 0..=4 {
+        let fy = w.y0 + (w.y1 - w.y0) * k as f64 / 4.0;
+        painter.text(
+            Pos2::new(img_rect.left() - 4.0, y_of(fy)),
+            Align2::RIGHT_CENTER,
+            fmt_sig(fy),
+            tick_font.clone(),
+            weak,
+        );
+    }
+    painter.text(
+        Pos2::new(img_rect.center().x, rect.bottom() - 1.0),
+        Align2::CENTER_BOTTOM,
+        "x  (aft ← 0 → fwd) [m]",
+        FontId::proportional(10.5),
+        weak,
+    );
+    painter.text(
+        Pos2::new(rect.left() + 1.0, img_rect.top() - 1.0),
+        Align2::LEFT_BOTTOM,
+        "y [m]",
+        FontId::proportional(10.5),
+        weak,
+    );
+
+    // Colour bar on the right: +zmax (crest) at top → −zmax (trough) at bottom.
+    let bar = Rect::from_min_size(
+        Pos2::new(img_rect.right() + 12.0, img_rect.top()),
+        Vec2::new(12.0, img_rect.height()),
+    );
+    let bands = 48;
+    for b in 0..bands {
+        let t = 1.0 - 2.0 * b as f64 / (bands - 1) as f64; // +1 at top
+        let [cr, cg, cb] = png::diverging(t);
+        let y = bar.top() + b as f32 / bands as f32 * bar.height();
+        let h = bar.height() / bands as f32 + 1.0;
+        painter.rect_filled(
+            Rect::from_min_size(Pos2::new(bar.left(), y), Vec2::new(bar.width(), h)),
+            0.0,
+            Color32::from_rgb(cr, cg, cb),
+        );
+    }
+    painter.rect_stroke(bar, 0.0, Stroke::new(1.0_f32, weak.gamma_multiply(0.6)));
+    painter.text(
+        Pos2::new(bar.right() + 3.0, bar.top()),
+        Align2::LEFT_TOP,
+        format!("+{} m", fmt_sig(w.zmax)),
+        tick_font.clone(),
+        weak,
+    );
+    painter.text(
+        Pos2::new(bar.right() + 3.0, bar.center().y),
+        Align2::LEFT_CENTER,
+        "0",
+        tick_font.clone(),
+        weak,
+    );
+    painter.text(
+        Pos2::new(bar.right() + 3.0, bar.bottom()),
+        Align2::LEFT_BOTTOM,
+        format!("−{} m", fmt_sig(w.zmax)),
+        tick_font.clone(),
+        weak,
+    );
+
+    ui.label(
+        egui::RichText::new(format!(
+            "λ_transverse = {:.2} m · {} spectral components · colour saturates at the 99.5th \
+             percentile of |ζ| (blue trough → red crest)",
+            w.transverse_wavelength, w.used_samples
+        ))
+        .weak()
+        .small(),
+    );
 }
 
 // ---------------------------------------------------------------------------
