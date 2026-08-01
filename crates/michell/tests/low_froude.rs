@@ -1,7 +1,20 @@
 use michell::{
-    hulls, low_froude_wave_resistance, wave_resistance_with, Conditions, WaveOptions,
-    STANDARD_GRAVITY,
+    hulls, low_froude_wave_resistance, multihull_wave_resistance_with, wave_resistance_with,
+    Conditions, Placement, WaveOptions, WaveResistance, STANDARD_GRAVITY,
 };
+
+fn marching_wave_resistance(
+    hull: &michell::Hull,
+    conditions: &Conditions,
+    options: &WaveOptions,
+) -> WaveResistance {
+    multihull_wave_resistance_with(
+        &[(hull, Placement::default())],
+        conditions,
+        options,
+    )
+    .unwrap()
+}
 
 fn wigley_j(length: f64, beam: f64, draft: f64, nu: f64, lambda: f64) -> f64 {
     let half_length = length / 2.0;
@@ -82,7 +95,7 @@ fn endpoint_reduction_converges_as_froude_number_falls() {
     for fn_ in [0.08, 0.05, 0.03, 0.02] {
         let speed = fn_ * (STANDARD_GRAVITY * hull.length()).sqrt();
         let conditions = Conditions::freshwater(speed);
-        let direct = wave_resistance_with(&hull, &conditions, &reference_options).unwrap();
+        let direct = marching_wave_resistance(&hull, &conditions, &reference_options);
         let (reference, reference_evaluations) =
             resolved_wigley_reference(length, beam, draft, &conditions);
         let reduced = low_froude_wave_resistance(&hull, &conditions).unwrap();

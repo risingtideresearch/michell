@@ -1,6 +1,7 @@
 use michell::{
-    hulls, low_froude_wave_resistance, resistance, wave_resistance, wave_resistance_gradient,
-    BSplineSurface, Conditions, Hull, STANDARD_GRAVITY,
+    hulls, low_froude_wave_resistance, multihull_wave_resistance_with, resistance,
+    wave_resistance, wave_resistance_gradient, BSplineSurface, Conditions, Hull, Placement,
+    WaveOptions, WaveResistance, STANDARD_GRAVITY,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -45,6 +46,15 @@ fn rebuild(surface: &BSplineSurface, control: Vec<f64>) -> Hull {
     .unwrap()
 }
 
+fn marching_wave_resistance(hull: &Hull, conditions: &Conditions) -> WaveResistance {
+    multihull_wave_resistance_with(
+        &[(hull, Placement::default())],
+        conditions,
+        &WaveOptions::default(),
+    )
+    .unwrap()
+}
+
 fn main() {
     let hull = hulls::wigley(10.0, 1.0, 0.625).expect("valid Wigley hull");
     let samples = sample_count();
@@ -76,11 +86,11 @@ fn main() {
     let very_low_fn = 0.02;
     let very_low_speed = very_low_fn * (STANDARD_GRAVITY * hull.length()).sqrt();
     let very_low_cond = Conditions::freshwater(very_low_speed);
-    let very_low_direct = wave_resistance(&hull, &very_low_cond).unwrap();
+    let very_low_direct = marching_wave_resistance(&hull, &very_low_cond);
     let very_low_reduced = low_froude_wave_resistance(&hull, &very_low_cond).unwrap();
     let (very_low_direct_median, very_low_direct_best, very_low_direct_checksum) =
         measure(samples, || {
-            wave_resistance(&hull, &very_low_cond).unwrap().resistance
+            marching_wave_resistance(&hull, &very_low_cond).resistance
         });
     let (very_low_reduced_median, very_low_reduced_best, very_low_reduced_checksum) =
         measure(samples, || {

@@ -76,9 +76,12 @@ pub struct WaveResistance {
     /// Estimated relative quadrature error (difference between the last two
     /// refinement passes).
     pub est_rel_error: f64,
-    /// Total number of inner-integral evaluations performed.
+    /// Total number of inner-integral evaluations performed, or transformed
+    /// kernel nodes for an accepted low-Froude endpoint reduction.
     pub inner_evaluations: usize,
-    /// Largest λ = sec θ reached before truncation.
+    /// Largest λ = sec θ reached before truncation. This is infinity when the
+    /// low-Froude steepest-descent contour evaluates the infinite interval
+    /// without real-axis truncation.
     pub max_lambda: f64,
 }
 
@@ -111,11 +114,28 @@ pub fn wave_resistance(hull: &Hull, cond: &Conditions) -> Result<WaveResistance>
 }
 
 /// Compute Michell wave resistance with explicit quadrature options.
+///
+/// For a symmetric hull at sufficiently low Froude number this first tries the
+/// waterline-endpoint/steepest-descent reduction. It is accepted only when its
+/// omitted-endpoint bound and contour estimate meet `opts.rel_tol`; all other
+/// cases retain the general marching quadrature.
 pub fn wave_resistance_with(
     hull: &Hull,
     cond: &Conditions,
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
+    if opts.rel_tol.is_finite() && opts.rel_tol > 0.0 {
+        if let Ok(reduced) = crate::low_froude::low_froude_wave_resistance(hull, cond) {
+            if reduced.est_rel_error <= opts.rel_tol {
+                return Ok(WaveResistance {
+                    resistance: reduced.resistance,
+                    est_rel_error: reduced.est_rel_error,
+                    inner_evaluations: reduced.kernel_evaluations,
+                    max_lambda: f64::INFINITY,
+                });
+            }
+        }
+    }
     multihull_wave_resistance_with(&[(hull, Placement::default())], cond, opts)
 }
 
