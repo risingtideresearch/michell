@@ -73,9 +73,12 @@ fn transverse_wavelength_far_astern() {
         let x = grid.x(i - 1) + (grid.x(i) - grid.x(i - 1)) * a / (a - b);
         crossings.push(x);
     }
-    assert!(crossings.len() >= 8, "too few crossings: {}", crossings.len());
-    let spacing =
-        (crossings.last().unwrap() - crossings[0]) / (crossings.len() - 1) as f64;
+    assert!(
+        crossings.len() >= 8,
+        "too few crossings: {}",
+        crossings.len()
+    );
+    let spacing = (crossings.last().unwrap() - crossings[0]) / (crossings.len() - 1) as f64;
     let got = 2.0 * spacing;
     assert!(
         (got - want).abs() <= 0.02 * want,
@@ -108,7 +111,9 @@ fn monohull_pattern_is_y_symmetric() {
     let members = [(&hull, Placement::default())];
     let mut spec = FreeWaveSpectrum::new(&members, &cond).unwrap();
     let (nx, ny) = (40, 25);
-    let grid = spec.elevation_grid(-30.0, -10.0, -12.0, 12.0, nx, ny).unwrap();
+    let grid = spec
+        .elevation_grid(-30.0, -10.0, -12.0, 12.0, nx, ny)
+        .unwrap();
     let peak = grid.zeta.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
     for iy in 0..ny / 2 {
         for ix in 0..nx {

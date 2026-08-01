@@ -58,7 +58,10 @@ fn fleet_of_one_matches_single() {
     )
     .unwrap()
     .resistance;
-    assert!((single - fleet).abs() < 1e-10 * single, "{single} vs {fleet}");
+    assert!(
+        (single - fleet).abs() < 1e-10 * single,
+        "{single} vs {fleet}"
+    );
 }
 
 /// A fleet of purely symmetric hulls has no dipole, so the lifting path

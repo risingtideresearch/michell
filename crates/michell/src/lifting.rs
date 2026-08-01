@@ -119,8 +119,11 @@ pub fn solve_vortex_lattice(alpha: f64, dydx: impl Fn(f64) -> f64, n: usize) -> 
     // Coefficients (c = 1): C_L = 2 Σ g_j; moments from the vortex positions.
     let cl: f64 = 2.0 * g.iter().sum::<f64>();
     let cm_le: f64 = -2.0 * g.iter().zip(&vortex).map(|(gj, xj)| gj * xj).sum::<f64>();
-    let cm_quarter: f64 =
-        -2.0 * g.iter().zip(&vortex).map(|(gj, xj)| gj * (xj - 0.25)).sum::<f64>();
+    let cm_quarter: f64 = -2.0
+        * g.iter()
+            .zip(&vortex)
+            .map(|(gj, xj)| gj * (xj - 0.25))
+            .sum::<f64>();
 
     // Loading γ/U is a set of point circulations Γ_j/U; report the equivalent
     // sheet strength γ ≈ Γ_j / h at each vortex station.
@@ -286,7 +289,11 @@ mod tests {
                 s.cl,
                 2.0 * PI * alpha
             );
-            assert!(s.cm_quarter.abs() < 1e-12, "n={n}: C_m,c/4={}", s.cm_quarter);
+            assert!(
+                s.cm_quarter.abs() < 1e-12,
+                "n={n}: C_m,c/4={}",
+                s.cm_quarter
+            );
             assert!(
                 (s.center_of_pressure - 0.25).abs() < 1e-12,
                 "n={n}: x_cp={}",

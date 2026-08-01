@@ -111,10 +111,7 @@ fn coincident_pair_quadruples_wave_resistance() {
     let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
     let cond = Conditions::seawater(3.0);
     let single = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-    let pair = [
-        (&hull, Placement::default()),
-        (&hull, Placement::default()),
-    ];
+    let pair = [(&hull, Placement::default()), (&hull, Placement::default())];
     let both = michell::multihull_wave_resistance(&pair, &cond)
         .unwrap()
         .resistance;
@@ -138,7 +135,13 @@ fn catamaran_matches_analytic_interference() {
     let nu = G / (u * u);
     let members = [
         (&hull, Placement { x: 0.0, y: s / 2.0 }),
-        (&hull, Placement { x: 0.0, y: -s / 2.0 }),
+        (
+            &hull,
+            Placement {
+                x: 0.0,
+                y: -s / 2.0,
+            },
+        ),
     ];
     let opts = WaveOptions {
         rel_tol: 1e-7,
@@ -147,14 +150,25 @@ fn catamaran_matches_analytic_interference() {
     let got = michell::multihull_wave_resistance_with(&members, &cond, &opts)
         .unwrap()
         .resistance;
-    let want =
-        reference_wave_resistance_factored(l, b, t, u, cond.fluid.density, 100.0, 4_000_000, |theta| {
+    let want = reference_wave_resistance_factored(
+        l,
+        b,
+        t,
+        u,
+        cond.fluid.density,
+        100.0,
+        4_000_000,
+        |theta| {
             let sec = 1.0 / theta.cos();
             let alpha = 0.5 * nu * s * sec * theta.tan();
             4.0 * alpha.cos().powi(2)
-        });
+        },
+    );
     let rel = (got - want).abs() / want;
-    assert!(rel < 2e-4, "catamaran: got {got} N, reference {want} N (rel {rel:.2e})");
+    assert!(
+        rel < 2e-4,
+        "catamaran: got {got} N, reference {want} N (rel {rel:.2e})"
+    );
 }
 
 #[test]
@@ -170,7 +184,13 @@ fn tandem_matches_analytic_interference() {
     let nu = G / (u * u);
     let members = [
         (&hull, Placement { x: d / 2.0, y: 0.0 }),
-        (&hull, Placement { x: -d / 2.0, y: 0.0 }),
+        (
+            &hull,
+            Placement {
+                x: -d / 2.0,
+                y: 0.0,
+            },
+        ),
     ];
     let opts = WaveOptions {
         rel_tol: 1e-7,
@@ -179,13 +199,24 @@ fn tandem_matches_analytic_interference() {
     let got = michell::multihull_wave_resistance_with(&members, &cond, &opts)
         .unwrap()
         .resistance;
-    let want =
-        reference_wave_resistance_factored(l, b, t, u, cond.fluid.density, 100.0, 4_000_000, |theta| {
+    let want = reference_wave_resistance_factored(
+        l,
+        b,
+        t,
+        u,
+        cond.fluid.density,
+        100.0,
+        4_000_000,
+        |theta| {
             let alpha = 0.5 * nu * d / theta.cos();
             4.0 * alpha.cos().powi(2)
-        });
+        },
+    );
     let rel = (got - want).abs() / want;
-    assert!(rel < 2e-4, "tandem: got {got} N, reference {want} N (rel {rel:.2e})");
+    assert!(
+        rel < 2e-4,
+        "tandem: got {got} N, reference {want} N (rel {rel:.2e})"
+    );
 }
 
 #[test]
@@ -203,9 +234,7 @@ fn multihull_breakdown_is_consistent() {
     assert!((r.interference - r.wave.resistance / r.solo_wave_total).abs() < 1e-12);
     assert!((r.total - r.wave.resistance - r.viscous_total).abs() < 1e-9 * r.total);
     assert!((r.effective_power - r.total * 3.0).abs() < 1e-9 * r.effective_power);
-    assert!(
-        (r.wetted_surface - 2.0 * hull.wetted_surface()).abs() < 1e-9 * r.wetted_surface
-    );
+    assert!((r.wetted_surface - 2.0 * hull.wetted_surface()).abs() < 1e-9 * r.wetted_surface);
 }
 
 #[test]

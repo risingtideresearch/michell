@@ -221,7 +221,12 @@ pub fn rectangular_wing(ar: f64, nc: usize, ns: usize) -> Vec<Panel> {
 /// Spanwise loading: total bound circulation summed over the chordwise strip at
 /// each spanwise station, returned as `(y_mid, Γ_strip)` for an `nc × ns` wing
 /// built by [`rectangular_wing`] (panels in that row-major order).
-pub fn spanwise_loading(panels: &[Panel], sol: &WingSolution, nc: usize, ns: usize) -> Vec<(f64, f64)> {
+pub fn spanwise_loading(
+    panels: &[Panel],
+    sol: &WingSolution,
+    nc: usize,
+    ns: usize,
+) -> Vec<(f64, f64)> {
     let mut out = Vec::with_capacity(ns);
     for j in 0..ns {
         let mut g = 0.0;
@@ -276,7 +281,10 @@ mod tests {
         }
         // By AR = 32 a rectangular wing is ~92% of 2π (lifting-line gives
         // 2π/(1+2/32) = 5.91; a rectangular planform sits a little under it).
-        assert!(prev > 0.90 * 2.0 * PI, "AR=32 slope {prev} too far below 2π");
+        assert!(
+            prev > 0.90 * 2.0 * PI,
+            "AR=32 slope {prev} too far below 2π"
+        );
     }
 
     /// Prandtl lifting-line sanity: for a high-AR rectangular wing the slope is
@@ -322,12 +330,18 @@ mod tests {
             let (yl, gl) = load[j];
             let (yr, gr) = load[ns - 1 - j];
             assert!((yl + yr).abs() < 1e-9, "stations not mirrored in y");
-            assert!((gl - gr).abs() < 1e-9 * gl.abs().max(1e-12), "loading not symmetric");
+            assert!(
+                (gl - gr).abs() < 1e-9 * gl.abs().max(1e-12),
+                "loading not symmetric"
+            );
         }
         // Tip relief: the outermost strip carries much less than the root.
         let root = load[ns / 2].1.abs();
         let tip = load[0].1.abs();
-        assert!(tip < 0.5 * root, "tip loading {tip} not relieved vs root {root}");
+        assert!(
+            tip < 0.5 * root,
+            "tip loading {tip} not relieved vs root {root}"
+        );
         assert!(tip > 0.0);
     }
 
@@ -338,7 +352,13 @@ mod tests {
         let coarse = lift_slope(ar, 3, 24);
         let medium = lift_slope(ar, 5, 40);
         let fine = lift_slope(ar, 8, 64);
-        assert!((fine - medium).abs() < (medium - coarse).abs(), "not settling");
-        assert!((fine - medium).abs() < 0.03 * fine, "fine grid not converged");
+        assert!(
+            (fine - medium).abs() < (medium - coarse).abs(),
+            "not settling"
+        );
+        assert!(
+            (fine - medium).abs() < 0.03 * fine,
+            "fine grid not converged"
+        );
     }
 }

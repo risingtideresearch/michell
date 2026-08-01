@@ -7,7 +7,7 @@
 //!
 //! Run with: cargo run --release --example heel
 
-use michell::{heel_wave_resistance, hulls, Conditions, STANDARD_GRAVITY, WaveOptions};
+use michell::{heel_wave_resistance, hulls, Conditions, WaveOptions, STANDARD_GRAVITY};
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
 
@@ -27,10 +27,14 @@ fn main() {
     for fr in [0.25, 0.32, 0.40] {
         let u = fr * (STANDARD_GRAVITY * l).sqrt();
         let cond = Conditions::seawater(u);
-        let r0 = heel_wave_resistance(&hull, &cond, 0.0, &opts).unwrap().resistance;
+        let r0 = heel_wave_resistance(&hull, &cond, 0.0, &opts)
+            .unwrap()
+            .resistance;
         print!("{fr:>5.2} {u:>7.3}");
         for a in angles {
-            let r = heel_wave_resistance(&hull, &cond, a * DEG, &opts).unwrap().resistance;
+            let r = heel_wave_resistance(&hull, &cond, a * DEG, &opts)
+                .unwrap()
+                .resistance;
             let pct = 100.0 * (r - r0) / r0;
             print!("{:>13}", format!("{r:.1} (+{pct:.1}%)"));
         }

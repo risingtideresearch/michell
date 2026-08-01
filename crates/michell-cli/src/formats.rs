@@ -203,8 +203,7 @@ pub fn load_hulls(
                 .max(fit.degree_z + 1);
         }
         dump_grids(settings, &[(&grid, centerplane)])?;
-        let (hull, report) =
-            fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
+        let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
         return Ok(vec![(
             hull,
             Placement {
@@ -232,7 +231,11 @@ pub fn load_hulls(
                     .map_err(|e| format!("{e}"))?
                     .ok_or_else(|| format!("{path}: body is dry at its design waterline"))?;
                 dump_grids(settings, &[(&situated.grid, Some(situated.placement.y))])?;
-                Ok(vec![(situated.hull, situated.placement, Source::Body(situated.fit))])
+                Ok(vec![(
+                    situated.hull,
+                    situated.placement,
+                    Source::Body(situated.fit),
+                )])
             }
             None => {
                 if settings.dump_grid.is_some() {
@@ -242,11 +245,7 @@ pub fn load_hulls(
                     ));
                 }
                 let hull = Hull::new(data.surface).map_err(|e| format!("{e}"))?;
-                Ok(vec![(
-                    hull,
-                    Placement { x: 0.0, y },
-                    Source::Native,
-                )])
+                Ok(vec![(hull, Placement { x: 0.0, y }, Source::Native)])
             }
         };
     }
@@ -256,13 +255,18 @@ pub fn load_hulls(
         if !settings.fit_explicit {
             // Adapt the default control count to the grid so small tables
             // still loft.
-            fit.n_ctrl_x = fit.n_ctrl_x.min(st.len().saturating_sub(2)).max(fit.degree_x + 1);
-            fit.n_ctrl_z = fit.n_ctrl_z.min(wl.len().saturating_sub(2)).max(fit.degree_z + 1);
+            fit.n_ctrl_x = fit
+                .n_ctrl_x
+                .min(st.len().saturating_sub(2))
+                .max(fit.degree_x + 1);
+            fit.n_ctrl_z = fit
+                .n_ctrl_z
+                .min(wl.len().saturating_sub(2))
+                .max(fit.degree_z + 1);
         }
         let grid = SampleGrid::new(st, wl, y).map_err(|e| format!("{path}: {e}"))?;
         dump_grids(settings, &[(&grid, None)])?;
-        let (hull, report) =
-            fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
+        let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
         return Ok(vec![(hull, Placement::default(), Source::Offsets(report))]);
     }
     let looks_iges = lower.ends_with(".igs")
@@ -382,8 +386,7 @@ pub fn parse_hull_data(text: &str) -> Result<HullFileData, String> {
         }
         control.extend_from_slice(r);
     }
-    let surface =
-        BSplineSurface::new(px, pz, kx, kz, control).map_err(|e| format!("{e}"))?;
+    let surface = BSplineSurface::new(px, pz, kx, kz, control).map_err(|e| format!("{e}"))?;
     Ok(HullFileData {
         surface,
         waterline,
@@ -463,7 +466,10 @@ fn write_spline_file(
     out.push_str(&format!("knots-z {}\n", join(s.knots_z())));
     let nz = s.n_ctrl_z();
     for i in 0..s.n_ctrl_x() {
-        out.push_str(&format!("row {}\n", join(&s.control()[i * nz..(i + 1) * nz])));
+        out.push_str(&format!(
+            "row {}\n",
+            join(&s.control()[i * nz..(i + 1) * nz])
+        ));
     }
     out
 }
@@ -536,7 +542,9 @@ pub fn parse_range(s: &str) -> Result<Vec<f64>, String> {
             let n = ((b - a) / step + 1e-9).floor() as usize;
             Ok((0..=n).map(|i| a + i as f64 * step).collect())
         }
-        _ => Err(format!("bad range {s:?}: expected `value` or `start:end:step`")),
+        _ => Err(format!(
+            "bad range {s:?}: expected `value` or `start:end:step`"
+        )),
     }
 }
 

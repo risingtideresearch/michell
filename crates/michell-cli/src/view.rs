@@ -28,8 +28,8 @@ use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
 use michell::float::{heel_poses, solve_equilibrium_heeled, LoadCase};
-use michell::inclined::InclinedGrid;
 use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
+use michell::inclined::InclinedGrid;
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -362,7 +362,13 @@ fn bodies_from_iges(
             d.fit.n_ctrl_x = d.fit.n_ctrl_x.min(10);
             d.fit.n_ctrl_z = d.fit.n_ctrl_z.min(7);
             hull_opts.centerplane = src
-                .situate_one(idx, design_wl, &HullPose::default(), &Platform::default(), &d)
+                .situate_one(
+                    idx,
+                    design_wl,
+                    &HullPose::default(),
+                    &Platform::default(),
+                    &d,
+                )
                 .ok()?
                 .map(|m| m.report.centerplane);
         }
@@ -416,7 +422,15 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
         .map(|vh| {
             if vh.dry {
                 // Out of the water: no field (sampling an empty grid is zero).
-                return Field { lx0: 0.0, lx1: 0.0, ly0: 0.0, ly1: 0.0, nx: 0, ny: 0, zeta: Vec::new() };
+                return Field {
+                    lx0: 0.0,
+                    lx1: 0.0,
+                    ly0: 0.0,
+                    ly1: 0.0,
+                    nx: 0,
+                    ny: 0,
+                    zeta: Vec::new(),
+                };
             }
             let lx0 = vx0 - vh.home.x - margin;
             let lx1 = vx1 - vh.home.x + margin;
@@ -424,7 +438,15 @@ fn recompute_fields(state: &mut ViewState) -> Result<(), String> {
             let ly1 = vy1 - vh.home.y + margin;
             let nx = (((lx1 - lx0) / dx).round() as usize + 1).clamp(2, 1400);
             let ny = (((ly1 - ly0) / dy).round() as usize + 1).clamp(2, 1400);
-            Field { lx0, lx1, ly0, ly1, nx, ny, zeta: vec![0.0; nx * ny] }
+            Field {
+                lx0,
+                lx1,
+                ly0,
+                ly1,
+                nx,
+                ny,
+                zeta: vec![0.0; nx * ny],
+            }
         })
         .collect();
 
@@ -732,7 +754,7 @@ fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
     loop {
         let mut request_line = String::new();
         match reader.read_line(&mut request_line) {
-            Ok(0) => return Ok(()),  // client closed the connection
+            Ok(0) => return Ok(()), // client closed the connection
             Ok(_) => {}
             Err(_) => return Ok(()), // idle timeout or read error: drop it
         }
@@ -766,9 +788,13 @@ fn handle(stream: TcpStream, state: &Mutex<ViewState>) -> std::io::Result<()> {
         let keep_alive = !client_close;
         match routed {
             Ok(resp) => write_response(&mut stream, 200, resp.ctype, &resp.body, keep_alive)?,
-            Err(msg) => {
-                write_response(&mut stream, 400, "text/plain; charset=utf-8", msg.as_bytes(), keep_alive)?
-            }
+            Err(msg) => write_response(
+                &mut stream,
+                400,
+                "text/plain; charset=utf-8",
+                msg.as_bytes(),
+                keep_alive,
+            )?,
         };
         if client_close {
             return Ok(());
@@ -800,7 +826,11 @@ fn route(path: &str, query: &str, state: &Mutex<ViewState>) -> Result<Resp, Stri
                 .parse()
                 .map_err(|_| "field: bad hull index".to_string())?;
             let s = state.lock().unwrap();
-            let f = &s.hulls.get(i).ok_or("field: hull index out of range")?.field;
+            let f = &s
+                .hulls
+                .get(i)
+                .ok_or("field: hull index out of range")?
+                .field;
             let mut body = Vec::with_capacity(f.zeta.len() * 4);
             for &v in &f.zeta {
                 body.extend_from_slice(&v.to_le_bytes());
@@ -900,9 +930,11 @@ fn resistance_json(s: &ViewState, places: &[Placement]) -> Result<String, String
         .map(|(vh, &p)| (&vh.hull, p))
         .collect();
     if members.is_empty() {
-        return Ok("{\"total\":null,\"wave\":null,\"viscous\":null,\"interference\":null,\
+        return Ok(
+            "{\"total\":null,\"wave\":null,\"viscous\":null,\"interference\":null,\
                    \"cw\":null,\"ct\":null,\"effective_power\":null,\"froude\":null}"
-            .to_string());
+                .to_string(),
+        );
     }
     // Only the combined wave resistance depends on placement; integrate it on
     // the fixed grid (fast regardless of separation). Viscous, wetted surface,
@@ -1112,10 +1144,7 @@ mod tests {
     fn superposition_matches_direct_fleet_field() {
         let hull = hulls::wigley(12.0, 1.2, 0.75).unwrap();
         let cond = Conditions::seawater(4.0);
-        let places = [
-            Placement { x: 0.0, y: 2.5 },
-            Placement { x: -3.0, y: -2.5 },
-        ];
+        let places = [Placement { x: 0.0, y: 2.5 }, Placement { x: -3.0, y: -2.5 }];
 
         // Direct: both hulls in one spectrum.
         let members: Vec<(&Hull, Placement)> = places.iter().map(|&p| (&hull, p)).collect();
@@ -1125,7 +1154,9 @@ mod tests {
         // placement-shifted point and summed — exactly what the browser does.
         let mut solos: Vec<FreeWaveSpectrum> = places
             .iter()
-            .map(|_| FreeWaveSpectrum::new(&[(&hull, Placement { x: 0.0, y: 0.0 })], &cond).unwrap())
+            .map(|_| {
+                FreeWaveSpectrum::new(&[(&hull, Placement { x: 0.0, y: 0.0 })], &cond).unwrap()
+            })
             .collect();
 
         let mut max_err = 0.0f64;

@@ -14,14 +14,8 @@ use michell::BSplineSurface;
 /// `l` and band depth `d`, design waterline `w` below the band top, centreplane
 /// at `centerplane`. (Same construction as the GZ test's barge.)
 fn barge(l: f64, b: f64, d: f64, w: f64, centerplane: f64) -> Body {
-    let surface = BSplineSurface::new(
-        1,
-        1,
-        vec![0.0, 0.0, l, l],
-        vec![0.0, 0.0, d, d],
-        vec![b; 4],
-    )
-    .unwrap();
+    let surface =
+        BSplineSurface::new(1, 1, vec![0.0, 0.0, l, l], vec![0.0, 0.0, d, d], vec![b; 4]).unwrap();
     Body::new(surface, w, centerplane).unwrap()
 }
 
@@ -56,13 +50,29 @@ fn upright_box_is_exact() {
     let w = d - t; // design waterline == float waterline (z_b = d - t)
     let body = barge(l, b, d, w, 0.0);
     let grid = InclinedGrid::default();
-    let h = body_inclined_hydro(&body, 0.0, &HullPose::default(), &Platform::default(), 0.0, grid)
-        .expect("wet");
+    let h = body_inclined_hydro(
+        &body,
+        0.0,
+        &HullPose::default(),
+        &Platform::default(),
+        0.0,
+        grid,
+    )
+    .expect("wet");
     let want_v = l * 2.0 * b * t;
-    assert!((h.volume - want_v).abs() < 1e-6 * want_v, "V {} vs {want_v}", h.volume);
+    assert!(
+        (h.volume - want_v).abs() < 1e-6 * want_v,
+        "V {} vs {want_v}",
+        h.volume
+    );
     assert!(h.tcb.abs() < 1e-9, "TCB {}", h.tcb);
     assert!((h.kb - t / 2.0).abs() < 1e-9, "KB {} vs {}", h.kb, t / 2.0);
-    assert!((h.lcb - l / 2.0).abs() < 1e-9, "LCB {} vs {}", h.lcb, l / 2.0);
+    assert!(
+        (h.lcb - l / 2.0).abs() < 1e-9,
+        "LCB {} vs {}",
+        h.lcb,
+        l / 2.0
+    );
     assert_eq!(h.band_exceeded, 0);
 }
 
@@ -77,7 +87,16 @@ fn zero_heel_is_upright() {
     let grid = InclinedGrid::default();
     let target = l * 2.0 * b * t;
     let s = solve_sinkage(&bodies, &poses, 0.0, grid, target);
-    let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), 0.0, 0.1, 0.0, grid);
+    let gz = fleet_righting_arm(
+        &bodies,
+        s,
+        &poses,
+        &Platform::default(),
+        0.0,
+        0.1,
+        0.0,
+        grid,
+    );
     assert!(gz.abs() < 1e-9, "GZ(0) = {gz}");
 }
 
@@ -109,9 +128,21 @@ fn heeled_box_is_wall_sided_and_nonlinear() {
         let s = solve_sinkage(&bodies, &poses, phi, grid, target);
         // Wall-sided displacement is preserved (mean draft unchanged).
         let v = fleet_volume(&bodies, s, &poses, &Platform::default(), phi, grid);
-        assert!((v - target).abs() < 1e-4 * target, "{deg}°: V {v} vs {target}");
+        assert!(
+            (v - target).abs() < 1e-4 * target,
+            "{deg}°: V {v} vs {target}"
+        );
 
-        let gz = fleet_righting_arm(&bodies, s, &poses, &Platform::default(), phi, vcg, 0.0, grid);
+        let gz = fleet_righting_arm(
+            &bodies,
+            s,
+            &poses,
+            &Platform::default(),
+            phi,
+            vcg,
+            0.0,
+            grid,
+        );
         let (sin, tan) = (phi.sin(), phi.tan());
         let want = sin * (gm + 0.5 * bm * tan * tan); // wall-sided exact
         let linear = gm * sin; // metacentric approximation
@@ -121,7 +152,10 @@ fn heeled_box_is_wall_sided_and_nonlinear() {
         );
         // The nonlinear form-stability term is real, not noise.
         if deg >= 12.0 {
-            assert!(gz > 1.02 * linear, "{deg}°: GZ {gz} not above linear {linear}");
+            assert!(
+                gz > 1.02 * linear,
+                "{deg}°: GZ {gz} not above linear {linear}"
+            );
         }
     }
 }
@@ -164,25 +198,67 @@ fn catamaran_gz_beats_metacentric() {
         let sk = solve_sinkage(&bodies, &poses, phi, grid, target);
         // Displacement is held across the heel sweep.
         let v = fleet_volume(&bodies, sk, &poses, &Platform::default(), phi, grid);
-        assert!((v - target).abs() < 1e-4 * target, "{deg}°: V {v} vs {target}");
-        fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), phi, vcg, 0.0, grid)
+        assert!(
+            (v - target).abs() < 1e-4 * target,
+            "{deg}°: V {v} vs {target}"
+        );
+        fleet_righting_arm(
+            &bodies,
+            sk,
+            &poses,
+            &Platform::default(),
+            phi,
+            vcg,
+            0.0,
+            grid,
+        )
     };
 
     // Linear regime: agree closely at 2°.
     let (g2, c2) = (gz_at(2.0), closed(2.0f64.to_radians()));
-    assert!((g2 - c2).abs() < 4e-3 * c2, "2°: module {g2} vs closed {c2}");
+    assert!(
+        (g2 - c2).abs() < 4e-3 * c2,
+        "2°: module {g2} vs closed {c2}"
+    );
 
     // Growing nonlinear excess above the metacentric line.
     let excess = |deg: f64| gz_at(deg) - closed((deg as f64).to_radians());
     let (e5, e8) = (excess(5.0), excess(8.0));
-    assert!(e5 > 0.0 && e8 > e5, "form-stability excess should grow: e5={e5} e8={e8}");
-    assert!(e8 > 0.02 * closed(8.0f64.to_radians()), "8° excess too small: {e8}");
+    assert!(
+        e5 > 0.0 && e8 > e5,
+        "form-stability excess should grow: e5={e5} e8={e8}"
+    );
+    assert!(
+        e8 > 0.02 * closed(8.0f64.to_radians()),
+        "8° excess too small: {e8}"
+    );
 
     // Antisymmetric about upright.
     let sk = solve_sinkage(&bodies, &poses, 5.0f64.to_radians(), grid, target);
-    let plus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), 5.0f64.to_radians(), vcg, 0.0, grid);
-    let minus = fleet_righting_arm(&bodies, sk, &poses, &Platform::default(), -5.0f64.to_radians(), vcg, 0.0, grid);
-    assert!((plus + minus).abs() < 1e-6 * plus.abs(), "not antisymmetric: {plus} vs {minus}");
+    let plus = fleet_righting_arm(
+        &bodies,
+        sk,
+        &poses,
+        &Platform::default(),
+        5.0f64.to_radians(),
+        vcg,
+        0.0,
+        grid,
+    );
+    let minus = fleet_righting_arm(
+        &bodies,
+        sk,
+        &poses,
+        &Platform::default(),
+        -5.0f64.to_radians(),
+        vcg,
+        0.0,
+        grid,
+    );
+    assert!(
+        (plus + minus).abs() < 1e-6 * plus.abs(),
+        "not antisymmetric: {plus} vs {minus}"
+    );
 }
 
 /// A curved (Wigley) section is approximated by the outline polygon, so the
@@ -198,15 +274,31 @@ fn curved_section_converges() {
     let (pose, plat) = (HullPose::default(), Platform::default());
     let at = |g| body_inclined_hydro(&body, -0.15, &pose, &plat, heel, g).unwrap();
 
-    let reference = at(InclinedGrid { stations: 401, band: 401 });
+    let reference = at(InclinedGrid {
+        stations: 401,
+        band: 401,
+    });
     let default = at(InclinedGrid::default());
-    let coarse = at(InclinedGrid { stations: 41, band: 21 });
+    let coarse = at(InclinedGrid {
+        stations: 41,
+        band: 21,
+    });
 
     let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-9);
     // The default grid is essentially converged; the coarse grid is close but
     // measurably worse — confirming genuine convergence, not a fluke.
-    assert!(rel(default.volume, reference.volume) < 1e-3, "default V {} vs {}", default.volume, reference.volume);
-    assert!((default.tcb - reference.tcb).abs() < 1e-3, "default tcb {} vs {}", default.tcb, reference.tcb);
+    assert!(
+        rel(default.volume, reference.volume) < 1e-3,
+        "default V {} vs {}",
+        default.volume,
+        reference.volume
+    );
+    assert!(
+        (default.tcb - reference.tcb).abs() < 1e-3,
+        "default tcb {} vs {}",
+        default.tcb,
+        reference.tcb
+    );
     assert!(
         rel(default.volume, reference.volume) <= rel(coarse.volume, reference.volume) + 1e-9,
         "default not better than coarse"
@@ -224,8 +316,14 @@ fn resolution_converges() {
     let phi = 15.0f64.to_radians();
     let target = l * 2.0 * b * t;
 
-    let coarse = InclinedGrid { stations: 17, band: 25 };
-    let fine = InclinedGrid { stations: 33, band: 401 };
+    let coarse = InclinedGrid {
+        stations: 17,
+        band: 25,
+    };
+    let fine = InclinedGrid {
+        stations: 33,
+        band: 401,
+    };
     let sc = solve_sinkage(&bodies, &poses, phi, coarse, target);
     let sf = solve_sinkage(&bodies, &poses, phi, fine, target);
     let ec = (fleet_volume(&bodies, sc, &poses, &Platform::default(), phi, coarse) - target).abs();
