@@ -23,16 +23,16 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI};
 /// Michell resistance from the low-Froude waterline-endpoint reduction.
 #[derive(Debug, Clone, Copy)]
 pub struct LowFroudeResistance {
-    /// Approximate wave resistance [N].
+    /// Approximate wave resistance, in newtons.
     pub resistance: f64,
     /// Estimated relative error: the analytical bound for omitted submerged
     /// endpoint terms plus the coarse/fine steepest-descent difference.
     pub est_rel_error: f64,
-    /// Analytical absolute resistance bound [N] for all pair terms involving
-    /// at least one omitted endpoint below the waterline.
+    /// Analytical absolute resistance bound, in newtons, for all pair terms
+    /// involving at least one omitted endpoint below the waterline.
     pub omitted_abs_error_bound: f64,
-    /// Absolute resistance error estimate [N] from coarse/fine quadrature on
-    /// the steepest-descent contours.
+    /// Absolute resistance error estimate, in newtons, from coarse/fine
+    /// quadrature on the steepest-descent contours.
     pub quadrature_abs_error_estimate: f64,
     /// Number of nonzero terms in the exact endpoint representation.
     pub endpoint_terms: usize,
