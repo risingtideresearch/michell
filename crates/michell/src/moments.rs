@@ -100,6 +100,54 @@ impl Mul for C64 {
 /// closed-form recurrence (large argument, exact).
 const SERIES_THRESHOLD: f64 = 4.0;
 
+/// Dimensionless endpoint expansion
+/// `∫₀¹ uᵃeⁱˣᵘdu = eⁱˣ Σₘ (-ix)ᵐ a!/(a+m+1)!`.
+///
+/// Unlike the origin expansion, successive terms contract when `a >= |x|`.
+/// It therefore provides a stable handoff when the upward recurrence starts
+/// amplifying roundoff at degrees large compared with the phase.
+fn osc_endpoint_series(x: f64, a: usize) -> C64 {
+    let mut term = C64::new(1.0 / (a as f64 + 1.0), 0.0);
+    let mut sum = term;
+    for m in 0..256 {
+        term = term * C64::new(0.0, -x).scale(1.0 / (a as f64 + m as f64 + 2.0));
+        sum = sum + term;
+        if term.abs() <= 1e-18 * sum.abs() {
+            break;
+        }
+    }
+    C64::cis(x) * sum
+}
+
+/// Real endpoint expansion
+/// `∫₀¹ uᵇe⁻ˣᵘdu = e⁻ˣ Σₘ xᵐ b!/(b+m+1)!`.
+fn exp_endpoint_series(x: f64, b: usize) -> f64 {
+    let mut term = 1.0 / (b as f64 + 1.0);
+    let mut sum = term;
+    for m in 0..256 {
+        term *= x / (b as f64 + m as f64 + 2.0);
+        sum += term;
+        if term.abs() <= 1e-18 * sum.abs() {
+            break;
+        }
+    }
+    (-x).exp() * sum
+}
+
+/// Complex form of [`exp_endpoint_series`].
+fn exp_endpoint_series_complex(x: C64, b: usize) -> C64 {
+    let mut term = C64::new(1.0 / (b as f64 + 1.0), 0.0);
+    let mut sum = term;
+    for m in 0..256 {
+        term = term * x.scale(1.0 / (b as f64 + m as f64 + 2.0));
+        sum = sum + term;
+        if term.abs() <= 1e-18 * sum.abs() {
+            break;
+        }
+    }
+    x.scale(-1.0).exp() * sum
+}
+
 /// Oscillatory moments `M_a = ∫_0^h t^a e^{i k t} dt` for `a = 0..=a_max`.
 ///
 /// For |kh| below [`SERIES_THRESHOLD`] uses the entire series
@@ -133,7 +181,11 @@ pub fn osc_moments(k: f64, h: f64, a_max: usize, out: &mut Vec<C64>) {
         out.push(prev);
         let mut h_pow = h;
         for a in 1..=a_max {
-            let cur = (e.scale(h_pow) - prev.scale(a as f64)) * inv_ik;
+            let cur = if a as f64 >= kh.abs() {
+                osc_endpoint_series(kh, a).scale(h_pow * h)
+            } else {
+                (e.scale(h_pow) - prev.scale(a as f64)) * inv_ik
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -172,7 +224,11 @@ pub fn exp_moments(kappa: f64, h: f64, b_max: usize, out: &mut Vec<f64>) {
         out.push(prev);
         let mut h_pow = h;
         for b in 1..=b_max {
-            let cur = (b as f64 * prev - h_pow * e) / kappa;
+            let cur = if b as f64 >= x {
+                exp_endpoint_series(x, b) * h_pow * h
+            } else {
+                (b as f64 * prev - h_pow * e) / kappa
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -213,7 +269,11 @@ pub fn exp_moments_complex(kappa: C64, h: f64, b_max: usize, out: &mut Vec<C64>)
         out.push(prev);
         let mut h_pow = h;
         for b in 1..=b_max {
-            let cur = (prev.scale(b as f64) - e.scale(h_pow)) * inv_k;
+            let cur = if b as f64 >= x.abs() {
+                exp_endpoint_series_complex(x, b).scale(h_pow * h)
+            } else {
+                (prev.scale(b as f64) - e.scale(h_pow)) * inv_k
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -379,6 +439,26 @@ mod tests {
             assert!(
                 jump < 1e-9,
                 "exponential degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_degree_complex_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+        let direction = C64::new(0.8, 0.6);
+
+        let mut complex_below = Vec::new();
+        let mut complex_above = Vec::new();
+        exp_moments_complex(direction.scale(below), 1.0, 32, &mut complex_below);
+        exp_moments_complex(direction.scale(above), 1.0, 32, &mut complex_above);
+        for degree in 0..=32 {
+            let scale = complex_below[degree].abs().max(1e-300);
+            let jump = (complex_above[degree] - complex_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "complex degree {degree}: relative switch jump {jump:.3e}"
             );
         }
     }
