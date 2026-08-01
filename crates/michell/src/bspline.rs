@@ -552,8 +552,18 @@ mod tests {
             2,
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
-            vec![1.0; 3 * 5],
-        );
-        assert!(s.is_ok());
+            (0..3 * 5).map(|index| 0.2 + index as f64 / 10.0).collect(),
+        )
+        .unwrap();
+
+        assert_eq!(s.z_span_indices(), vec![2, 4]);
+        for &span_z in &s.z_span_indices() {
+            let partials = s.corner_partials(2, span_z);
+            assert!(partials.iter().flatten().all(|value| value.is_finite()));
+        }
+        for z in [0.5 - 1e-12, 0.5, 0.5 + 1e-12] {
+            assert!(s.eval(0.4, z).is_finite());
+            assert!(s.eval_deriv(0.4, z, 0, 1).is_finite());
+        }
     }
 }
