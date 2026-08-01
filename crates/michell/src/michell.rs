@@ -493,6 +493,8 @@ struct OuterParams {
 fn integrate_outer(
     params: &OuterParams,
     frac: f64,
+    gx: &[f64],
+    gw: &[f64],
     amp_sq: &mut impl FnMut(f64) -> f64,
     evals: &mut usize,
 ) -> (f64, f64) {
@@ -507,7 +509,6 @@ fn integrate_outer(
     const LAMBDA_HARD_CAP: f64 = 1e4;
     const MAX_EVALS_PER_PASS: usize = 4_000_000;
 
-    let (gx, gw) = gauss_legendre(GL_N);
     let nu = params.nu;
     let (x_half, y_half, t_max) = (params.x_half, params.y_half, params.t_max);
 
@@ -515,9 +516,7 @@ fn integrate_outer(
     // 2 ν x_half d(sec θ)/dθ, the z-decay envelope 2 ν T d(sec²θ)/dθ, and the
     // transverse separation phase ν y λ√(λ²−1) = ν y sec θ tan θ contributes
     // 2 ν y_half d(sec θ tan θ)/dθ = 2 ν y_half sec θ (sec²θ + tan²θ).
-    let rate = |theta: f64| -> f64 {
-        let sec = 1.0 / theta.cos();
-        let tan = theta.tan();
+    let rate = |sec: f64, tan: f64| -> f64 {
         2.0 * nu * sec * tan * (x_half + t_max * sec)
             + 2.0 * nu * y_half * sec * (sec * sec + tan * tan)
             + 4.0
@@ -532,8 +531,11 @@ fn integrate_outer(
     let mut window_sum = 0.0f64;
     let mut window_phase = 0.0f64;
     let mut pass_evals = 0usize;
+    let mut lambda = 1.0f64;
     while theta < FRAC_PI_2 - 1e-12 {
-        let local_rate = rate(theta);
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        let sec_theta = 1.0 / cos_theta;
+        let local_rate = rate(sec_theta, sin_theta * sec_theta);
         let dt = (frac * 2.0 * PI / local_rate)
             .min(frac * cap)
             .min(FRAC_PI_2 - theta)
@@ -550,10 +552,11 @@ fn integrate_outer(
         total += panel;
         pass_evals += GL_N;
         theta += dt;
+        lambda = 1.0 / theta.cos();
 
         // Truncation: only past λ = 2, and only when an entire window of
         // accumulated oscillation phase contributed negligibly.
-        if 1.0 / theta.cos() > 2.0 {
+        if lambda > 2.0 {
             window_sum += panel;
             window_phase += local_rate * dt;
             if window_phase >= STOP_WINDOW_PHASE {
@@ -564,12 +567,12 @@ fn integrate_outer(
                 window_phase = 0.0;
             }
         }
-        if 1.0 / theta.cos() > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
+        if lambda > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
             break;
         }
     }
     *evals += pass_evals;
-    (total, 1.0 / theta.cos().max(1e-300))
+    (total, lambda)
 }
 
 // ---------------------------------------------------------------------------
@@ -621,16 +624,19 @@ fn run_outer(
     coeff: f64,
     mut amp_sq: impl FnMut(f64) -> f64,
 ) -> WaveResistance {
+    const GL_N: usize = 16;
+    let (gx, gw) = gauss_legendre(GL_N);
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+    let (mut integral, mut max_lambda) =
+        integrate_outer(params, frac, &gx, &gw, &mut amp_sq, &mut evals);
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+        let (refined, ml) = integrate_outer(params, frac, &gx, &gw, &mut amp_sq, &mut evals);
         evals_total += evals;
         let scale = refined.abs().max(f64::MIN_POSITIVE);
         est_rel = (refined - integral).abs() / scale;
