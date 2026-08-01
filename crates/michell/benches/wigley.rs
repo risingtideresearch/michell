@@ -1,4 +1,7 @@
-use michell::{hulls, resistance, wave_resistance, Conditions, STANDARD_GRAVITY};
+use michell::{
+    hulls, resistance, wave_resistance, wave_resistance_gradient, BSplineSurface, Conditions, Hull,
+    STANDARD_GRAVITY,
+};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -26,6 +29,20 @@ fn measure(samples: usize, mut run: impl FnMut() -> f64) -> (Duration, Duration,
 
 fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1e3
+}
+
+fn rebuild(surface: &BSplineSurface, control: Vec<f64>) -> Hull {
+    Hull::new(
+        BSplineSurface::new(
+            surface.degree_x(),
+            surface.degree_z(),
+            surface.knots_x().to_vec(),
+            surface.knots_z().to_vec(),
+            control,
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
 fn main() {
@@ -56,6 +73,43 @@ fn main() {
         wave_resistance(&hull, &low_cond).unwrap().resistance
     });
 
+    let gradient_hull = rebuild(
+        hull.surface(),
+        hull.surface()
+            .control()
+            .iter()
+            .map(|value| value + 0.2)
+            .collect(),
+    );
+    let gradient_speed = 0.35 * (STANDARD_GRAVITY * gradient_hull.length()).sqrt();
+    let gradient_cond = Conditions::freshwater(gradient_speed);
+    let (gradient_median, gradient_best, gradient_checksum) = measure(samples, || {
+        wave_resistance_gradient(&gradient_hull, &gradient_cond)
+            .unwrap()
+            .control_gradient
+            .iter()
+            .map(|value| value.abs())
+            .sum()
+    });
+    let (finite_median, finite_best, finite_checksum) = measure(samples, || {
+        let step = 1e-5;
+        let mut norm = 0.0;
+        for index in 0..gradient_hull.surface().control().len() {
+            let mut plus = gradient_hull.surface().control().to_vec();
+            let mut minus = plus.clone();
+            plus[index] += step;
+            minus[index] -= step;
+            let r_plus = wave_resistance(&rebuild(gradient_hull.surface(), plus), &gradient_cond)
+                .unwrap()
+                .resistance;
+            let r_minus = wave_resistance(&rebuild(gradient_hull.surface(), minus), &gradient_cond)
+                .unwrap()
+                .resistance;
+            norm += ((r_plus - r_minus) / (2.0 * step)).abs();
+        }
+        norm
+    });
+
     println!("michell Wigley benchmark ({samples} samples, default rel_tol=1e-5)");
     println!("case                         median_ms      best_ms");
     println!(
@@ -77,5 +131,22 @@ fn main() {
     println!(
         "checksums: sweep={:.12e}, low={:.12e}",
         sweep_checksum, low_checksum
+    );
+    println!("gradient method              median_ms      best_ms");
+    println!(
+        "exact reverse (9 controls)   {:>10.3}   {:>10.3}",
+        millis(gradient_median),
+        millis(gradient_best)
+    );
+    println!(
+        "centered finite differences  {:>10.3}   {:>10.3}",
+        millis(finite_median),
+        millis(finite_best)
+    );
+    println!(
+        "gradient speedup: {:.2}x; checksums exact={:.12e}, finite={:.12e}",
+        finite_median.as_secs_f64() / gradient_median.as_secs_f64(),
+        gradient_checksum,
+        finite_checksum
     );
 }
