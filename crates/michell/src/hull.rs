@@ -233,6 +233,21 @@ impl Hull {
                 "asymmetric hull: control nets differ in length".into(),
             ));
         }
+        for (side, surface) in [("port", &port), ("starboard", &starboard)] {
+            let scale = surface
+                .control()
+                .iter()
+                .fold(0.0f64, |maximum, &value| maximum.max(value.abs()));
+            if surface
+                .control()
+                .iter()
+                .any(|&value| value < -1e-12 * scale.max(1.0))
+            {
+                return Err(Error::InvalidGeometry(format!(
+                    "asymmetric hull: {side} control net contains negative half-beam values"
+                )));
+            }
+        }
 
         // Symmetric and antisymmetric control nets on the shared parametrisation.
         let sym_ctrl: Vec<f64> = starboard
