@@ -1,6 +1,6 @@
 use michell::{
-    hulls, resistance, wave_resistance, wave_resistance_gradient, BSplineSurface, Conditions, Hull,
-    STANDARD_GRAVITY,
+    hulls, low_froude_wave_resistance, resistance, wave_resistance, wave_resistance_gradient,
+    BSplineSurface, Conditions, Hull, STANDARD_GRAVITY,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -73,6 +73,22 @@ fn main() {
         wave_resistance(&hull, &low_cond).unwrap().resistance
     });
 
+    let very_low_fn = 0.02;
+    let very_low_speed = very_low_fn * (STANDARD_GRAVITY * hull.length()).sqrt();
+    let very_low_cond = Conditions::freshwater(very_low_speed);
+    let very_low_direct = wave_resistance(&hull, &very_low_cond).unwrap();
+    let very_low_reduced = low_froude_wave_resistance(&hull, &very_low_cond).unwrap();
+    let (very_low_direct_median, very_low_direct_best, very_low_direct_checksum) =
+        measure(samples, || {
+            wave_resistance(&hull, &very_low_cond).unwrap().resistance
+        });
+    let (very_low_reduced_median, very_low_reduced_best, very_low_reduced_checksum) =
+        measure(samples, || {
+            low_froude_wave_resistance(&hull, &very_low_cond)
+                .unwrap()
+                .resistance
+        });
+
     let gradient_hull = rebuild(
         hull.surface(),
         hull.surface()
@@ -131,6 +147,26 @@ fn main() {
     println!(
         "checksums: sweep={:.12e}, low={:.12e}",
         sweep_checksum, low_checksum
+    );
+    println!("very-low-Froude method       median_ms      best_ms");
+    println!(
+        "marching Fn={very_low_fn:.2}            {:>10.3}   {:>10.3}",
+        millis(very_low_direct_median),
+        millis(very_low_direct_best)
+    );
+    println!(
+        "endpoint/NSD Fn={very_low_fn:.2}        {:>10.3}   {:>10.3}",
+        millis(very_low_reduced_median),
+        millis(very_low_reduced_best)
+    );
+    println!(
+        "very-low-Fn speedup: {:.2}x; evaluations {} -> {}; estimated endpoint error {:.3e}; checksums direct={:.12e}, endpoint={:.12e}",
+        very_low_direct_median.as_secs_f64() / very_low_reduced_median.as_secs_f64(),
+        very_low_direct.inner_evaluations,
+        very_low_reduced.kernel_evaluations,
+        very_low_reduced.est_rel_error,
+        very_low_direct_checksum,
+        very_low_reduced_checksum,
     );
     println!("gradient method              median_ms      best_ms");
     println!(

@@ -79,6 +79,7 @@ pub mod iges;
 pub mod inclined;
 pub mod lifting;
 pub mod lifting3d;
+mod low_froude;
 mod michell;
 mod moments;
 mod quadrature;
@@ -91,6 +92,7 @@ pub use error::{Error, Result};
 pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, ViscousResistance};
 pub use grid::SampleGrid;
 pub use hull::Hull;
+pub use low_froude::{low_froude_wave_resistance, LowFroudeResistance};
 pub use michell::{
     asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
     multihull_heel_wave_resistance, multihull_wave_resistance, multihull_wave_resistance_lifting,
