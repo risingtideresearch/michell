@@ -246,8 +246,11 @@ fn reported_error_tracks_actual_error() {
             &hull,
             &cond,
             &WaveOptions {
-                rel_tol: 1e-11,
-                max_refinements: 9,
+                // Six forced refinements remain below the per-pass safety
+                // cap even for Fn=0.08. Finer passes hit that cap and are not
+                // valid references: their reported max_lambda retreats.
+                rel_tol: 1e-14,
+                max_refinements: 6,
             },
         )
         .unwrap();
@@ -260,12 +263,24 @@ fn reported_error_tracks_actual_error() {
             },
         )
         .unwrap();
+        assert!(
+            reference.max_lambda >= 0.95 * result.max_lambda,
+            "reference truncated earlier: reference λmax={:.3}, result λmax={:.3}",
+            reference.max_lambda,
+            result.max_lambda
+        );
         let actual = rel_err(result.resistance, reference.resistance);
         let allowance = 10.0 * result.est_rel_error.max(1e-10);
         assert!(
             actual <= allowance,
-            "Fn={fn_}: estimated {:.3e}, actual {actual:.3e}",
-            result.est_rel_error
+            "Fn={fn_}: estimated {:.3e}, actual {actual:.3e}; result Rw={:.12e}, λmax={:.3}, evals={}; reference Rw={:.12e}, λmax={:.3}, evals={}",
+            result.est_rel_error,
+            result.resistance,
+            result.max_lambda,
+            result.inner_evaluations,
+            reference.resistance,
+            reference.max_lambda,
+            reference.inner_evaluations,
         );
     }
 }
