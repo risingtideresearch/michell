@@ -105,3 +105,22 @@ fn endpoint_reduction_converges_as_froude_number_falls() {
         }
     }
 }
+
+#[test]
+fn low_froude_reported_error_covers_actual_error() {
+    let (length, beam, draft) = (10.0, 1.0, 0.625);
+    let hull = hulls::wigley(length, beam, draft).unwrap();
+    let fn_ = 0.05;
+    let speed = fn_ * (STANDARD_GRAVITY * length).sqrt();
+    let conditions = Conditions::freshwater(speed);
+    let result = wave_resistance_with(&hull, &conditions, &WaveOptions::default()).unwrap();
+    let (reference, _) = resolved_wigley_reference(length, beam, draft, &conditions);
+    let actual_relative_error = (result.resistance - reference).abs() / reference;
+    assert!(
+        actual_relative_error <= 10.0 * result.est_rel_error.max(1e-12),
+        "reported {:.3e}, actual {actual_relative_error:.3e}, evaluations={}, max_lambda={:.3}",
+        result.est_rel_error,
+        result.inner_evaluations,
+        result.max_lambda,
+    );
+}
