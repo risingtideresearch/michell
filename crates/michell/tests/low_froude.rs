@@ -137,3 +137,21 @@ fn low_froude_reported_error_covers_actual_error() {
         result.max_lambda,
     );
 }
+
+#[test]
+fn default_solver_accepts_only_a_reduction_within_tolerance() {
+    let (length, beam, draft) = (10.0, 1.0, 0.625);
+    let hull = hulls::wigley(length, beam, draft).unwrap();
+
+    for (fn_, should_use_reduction) in [(0.08, false), (0.05, true)] {
+        let speed = fn_ * (STANDARD_GRAVITY * length).sqrt();
+        let conditions = Conditions::freshwater(speed);
+        let result = wave_resistance_with(&hull, &conditions, &WaveOptions::default()).unwrap();
+        assert_eq!(
+            result.max_lambda.is_infinite(),
+            should_use_reduction,
+            "unexpected default route at Fn={fn_}: estimated error {:.3e}",
+            result.est_rel_error,
+        );
+    }
+}
