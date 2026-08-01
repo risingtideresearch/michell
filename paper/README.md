@@ -9,6 +9,6 @@ tectonic main.tex --outdir ../output/pdf --keep-logs --keep-intermediates
 
 Rename the generated `main.pdf` to
 `endpoint-bickley-michell-draft.pdf` for distribution.  The final PDF is kept
-under `output/pdf/`; auxiliary files remain ignored. The author list, target
-journal, and repository archive URL are placeholders that must be resolved
-before submission.
+under `output/pdf/`; auxiliary files remain ignored. The target journal and
+repository archive URL are placeholders that must be resolved before
+submission.
