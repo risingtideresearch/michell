@@ -112,3 +112,15 @@ fn mismatched_parametrisations_are_rejected() {
     let b = hulls::wigley(12.0, 1.0, 0.625).unwrap(); // different x-knots
     assert!(Hull::new_asymmetric(clone_surface(a.surface()), clone_surface(b.surface())).is_err());
 }
+
+#[test]
+fn negative_side_half_breadth_is_rejected() {
+    let base = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let port = scaled(base.surface(), -0.1);
+    let starboard = clone_surface(base.surface());
+
+    assert!(
+        Hull::new_asymmetric(port, starboard).is_err(),
+        "each physical side must satisfy the non-negative half-breadth contract"
+    );
+}
