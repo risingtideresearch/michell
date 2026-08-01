@@ -344,4 +344,42 @@ mod tests {
         assert!((out[1] - 1e-12).abs() < 1e-24);
         assert!(out.iter().all(|v| v.is_finite()));
     }
+
+    #[test]
+    fn high_degree_oscillatory_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+
+        let mut oscillatory_below = Vec::new();
+        let mut oscillatory_above = Vec::new();
+        osc_moments(below, 1.0, 32, &mut oscillatory_below);
+        osc_moments(above, 1.0, 32, &mut oscillatory_above);
+        for degree in 0..=32 {
+            let scale = oscillatory_below[degree].abs().max(1e-300);
+            let jump = (oscillatory_above[degree] - oscillatory_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "oscillatory degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_degree_exponential_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+
+        let mut exponential_below = Vec::new();
+        let mut exponential_above = Vec::new();
+        exp_moments(below, 1.0, 32, &mut exponential_below);
+        exp_moments(above, 1.0, 32, &mut exponential_above);
+        for degree in 0..=32 {
+            let scale = exponential_below[degree].abs().max(1e-300);
+            let jump = (exponential_above[degree] - exponential_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "exponential degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
+    }
 }
