@@ -14,6 +14,29 @@ pub(crate) struct Span {
     pub len: f64,
 }
 
+/// Constraint derivatives with respect to one B-spline control net.
+#[derive(Debug, Clone)]
+pub struct ConstraintGradient {
+    /// `∂∇/∂Pᵢ` [m²] for displaced volume `∇`.
+    pub displaced_volume: Vec<f64>,
+    /// `∂x_B/∂Pᵢ` for the longitudinal centre of buoyancy.
+    pub lcb_x: Vec<f64>,
+    /// `∂S/∂Pᵢ` [m] for wetted surface area `S`.
+    pub wetted_surface: Vec<f64>,
+}
+
+/// Hull-constraint derivatives for the physical control net or nets.
+#[derive(Debug, Clone)]
+pub enum HullConstraintGradients {
+    /// A symmetric half-breadth control net, representing both physical sides.
+    Symmetric(ConstraintGradient),
+    /// Independent derivatives for the two physical half-breadth control nets.
+    Asymmetric {
+        port: ConstraintGradient,
+        starboard: ConstraintGradient,
+    },
+}
+
 /// A validated hull.
 ///
 /// Geometry contract (see crate docs): `y = f(x, z) >= 0` is the local
@@ -364,6 +387,146 @@ impl Hull {
             self.waterplane_moment / self.waterplane_area
         } else {
             0.0
+        }
+    }
+
+    /// Derivatives of displacement volume, LCB, and wetted surface with
+    /// respect to every physical B-spline control value.
+    ///
+    /// Volume and first-moment derivatives are polynomial basis integrals and
+    /// are evaluated exactly to floating-point roundoff. Wetted-surface
+    /// derivatives differentiate the same 24-point-per-span Gauss–Legendre
+    /// rule used by [`Self::wetted_surface`]. An asymmetric hull returns
+    /// separate port and starboard derivatives. LCB is undefined for a hull
+    /// with zero displaced volume, which is reported as an error.
+    pub fn constraint_gradients(&self) -> Result<HullConstraintGradients> {
+        if self.displaced_volume <= 0.0 {
+            return Err(Error::InvalidGeometry(
+                "constraint gradients require positive displaced volume".into(),
+            ));
+        }
+        match self.a_surface.as_ref() {
+            None => Ok(HullConstraintGradients::Symmetric(
+                self.constraint_gradient_for_side(0.0, 2.0),
+            )),
+            Some(_) => Ok(HullConstraintGradients::Asymmetric {
+                port: self.constraint_gradient_for_side(-1.0, 1.0),
+                starboard: self.constraint_gradient_for_side(1.0, 1.0),
+            }),
+        }
+    }
+
+    /// Constraint derivative for `f_side = f_sym + camber_sign · f_a`.
+    /// `multiplicity` is two for a symmetric net and one for a physical side.
+    fn constraint_gradient_for_side(
+        &self,
+        camber_sign: f64,
+        multiplicity: f64,
+    ) -> ConstraintGradient {
+        let surface = &self.surface;
+        let p = surface.degree_x();
+        let q = surface.degree_z();
+        let nx = surface.n_ctrl_x();
+        let nz = surface.n_ctrl_z();
+        let xs = surface.x_span_indices();
+        let zs = surface.z_span_indices();
+        let mut displaced_volume = vec![0.0; nx * nz];
+        let mut volume_moment = vec![0.0; nx * nz];
+        let mut wetted_surface = vec![0.0; nx * nz];
+
+        let n_volume = (p.max(q) + 2) / 2 + 2;
+        let (volume_nodes, volume_weights) = gauss_legendre(n_volume);
+        for &sx in &xs {
+            let x_start = surface.knots_x()[sx];
+            let x_len = surface.knots_x()[sx + 1] - x_start;
+            for &sz in &zs {
+                let z_start = surface.knots_z()[sz];
+                let z_len = surface.knots_z()[sz + 1] - z_start;
+                let jacobian = x_len * z_len / 4.0;
+                for (ix, &node_x) in volume_nodes.iter().enumerate() {
+                    let x = x_start + x_len * (node_x + 1.0) / 2.0;
+                    let basis_x = ders_basis(surface.knots_x(), p, sx, x, 0);
+                    for (iz, &node_z) in volume_nodes.iter().enumerate() {
+                        let z = z_start + z_len * (node_z + 1.0) / 2.0;
+                        let basis_z = ders_basis(surface.knots_z(), q, sz, z, 0);
+                        let weighted_jacobian = multiplicity
+                            * volume_weights[ix]
+                            * volume_weights[iz]
+                            * jacobian;
+                        for (local_x, &value_x) in basis_x[0].iter().enumerate() {
+                            let control_x = sx - p + local_x;
+                            for (local_z, &value_z) in basis_z[0].iter().enumerate() {
+                                let control_z = sz - q + local_z;
+                                let index = control_x * nz + control_z;
+                                let derivative = weighted_jacobian * value_x * value_z;
+                                displaced_volume[index] += derivative;
+                                volume_moment[index] += x * derivative;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let (wetted_nodes, wetted_weights) = gauss_legendre(24);
+        for &sx in &xs {
+            let x_start = surface.knots_x()[sx];
+            let x_len = surface.knots_x()[sx + 1] - x_start;
+            for &sz in &zs {
+                let z_start = surface.knots_z()[sz];
+                let z_len = surface.knots_z()[sz + 1] - z_start;
+                let jacobian = x_len * z_len / 4.0;
+                for (ix, &node_x) in wetted_nodes.iter().enumerate() {
+                    let x = x_start + x_len * (node_x + 1.0) / 2.0;
+                    let basis_x = ders_basis(surface.knots_x(), p, sx, x, 1);
+                    for (iz, &node_z) in wetted_nodes.iter().enumerate() {
+                        let z = z_start + z_len * (node_z + 1.0) / 2.0;
+                        let basis_z = ders_basis(surface.knots_z(), q, sz, z, 1);
+                        let mean_fx = surface.eval_deriv(x, z, 1, 0);
+                        let mean_fz = surface.eval_deriv(x, z, 0, 1);
+                        let camber_fx = self
+                            .a_surface
+                            .as_ref()
+                            .map_or(0.0, |camber| camber.eval_deriv(x, z, 1, 0));
+                        let camber_fz = self
+                            .a_surface
+                            .as_ref()
+                            .map_or(0.0, |camber| camber.eval_deriv(x, z, 0, 1));
+                        let fx = mean_fx + camber_sign * camber_fx;
+                        let fz = mean_fz + camber_sign * camber_fz;
+                        let area_scale = (1.0 + fx * fx + fz * fz).sqrt();
+                        let weighted_jacobian = multiplicity
+                            * wetted_weights[ix]
+                            * wetted_weights[iz]
+                            * jacobian;
+                        for (local_x, &value_x) in basis_x[0].iter().enumerate() {
+                            let control_x = sx - p + local_x;
+                            for (local_z, &value_z) in basis_z[0].iter().enumerate() {
+                                let control_z = sz - q + local_z;
+                                let index = control_x * nz + control_z;
+                                let derivative_fx = basis_x[1][local_x] * value_z;
+                                let derivative_fz = value_x * basis_z[1][local_z];
+                                wetted_surface[index] += weighted_jacobian
+                                    * (fx * derivative_fx + fz * derivative_fz)
+                                    / area_scale;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let lcb_x = volume_moment
+            .iter()
+            .zip(&displaced_volume)
+            .map(|(moment, volume)| {
+                (moment - self.lcb_x * volume) / self.displaced_volume
+            })
+            .collect();
+        ConstraintGradient {
+            displaced_volume,
+            lcb_x,
+            wetted_surface,
         }
     }
 
