@@ -103,7 +103,9 @@ pub use michell::{
     WaveMethod, WaveOptions, WaveOutcome, WaveResistance, WaveResistanceGradient,
 };
 pub use moments::C64;
-pub use spectrum::{FreeWaveSpectrum, WaveGrid, WaveGridOutcome};
+pub use spectrum::{
+    FreeWaveSpectrum, WaveGrid, WaveGridOutcome, WaveInterferenceContribution, WaveSignature,
+};
 
 /// Combined resistance breakdown.
 #[derive(Debug, Clone, Copy)]

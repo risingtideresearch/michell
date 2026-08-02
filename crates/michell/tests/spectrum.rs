@@ -1,6 +1,8 @@
 //! Physics checks for the free-wave spectrum and wake reconstruction.
 
-use michell::{hulls, Conditions, FreeWaveSpectrum, Placement, WaveGridOutcome};
+use michell::{
+    hulls, BSplineSurface, Conditions, FreeWaveSpectrum, Hull, Placement, WaveGridOutcome,
+};
 
 /// Integrate dR/dθ over (−π/2, π/2) by fine trapezoid.
 fn resistance_from_spectrum(spec: &mut FreeWaveSpectrum, n: usize) -> f64 {
@@ -45,6 +47,37 @@ fn spectrum_reproduces_michell_resistance_staggered_catamaran() {
     assert!(
         (rw_spec - rw).abs() <= 2e-3 * rw,
         "spectrum {rw_spec} vs michell {rw}"
+    );
+}
+
+#[test]
+fn spectrum_reproduces_default_asymmetric_resistance() {
+    let base = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let make_surface = |scale: f64| {
+        BSplineSurface::new(
+            base.surface().degree_x(),
+            base.surface().degree_z(),
+            base.surface().knots_x().to_vec(),
+            base.surface().knots_z().to_vec(),
+            base.surface()
+                .control()
+                .iter()
+                .map(|value| scale * value)
+                .collect(),
+        )
+        .unwrap()
+    };
+    let hull = Hull::new_asymmetric(make_surface(0.8), make_surface(1.2)).unwrap();
+    let cond = Conditions::seawater(3.0);
+    let members = [(&hull, Placement::default())];
+    let resistance = michell::multihull_wave_resistance(&members, &cond)
+        .unwrap()
+        .resistance;
+    let mut spectrum = FreeWaveSpectrum::new(&members, &cond).unwrap();
+    let spectrum_resistance = resistance_from_spectrum(&mut spectrum, 400_000);
+    assert!(
+        (spectrum_resistance - resistance).abs() <= 2e-3 * resistance,
+        "spectrum {spectrum_resistance} vs asymmetric resistance {resistance}",
     );
 }
 
@@ -179,5 +212,81 @@ fn amplitude_is_zero_outside_domain() {
     for theta in [std::f64::consts::FRAC_PI_2, 2.0, -2.0, f64::NAN] {
         let a = spec.amplitude(theta);
         assert!(a.re == 0.0 && a.im == 0.0, "A({theta}) = {a:?}");
+    }
+}
+
+#[test]
+fn member_signatures_and_pair_terms_sum_to_the_total_integrand() {
+    let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let cond = Conditions::seawater(3.0);
+    let members = [
+        (&hull, Placement { x: -0.7, y: 1.4 }),
+        (&hull, Placement { x: 0.2, y: -1.1 }),
+        (&hull, Placement { x: 1.3, y: 0.4 }),
+    ];
+    let mut spectrum = FreeWaveSpectrum::new(&members, &cond).unwrap();
+
+    for theta in [-0.55, -0.2, 0.0, 0.31, 0.67] {
+        let signature = spectrum.signature(theta);
+        let amplitude_sum = signature
+            .member_amplitudes
+            .iter()
+            .copied()
+            .fold(michell::C64::ZERO, |sum, amplitude| sum + amplitude);
+        let amplitude_scale = signature.total_amplitude.abs().max(1e-14);
+        assert!(
+            (amplitude_sum - signature.total_amplitude).abs() <= 1e-13 * amplitude_scale
+        );
+
+        let integrand_sum: f64 = signature
+            .interference
+            .iter()
+            .map(|term| term.amplitude_squared)
+            .sum();
+        let density_sum: f64 = signature
+            .interference
+            .iter()
+            .map(|term| term.resistance_density)
+            .sum();
+        assert!(
+            (integrand_sum - signature.total_amplitude_squared).abs()
+                <= 2e-13 * signature.total_amplitude_squared.max(1e-20)
+        );
+        assert!(
+            (density_sum - signature.total_resistance_density).abs()
+                <= 2e-13 * signature.total_resistance_density.abs().max(1e-20)
+        );
+    }
+}
+
+#[test]
+fn catamaran_signature_reproduces_four_cosine_squared_interference() {
+    let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let cond = Conditions::seawater(3.0);
+    let separation = 2.8;
+    let members = [
+        (&hull, Placement { x: 0.0, y: 0.5 * separation }),
+        (&hull, Placement { x: 0.0, y: -0.5 * separation }),
+    ];
+    let solo_members = [(&hull, Placement::default())];
+    let mut catamaran = FreeWaveSpectrum::new(&members, &cond).unwrap();
+    let mut solo = FreeWaveSpectrum::new(&solo_members, &cond).unwrap();
+
+    for theta in [0.08, 0.31, 0.57] {
+        let signature = catamaran.signature(theta);
+        let solo_intensity = solo.signature(theta).total_amplitude_squared;
+        let sec = 1.0 / theta.cos();
+        let ky = catamaran.wavenumber() * sec * theta.tan();
+        let expected_factor = 4.0 * (0.5 * ky * separation).cos().powi(2);
+        let decomposed: f64 = signature
+            .interference
+            .iter()
+            .map(|term| term.amplitude_squared)
+            .sum();
+        let factor = decomposed / solo_intensity;
+        assert!(
+            (factor - expected_factor).abs() <= 2e-12,
+            "theta={theta}: decomposed factor={factor}, expected={expected_factor}",
+        );
     }
 }

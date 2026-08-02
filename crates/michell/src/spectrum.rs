@@ -45,7 +45,7 @@
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement};
+use crate::michell::{dipole_weight, InnerIntegral, Placement};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -74,6 +74,38 @@ struct Member<'h> {
     dx: f64,
     /// Transverse centerplane position.
     y: f64,
+}
+
+/// One diagonal or pair-interference contribution to `|Σ Aⱼ(θ)|²`.
+#[derive(Debug, Clone, Copy)]
+pub struct WaveInterferenceContribution {
+    /// Left member index in the input fleet.
+    pub left: usize,
+    /// Right member index (`right >= left`). Equal indices are self terms.
+    pub right: usize,
+    /// Signed contribution to `|Σ Aⱼ|²` [m²/rad²]. Off-diagonal
+    /// interference terms may be negative.
+    pub amplitude_squared: f64,
+    /// Signed contribution to `dR_w/dθ` [N/rad].
+    pub resistance_density: f64,
+}
+
+/// Complex per-member wave signature and its pairwise resistance attribution
+/// at one propagation angle.
+#[derive(Debug, Clone)]
+pub struct WaveSignature {
+    pub theta: f64,
+    /// Complex free-wave amplitudes `Aⱼ(θ)` in input fleet order.
+    pub member_amplitudes: Vec<C64>,
+    /// `Σ Aⱼ(θ)`.
+    pub total_amplitude: C64,
+    /// `|Σ Aⱼ(θ)|²`.
+    pub total_amplitude_squared: f64,
+    /// Upper-triangular self and pair terms, including the factor of two for
+    /// off-diagonal terms. These sum to `total_amplitude_squared`.
+    pub interference: Vec<WaveInterferenceContribution>,
+    /// Total `dR_w/dθ` [N/rad].
+    pub total_resistance_density: f64,
 }
 
 /// Termination reason for a [`WaveGrid`] spectrum integration.
@@ -232,6 +264,57 @@ impl<'h> FreeWaveSpectrum<'h> {
         let a = self.amplitude(theta);
         let c = theta.cos();
         0.5 * PI * self.rho * self.speed * self.speed * a.abs_sq() * c * c * c
+    }
+
+    /// Per-member complex amplitudes and pairwise interference attribution at
+    /// one signed propagation angle `θ`.
+    ///
+    /// Member amplitudes are in the same fleet order passed to [`Self::new`]
+    /// and sum exactly to [`WaveSignature::total_amplitude`]. The upper-
+    /// triangular interference array expands `|Σ Aⱼ|²`: diagonal entries
+    /// are `|Aⱼ|²`, while off-diagonal entries are
+    /// `2 Re(Aⱼ conj(Aⱼ))` and can be negative at favourable-interference
+    /// angles. Outside `|θ| < π/2`, every amplitude and contribution is zero.
+    pub fn signature(&mut self, theta: f64) -> WaveSignature {
+        let member_amplitudes = self.member_amplitudes(theta);
+        let total_amplitude = member_amplitudes
+            .iter()
+            .copied()
+            .fold(C64::ZERO, |sum, amplitude| sum + amplitude);
+        let density_scale = if theta.is_finite() {
+            let cosine = theta.cos();
+            0.5 * PI * self.rho * self.speed * self.speed * cosine * cosine * cosine
+        } else {
+            0.0
+        };
+        let mut interference = Vec::with_capacity(
+            member_amplitudes.len() * (member_amplitudes.len() + 1) / 2,
+        );
+        for left in 0..member_amplitudes.len() {
+            for right in left..member_amplitudes.len() {
+                let product = member_amplitudes[left] * conjugate(member_amplitudes[right]);
+                let amplitude_squared = if left == right {
+                    product.re
+                } else {
+                    2.0 * product.re
+                };
+                interference.push(WaveInterferenceContribution {
+                    left,
+                    right,
+                    amplitude_squared,
+                    resistance_density: density_scale * amplitude_squared,
+                });
+            }
+        }
+        let total_amplitude_squared = total_amplitude.abs_sq();
+        WaveSignature {
+            theta,
+            member_amplitudes,
+            total_amplitude,
+            total_amplitude_squared,
+            interference,
+            total_resistance_density: density_scale * total_amplitude_squared,
+        }
     }
 
     /// ζ at a single point [m]. See [`Self::elevation_grid`].
@@ -463,13 +546,18 @@ impl<'h> FreeWaveSpectrum<'h> {
         let mut plus = C64::ZERO;
         let mut minus = C64::ZERO;
         for m in self.members.iter_mut() {
-            let f = m.inner.eval(sec);
-            if f == C64::ZERO {
+            let (source, camber) = m.inner.eval_pair(sec);
+            let weighted_camber =
+                camber.map_or(C64::ZERO, |value| value.scale(dipole_weight(sec)));
+            let system_plus = source - weighted_camber;
+            let system_minus = source + weighted_camber;
+            if system_plus == C64::ZERO && system_minus == C64::ZERO {
                 continue;
             }
-            let fc = C64::new(f.re, -f.im);
-            plus = plus + fc * C64::cis(-(kx * m.dx + ky_abs * m.y));
-            minus = minus + fc * C64::cis(-(kx * m.dx - ky_abs * m.y));
+            plus = plus
+                + conjugate(system_plus) * C64::cis(-(kx * m.dx + ky_abs * m.y));
+            minus = minus
+                + conjugate(system_minus) * C64::cis(-(kx * m.dx - ky_abs * m.y));
         }
         if plus == C64::ZERO && minus == C64::ZERO {
             return (C64::ZERO, C64::ZERO);
@@ -477,4 +565,36 @@ impl<'h> FreeWaveSpectrum<'h> {
         let scale = -(2.0 * self.nu / PI) * sec * sec * sec;
         (plus.scale(scale), minus.scale(scale))
     }
+
+    fn member_amplitudes(&mut self, theta: f64) -> Vec<C64> {
+        if !(theta.is_finite() && theta.abs() < FRAC_PI_2) {
+            return vec![C64::ZERO; self.members.len()];
+        }
+        let sec = 1.0 / theta.cos();
+        if sec > 1e8 {
+            return vec![C64::ZERO; self.members.len()];
+        }
+        let kx = self.nu * sec;
+        let ky = self.nu * sec * theta.tan();
+        let scale = -(2.0 * self.nu / PI) * sec * sec * sec;
+        self.members
+            .iter_mut()
+            .map(|member| {
+                let (source, camber) = member.inner.eval_pair(sec);
+                let weighted_camber =
+                    camber.map_or(C64::ZERO, |value| value.scale(dipole_weight(sec)));
+                let system = if theta >= 0.0 {
+                    source - weighted_camber
+                } else {
+                    source + weighted_camber
+                };
+                (conjugate(system) * C64::cis(-(kx * member.dx + ky * member.y))).scale(scale)
+            })
+            .collect()
+    }
+}
+
+#[inline]
+fn conjugate(value: C64) -> C64 {
+    C64::new(value.re, -value.im)
 }

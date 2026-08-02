@@ -805,7 +805,7 @@ const DIPOLE_WEIGHT_C: f64 = 1.0;
 /// wavenumber and is blind to side-to-side asymmetry, so `R_dipole` is fed
 /// entirely by the diverging (large-λ) part of the spectrum.
 #[inline]
-fn dipole_weight(lambda: f64) -> f64 {
+pub(crate) fn dipole_weight(lambda: f64) -> f64 {
     DIPOLE_WEIGHT_C * (lambda * lambda - 1.0).max(0.0).sqrt()
 }
 
