@@ -286,7 +286,8 @@ fn endpoint_and_marcher_routes_agree_on_order_and_pairwise_margins() {
         result.method == WaveMethod::EndpointReduction && result.outcome == WaveOutcome::Converged
     }));
     assert!(marched.iter().all(|result| {
-        result.method == WaveMethod::GeneralMarcher && result.outcome == WaveOutcome::Converged
+        result.method == WaveMethod::GeneralMarcher
+            && !matches!(result.outcome, WaveOutcome::TailCap | WaveOutcome::EvalCap)
     }));
     assert_eq!(ordering(&dispatched), ordering(&marched));
 

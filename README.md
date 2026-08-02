@@ -54,8 +54,10 @@ The numerical strategy exploits the spline structure end to end:
    singularity. It is integrated by 16-point Gauss–Legendre panels sized to
    the local oscillation rate, truncated only when a full multi-period window
    of accumulated phase contributes negligibly, and refined (panel halving)
-   until a requested relative tolerance is met, with the achieved estimate
-   reported in the result.
+   toward a requested relative tolerance. The tolerance is a target, not a
+   guaranteed postcondition: callers should inspect both `est_rel_error` and
+   `outcome`, which is `RefinementCap` when the estimated fixed tail floor or
+   the refinement limit prevents the request from being met.
 
 Viscous resistance: ITTC-57 `C_F = 0.075/(log₁₀Re − 2)²` with optional form
 factor, on the thin-ship wetted surface `S = 2∬√(1 + fx² + fz²) dx dz`.

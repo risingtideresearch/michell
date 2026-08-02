@@ -37,7 +37,9 @@
 //! Because `f` is piecewise polynomial, the inner integrals are evaluated in
 //! closed form on every knot span (polynomial × oscillatory / exponential
 //! moments); only the smooth outer integral is quadratured, with panels sized
-//! to the local oscillation rate and refined to a requested tolerance.
+//! to the local oscillation rate and refined toward a requested tolerance.
+//! The result reports both the achieved error estimate and whether convergence
+//! or a numerical cap ended the calculation.
 //!
 //! Viscous resistance uses the ITTC-57 correlation line with an optional form
 //! factor, referencing the thin-ship wetted surface

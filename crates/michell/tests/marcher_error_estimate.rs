@@ -2,7 +2,7 @@
 
 use michell::{
     hulls, multihull_wave_resistance_with, Conditions, Placement, WaveMethod, WaveOptions,
-    STANDARD_GRAVITY,
+    WaveOutcome, STANDARD_GRAVITY,
 };
 
 #[derive(Default)]
@@ -93,27 +93,35 @@ fn deep_wigley_reference(length: f64, beam: f64, draft: f64, conditions: &Condit
 fn design_froude_tail_estimate_covers_actual_error() {
     let (length, beam, draft) = (10.0, 1.0, 0.625);
     let hull = hulls::wigley(length, beam, draft).unwrap();
-    let speed = 0.35 * (STANDARD_GRAVITY * length).sqrt();
-    let conditions = Conditions::freshwater(speed);
-    let result = multihull_wave_resistance_with(
-        &[(&hull, Placement::default())],
-        &conditions,
-        &WaveOptions {
-            rel_tol: 1e-8,
-            max_refinements: 8,
-        },
-    )
-    .unwrap();
-    let reference = deep_wigley_reference(length, beam, draft, &conditions);
-    let actual_relative_error = (result.resistance - reference).abs() / reference;
+    for froude in [0.12, 0.20, 0.35] {
+        let speed = froude * (STANDARD_GRAVITY * length).sqrt();
+        let conditions = Conditions::freshwater(speed);
+        let result = multihull_wave_resistance_with(
+            &[(&hull, Placement::default())],
+            &conditions,
+            &WaveOptions {
+                rel_tol: 1e-8,
+                max_refinements: 8,
+            },
+        )
+        .unwrap();
+        let reference = deep_wigley_reference(length, beam, draft, &conditions);
+        let actual_relative_error = (result.resistance - reference).abs() / reference;
 
-    assert_eq!(result.method, WaveMethod::GeneralMarcher);
-    assert!(
-        actual_relative_error <= result.est_rel_error,
-        "reported {:.6e}, actual {actual_relative_error:.6e}; Rw={:.12e}, reference={reference:.12e}, lambda_max={:.3}, evaluations={}",
-        result.est_rel_error,
-        result.resistance,
-        result.max_lambda,
-        result.inner_evaluations,
-    );
+        assert_eq!(result.method, WaveMethod::GeneralMarcher);
+        assert_eq!(result.outcome, WaveOutcome::RefinementCap);
+        eprintln!(
+            "Fn={froude:.2}: reported={:.6e}, actual={actual_relative_error:.6e}, coverage={:.3}x",
+            result.est_rel_error,
+            result.est_rel_error / actual_relative_error,
+        );
+        assert!(
+            actual_relative_error <= result.est_rel_error,
+            "Fn={froude:.2}: reported {:.6e}, actual {actual_relative_error:.6e}; Rw={:.12e}, reference={reference:.12e}, lambda_max={:.3}, evaluations={}",
+            result.est_rel_error,
+            result.resistance,
+            result.max_lambda,
+            result.inner_evaluations,
+        );
+    }
 }

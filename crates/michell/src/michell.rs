@@ -15,7 +15,9 @@
 //! per knot span via the closed-form moments in [`crate::moments`]; the only
 //! numerical error lives in the smooth outer θ-integral, which is integrated
 //! with Gauss–Legendre panels sized to the local oscillation rate and then
-//! refined until the requested tolerance is met.
+//! refined until the requested tolerance is met or a diagnosed limit is
+//! reached. Callers should inspect [`WaveResistance::outcome`] as well as the
+//! achieved [`WaveResistance::est_rel_error`].
 //!
 //! ## Asymmetric hulls
 //!
@@ -54,6 +56,11 @@ use std::f64::consts::{FRAC_PI_2, PI};
 #[derive(Debug, Clone, Copy)]
 pub struct WaveOptions {
     /// Target relative tolerance on the resistance.
+    ///
+    /// This is a request, not a guaranteed postcondition. In particular, the
+    /// general marcher's estimated tail floor can exceed a tight request; the
+    /// returned [`WaveResistance::outcome`] is then
+    /// [`WaveOutcome::RefinementCap`].
     pub rel_tol: f64,
     /// Maximum number of panel-halving refinement passes.
     pub max_refinements: usize,
@@ -104,7 +111,8 @@ pub enum WaveOutcome {
     TailCap,
     /// The marcher exhausted its per-pass evaluation budget.
     EvalCap,
-    /// Panel refinement was exhausted before `rel_tol` was met.
+    /// `rel_tol` was not met because panel refinement was exhausted or the
+    /// estimated fixed tail floor already dominated further refinement.
     RefinementCap,
 }
 
@@ -160,7 +168,8 @@ pub struct WaveResistance {
     pub max_lambda: f64,
     /// Numerical route used to produce this result.
     pub method: WaveMethod,
-    /// Whether that route converged or stopped at a safety/refinement cap.
+    /// Whether that route met `rel_tol` or stopped at a safety/refinement cap.
+    /// Always inspect this field when a tolerance is load-bearing.
     pub outcome: WaveOutcome,
 }
 
@@ -934,7 +943,12 @@ fn integrate_outer_with_limits(
                 // than treating one tiny low-Froude window as the tail.
                 let lambda_width = (lambda - window_lambda_start).max(f64::MIN_POSITIVE);
                 let extrapolation = (lambda / (4.0 * lambda_width)).max(1.0);
-                const TAIL_SAFETY: f64 = 1.25;
+                // At design Froude numbers the first quiet window can precede
+                // the fully asymptotic regime. A deep analytic-Wigley sweep
+                // through λ=4000 found a 2.97× shortfall with the former 1.25
+                // factor; 4.0 covers that finite-λ transition while retaining
+                // the asymptotic estimator's scaling.
+                const TAIL_SAFETY: f64 = 4.0;
                 let candidate_tail = TAIL_SAFETY * window_sum.abs() * extrapolation;
                 if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
                     tail_abs_estimate = candidate_tail;
