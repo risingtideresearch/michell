@@ -17,11 +17,11 @@ pub(crate) struct Span {
 /// Constraint derivatives with respect to one B-spline control net.
 #[derive(Debug, Clone)]
 pub struct ConstraintGradient {
-    /// `∂∇/∂Pᵢ` [m²] for displaced volume `∇`.
+    /// `∂∇/∂Pᵢ` \[m²] for displaced volume `∇`.
     pub displaced_volume: Vec<f64>,
     /// `∂x_B/∂Pᵢ` for the longitudinal centre of buoyancy.
     pub lcb_x: Vec<f64>,
-    /// `∂S/∂Pᵢ` [m] for wetted surface area `S`.
+    /// `∂S/∂Pᵢ` \[m] for wetted surface area `S`.
     pub wetted_surface: Vec<f64>,
 }
 

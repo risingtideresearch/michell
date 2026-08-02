@@ -62,9 +62,9 @@ pub enum EndpointKind {
 #[derive(Debug, Clone, Copy)]
 pub struct EndpointWave {
     pub kind: EndpointKind,
-    /// Hull-coordinate endpoint location [m].
+    /// Hull-coordinate endpoint location \[m].
     pub x: f64,
-    /// Endpoint depth [m]. Retained terms are currently all at `z = 0`.
+    /// Endpoint depth \[m]. Retained terms are currently all at `z = 0`.
     pub z: f64,
     /// Power `n` in `coefficient · exp(i ν λ x) / λⁿ`.
     pub lambda_power: usize,
@@ -78,12 +78,12 @@ pub struct EndpointWave {
 pub struct EndpointPairContribution {
     pub left: EndpointWave,
     pub right: EndpointWave,
-    /// Pair contribution to resistance [N], including the factor of two for
+    /// Pair contribution to resistance \[N], including the factor of two for
     /// an off-diagonal pair. Interference contributions may be negative.
     pub resistance: f64,
     /// Signed fraction `resistance / total resistance`.
     pub resistance_fraction: f64,
-    /// Absolute coarse/fine contour difference attributed to this pair [N].
+    /// Absolute coarse/fine contour difference attributed to this pair \[N].
     pub quadrature_abs_error_estimate: f64,
     /// Scalar quadrature nodes used for this kernel (zero for equal-x pairs).
     pub kernel_evaluations: usize,
