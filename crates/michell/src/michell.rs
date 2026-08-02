@@ -150,11 +150,10 @@ pub struct WaveResistance {
     pub resistance: f64,
     /// Method-specific relative error diagnostic.
     ///
-    /// For [`WaveMethod::GeneralMarcher`] this is the larger of the last-pass
+    /// For [`WaveMethod::GeneralMarcher`] this is the sum of the last-pass
     /// refinement difference and a power-law extrapolation of the terminating
     /// quiet window. It remains a heuristic rather than a rigorous bound, but
-    /// accounts for the long aggregate tail that a small local window alone
-    /// can hide at low Froude number.
+    /// accounts separately for discretization and the aggregate omitted tail.
     /// For [`WaveMethod::EndpointReduction`] it combines a rigorous bound on
     /// omitted submerged endpoints with an empirical contour-quadrature
     /// estimate.
@@ -880,7 +879,7 @@ fn integrate_outer_with_limits(
     let nu = params.nu;
     let (x_half, y_half, t_max) = (params.x_half, params.y_half, params.t_max);
 
-    // Local phase rate of |A|² in θ: the x-oscillation contributes
+    // Local variation rate of |A|² in θ: the x-oscillation contributes
     // 2 ν x_half d(sec θ)/dθ, the z-decay envelope 2 ν T d(sec²θ)/dθ, and the
     // transverse separation phase ν y λ√(λ²−1) = ν y sec θ tan θ contributes
     // 2 ν y_half d(sec θ tan θ)/dθ = 2 ν y_half sec θ (sec²θ + tan²θ).
@@ -888,6 +887,13 @@ fn integrate_outer_with_limits(
         2.0 * nu * sec * tan * (x_half + t_max * sec)
             + 2.0 * nu * y_half * sec * (sec * sec + tan * tan)
             + 4.0
+    };
+    // A quiet window must span the actual x/y oscillations. The vertical
+    // decay term above is useful for panel sizing but is not a phase: at high
+    // Froude number it previously advanced the stopping window through 8π
+    // inside a narrow cos² trough and understated the later positive tail.
+    let oscillation_rate = |sec: f64, tan: f64| -> f64 {
+        2.0 * nu * x_half * sec * tan + 2.0 * nu * y_half * sec * (sec * sec + tan * tan)
     };
     // Near θ = 0 the longitudinal phase grows like ν x_half θ², so cap the
     // first panels at one period of that quadratic phase (the transverse
@@ -933,7 +939,7 @@ fn integrate_outer_with_limits(
                 window_lambda_start = sec_theta;
             }
             window_sum += panel;
-            window_phase += local_rate * dt;
+            window_phase += oscillation_rate(sec_theta, sin_theta * sec_theta) * dt;
             if window_phase >= STOP_WINDOW_PHASE {
                 // Every piecewise-polynomial hull amplitude is O(λ⁻³) or
                 // faster at the waterline, so the transformed resistance
@@ -943,11 +949,9 @@ fn integrate_outer_with_limits(
                 // than treating one tiny low-Froude window as the tail.
                 let lambda_width = (lambda - window_lambda_start).max(f64::MIN_POSITIVE);
                 let extrapolation = (lambda / (4.0 * lambda_width)).max(1.0);
-                // At design Froude numbers the first quiet window can precede
-                // the fully asymptotic regime. A deep analytic-Wigley sweep
-                // through λ=4000 found a 2.97× shortfall with the former 1.25
-                // factor; 4.0 covers that finite-λ transition while retaining
-                // the asymptotic estimator's scaling.
+                // The finite-window extrapolation remains a heuristic; retain
+                // a factor of four after the stopping window itself has been
+                // corrected to span the physical x/y oscillations.
                 const TAIL_SAFETY: f64 = 4.0;
                 let candidate_tail = TAIL_SAFETY * window_sum.abs() * extrapolation;
                 if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
@@ -1055,7 +1059,10 @@ fn run_outer_with_limits(
         let scale = refined.integral.abs().max(f64::MIN_POSITIVE);
         let refinement_rel = (refined.integral - pass.integral).abs() / scale;
         let tail_rel = refined.tail_abs_estimate / scale;
-        est_rel = refinement_rel.max(tail_rel);
+        // These diagnose different omissions. Adding them is the appropriate
+        // conservative combination; max() discarded one source whenever both
+        // were nonzero.
+        est_rel = refinement_rel + tail_rel;
         // Panel halving cannot reduce the fixed quiet-window truncation. Once
         // its discretisation change is already below that tail floor, further
         // refinement is pure cost; stop and report RefinementCap below.
