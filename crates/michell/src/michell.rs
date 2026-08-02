@@ -1175,6 +1175,46 @@ mod tests {
     use super::*;
     use crate::hulls::wigley;
 
+    fn synthetic_outer_with_limits(limits: OuterLimits) -> WaveResistance {
+        let params = OuterParams {
+            nu: 1.0,
+            x_half: 0.0,
+            y_half: 0.0,
+            t_max: 0.0,
+        };
+        run_outer_with_limits(
+            &params,
+            &WaveOptions {
+                rel_tol: 1e-5,
+                max_refinements: 1,
+            },
+            1.0,
+            |_| 1.0,
+            limits,
+        )
+        .0
+    }
+
+    #[test]
+    fn lambda_cap_is_reported_as_not_converged() {
+        let wave = synthetic_outer_with_limits(OuterLimits {
+            lambda_hard_cap: 1.5,
+            max_evals_per_pass: usize::MAX,
+        });
+        assert_eq!(wave.method, WaveMethod::GeneralMarcher);
+        assert_eq!(wave.outcome, WaveOutcome::TailCap);
+    }
+
+    #[test]
+    fn evaluation_cap_is_reported_as_not_converged() {
+        let wave = synthetic_outer_with_limits(OuterLimits {
+            lambda_hard_cap: f64::INFINITY,
+            max_evals_per_pass: 16,
+        });
+        assert_eq!(wave.method, WaveMethod::GeneralMarcher);
+        assert_eq!(wave.outcome, WaveOutcome::EvalCap);
+    }
+
     #[test]
     fn staggered_fleet_resistance_is_mirror_symmetric() {
         // A staggered pair and its mirror image about y = 0 are the same
