@@ -93,7 +93,7 @@ fn deep_wigley_reference(length: f64, beam: f64, draft: f64, conditions: &Condit
 fn design_froude_tail_estimate_covers_actual_error() {
     let (length, beam, draft) = (10.0, 1.0, 0.625);
     let hull = hulls::wigley(length, beam, draft).unwrap();
-    for froude in [0.12, 0.20, 0.35] {
+    for froude in [0.12, 0.20, 0.35, 0.70, 1.00] {
         let speed = froude * (STANDARD_GRAVITY * length).sqrt();
         let conditions = Conditions::freshwater(speed);
         let result = multihull_wave_resistance_with(
