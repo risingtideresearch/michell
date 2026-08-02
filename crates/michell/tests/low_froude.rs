@@ -9,12 +9,7 @@ fn marching_wave_resistance(
     conditions: &Conditions,
     options: &WaveOptions,
 ) -> WaveResistance {
-    multihull_wave_resistance_with(
-        &[(hull, Placement::default())],
-        conditions,
-        options,
-    )
-    .unwrap()
+    multihull_wave_resistance_with(&[(hull, Placement::default())], conditions, options).unwrap()
 }
 
 fn wigley_j(length: f64, beam: f64, draft: f64, nu: f64, lambda: f64) -> f64 {
@@ -162,14 +157,17 @@ fn default_solver_accepts_only_a_reduction_within_tolerance() {
 fn endpoint_pair_contributions_sum_to_reduced_resistance() {
     let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
     let speed = 0.05 * (STANDARD_GRAVITY * hull.length()).sqrt();
-    let result =
-        low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+    let result = low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
 
     assert_eq!(
         result.endpoint_pairs.len(),
         result.waterline_terms * (result.waterline_terms + 1) / 2,
     );
-    let resistance_sum: f64 = result.endpoint_pairs.iter().map(|pair| pair.resistance).sum();
+    let resistance_sum: f64 = result
+        .endpoint_pairs
+        .iter()
+        .map(|pair| pair.resistance)
+        .sum();
     let fraction_sum: f64 = result
         .endpoint_pairs
         .iter()

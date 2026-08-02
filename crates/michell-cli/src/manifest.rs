@@ -1237,9 +1237,7 @@ fn build_meta(
     s.push_str(&format!(",\"speeds_ms\":{}", nums(speeds)));
     s.push_str(&format!(",\"axis_labels\":{}", arr(&axis_labels)));
     s.push_str(&format!(",\"metric_labels\":{}", arr(metric_labels)));
-    s.push_str(
-        ",\"wave_method_codes\":{\"0\":\"general_marcher\",\"1\":\"endpoint_reduction\"}",
-    );
+    s.push_str(",\"wave_method_codes\":{\"0\":\"general_marcher\",\"1\":\"endpoint_reduction\"}");
     s.push_str(
         ",\"wave_outcome_codes\":{\"0\":\"converged\",\"1\":\"tail_cap\",+         \"2\":\"eval_cap\",\"3\":\"refinement_cap\"}",
     );

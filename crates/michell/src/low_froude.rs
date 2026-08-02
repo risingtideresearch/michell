@@ -472,8 +472,7 @@ mod tests {
         }
 
         let speed = (STANDARD_GRAVITY / 40.0).sqrt();
-        let reduced =
-            low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+        let reduced = low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
         assert!(reduced.endpoint_pairs.iter().any(|pair| {
             pair.left.kind == EndpointKind::InteriorKnot
                 || pair.right.kind == EndpointKind::InteriorKnot

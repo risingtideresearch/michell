@@ -209,8 +209,16 @@ impl Hull {
             x_center: 0.5 * (x0 + x1),
             wetted_surface: wetted,
             displaced_volume: volume,
-            lcb_x: if volume > 0.0 { volume_mx / volume } else { 0.0 },
-            vcb_z: if volume > 0.0 { volume_mz / volume } else { 0.0 },
+            lcb_x: if volume > 0.0 {
+                volume_mx / volume
+            } else {
+                0.0
+            },
+            vcb_z: if volume > 0.0 {
+                volume_mz / volume
+            } else {
+                0.0
+            },
             waterplane_area: wp_area,
             waterplane_moment: wp_mx,
             waterplane_second_moment: wp_ixx,
@@ -240,7 +248,9 @@ impl Hull {
         }
         let knots_match = |a: &[f64], b: &[f64]| {
             a.len() == b.len()
-                && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-12 * (1.0 + x.abs()))
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| (x - y).abs() <= 1e-12 * (1.0 + x.abs()))
         };
         if !knots_match(starboard.knots_x(), port.knots_x())
             || !knots_match(starboard.knots_z(), port.knots_z())
@@ -449,10 +459,8 @@ impl Hull {
                     for (iz, &node_z) in volume_nodes.iter().enumerate() {
                         let z = z_start + z_len * (node_z + 1.0) / 2.0;
                         let basis_z = ders_basis(surface.knots_z(), q, sz, z, 0);
-                        let weighted_jacobian = multiplicity
-                            * volume_weights[ix]
-                            * volume_weights[iz]
-                            * jacobian;
+                        let weighted_jacobian =
+                            multiplicity * volume_weights[ix] * volume_weights[iz] * jacobian;
                         for (local_x, &value_x) in basis_x[0].iter().enumerate() {
                             let control_x = sx - p + local_x;
                             for (local_z, &value_z) in basis_z[0].iter().enumerate() {
@@ -495,10 +503,8 @@ impl Hull {
                         let fx = mean_fx + camber_sign * camber_fx;
                         let fz = mean_fz + camber_sign * camber_fz;
                         let area_scale = (1.0 + fx * fx + fz * fz).sqrt();
-                        let weighted_jacobian = multiplicity
-                            * wetted_weights[ix]
-                            * wetted_weights[iz]
-                            * jacobian;
+                        let weighted_jacobian =
+                            multiplicity * wetted_weights[ix] * wetted_weights[iz] * jacobian;
                         for (local_x, &value_x) in basis_x[0].iter().enumerate() {
                             let control_x = sx - p + local_x;
                             for (local_z, &value_z) in basis_z[0].iter().enumerate() {
@@ -519,9 +525,7 @@ impl Hull {
         let lcb_x = volume_moment
             .iter()
             .zip(&displaced_volume)
-            .map(|(moment, volume)| {
-                (moment - self.lcb_x * volume) / self.displaced_volume
-            })
+            .map(|(moment, volume)| (moment - self.lcb_x * volume) / self.displaced_volume)
             .collect();
         ConstraintGradient {
             displaced_volume,

@@ -1451,8 +1451,7 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
         rows.push((theta, a, d));
     }
     let rw_spectrum = total;
-    let wave =
-        michell::multihull_wave_resistance(&members, &cond).map_err(|e| format!("{e}"))?;
+    let wave = michell::multihull_wave_resistance(&members, &cond).map_err(|e| format!("{e}"))?;
     let rw = wave.resistance;
     eprintln!(
         "U = {u:.3} m/s (Fn {:.3}): Rw = {rw:.4} N (spectrum integral {rw_spectrum:.4} N), \

@@ -261,10 +261,7 @@ pub fn wave_resistance_with(
 
 /// Wave resistance and exact B-spline control-net gradient with default
 /// quadrature options. See [`wave_resistance_gradient_with`].
-pub fn wave_resistance_gradient(
-    hull: &Hull,
-    cond: &Conditions,
-) -> Result<WaveResistanceGradient> {
+pub fn wave_resistance_gradient(hull: &Hull, cond: &Conditions) -> Result<WaveResistanceGradient> {
     wave_resistance_gradient_with(hull, cond, &WaveOptions::default())
 }
 
@@ -297,11 +294,8 @@ pub fn wave_resistance_gradient_with(
             "wave_resistance_gradient requires a symmetric hull".into(),
         ));
     }
-    let fleet = multihull_wave_resistance_gradient_with(
-        &[(hull, Placement::default())],
-        cond,
-        opts,
-    )?;
+    let fleet =
+        multihull_wave_resistance_gradient_with(&[(hull, Placement::default())], cond, opts)?;
     let member = fleet.members.into_iter().next().unwrap();
     let ControlNetGradient::Symmetric(control_gradient) = member.control else {
         unreachable!("symmetric hull returned asymmetric controls")
@@ -853,15 +847,7 @@ fn integrate_outer(
     amp_sq: &mut impl FnMut(f64, f64) -> f64,
     evals: &mut usize,
 ) -> OuterPass {
-    integrate_outer_with_limits(
-        params,
-        frac,
-        gx,
-        gw,
-        amp_sq,
-        evals,
-        DEFAULT_OUTER_LIMITS,
-    )
+    integrate_outer_with_limits(params, frac, gx, gw, amp_sq, evals, DEFAULT_OUTER_LIMITS)
 }
 
 fn integrate_outer_with_limits(
@@ -1042,29 +1028,15 @@ fn run_outer_with_limits(
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let mut pass = integrate_outer_with_limits(
-        params,
-        frac,
-        &gx,
-        &gw,
-        &mut sample,
-        &mut evals,
-        limits,
-    );
+    let mut pass =
+        integrate_outer_with_limits(params, frac, &gx, &gw, &mut sample, &mut evals, limits);
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let refined = integrate_outer_with_limits(
-            params,
-            frac,
-            &gx,
-            &gw,
-            &mut sample,
-            &mut evals,
-            limits,
-        );
+        let refined =
+            integrate_outer_with_limits(params, frac, &gx, &gw, &mut sample, &mut evals, limits);
         evals_total += evals;
         let scale = refined.integral.abs().max(f64::MIN_POSITIVE);
         let refinement_rel = (refined.integral - pass.integral).abs() / scale;
@@ -1123,7 +1095,10 @@ fn validate_fleet(
             "at least one hull is required".into(),
         ));
     }
-    if members.iter().any(|(_, p)| !(p.x.is_finite() && p.y.is_finite())) {
+    if members
+        .iter()
+        .any(|(_, p)| !(p.x.is_finite() && p.y.is_finite()))
+    {
         return Err(Error::InvalidConditions(
             "hull placements must be finite".into(),
         ));
@@ -1228,8 +1203,7 @@ fn source_gradient_integrand(
 
     for (member, contribution) in members.iter_mut().zip(contributions.iter_mut()) {
         let (source, camber) = member.inner.eval_pair(lambda);
-        let weighted_camber =
-            camber.map_or(C64::ZERO, |value| value.scale(camber_weight));
+        let weighted_camber = camber.map_or(C64::ZERO, |value| value.scale(camber_weight));
         let phase_plus = C64::cis(kx * member.dx + ky * member.dy);
         let phase_minus = C64::cis(kx * member.dx - ky * member.dy);
         let carried_plus = (source - weighted_camber) * phase_plus;
@@ -1262,8 +1236,7 @@ fn source_gradient_integrand(
         let local_plus = plus * conjugate(contribution.phase_plus);
         let local_minus = minus * conjugate(contribution.phase_minus);
         let source_effective = (local_plus + local_minus).scale(0.5);
-        let camber_effective = (local_minus - local_plus)
-            .scale(0.5 * contribution.camber_weight);
+        let camber_effective = (local_minus - local_plus).scale(0.5 * contribution.camber_weight);
         members[index].inner.accumulate_pair_coeff_adjoint(
             lambda,
             source_effective,
@@ -1401,12 +1374,7 @@ impl<'h> InnerIntegral<'h> {
         camber_coeff_adjoint: Option<&mut [f64]>,
     ) {
         let kx = self.nu * lambda;
-        self.accumulate_coeff_adjoint(
-            kx,
-            source_effective,
-            weight,
-            source_coeff_adjoint,
-        );
+        self.accumulate_coeff_adjoint(kx, source_effective, weight, source_coeff_adjoint);
         if let Some(adjoint) = camber_coeff_adjoint {
             debug_assert!(self.hull.fx_a_coeff().is_some());
             self.accumulate_coeff_adjoint(kx, camber_effective, weight, adjoint);
@@ -1492,9 +1460,8 @@ impl<'h> InnerIntegral<'h> {
                     for b in 0..=q {
                         let index = ((s * nsz + t) * p + a) * (q + 1) + b;
                         let basis = x_basis.scale(self.zm[t * (q + 1) + b]);
-                        coeff_adjoint[index] += weight
-                            * 2.0
-                            * (amplitude.re * basis.re + amplitude.im * basis.im);
+                        coeff_adjoint[index] +=
+                            weight * 2.0 * (amplitude.re * basis.re + amplitude.im * basis.im);
                     }
                 }
             }

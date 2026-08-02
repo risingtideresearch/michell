@@ -287,9 +287,8 @@ impl<'h> FreeWaveSpectrum<'h> {
         } else {
             0.0
         };
-        let mut interference = Vec::with_capacity(
-            member_amplitudes.len() * (member_amplitudes.len() + 1) / 2,
-        );
+        let mut interference =
+            Vec::with_capacity(member_amplitudes.len() * (member_amplitudes.len() + 1) / 2);
         for left in 0..member_amplitudes.len() {
             for right in left..member_amplitudes.len() {
                 let product = member_amplitudes[left] * conjugate(member_amplitudes[right]);
@@ -547,17 +546,14 @@ impl<'h> FreeWaveSpectrum<'h> {
         let mut minus = C64::ZERO;
         for m in self.members.iter_mut() {
             let (source, camber) = m.inner.eval_pair(sec);
-            let weighted_camber =
-                camber.map_or(C64::ZERO, |value| value.scale(dipole_weight(sec)));
+            let weighted_camber = camber.map_or(C64::ZERO, |value| value.scale(dipole_weight(sec)));
             let system_plus = source - weighted_camber;
             let system_minus = source + weighted_camber;
             if system_plus == C64::ZERO && system_minus == C64::ZERO {
                 continue;
             }
-            plus = plus
-                + conjugate(system_plus) * C64::cis(-(kx * m.dx + ky_abs * m.y));
-            minus = minus
-                + conjugate(system_minus) * C64::cis(-(kx * m.dx - ky_abs * m.y));
+            plus = plus + conjugate(system_plus) * C64::cis(-(kx * m.dx + ky_abs * m.y));
+            minus = minus + conjugate(system_minus) * C64::cis(-(kx * m.dx - ky_abs * m.y));
         }
         if plus == C64::ZERO && minus == C64::ZERO {
             return (C64::ZERO, C64::ZERO);

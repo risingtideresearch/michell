@@ -659,7 +659,10 @@ fn manifest_binary_archive_bundles_everything() {
     let meta = blobs.iter().find(|b| b.kind == 3).expect("meta blob");
     let meta_txt = String::from_utf8(meta.data.clone()).unwrap();
     assert!(meta_txt.contains("\"metric_labels\""), "{meta_txt}");
-    assert!(meta_txt.contains("\"format\":\"michell-sweep v2\""), "{meta_txt}");
+    assert!(
+        meta_txt.contains("\"format\":\"michell-sweep v2\""),
+        "{meta_txt}"
+    );
     assert!(meta_txt.contains("\"wave_method\""), "{meta_txt}");
     assert!(meta_txt.contains("\"wave_outcome\""), "{meta_txt}");
     assert!(meta_txt.contains("\"wave_outcome_codes\""), "{meta_txt}");

@@ -79,7 +79,11 @@ fn constant_half_breadth_shift_is_a_null_direction() {
     )
     .unwrap();
     let directional: f64 = gradient.control_gradient.iter().sum();
-    let scale: f64 = gradient.control_gradient.iter().map(|value| value.abs()).sum();
+    let scale: f64 = gradient
+        .control_gradient
+        .iter()
+        .map(|value| value.abs())
+        .sum();
     assert!(directional.abs() < 1e-11 * scale.max(1.0));
 }
 
@@ -114,7 +118,9 @@ fn asymmetric_control_net_requires_an_explicit_two_side_gradient() {
     };
     let asymmetric = Hull::new_asymmetric(clone_surface(), clone_surface()).unwrap();
     let conditions = Conditions::freshwater(3.0);
-    assert!(wave_resistance_gradient_with(&asymmetric, &conditions, &WaveOptions::default()).is_err());
+    assert!(
+        wave_resistance_gradient_with(&asymmetric, &conditions, &WaveOptions::default()).is_err()
+    );
 }
 
 #[test]
@@ -222,14 +228,12 @@ fn multihull_member_control_gradients_include_interference() {
             } else {
                 [(&hulls[other], placements[0]), (&minus, placements[1])]
             };
-            let r_plus =
-                multihull_wave_resistance_with(&plus_members, &conditions, &options)
-                    .unwrap()
-                    .resistance;
-            let r_minus =
-                multihull_wave_resistance_with(&minus_members, &conditions, &options)
-                    .unwrap()
-                    .resistance;
+            let r_plus = multihull_wave_resistance_with(&plus_members, &conditions, &options)
+                .unwrap()
+                .resistance;
+            let r_minus = multihull_wave_resistance_with(&minus_members, &conditions, &options)
+                .unwrap()
+                .resistance;
             let finite_difference = (r_plus - r_minus) / (2.0 * step);
             let scaled_error =
                 (expected[index] - finite_difference).abs() / finite_difference.abs().max(1.0);
@@ -276,9 +280,7 @@ fn asymmetric_side_gradients_match_centered_finite_differences() {
         &options,
     )
     .unwrap();
-    let ControlNetGradient::Asymmetric { port, starboard } =
-        &analytic.members[0].control
-    else {
+    let ControlNetGradient::Asymmetric { port, starboard } = &analytic.members[0].control else {
         panic!("asymmetric hull returned a symmetric control gradient");
     };
     let step = 1e-5;
@@ -314,8 +316,8 @@ fn asymmetric_side_gradients_match_centered_finite_differences() {
             .unwrap()
             .resistance;
             let finite_difference = (r_plus - r_minus) / (2.0 * step);
-            let scaled_error = (expected[index] - finite_difference).abs()
-                / finite_difference.abs().max(1.0);
+            let scaled_error =
+                (expected[index] - finite_difference).abs() / finite_difference.abs().max(1.0);
             assert!(
                 scaled_error < 3e-6,
                 "{} control {index}: analytic={}, finite difference={finite_difference}, scaled error={scaled_error:.3e}",

@@ -234,9 +234,7 @@ fn member_signatures_and_pair_terms_sum_to_the_total_integrand() {
             .copied()
             .fold(michell::C64::ZERO, |sum, amplitude| sum + amplitude);
         let amplitude_scale = signature.total_amplitude.abs().max(1e-14);
-        assert!(
-            (amplitude_sum - signature.total_amplitude).abs() <= 1e-13 * amplitude_scale
-        );
+        assert!((amplitude_sum - signature.total_amplitude).abs() <= 1e-13 * amplitude_scale);
 
         let integrand_sum: f64 = signature
             .interference
@@ -265,8 +263,20 @@ fn catamaran_signature_reproduces_four_cosine_squared_interference() {
     let cond = Conditions::seawater(3.0);
     let separation = 2.8;
     let members = [
-        (&hull, Placement { x: 0.0, y: 0.5 * separation }),
-        (&hull, Placement { x: 0.0, y: -0.5 * separation }),
+        (
+            &hull,
+            Placement {
+                x: 0.0,
+                y: 0.5 * separation,
+            },
+        ),
+        (
+            &hull,
+            Placement {
+                x: 0.0,
+                y: -0.5 * separation,
+            },
+        ),
     ];
     let solo_members = [(&hull, Placement::default())];
     let mut catamaran = FreeWaveSpectrum::new(&members, &cond).unwrap();

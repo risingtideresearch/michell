@@ -182,9 +182,7 @@ fn insert_surface_knot_x(surface: &BSplineSurface, knot: f64) -> BSplineSurface 
     let nz = surface.n_ctrl_z();
     let mut control = vec![0.0; (old_nx + 1) * nz];
     for z in 0..nz {
-        let column: Vec<_> = (0..old_nx)
-            .map(|x| surface.control()[x * nz + z])
-            .collect();
+        let column: Vec<_> = (0..old_nx).map(|x| surface.control()[x * nz + z]).collect();
         let refined = insert_curve_knot(&column, surface.knots_x(), surface.degree_x(), knot);
         for (x, value) in refined.into_iter().enumerate() {
             control[x * nz + z] = value;
@@ -258,7 +256,8 @@ fn ordering_is_stable_across_requested_tolerances() {
         let order = ordering(&results);
         if let Some(reference) = &reference_order {
             assert_eq!(
-                &order, reference,
+                &order,
+                reference,
                 "ordering changed at rel_tol={rel_tol}: {}",
                 order
                     .iter()
@@ -302,8 +301,7 @@ fn endpoint_and_marcher_routes_agree_on_order_and_pairwise_margins() {
                 variants[left].name,
                 variants[right].name,
             );
-            let combined_error = dispatched[left].est_rel_error
-                * dispatched[left].resistance.abs()
+            let combined_error = dispatched[left].est_rel_error * dispatched[left].resistance.abs()
                 + dispatched[right].est_rel_error * dispatched[right].resistance.abs()
                 + marched[left].est_rel_error * marched[left].resistance.abs()
                 + marched[right].est_rel_error * marched[right].resistance.abs();
@@ -336,8 +334,7 @@ fn ordering_is_invariant_under_exact_knot_insertion() {
                 let z = z_fraction * DRAFT;
                 let scale = original.hull.surface().eval(x, z).abs().max(1.0);
                 assert!(
-                    (original.hull.surface().eval(x, z) - refined.hull.surface().eval(x, z))
-                        .abs()
+                    (original.hull.surface().eval(x, z) - refined.hull.surface().eval(x, z)).abs()
                         <= 2e-14 * scale,
                     "{} geometry changed at ({x}, {z})",
                     original.name,

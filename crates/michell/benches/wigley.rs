@@ -1,7 +1,7 @@
 use michell::{
-    hulls, low_froude_wave_resistance, multihull_wave_resistance_with, resistance,
-    wave_resistance, wave_resistance_gradient, BSplineSurface, Conditions, Hull, Placement,
-    WaveOptions, WaveResistance, STANDARD_GRAVITY,
+    hulls, low_froude_wave_resistance, multihull_wave_resistance_with, resistance, wave_resistance,
+    wave_resistance_gradient, BSplineSurface, Conditions, Hull, Placement, WaveOptions,
+    WaveResistance, STANDARD_GRAVITY,
 };
 use std::hint::black_box;
 use std::time::{Duration, Instant};
