@@ -10,7 +10,7 @@
 //! ```text
 //! Header
 //!   magic    4 bytes  "MSWP"
-//!   version  u32      = 1
+//!   version  u32      = 2
 //! Blob stream (repeats to EOF)
 //!   kind     u32      1=MANIFEST 2=HULLFILE 3=META 4=ROWS
 //!   name_len u32
@@ -21,7 +21,9 @@
 //!
 //! The `META` blob is a JSON object naming the axis and metric columns (so the
 //! `ROWS` blob is interpretable without hard-coding the schema) plus study
-//! scalars. The `ROWS` blob is:
+//! scalars. Version 2 adds wave-method/outcome/error diagnostics to the
+//! self-described scalar metric columns; the row framing itself is unchanged
+//! from version 1. The `ROWS` blob is:
 //!
 //! ```text
 //!   n_rows    u32
@@ -46,7 +48,7 @@ pub const KIND_META: u32 = 3;
 pub const KIND_ROWS: u32 = 4;
 
 const MAGIC: &[u8; 4] = b"MSWP";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// One sample of the free-wave spectrum at a propagation angle θ.
 pub struct SpecSample {
@@ -174,7 +176,7 @@ impl<'a> Reader<'a> {
             return Err("not an MSWP archive".into());
         }
         let version = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        if version != VERSION {
+        if !(1..=VERSION).contains(&version) {
             return Err(format!("unsupported archive version {version}"));
         }
         Ok(Reader { data, pos: 8 })
@@ -306,5 +308,12 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(Reader::new(b"NOPE\0\0\0\0").is_err());
+    }
+
+    #[test]
+    fn reader_keeps_version_one_container_compatibility() {
+        let mut bytes = Archive::default().into_bytes();
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        assert!(Reader::new(&bytes).is_ok());
     }
 }

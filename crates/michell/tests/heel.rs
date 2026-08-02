@@ -8,7 +8,7 @@
 
 use michell::{
     heel_wave_resistance, hulls, multihull_heel_wave_resistance, multihull_wave_resistance_with,
-    wave_resistance, Conditions, Placement, WaveOptions,
+    wave_resistance, Conditions, Placement, WaveMethod, WaveOptions, WaveOutcome,
 };
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
@@ -18,6 +18,23 @@ fn hull_and_cond(u: f64) -> (michell::Hull, Conditions) {
         hulls::wigley(10.0, 1.0, 0.625).unwrap(),
         Conditions::seawater(u),
     )
+}
+
+#[test]
+fn multihull_and_heel_paths_report_general_convergence() {
+    let (hull, cond) = hull_and_cond(3.0);
+    let opts = WaveOptions::default();
+    let members = [
+        (&hull, Placement { x: 0.0, y: 1.5 }),
+        (&hull, Placement { x: 0.0, y: -1.5 }),
+    ];
+    for wave in [
+        multihull_wave_resistance_with(&members, &cond, &opts).unwrap(),
+        multihull_heel_wave_resistance(&members, &cond, 5.0 * DEG, &opts).unwrap(),
+    ] {
+        assert_eq!(wave.method, WaveMethod::GeneralMarcher);
+        assert_eq!(wave.outcome, WaveOutcome::Converged);
+    }
 }
 
 /// Zero heel reproduces the upright Michell resistance to full precision — the

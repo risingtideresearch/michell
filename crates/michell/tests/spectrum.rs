@@ -1,6 +1,6 @@
 //! Physics checks for the free-wave spectrum and wake reconstruction.
 
-use michell::{hulls, Conditions, FreeWaveSpectrum, Placement};
+use michell::{hulls, Conditions, FreeWaveSpectrum, Placement, WaveGridOutcome};
 
 /// Integrate dR/dθ over (−π/2, π/2) by fine trapezoid.
 fn resistance_from_spectrum(spec: &mut FreeWaveSpectrum, n: usize) -> f64 {
@@ -60,6 +60,7 @@ fn transverse_wavelength_far_astern() {
     let (x0, x1, n) = (-50.0, -15.0, 3501);
     let grid = spec.elevation_grid(x0, x1, 0.0, 0.0, n, 1).unwrap();
     assert!(!grid.resolution_limited);
+    assert_eq!(grid.outcome, WaveGridOutcome::SpectralCap);
     let peak = grid.zeta.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
     assert!(peak > 1e-3, "wake unexpectedly flat: peak {peak} m");
 
@@ -114,6 +115,8 @@ fn monohull_pattern_is_y_symmetric() {
     let grid = spec
         .elevation_grid(-30.0, -10.0, -12.0, 12.0, nx, ny)
         .unwrap();
+    assert_eq!(grid.outcome, WaveGridOutcome::ResolutionCap);
+    assert!(grid.resolution_limited);
     let peak = grid.zeta.iter().fold(0.0f64, |m, &v| m.max(v.abs()));
     for iy in 0..ny / 2 {
         for ix in 0..nx {

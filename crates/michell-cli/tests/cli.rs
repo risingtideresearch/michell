@@ -86,6 +86,20 @@ fn wigley_roundtrip_matches_library() {
         "pe {pe} vs total*U {}",
         total * 3.0
     );
+    assert!(out.contains("\"wave_method\":\"general_marcher\""), "{out}");
+    assert!(out.contains("\"wave_outcome\":\"converged\""), "{out}");
+
+    let low = run_ok(bin().args([
+        "resistance",
+        hull_path.to_str().unwrap(),
+        "--froude",
+        "0.05",
+        "--json",
+    ]));
+    // The CLI accepts fleets, so it deliberately uses the general multihull
+    // route even when the input happens to contain one symmetric hull.
+    assert!(low.contains("\"wave_method\":\"general_marcher\""), "{low}");
+    assert!(low.contains("\"wave_outcome\":\"converged\""), "{low}");
 }
 
 #[test]
@@ -571,7 +585,7 @@ fn parse_msw(bytes: &[u8]) -> Vec<Blob> {
     assert_eq!(&bytes[0..4], b"MSWP", "bad magic");
     assert_eq!(
         u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-        1,
+        2,
         "version"
     );
     let mut blobs = Vec::new();
@@ -645,6 +659,10 @@ fn manifest_binary_archive_bundles_everything() {
     let meta = blobs.iter().find(|b| b.kind == 3).expect("meta blob");
     let meta_txt = String::from_utf8(meta.data.clone()).unwrap();
     assert!(meta_txt.contains("\"metric_labels\""), "{meta_txt}");
+    assert!(meta_txt.contains("\"format\":\"michell-sweep v2\""), "{meta_txt}");
+    assert!(meta_txt.contains("\"wave_method\""), "{meta_txt}");
+    assert!(meta_txt.contains("\"wave_outcome\""), "{meta_txt}");
+    assert!(meta_txt.contains("\"wave_outcome_codes\""), "{meta_txt}");
     assert!(meta_txt.contains("gz_peak_deg"), "{meta_txt}");
     assert!(meta_txt.contains("\"speeds_ms\":[2.5,3.5]"), "{meta_txt}");
 

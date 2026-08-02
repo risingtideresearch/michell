@@ -76,6 +76,31 @@ struct Member<'h> {
     y: f64,
 }
 
+/// Termination reason for a [`WaveGrid`] spectrum integration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveGridOutcome {
+    /// A full angular window decayed below the amplitude threshold.
+    AmplitudeDecay,
+    /// The grid could not resolve shorter waves, which were smoothly tapered.
+    ResolutionCap,
+    /// The documented λ = 15 spectral cap was reached.
+    SpectralCap,
+    /// The integration exhausted its θ-node budget.
+    EvalCap,
+}
+
+impl WaveGridOutcome {
+    /// Stable lower-case name for CLI diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AmplitudeDecay => "amplitude_decay",
+            Self::ResolutionCap => "resolution_cap",
+            Self::SpectralCap => "spectral_cap",
+            Self::EvalCap => "eval_cap",
+        }
+    }
+}
+
 /// Wave elevation ζ sampled on a rectangular grid.
 #[derive(Debug, Clone)]
 pub struct WaveGrid {
@@ -93,6 +118,8 @@ pub struct WaveGrid {
     pub max_lambda: f64,
     /// Number of θ nodes evaluated (per signed pair).
     pub theta_samples: usize,
+    /// Why the angular integration stopped.
+    pub outcome: WaveGridOutcome,
     /// True when the θ integral was truncated at the grid's resolution
     /// limit (waves shorter than ~2 pixels smoothly tapered away) rather
     /// than by amplitude decay.
@@ -341,6 +368,11 @@ impl<'h> FreeWaveSpectrum<'h> {
         let mut window_phase = 0.0f64;
         let mut window_peak = 0.0f64;
         let mut resolution_limited = grid_capped;
+        let mut outcome = if grid_capped {
+            WaveGridOutcome::ResolutionCap
+        } else {
+            WaveGridOutcome::SpectralCap
+        };
         while theta < theta_end - 1e-12 {
             let local_rate = rate(theta);
             let dt = (FRAC * 2.0 * PI / local_rate)
@@ -396,6 +428,7 @@ impl<'h> FreeWaveSpectrum<'h> {
                 if window_phase >= QUIET_WINDOW_PHASE {
                     if window_peak <= QUIET_REL * amp_peak {
                         resolution_limited = false;
+                        outcome = WaveGridOutcome::AmplitudeDecay;
                         break;
                     }
                     window_phase = 0.0;
@@ -403,6 +436,7 @@ impl<'h> FreeWaveSpectrum<'h> {
                 }
             }
             if nodes >= MAX_NODES {
+                outcome = WaveGridOutcome::EvalCap;
                 break;
             }
         }
@@ -417,6 +451,7 @@ impl<'h> FreeWaveSpectrum<'h> {
             zeta,
             max_lambda: 1.0 / theta.cos().max(1e-300),
             theta_samples: nodes,
+            outcome,
             resolution_limited,
         })
     }

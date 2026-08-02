@@ -1,6 +1,7 @@
 use michell::{
     hulls, low_froude_wave_resistance, multihull_wave_resistance_with, wave_resistance_with,
-    Conditions, Placement, WaveOptions, WaveResistance, STANDARD_GRAVITY,
+    Conditions, Placement, WaveMethod, WaveOptions, WaveOutcome, WaveResistance,
+    STANDARD_GRAVITY,
 };
 
 fn marching_wave_resistance(
@@ -148,10 +149,11 @@ fn default_solver_accepts_only_a_reduction_within_tolerance() {
         let conditions = Conditions::freshwater(speed);
         let result = wave_resistance_with(&hull, &conditions, &WaveOptions::default()).unwrap();
         assert_eq!(
-            result.max_lambda.is_infinite(),
+            result.method == WaveMethod::EndpointReduction,
             should_use_reduction,
             "unexpected default route at Fn={fn_}: estimated error {:.3e}",
             result.est_rel_error,
         );
+        assert_eq!(result.outcome, WaveOutcome::Converged);
     }
 }

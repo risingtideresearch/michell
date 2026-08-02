@@ -98,10 +98,10 @@ pub use michell::{
     multihull_heel_wave_resistance, multihull_wave_resistance, multihull_wave_resistance_lifting,
     multihull_wave_resistance_with, wave_resistance, wave_resistance_gradient,
     wave_resistance_gradient_with, wave_resistance_with, LiftingGrid, Placement, WaveOptions,
-    WaveResistance, WaveResistanceGradient,
+    WaveMethod, WaveOutcome, WaveResistance, WaveResistanceGradient,
 };
 pub use moments::C64;
-pub use spectrum::{FreeWaveSpectrum, WaveGrid};
+pub use spectrum::{FreeWaveSpectrum, WaveGrid, WaveGridOutcome};
 
 /// Combined resistance breakdown.
 #[derive(Debug, Clone, Copy)]

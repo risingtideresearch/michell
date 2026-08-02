@@ -735,6 +735,11 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 "speed",
                 "froude",
                 "rw",
+                "wave_method",
+                "wave_outcome",
+                "wave_est_rel_error",
+                "wave_max_lambda",
+                "wave_evaluations",
                 "rv",
                 "rt",
                 "pe",
@@ -982,14 +987,45 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
 
         for &u in &speeds {
             let cond = make_cond(u)?;
-            let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
-                (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+            let (
+                rw,
+                wave_method,
+                wave_outcome,
+                wave_est_rel_error,
+                wave_max_lambda,
+                wave_evaluations,
+                rv,
+                rt,
+                pe,
+                iff,
+                cw,
+                ct,
+            ) = if members.is_empty() {
+                (
+                    0.0,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                )
             } else {
                 let r =
                     michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
                         .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
+                    r.wave.method.code() as f64,
+                    r.wave.outcome.code() as f64,
+                    r.wave.est_rel_error,
+                    r.wave.max_lambda,
+                    r.wave.inner_evaluations as f64,
                     r.viscous_total,
                     r.total,
                     r.effective_power,
@@ -1049,6 +1085,11 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     u,
                     froude,
                     rw,
+                    wave_method,
+                    wave_outcome,
+                    wave_est_rel_error,
+                    wave_max_lambda,
+                    wave_evaluations,
                     rv,
                     rt,
                     pe,
@@ -1184,7 +1225,7 @@ fn build_meta(
     };
     let axis_labels: Vec<String> = axes.iter().map(|a| a.label.clone()).collect();
     let mut s = String::from("{");
-    s.push_str("\"format\":\"michell-sweep v1\"");
+    s.push_str("\"format\":\"michell-sweep v2\"");
     if let Some(n) = name {
         s.push_str(&format!(",\"name\":{}", json_str(n)));
     }
@@ -1196,6 +1237,12 @@ fn build_meta(
     s.push_str(&format!(",\"speeds_ms\":{}", nums(speeds)));
     s.push_str(&format!(",\"axis_labels\":{}", arr(&axis_labels)));
     s.push_str(&format!(",\"metric_labels\":{}", arr(metric_labels)));
+    s.push_str(
+        ",\"wave_method_codes\":{\"0\":\"general_marcher\",\"1\":\"endpoint_reduction\"}",
+    );
+    s.push_str(
+        ",\"wave_outcome_codes\":{\"0\":\"converged\",\"1\":\"tail_cap\",+         \"2\":\"eval_cap\",\"3\":\"refinement_cap\"}",
+    );
     s.push_str(&format!(",\"spectrum_points\":{spectrum_points}"));
     s.push_str(&format!(
         ",\"gz_scan\":{{\"step_deg\":{},\"max_deg\":{}}}",

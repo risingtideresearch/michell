@@ -776,7 +776,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             out.push_str(&format!(
                 "{{\"speed\":{u},\"froude\":{},\"rw\":{},\"rv\":{},\"total\":{},\
                  \"effective_power\":{},\"interference\":{},\"cw\":{},\"cv\":{},\"ct\":{},\
-                 \"wave_est_rel_error\":{}}}",
+                 \"wave_est_rel_error\":{},\"wave_method\":{:?},\"wave_outcome\":{:?}}}",
                 cond.froude_number(l_ref),
                 r.wave.resistance,
                 r.viscous_total,
@@ -786,7 +786,9 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
                 r.cw,
                 r.cv,
                 r.ct,
-                r.wave.est_rel_error
+                r.wave.est_rel_error,
+                r.wave.method.as_str(),
+                r.wave.outcome.as_str()
             ));
         }
         out.push_str("]}");
@@ -1449,9 +1451,9 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
         rows.push((theta, a, d));
     }
     let rw_spectrum = total;
-    let rw = michell::multihull_wave_resistance(&members, &cond)
-        .map_err(|e| format!("{e}"))?
-        .resistance;
+    let wave =
+        michell::multihull_wave_resistance(&members, &cond).map_err(|e| format!("{e}"))?;
+    let rw = wave.resistance;
     eprintln!(
         "U = {u:.3} m/s (Fn {:.3}): Rw = {rw:.4} N (spectrum integral {rw_spectrum:.4} N), \
          transverse wavelength {:.3} m, theta range +-{:.2} deg",
@@ -1464,10 +1466,12 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
         let mut out = String::from("{");
         out.push_str(&format!(
             "\"speed\":{u},\"froude\":{},\"k0\":{},\"transverse_wavelength\":{},\
-             \"rw_michell\":{rw},\"rw_spectrum\":{rw_spectrum},\"points\":[",
+             \"rw_michell\":{rw},\"rw_spectrum\":{rw_spectrum},+             \"wave_method\":{:?},\"wave_outcome\":{:?},\"points\":[",
             cond.froude_number(l_ref),
             spec.wavenumber(),
-            spec.transverse_wavelength()
+            spec.transverse_wavelength(),
+            wave.method.as_str(),
+            wave.outcome.as_str()
         ));
         for (i, (theta, a, d)) in rows.iter().enumerate() {
             if i > 0 {
@@ -1583,13 +1587,14 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
     }
     let summary = format!(
         "wake: {nx}x{ny} over x {x0:.2}..{x1:.2} m, y {y0:.2}..{y1:.2} m at U = {u:.3} m/s \
-         (Fn {:.3})\nzeta {:.4}..{:.4} m, transverse wavelength {:.3} m, max lambda {:.1}{}\n\
+         (Fn {:.3})\nzeta {:.4}..{:.4} m, transverse wavelength {:.3} m, max lambda {:.1}, +         outcome {}{}\n\
          ship advances toward +x; the pattern is physical astern of each hull",
         cond.froude_number(l_ref),
         lo,
         hi,
         spec.transverse_wavelength(),
         grid.max_lambda,
+        grid.outcome.as_str(),
         if grid.resolution_limited {
             " (grid-resolution limited; finer --size reveals shorter diverging waves)"
         } else {
@@ -1606,10 +1611,11 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
             out.push_str(&format!(
                 "{{\"speed\":{u},\"x0\":{x0},\"x1\":{x1},\"y0\":{y0},\"y1\":{y1},\
                  \"nx\":{nx},\"ny\":{ny},\"transverse_wavelength\":{},\"max_lambda\":{},\
-                 \"resolution_limited\":{},\"zeta\":[",
+                 \"resolution_limited\":{},\"integration_outcome\":{:?},\"zeta\":[",
                 spec.transverse_wavelength(),
                 grid.max_lambda,
-                grid.resolution_limited
+                grid.resolution_limited,
+                grid.outcome.as_str()
             ));
             for iy in 0..ny {
                 if iy > 0 {

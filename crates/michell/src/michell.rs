@@ -68,13 +68,86 @@ impl Default for WaveOptions {
     }
 }
 
+/// Numerical method used to produce a [`WaveResistance`] result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveMethod {
+    /// General real-axis marching quadrature, valid for every supported hull.
+    GeneralMarcher,
+    /// Low-Froude endpoint reduction on a steepest-descent contour.
+    EndpointReduction,
+}
+
+impl WaveMethod {
+    /// Stable lower-case name for diagnostics and file formats.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::GeneralMarcher => "general_marcher",
+            Self::EndpointReduction => "endpoint_reduction",
+        }
+    }
+
+    /// Stable numeric code for numeric-only sweep tables.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::GeneralMarcher => 0,
+            Self::EndpointReduction => 1,
+        }
+    }
+}
+
+/// Convergence outcome for a [`WaveResistance`] result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaveOutcome {
+    /// The method's stopping and requested-refinement criteria were met.
+    Converged,
+    /// The marcher reached its hard λ tail cap before a quiet tail was found.
+    TailCap,
+    /// The marcher exhausted its per-pass evaluation budget.
+    EvalCap,
+    /// Panel refinement was exhausted before `rel_tol` was met.
+    RefinementCap,
+}
+
+impl WaveOutcome {
+    /// Stable lower-case name for diagnostics and file formats.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Converged => "converged",
+            Self::TailCap => "tail_cap",
+            Self::EvalCap => "eval_cap",
+            Self::RefinementCap => "refinement_cap",
+        }
+    }
+
+    /// Stable numeric code for numeric-only sweep tables.
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Converged => 0,
+            Self::TailCap => 1,
+            Self::EvalCap => 2,
+            Self::RefinementCap => 3,
+        }
+    }
+
+    /// Whether the method met all of its convergence criteria.
+    pub const fn is_converged(self) -> bool {
+        matches!(self, Self::Converged)
+    }
+}
+
 /// Wave resistance result with quadrature diagnostics.
 #[derive(Debug, Clone, Copy)]
 pub struct WaveResistance {
     /// Wave resistance R_w [N].
     pub resistance: f64,
-    /// Estimated relative quadrature error (difference between the last two
-    /// refinement passes).
+    /// Method-specific relative error diagnostic.
+    ///
+    /// For [`WaveMethod::GeneralMarcher`] this is the difference between the
+    /// last two refinement passes. It is a heuristic and is known to be
+    /// optimistic when a quiet oscillatory window precedes a material tail.
+    /// For [`WaveMethod::EndpointReduction`] it combines a rigorous bound on
+    /// omitted submerged endpoints with an empirical contour-quadrature
+    /// estimate.
     pub est_rel_error: f64,
     /// Total number of inner-integral evaluations performed, or transformed
     /// kernel nodes for an accepted low-Froude endpoint reduction.
@@ -83,6 +156,10 @@ pub struct WaveResistance {
     /// low-Froude steepest-descent contour evaluates the infinite interval
     /// without real-axis truncation.
     pub max_lambda: f64,
+    /// Numerical route used to produce this result.
+    pub method: WaveMethod,
+    /// Whether that route converged or stopped at a safety/refinement cap.
+    pub outcome: WaveOutcome,
 }
 
 /// Michell resistance and its exact first derivative with respect to the
@@ -132,6 +209,8 @@ pub fn wave_resistance_with(
                     est_rel_error: reduced.est_rel_error,
                     inner_evaluations: reduced.kernel_evaluations,
                     max_lambda: f64::INFINITY,
+                    method: WaveMethod::EndpointReduction,
+                    outcome: WaveOutcome::Converged,
                 });
             }
         }
@@ -194,7 +273,7 @@ pub fn wave_resistance_gradient_with(
     let mut coeff_adjoint = vec![0.0; hull.fx_coeff().len()];
     let mut reverse_inner = InnerIntegral::new(hull, nu);
     let mut gradient_evaluations = 0usize;
-    let (reverse_integral, reverse_max_lambda) = integrate_outer(
+    let reverse = integrate_outer(
         &params,
         frac,
         &gx,
@@ -206,9 +285,9 @@ pub fn wave_resistance_gradient_with(
         },
         &mut gradient_evaluations,
     );
-    debug_assert!((coeff * reverse_integral - wave.resistance).abs()
+    debug_assert!((coeff * reverse.integral - wave.resistance).abs()
         <= 1e-12 * wave.resistance.abs().max(1.0));
-    debug_assert_eq!(reverse_max_lambda, wave.max_lambda);
+    debug_assert_eq!(reverse.max_lambda, wave.max_lambda);
 
     let mut control_gradient = hull.fx_control_adjoint(&coeff_adjoint);
     for derivative in &mut control_gradient {
@@ -602,6 +681,23 @@ struct OuterParams {
     t_max: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct OuterLimits {
+    lambda_hard_cap: f64,
+    max_evals_per_pass: usize,
+}
+
+const DEFAULT_OUTER_LIMITS: OuterLimits = OuterLimits {
+    lambda_hard_cap: 1e4,
+    max_evals_per_pass: 4_000_000,
+};
+
+struct OuterPass {
+    integral: f64,
+    max_lambda: f64,
+    outcome: WaveOutcome,
+}
+
 /// Marching-panel Gauss–Legendre integration of
 /// `∫_0^{π/2} |A(sec θ)|² sec³θ dθ`, where `amp_sq` supplies the combined
 /// `|A|²` of the fleet's two (±θ) wave systems.
@@ -612,7 +708,27 @@ fn integrate_outer(
     gw: &[f64],
     amp_sq: &mut impl FnMut(f64, f64) -> f64,
     evals: &mut usize,
-) -> (f64, f64) {
+) -> OuterPass {
+    integrate_outer_with_limits(
+        params,
+        frac,
+        gx,
+        gw,
+        amp_sq,
+        evals,
+        DEFAULT_OUTER_LIMITS,
+    )
+}
+
+fn integrate_outer_with_limits(
+    params: &OuterParams,
+    frac: f64,
+    gx: &[f64],
+    gw: &[f64],
+    amp_sq: &mut impl FnMut(f64, f64) -> f64,
+    evals: &mut usize,
+    limits: OuterLimits,
+) -> OuterPass {
     const GL_N: usize = 16;
     /// Truncate once a full quiet window contributes below this fraction.
     const STOP_REL: f64 = 1e-9;
@@ -621,8 +737,6 @@ fn integrate_outer(
     /// (width < π) can never trigger truncation on its own. Phase-based, so
     /// the criterion is independent of the panel-refinement level.
     const STOP_WINDOW_PHASE: f64 = 8.0 * PI;
-    const LAMBDA_HARD_CAP: f64 = 1e4;
-    const MAX_EVALS_PER_PASS: usize = 4_000_000;
 
     let nu = params.nu;
     let (x_half, y_half, t_max) = (params.x_half, params.y_half, params.t_max);
@@ -647,6 +761,7 @@ fn integrate_outer(
     let mut window_phase = 0.0f64;
     let mut pass_evals = 0usize;
     let mut lambda = 1.0f64;
+    let mut outcome = WaveOutcome::TailCap;
     while theta < FRAC_PI_2 - 1e-12 {
         let (sin_theta, cos_theta) = theta.sin_cos();
         let sec_theta = 1.0 / cos_theta;
@@ -677,18 +792,28 @@ fn integrate_outer(
             window_phase += local_rate * dt;
             if window_phase >= STOP_WINDOW_PHASE {
                 if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
+                    outcome = WaveOutcome::Converged;
                     break;
                 }
                 window_sum = 0.0;
                 window_phase = 0.0;
             }
         }
-        if lambda > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
+        if lambda > limits.lambda_hard_cap {
+            outcome = WaveOutcome::TailCap;
+            break;
+        }
+        if pass_evals >= limits.max_evals_per_pass {
+            outcome = WaveOutcome::EvalCap;
             break;
         }
     }
     *evals += pass_evals;
-    (total, lambda)
+    OuterPass {
+        integral: total,
+        max_lambda: lambda,
+        outcome,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +863,17 @@ fn run_outer_with_frac(
     params: &OuterParams,
     opts: &WaveOptions,
     coeff: f64,
+    amp_sq: impl FnMut(f64) -> f64,
+) -> (WaveResistance, f64) {
+    run_outer_with_limits(params, opts, coeff, amp_sq, DEFAULT_OUTER_LIMITS)
+}
+
+fn run_outer_with_limits(
+    params: &OuterParams,
+    opts: &WaveOptions,
+    coeff: f64,
     mut amp_sq: impl FnMut(f64) -> f64,
+    limits: OuterLimits,
 ) -> (WaveResistance, f64) {
     const GL_N: usize = 16;
     let (gx, gw) = gauss_legendre(GL_N);
@@ -746,29 +881,50 @@ fn run_outer_with_frac(
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let (mut integral, mut max_lambda) =
-        integrate_outer(params, frac, &gx, &gw, &mut sample, &mut evals);
+    let mut pass = integrate_outer_with_limits(
+        params,
+        frac,
+        &gx,
+        &gw,
+        &mut sample,
+        &mut evals,
+        limits,
+    );
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(params, frac, &gx, &gw, &mut sample, &mut evals);
+        let refined = integrate_outer_with_limits(
+            params,
+            frac,
+            &gx,
+            &gw,
+            &mut sample,
+            &mut evals,
+            limits,
+        );
         evals_total += evals;
-        let scale = refined.abs().max(f64::MIN_POSITIVE);
-        est_rel = (refined - integral).abs() / scale;
-        integral = refined;
-        max_lambda = ml;
-        if est_rel <= opts.rel_tol {
+        let scale = refined.integral.abs().max(f64::MIN_POSITIVE);
+        est_rel = (refined.integral - pass.integral).abs() / scale;
+        pass = refined;
+        if est_rel <= opts.rel_tol && pass.outcome.is_converged() {
             break;
         }
     }
+    let outcome = if pass.outcome.is_converged() && est_rel > opts.rel_tol {
+        WaveOutcome::RefinementCap
+    } else {
+        pass.outcome
+    };
     (
         WaveResistance {
-            resistance: coeff * integral,
+            resistance: coeff * pass.integral,
             est_rel_error: est_rel,
             inner_evaluations: evals_total,
-            max_lambda,
+            max_lambda: pass.max_lambda,
+            method: WaveMethod::GeneralMarcher,
+            outcome,
         },
         frac,
     )
