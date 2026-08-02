@@ -22,8 +22,11 @@ pairs carry signed attribution; and design rankings are checked across three
 tolerances, two numerical routes, and exact knot insertion. The new ranking
 gate exposed one additional diagnostic bug: at `Fn=0.05` the marcher reported
 `5.123e-9` while its actual error was `5.781e-7`. A power-law tail extrapolation
-now reports about `6.356e-7`, covers the observed error, and avoids useless
-panel refinement once that tail floor dominates.
+fixed that low-Froude failure. Independent follow-up then found that its first
+1.25 safety factor was still 2.97 times optimistic at `Fn=0.35`. A red
+λ-to-4000 analytic-Wigley regression now anchors the design-Froude regime; a
+4.0 finite-λ safety factor reports `1.961e-7` against `1.822e-7` actual error
+there and avoids useless panel refinement once that tail floor dominates.
 
 The second Phase-4 advance is the larger one. It rewrites each polynomial
 B-spline span exactly as endpoint waves, discards only depth-damped endpoints
@@ -72,7 +75,7 @@ The required honesty classes are used throughout this report:
 | Exact polynomial-times-kernel span integration | 3 | This code and Dambrine–Pierre–Rousseaux both evaluate polynomial basis integrals exactly |
 | Exact B-spline control gradient | 1 and 2 | Known quadratic-form result reproduced; reverse implementation and public API are new here |
 | Explicit method/outcome status and `.msw` v2 diagnostics | 2 | Cap regressions, CLI/archive compatibility tests, and v1 reader coverage |
-| Power-law marcher-tail diagnostic | 1 and 2 | Known algebraic endpoint decay; engineering estimator covers the reproduced 113× underestimate |
+| Power-law marcher-tail diagnostic | 1 and 2 | Known algebraic endpoint decay; independent λ-to-4000 Wigley regressions cover reproduced low- and design-Froude failures |
 | Multihull placement and asymmetric per-side gradients | 1 and 2 | Analytic phase/chain-rule derivatives; every requested component is centered-FD checked |
 | Displacement, LCB, and wetted-area control derivatives | 1 and 2 | Standard spline/calculus derivatives; exact polynomial and differentiated-quadrature implementation |
 | Member/pair wave and endpoint attribution | 1 and 2 | Standard quadratic interference expansion; new typed attribution API and summation regressions |
@@ -107,25 +110,44 @@ framing is unchanged and the reader retains version-1 compatibility. New CLI
 and archive fields include method, outcome, estimated relative error,
 `max_lambda`, and evaluation count.
 
-Two deliberately red regressions proved that the lambda and evaluation safety
-caps had previously been indistinguishable from successful return. They were
-committed in `6b8c42d`; `ca2d648` added the statuses and propagation.
+The cap-status contract tests in `6b8c42d` are deliberately compile-red: they
+name `WaveOutcome`, which did not yet exist. This establishes the missing
+observable API at the type level, but is not an assertion-red demonstration of
+the old runtime behavior. Commit `ca2d648` added the statuses and propagation;
+the same scenarios then assert the distinct `TailCap` and `EvalCap` outcomes.
 
 The ranking work later exposed a subtler diagnostic failure. At `Fn=0.05`:
 
-| General marcher diagnostic | Before | After | Independent actual error |
-|---|---:|---:|---:|
-| Relative error | `5.123e-9` | about `6.356e-7` | `5.781e-7` |
+| General marcher diagnostic | Refinement only | First tail estimator | Corrected estimator | Independent actual error |
+|---|---:|---:|---:|---:|
+| Relative error | `5.123e-9` | about `6.356e-7` | about `2.034e-6` | `5.781e-7` |
 
-The old value only measured panel refinement. The new value is the larger of
-that difference and a 1.25-safety-factor extrapolation of the terminating phase
+The old value only measured panel refinement. The tail value is the larger of
+that difference and a safety-factor extrapolation of the terminating phase
 window. The extrapolation uses the endpoint result `F = O(lambda^-3)`, hence a
 transformed resistance density `O(lambda^-5)` and tail proportional to one
-quarter of the local density times `lambda`. It remains a heuristic, not a
-rigorous bound, but it covers the reproduced case instead of understating it by
-about 113 times. When this fixed tail floor exceeds the requested tolerance,
-panel refinement stops once its own change is smaller and the result reports
+quarter of the local density times `lambda`.
+
+Independent review found that the initial 1.25 factor covered this low-Froude
+case but not the finite-λ transition at design Froude numbers. Red commit
+`30bc6ef` reproduces the worst reported case without production moments or
+outer quadrature: analytic Wigley amplitude, phase-resolved GL16 panels,
+compensated summation, and `lambda_max=4000`. Commit `8a7ac15` raises the factor
+to 4.0 and extends the reference sweep:
+
+| Fn | Initial estimate | Actual relative error | Corrected estimate | Corrected/actual |
+|---:|---:|---:|---:|---:|
+| 0.12 | `1.747e-7` | `2.128e-7` | `5.589e-7` | 2.63× |
+| 0.20 | `9.040e-8` | `1.452e-7` | `2.893e-7` | 1.99× |
+| 0.35 | `6.129e-8` | `1.822e-7` | `1.961e-7` | 1.08× |
+
+The estimator remains a heuristic, not a rigorous bound or a claim about all
+hulls. When its fixed tail floor exceeds the requested tolerance, panel
+refinement stops once its own change is smaller and the result reports
 `RefinementCap` rather than burning the entire allowance or claiming success.
+The public `WaveOptions`, `WaveOutcome`, and `WaveResistance` documentation now
+states prominently that `rel_tol` is a target and that callers must inspect
+both `outcome` and `est_rel_error`.
 
 Classification: endpoint decay is class 1; status plumbing, the estimator,
 archive versioning, and regressions are class 2. No novelty claim.
@@ -172,9 +194,9 @@ Validation results:
 | Displaced volume | every symmetric and per-side asymmetric control | `2e-8` |
 | LCB and wetted area | every symmetric and per-side asymmetric control | `2e-7` |
 
-The current 30-sample release benchmark retains the earlier constant-cost
-advantage: exact reverse `1.878 ms` median versus `23.198 ms` for centered
-finite differences, a `12.35x` speedup for nine controls. The aggregate
+The recorded 30-sample release implementation benchmark retains the
+constant-cost advantage: exact reverse `1.878 ms` median versus `23.198 ms`
+for centered finite differences, a `12.35x` speedup for nine controls. The aggregate
 gradient checksums agree to about `2.4e-11` relative.
 
 Classification: analytic phase derivatives, spline-basis integrals, quotient
@@ -231,11 +253,15 @@ the old combined estimate allowed only `1.069e-10 N`. The tail diagnostic fix
 in `fedd88a` raises the combined allowance to the physically relevant tail
 scale and closes the test without relaxing its assertion.
 
-At the tightest general-marcher request, some variants honestly report
-`RefinementCap`: the estimated tail floor is around `5.9e-8`, above `1e-8`.
-Their ranking is nevertheless identical. This is exactly why outcome is kept
-separate from a returned finite resistance; the test does not relabel an unmet
-tolerance as convergence.
+At tight general-marcher requests, variants honestly report `RefinementCap`
+when the calibrated tail floor exceeds `rel_tol`; after the design-Froude
+calibration this also occurs in the forced-marcher `Fn=0.05`, `rel_tol=1e-6`
+route comparison. Their ranking is nevertheless identical and every pairwise
+margin difference remains inside the sum of the four reported absolute error
+estimates. This is exactly why outcome is kept separate from a returned finite
+resistance; the test accepts `RefinementCap` for margin accounting but still
+rejects `TailCap` and `EvalCap` and never relabels an unmet tolerance as
+convergence.
 
 Classification: the gate, exact test-only knot insertion, and six-design corpus
 are class 2. Stable ranking is demonstrated for this corpus, not generalized to
@@ -403,17 +429,20 @@ accepts it at `Fn=0.05`.
 The design-ranking gate later proved that the forced marcher's own diagnostic
 was still too small for pairwise design margins. Red commit `5ed4f61` captures
 that failure; `fedd88a` adds the algebraic-tail estimate described in Workstream
-1. It remains heuristic for general multihulls, but the known 113-times
-underestimate is no longer reported as a converged `5e-9` result.
+1. Independent review then found the first estimator optimistic at design
+Froude numbers; assertion-red commit `30bc6ef` reproduces the 2.97× `Fn=0.35`
+shortfall, and `8a7ac15` calibrates and checks the finite-λ safety factor across
+`Fn=0.12`, `0.20`, and `0.35`. It remains heuristic for general multihulls, but
+neither reproduced failure is now reported with an uncovered estimate.
 
 Classification: class 2.
 
 ### Suspected or unverified; no speculative fix
 
-- The improved algebraic tail diagnostic is reproduced for the low-Froude
-  Wigley family, but adversarial multi-span and multihull beating envelopes have
-  not been characterized. It is still a heuristic, and the bounded low-Froude
-  route does not yet support those configurations.
+- The improved algebraic tail diagnostic is reproduced for the Wigley family
+  from low Froude through `Fn=0.35`, but adversarial multi-span and multihull
+  beating envelopes have not been characterized. It is still a heuristic, and
+  the bounded low-Froude route does not yet support those configurations.
 - `solve_dense` uses a debug-only singularity assertion. Invalid or degenerate
   user-supplied 3-D panels could yield non-finite release results. No failure was
   reproduced for the library's builders; input conditioning belongs in a
@@ -680,9 +709,9 @@ solved-lifting closure.
 | Returned primal versus ordinary resistance API | bit-for-bit equal in test |
 | Analytic work versus control count | one primal convergence plus one reverse pass |
 | Full Phase-0 harness | pass |
-| Full Rust workspace | 214 test cases pass, including one doctest |
+| Full Rust workspace | 215 test cases pass, including one doctest |
 
-Release benchmark, 30 samples, default tolerance (latest run):
+Release benchmark, 30 samples, default tolerance (recorded implementation run):
 
 | Gradient method | Median | Best |
 |---|---:|---:|
@@ -760,7 +789,7 @@ physics terms, not to a formally certified floating-point result.
 
 #### Claimed advantage
 
-Latest 30-sample release benchmark:
+Recorded implementation 30-sample release benchmark:
 
 | Case | Median | Best | Work/diagnostics |
 |---|---:|---:|---|
@@ -841,6 +870,8 @@ would require a professional database and patent search plus expert review.
 | `fedd88a` | Algebraic marcher-tail diagnostic and tail-limited refinement stop |
 | `282f0f0` | Isolated formatter-only cleanup |
 | `8c338e0` | Remove rustdoc ambiguity from new unit annotations |
+| `30bc6ef` | Failing design-Froude error-estimate coverage regression |
+| `8a7ac15` | Calibrate the finite-λ tail estimate and document cap semantics |
 
 ## Ranked backlog
 
@@ -886,13 +917,22 @@ would require a professional database and patent search plus expert review.
 |---|---|
 | `cargo build --workspace` | pass |
 | `cargo build --workspace --release` | pass |
-| `cargo test --workspace` | pass: 214 test cases including one doctest; 0 failed |
+| `cargo test --workspace` | pass: 215 test cases including one doctest; 0 failed |
 | `uv run --with pytest --with numpy pytest -q` in `python/` | pass: 11 passed in 0.10 s |
 | `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; sweep checksum exactly `2.553250998079e5` |
 | `cargo doc -p michell --no-deps` | generated successfully; pre-existing broken-link/unit-bracket warnings remain |
 | allowed-lint Clippy command reproduced below | pass |
 | `cargo fmt --all --check` | pass after isolated formatter commit `282f0f0` |
 | `git diff --check` | pass |
+
+The post-feedback benchmark rerun, under a different desktop load, measured
+`37.833 ms` for the 21-speed sweep, `51.646/0.036 ms` for direct/endpoint
+`Fn=0.02`, and `2.342/36.686 ms` for exact/finite-difference gradients. It is
+not substituted into the controlled implementation tables above because the
+estimator change is not a performance change and the absolute timings are not
+interleaved with their historical baselines. The sweep and gradient checksums
+remained exactly `2.553250998079e5`, `1.734433365029e4`, and
+`1.734433364988e4`, respectively.
 
 The exact passing Clippy command was:
 
