@@ -35,3 +35,35 @@ transcribed with the protocol in `DIGITIZATION.md` may be committed.
 Run `./fetch.sh` from this directory. The script downloads only missing files
 and leaves partial downloads under temporary names until each transfer
 completes successfully.
+
+## Supplementary sources checked during method extraction
+
+These sources are not substitutes for the primary experimental record. They
+were fetched from the linked publisher or institutional repository and used to
+adjudicate geometry naming, later reuse of the data, and limitations of the
+wave-cut method.
+
+1. S. Srinakaew (2017), *A Numerical Study of Resistance Components of High-
+   Speed Catamarans and the Scale Effects on Form Factor*, PhD thesis,
+   University of Southampton.
+   - Repository record: https://eprints.soton.ac.uk/420755/
+   - Version of record:
+     https://eprints.soton.ac.uk/420755/1/Final_Thesis_Sarawuth_Srinakaew.pdf
+   - Note: later uses the name "Wigley III" and reproduces some Insel total and
+     residual-resistance data, but its `C_W` tables are friction-line residuals,
+     not measured wave-pattern `C_WP`.
+
+2. X. Xu, Z. Zou, and X. Chen (2025), "Mechanism analysis and prediction of
+   longitudinal cut wave pattern resistance based on CFD simulation," *Journal
+   of Ocean Engineering and Science* 10(2), 271--288.
+   - Article: https://doi.org/10.1016/j.joes.2023.07.001
+   - Note: prints the Wigley equation and revisits Insel's fixed-attitude
+     `S/L = 0.3` case, including experimental wave-record limitations.
+
+3. P. R. Couser, J. F. Wellicome, and A. F. Molland (2000), *An Improved Method
+   for the Theoretical Prediction of the Wave Resistance of Transom-Stern Hulls
+   Using a Slender Body Approach*, Ship Science Report 125, University of
+   Southampton.
+   - Version of record: https://eprints.soton.ac.uk/46408/1/125ShipScience_Report.pdf
+   - Note: includes a later Wigley monohull thin-ship comparison; it does not
+     provide the missing C2 catamaran tables.
