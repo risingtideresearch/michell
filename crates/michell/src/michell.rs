@@ -142,9 +142,11 @@ pub struct WaveResistance {
     pub resistance: f64,
     /// Method-specific relative error diagnostic.
     ///
-    /// For [`WaveMethod::GeneralMarcher`] this is the difference between the
-    /// last two refinement passes. It is a heuristic and is known to be
-    /// optimistic when a quiet oscillatory window precedes a material tail.
+    /// For [`WaveMethod::GeneralMarcher`] this is the larger of the last-pass
+    /// refinement difference and a power-law extrapolation of the terminating
+    /// quiet window. It remains a heuristic rather than a rigorous bound, but
+    /// accounts for the long aggregate tail that a small local window alone
+    /// can hide at low Froude number.
     /// For [`WaveMethod::EndpointReduction`] it combines a rigorous bound on
     /// omitted submerged endpoints with an empirical contour-quadrature
     /// estimate.
@@ -833,6 +835,9 @@ const DEFAULT_OUTER_LIMITS: OuterLimits = OuterLimits {
 
 struct OuterPass {
     integral: f64,
+    /// Estimated integral beyond `max_lambda` from the terminating quiet
+    /// window. Infinite when the pass stopped at a safety cap.
+    tail_abs_estimate: f64,
     max_lambda: f64,
     outcome: WaveOutcome,
 }
@@ -898,9 +903,11 @@ fn integrate_outer_with_limits(
     let mut total = 0.0f64;
     let mut window_sum = 0.0f64;
     let mut window_phase = 0.0f64;
+    let mut window_lambda_start = 1.0f64;
     let mut pass_evals = 0usize;
     let mut lambda = 1.0f64;
     let mut outcome = WaveOutcome::TailCap;
+    let mut tail_abs_estimate = f64::INFINITY;
     while theta < FRAC_PI_2 - 1e-12 {
         let (sin_theta, cos_theta) = theta.sin_cos();
         let sec_theta = 1.0 / cos_theta;
@@ -927,10 +934,24 @@ fn integrate_outer_with_limits(
         // Truncation: only past λ = 2, and only when an entire window of
         // accumulated oscillation phase contributed negligibly.
         if lambda > 2.0 {
+            if window_phase == 0.0 {
+                window_lambda_start = sec_theta;
+            }
             window_sum += panel;
             window_phase += local_rate * dt;
             if window_phase >= STOP_WINDOW_PHASE {
+                // Every piecewise-polynomial hull amplitude is O(λ⁻³) or
+                // faster at the waterline, so the transformed resistance
+                // density is O(λ⁻⁵) and its remaining integral is
+                // asymptotically one quarter of the local density times λ.
+                // Recover that density from the full phase window rather
+                // than treating one tiny low-Froude window as the tail.
+                let lambda_width = (lambda - window_lambda_start).max(f64::MIN_POSITIVE);
+                let extrapolation = (lambda / (4.0 * lambda_width)).max(1.0);
+                const TAIL_SAFETY: f64 = 1.25;
+                let candidate_tail = TAIL_SAFETY * window_sum.abs() * extrapolation;
                 if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
+                    tail_abs_estimate = candidate_tail;
                     outcome = WaveOutcome::Converged;
                     break;
                 }
@@ -950,6 +971,7 @@ fn integrate_outer_with_limits(
     *evals += pass_evals;
     OuterPass {
         integral: total,
+        tail_abs_estimate,
         max_lambda: lambda,
         outcome,
     }
@@ -1045,9 +1067,15 @@ fn run_outer_with_limits(
         );
         evals_total += evals;
         let scale = refined.integral.abs().max(f64::MIN_POSITIVE);
-        est_rel = (refined.integral - pass.integral).abs() / scale;
+        let refinement_rel = (refined.integral - pass.integral).abs() / scale;
+        let tail_rel = refined.tail_abs_estimate / scale;
+        est_rel = refinement_rel.max(tail_rel);
+        // Panel halving cannot reduce the fixed quiet-window truncation. Once
+        // its discretisation change is already below that tail floor, further
+        // refinement is pure cost; stop and report RefinementCap below.
+        let tail_limited = tail_rel > opts.rel_tol && refinement_rel <= tail_rel;
         pass = refined;
-        if est_rel <= opts.rel_tol && pass.outcome.is_converged() {
+        if pass.outcome.is_converged() && (est_rel <= opts.rel_tol || tail_limited) {
             break;
         }
     }

@@ -167,9 +167,9 @@ fn insert_curve_knot(control: &[f64], knots: &[f64], degree: usize, knot: f64) -
     let last_control = control.len() - 1;
     let mut refined = vec![0.0; control.len() + 1];
     refined[..=span - degree].copy_from_slice(&control[..=span - degree]);
-    for index in span - multiplicity..=last_control {
-        refined[index + 1] = control[index];
-    }
+    let copy_start = span - multiplicity;
+    refined[copy_start + 1..last_control + 2]
+        .copy_from_slice(&control[copy_start..last_control + 1]);
     for index in span - degree + 1..=span - multiplicity {
         let alpha = (knot - knots[index]) / (knots[index + degree] - knots[index]);
         refined[index] = alpha * control[index] + (1.0 - alpha) * control[index - 1];
@@ -251,7 +251,10 @@ fn ordering_is_stable_across_requested_tolerances() {
             max_refinements: 8,
         };
         let results = evaluate(&variants, &conditions, &options, false);
-        assert!(results.iter().all(|result| result.outcome.is_converged()));
+        assert!(results.iter().all(|result| {
+            result.method == WaveMethod::GeneralMarcher
+                && !matches!(result.outcome, WaveOutcome::TailCap | WaveOutcome::EvalCap)
+        }));
         let order = ordering(&results);
         if let Some(reference) = &reference_order {
             assert_eq!(
