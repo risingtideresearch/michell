@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
 /// Michell resistance from the low-Froude waterline-endpoint reduction.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct LowFroudeResistance {
     /// Approximate wave resistance, in newtons.
     pub resistance: f64,
@@ -40,6 +40,52 @@ pub struct LowFroudeResistance {
     pub waterline_terms: usize,
     /// Total scalar quadrature nodes used by the coarse and fine contour
     /// passes. Zero-frequency kernels are analytic and use no nodes.
+    pub kernel_evaluations: usize,
+    /// Signed resistance attribution for every retained waterline term pair.
+    /// These entries sum to [`Self::resistance`].
+    pub endpoint_pairs: Vec<EndpointPairContribution>,
+}
+
+/// Longitudinal location represented by a low-Froude endpoint wave.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndpointKind {
+    /// Low-x end; the stern because the ship advances toward +x.
+    Stern,
+    /// A non-empty-span boundary inside the hull domain.
+    InteriorKnot,
+    /// High-x end; the bow because the ship advances toward +x.
+    Bow,
+}
+
+/// One retained waterline term in the endpoint expansion of the exact inner
+/// amplitude.
+#[derive(Debug, Clone, Copy)]
+pub struct EndpointWave {
+    pub kind: EndpointKind,
+    /// Hull-coordinate endpoint location [m].
+    pub x: f64,
+    /// Endpoint depth [m]. Retained terms are currently all at `z = 0`.
+    pub z: f64,
+    /// Power `n` in `coefficient · exp(i ν λ x) / λⁿ`.
+    pub lambda_power: usize,
+    /// Complex coefficient in the endpoint representation.
+    pub coefficient: C64,
+}
+
+/// Signed contribution of one upper-triangular endpoint-wave pair to the
+/// retained low-Froude resistance.
+#[derive(Debug, Clone, Copy)]
+pub struct EndpointPairContribution {
+    pub left: EndpointWave,
+    pub right: EndpointWave,
+    /// Pair contribution to resistance [N], including the factor of two for
+    /// an off-diagonal pair. Interference contributions may be negative.
+    pub resistance: f64,
+    /// Signed fraction `resistance / total resistance`.
+    pub resistance_fraction: f64,
+    /// Absolute coarse/fine contour difference attributed to this pair [N].
+    pub quadrature_abs_error_estimate: f64,
+    /// Scalar quadrature nodes used for this kernel (zero for equal-x pairs).
     pub kernel_evaluations: usize,
 }
 
@@ -111,9 +157,13 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
 
     let (coarse_x, coarse_w) = gauss_legendre(24);
     let (fine_x, fine_w) = gauss_legendre(48);
+    let physical_coeff =
+        4.0 * cond.fluid.density * cond.gravity * cond.gravity / (PI * cond.speed.powi(2));
+    let (x0, x1) = hull.surface().x_domain();
     let mut integral = 0.0;
     let mut quadrature_error = 0.0;
     let mut kernel_evaluations = 0usize;
+    let mut endpoint_pairs = Vec::with_capacity(waterline.len() * (waterline.len() + 1) / 2);
     for (i, left) in waterline.iter().enumerate() {
         for right in &waterline[i..] {
             let product = left.coeff * conjugate(right.coeff);
@@ -122,9 +172,19 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
             let (kernel, kernel_error, evaluations) =
                 oscillatory_kernel(s, omega, &coarse_x, &coarse_w, &fine_x, &fine_w);
             let multiplicity = if std::ptr::eq(left, right) { 1.0 } else { 2.0 };
-            integral += multiplicity * real_product(product, kernel);
-            quadrature_error += multiplicity * product.abs() * kernel_error;
+            let pair_integral = multiplicity * real_product(product, kernel);
+            let pair_error = multiplicity * product.abs() * kernel_error;
+            integral += pair_integral;
+            quadrature_error += pair_error;
             kernel_evaluations += evaluations;
+            endpoint_pairs.push(EndpointPairContribution {
+                left: endpoint_wave(*left, x0, x1),
+                right: endpoint_wave(*right, x0, x1),
+                resistance: physical_coeff * pair_integral,
+                resistance_fraction: 0.0,
+                quadrature_abs_error_estimate: physical_coeff * pair_error,
+                kernel_evaluations: evaluations,
+            });
         }
     }
 
@@ -141,13 +201,14 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
         }
     }
 
-    let physical_coeff =
-        4.0 * cond.fluid.density * cond.gravity * cond.gravity / (PI * cond.speed.powi(2));
     let resistance = physical_coeff * integral;
     let omitted_abs_error_bound = physical_coeff * omitted_bound;
     let quadrature_abs_error_estimate = physical_coeff * quadrature_error;
     let abs_error = omitted_abs_error_bound + quadrature_abs_error_estimate;
     let est_rel_error = abs_error / resistance.abs().max(f64::MIN_POSITIVE);
+    for pair in &mut endpoint_pairs {
+        pair.resistance_fraction = pair.resistance / resistance;
+    }
 
     Ok(LowFroudeResistance {
         resistance,
@@ -157,7 +218,25 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
         endpoint_terms: terms.len(),
         waterline_terms: waterline.len(),
         kernel_evaluations,
+        endpoint_pairs,
     })
+}
+
+fn endpoint_wave(term: EndpointTerm, x0: f64, x1: f64) -> EndpointWave {
+    let kind = if term.x == x0 {
+        EndpointKind::Stern
+    } else if term.x == x1 {
+        EndpointKind::Bow
+    } else {
+        EndpointKind::InteriorKnot
+    };
+    EndpointWave {
+        kind,
+        x: term.x,
+        z: term.z,
+        lambda_power: term.lambda_power,
+        coefficient: term.coeff,
+    }
 }
 
 fn endpoint_terms(hull: &Hull, nu: f64) -> Vec<EndpointTerm> {
@@ -391,6 +470,14 @@ mod tests {
                 "lambda={lambda}: endpoint {got:?}, direct {want:?}"
             );
         }
+
+        let speed = (STANDARD_GRAVITY / 40.0).sqrt();
+        let reduced =
+            low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+        assert!(reduced.endpoint_pairs.iter().any(|pair| {
+            pair.left.kind == EndpointKind::InteriorKnot
+                || pair.right.kind == EndpointKind::InteriorKnot
+        }));
     }
 
     #[test]

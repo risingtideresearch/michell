@@ -1,6 +1,6 @@
 use michell::{
     hulls, low_froude_wave_resistance, multihull_wave_resistance_with, wave_resistance_with,
-    Conditions, Placement, WaveMethod, WaveOptions, WaveOutcome, WaveResistance,
+    Conditions, EndpointKind, Placement, WaveMethod, WaveOptions, WaveOutcome, WaveResistance,
     STANDARD_GRAVITY,
 };
 
@@ -156,4 +156,40 @@ fn default_solver_accepts_only_a_reduction_within_tolerance() {
         );
         assert_eq!(result.outcome, WaveOutcome::Converged);
     }
+}
+
+#[test]
+fn endpoint_pair_contributions_sum_to_reduced_resistance() {
+    let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let speed = 0.05 * (STANDARD_GRAVITY * hull.length()).sqrt();
+    let result =
+        low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+
+    assert_eq!(
+        result.endpoint_pairs.len(),
+        result.waterline_terms * (result.waterline_terms + 1) / 2,
+    );
+    let resistance_sum: f64 = result.endpoint_pairs.iter().map(|pair| pair.resistance).sum();
+    let fraction_sum: f64 = result
+        .endpoint_pairs
+        .iter()
+        .map(|pair| pair.resistance_fraction)
+        .sum();
+    let quadrature_error_sum: f64 = result
+        .endpoint_pairs
+        .iter()
+        .map(|pair| pair.quadrature_abs_error_estimate)
+        .sum();
+    assert!((resistance_sum - result.resistance).abs() <= 2e-13 * result.resistance);
+    assert!((fraction_sum - 1.0).abs() <= 2e-13);
+    assert!(
+        (quadrature_error_sum - result.quadrature_abs_error_estimate).abs()
+            <= 2e-13 * result.quadrature_abs_error_estimate.max(1e-300)
+    );
+    assert!(result.endpoint_pairs.iter().any(|pair| {
+        pair.left.kind == EndpointKind::Bow || pair.right.kind == EndpointKind::Bow
+    }));
+    assert!(result.endpoint_pairs.iter().any(|pair| {
+        pair.left.kind == EndpointKind::Stern || pair.right.kind == EndpointKind::Stern
+    }));
 }
