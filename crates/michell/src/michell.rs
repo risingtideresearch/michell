@@ -884,7 +884,14 @@ fn integrate_outer_with_limits(
     // transverse separation phase ν y λ√(λ²−1) = ν y sec θ tan θ contributes
     // 2 ν y_half d(sec θ tan θ)/dθ = 2 ν y_half sec θ (sec²θ + tan²θ).
     let rate = |sec: f64, tan: f64| -> f64 {
-        2.0 * nu * sec * tan * (x_half + t_max * sec)
+        // For every depth whose exponent is at most eight this bounds the
+        // vertical envelope rate; deeper contributions are already suppressed
+        // below exp(-8). Do not let their unbounded relative rate force
+        // O(λ^-1) panel widths after they have vanished from the amplitude.
+        const DEPTH_EXPONENT_CAP: f64 = 8.0;
+        let depth_exponent = (nu * t_max * sec * sec).min(DEPTH_EXPONENT_CAP);
+        2.0 * nu * x_half * sec * tan
+            + 2.0 * depth_exponent * tan
             + 2.0 * nu * y_half * sec * (sec * sec + tan * tan)
             + 4.0
     };
