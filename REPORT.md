@@ -1,27 +1,40 @@
 # Michell wave-resistance deep dive
 
-Date: 2026-08-01  
-Branch: `story-wave-resistance-frontier`  
-Starting revision: `abe2b1f`  
+Date: 2026-08-02
+Branch: `story-design-tool-grade-kernel`
+Design-tool upgrade starting revision: `64925d4`
+Original deep-dive starting revision: `abe2b1f`
 Remote operations: none
 
 ## Executive result
 
 The project now has a published-value validation anchor, physical and numerical
-property checks, a repeatable benchmark harness, three reproduced bugs with
-fixes, a measured general-regime quadrature optimization, an exact control-net
-gradient, and a new low-Froude solver.
+property checks, a repeatable benchmark harness, reproduced numerical bugs with
+red-before-fix commits, a measured general-regime quadrature optimization, an
+exact design-variable adjoint, attributable wave signatures, a new low-Froude
+solver, and a six-design ranking-stability gate.
+
+The design-tool upgrade from `64925d4` completed all four requested workstreams.
+Results now identify both their numerical method and termination outcome;
+multihull placement, symmetric/asymmetric control-net, displacement, LCB, and
+wetted-area gradients are available; angular waves and low-Froude endpoint
+pairs carry signed attribution; and design rankings are checked across three
+tolerances, two numerical routes, and exact knot insertion. The new ranking
+gate exposed one additional diagnostic bug: at `Fn=0.05` the marcher reported
+`5.123e-9` while its actual error was `5.781e-7`. A power-law tail extrapolation
+now reports about `6.356e-7`, covers the observed error, and avoids useless
+panel refinement once that tail floor dominates.
 
 The second Phase-4 advance is the larger one. It rewrites each polynomial
 B-spline span exactly as endpoint waves, discards only depth-damped endpoints
 under an explicit absolute bound, expands the squared amplitude into pairwise
 kernels, and evaluates those kernels on a Gaussian-decaying steepest-descent
 contour. At `Fn=0.02` the result needs 1,152 kernel evaluations instead of
-877,424 inner-amplitude evaluations and is **971.79 times faster** (0.029 ms
-versus 28.141 ms median). Against an independent real-axis reference its
-relative difference is `3.56e-11`; the reference's finite tail, rather than the
-new solver, limits that comparison. Cost is effectively independent of the
-oscillation frequency in the tested low-Froude range.
+877,424 inner-amplitude evaluations and is **1,217.28 times faster** (0.029 ms
+versus 35.099 ms median in the final run). Against an independent real-axis
+reference its relative difference is `3.56e-11`; the reference's finite tail,
+rather than the new solver, limits that comparison. Cost is effectively
+independent of the oscillation frequency in the tested low-Froude range.
 
 The constituent mathematics is not new: endpoint low-speed asymptotics,
 Bickley--Naylor functions, and numerical steepest descent all have substantial
@@ -32,7 +45,7 @@ endpoint bound in Michell resistance is classified only as **possibly novel**
 (class 4), after the documented searches below found no prior instance. This is
 not a proof of priority and is not called a breakthrough.
 
-The first Phase-4 advance, the exact gradient, remains useful: it is 14.76 times
+The first Phase-4 advance, the exact gradient, remains useful: it is 12.35 times
 faster than centered finite differences for the nine-control benchmark. Its
 quadratic structure is known; the matrix-free B-spline reverse pass is an
 engineering implementation, not a novelty claim.
@@ -58,6 +71,12 @@ The required honesty classes are used throughout this report:
 | Adaptive outer-loop trigonometric reuse | 2 | Interleaved before/after benchmark at unchanged validation accuracy |
 | Exact polynomial-times-kernel span integration | 3 | This code and Dambrine–Pierre–Rousseaux both evaluate polynomial basis integrals exactly |
 | Exact B-spline control gradient | 1 and 2 | Known quadratic-form result reproduced; reverse implementation and public API are new here |
+| Explicit method/outcome status and `.msw` v2 diagnostics | 2 | Cap regressions, CLI/archive compatibility tests, and v1 reader coverage |
+| Power-law marcher-tail diagnostic | 1 and 2 | Known algebraic endpoint decay; engineering estimator covers the reproduced 113× underestimate |
+| Multihull placement and asymmetric per-side gradients | 1 and 2 | Analytic phase/chain-rule derivatives; every requested component is centered-FD checked |
+| Displacement, LCB, and wetted-area control derivatives | 1 and 2 | Standard spline/calculus derivatives; exact polynomial and differentiated-quadrature implementation |
+| Member/pair wave and endpoint attribution | 1 and 2 | Standard quadratic interference expansion; new typed attribution API and summation regressions |
+| Six-design ranking-stability gate | 2 | Ordering checks across tolerances, solver routes, and exact knot insertion |
 | Low-speed dominance by waterline bow/stern data | 1 | Keller–Ahluwalia, Wehausen/Kotik, and Gotman endpoint results reproduced computationally |
 | Steepest-descent evaluation of oscillatory ship-wave integrals | 1 | Motygin and the general numerical-steepest-descent literature |
 | Bounded low-Froude solver and automatic fallback | 2 | New implementation, independent reference tests, and routing regression |
@@ -69,6 +88,173 @@ thin-ship wave resistance”) found prior quadratic-form and sensitivity work, s
 the gradient is not class 4. The low-Froude search was broader and found close
 precursors, discussed explicitly below rather than hidden behind a novelty
 label.
+
+## Design-tool-grade upgrade from `64925d4`
+
+### Workstream 1 — honest convergence status: complete
+
+`WaveResistance` now carries explicit `method: WaveMethod` and
+`outcome: WaveOutcome`. Methods are `GeneralMarcher` and `EndpointReduction`;
+outcomes are `Converged`, `TailCap`, `EvalCap`, and the additional honest state
+`RefinementCap` for a completed tail march whose requested panel tolerance was
+not met. The old `max_lambda == infinity` route sentinel remains a useful
+physical diagnostic but is no longer an API discriminator.
+
+The status propagates through single- and multihull resistance, upright and
+heeled paths, spectrum/wake diagnostics, CLI JSON, and sweep archives. The
+`.msw` container is explicitly version 2 for the added scalar fields; row
+framing is unchanged and the reader retains version-1 compatibility. New CLI
+and archive fields include method, outcome, estimated relative error,
+`max_lambda`, and evaluation count.
+
+Two deliberately red regressions proved that the lambda and evaluation safety
+caps had previously been indistinguishable from successful return. They were
+committed in `6b8c42d`; `ca2d648` added the statuses and propagation.
+
+The ranking work later exposed a subtler diagnostic failure. At `Fn=0.05`:
+
+| General marcher diagnostic | Before | After | Independent actual error |
+|---|---:|---:|---:|
+| Relative error | `5.123e-9` | about `6.356e-7` | `5.781e-7` |
+
+The old value only measured panel refinement. The new value is the larger of
+that difference and a 1.25-safety-factor extrapolation of the terminating phase
+window. The extrapolation uses the endpoint result `F = O(lambda^-3)`, hence a
+transformed resistance density `O(lambda^-5)` and tail proportional to one
+quarter of the local density times `lambda`. It remains a heuristic, not a
+rigorous bound, but it covers the reproduced case instead of understating it by
+about 113 times. When this fixed tail floor exceeds the requested tolerance,
+panel refinement stops once its own change is smaller and the result reports
+`RefinementCap` rather than burning the entire allowance or claiming success.
+
+Classification: endpoint decay is class 1; status plumbing, the estimator,
+archive versioning, and regressions are class 2. No novelty claim.
+
+### Workstream 2 — design-variable gradients: complete
+
+The exact reverse pass now handles a fleet in one final outer pass. For each
+member it differentiates both placement phases,
+
+```text
+exp(i nu (lambda dx_j +/- lambda sqrt(lambda^2-1) y_j)),
+```
+
+and the member's local source/camber amplitude. The asymmetric chain rule maps
+the mean/camber adjoints back to independent physical controls:
+
+```text
+d/d port      = 1/2 (d/d source - d/d camber)
+d/d starboard = 1/2 (d/d source + d/d camber).
+```
+
+This exactly covers the default asymmetric strip closure. It deliberately does
+not claim to differentiate the optional solved-lifting closure. Both primal and
+reverse paths always use `GeneralMarcher`; a regression proves that at
+`Fn=0.05` the ordinary primal selects `EndpointReduction` while the gradient's
+embedded primal reports `GeneralMarcher`.
+
+Constraint derivatives are exposed separately on `Hull`. Displaced volume and
+its longitudinal first moment integrate B-spline bases exactly to floating-
+point roundoff; LCB uses the quotient rule. Wetted area differentiates through
+the identical 24-point-per-span Gauss–Legendre rule used for the reported area.
+Symmetric nets include both physical sides; asymmetric results return separate
+port/starboard arrays. A zero-volume hull returns an explicit error because its
+LCB derivative is undefined.
+
+Validation results:
+
+| Derivative family | Coverage | Maximum allowed scaled FD error |
+|---|---|---:|
+| Symmetric wave controls | every control | `2e-6` |
+| Interfering multihull controls | selected controls on every member | `1e-4` |
+| Multihull `x` and `y` placement | every member/component | `1e-4` |
+| Asymmetric wave controls | every port and starboard control | `3e-6` |
+| Displaced volume | every symmetric and per-side asymmetric control | `2e-8` |
+| LCB and wetted area | every symmetric and per-side asymmetric control | `2e-7` |
+
+The current 30-sample release benchmark retains the earlier constant-cost
+advantage: exact reverse `1.878 ms` median versus `23.198 ms` for centered
+finite differences, a `12.35x` speedup for nine controls. The aggregate
+gradient checksums agree to about `2.4e-11` relative.
+
+Classification: analytic phase derivatives, spline-basis integrals, quotient
+rules, and reverse differentiation of a quadratic form are class 1. The fleet,
+asymmetric, constraint APIs and their implementation are class 2. No class-4
+claim.
+
+### Workstream 3 — attributable wave signatures: complete
+
+`FreeWaveSpectrum::signature(theta)` returns complex amplitudes in input-member
+order, their total, the total amplitude squared, and an upper-triangular ledger
+of signed self/pair contributions. Diagonal terms are `|A_j|^2`; off-diagonal
+terms are `2 Re(A_j conj(A_k))` and may be negative at favourable-interference
+angles. Each term also carries its signed resistance density. The spectrum now
+includes the same asymmetric strip-camber contribution as the default
+resistance path rather than silently returning mean-thickness waves only.
+
+`LowFroudeResistance::endpoint_pairs` exposes every retained upper-triangular
+waterline term pair. Each entry identifies bow, stern, or interior knot;
+coordinates; lambda power; complex coefficient; signed resistance and share;
+quadrature estimate; and kernel work. This is attribution of the reduced
+retained result, not of the bounded omitted submerged terms.
+
+Regressions prove that:
+
+- member amplitudes sum to the fleet amplitude;
+- all self/pair terms sum to the total angular integrand and resistance density;
+- an identical catamaran reproduces the classical `4 cos^2` factor;
+- asymmetric spectrum integration reproduces default asymmetric resistance;
+- endpoint-pair resistances, shares, and error estimates sum to their reported
+  totals; and
+- a full-multiplicity interior chine is labelled as an interior-knot source.
+
+Classification: quadratic pair expansion and endpoint-wave decomposition are
+class 1; the typed attribution APIs and asymmetric spectrum correction are
+class 2. No novelty claim beyond the already qualified low-Froude combination.
+
+### Workstream 4 — design-ranking stability: complete
+
+The gate uses six exact degree-4 polynomial Wigley-family variants: base,
+narrow/wide beam, finer/fuller longitudinal distribution, and a forward-LCB
+perturbation. It verifies:
+
+1. identical resistance ordering at `rel_tol = 1e-4`, `1e-6`, and `1e-8`;
+2. identical ordering at `Fn=0.05` between dispatched endpoint reduction and
+   forced general marching, with every pairwise margin difference inside the
+   sum of the four reported absolute error estimates; and
+3. identical geometry and ordering after exact degree-preserving knot insertion
+   at mid-length and half-draft.
+
+The first version was intentionally committed red as `5ed4f61`. Ordering did
+not flip, but the base-versus-narrow-beam margin differed by `1.821e-10 N` while
+the old combined estimate allowed only `1.069e-10 N`. The tail diagnostic fix
+in `fedd88a` raises the combined allowance to the physically relevant tail
+scale and closes the test without relaxing its assertion.
+
+At the tightest general-marcher request, some variants honestly report
+`RefinementCap`: the estimated tail floor is around `5.9e-8`, above `1e-8`.
+Their ranking is nevertheless identical. This is exactly why outcome is kept
+separate from a returned finite resistance; the test does not relabel an unmet
+tolerance as convergence.
+
+Classification: the gate, exact test-only knot insertion, and six-design corpus
+are class 2. Stable ranking is demonstrated for this corpus, not generalized to
+all hulls or operating points.
+
+### New public API surface
+
+| API | Purpose |
+|---|---|
+| `WaveMethod`, `WaveOutcome`, fields on `WaveResistance` | explicit route and termination status |
+| `ControlNetGradient`, `PlacementGradient` | symmetric/asymmetric control and rigid-placement derivatives |
+| `MemberWaveResistanceGradient`, `MultihullWaveResistanceGradient` | per-member derivative results |
+| `multihull_wave_resistance_gradient[_with]` | exact fleet reverse pass |
+| `ConstraintGradient`, `HullConstraintGradients` | volume, LCB, and wetted-area derivatives |
+| `Hull::constraint_gradients` | constraint derivative entry point |
+| `WaveSignature`, `WaveInterferenceContribution` | angular complex amplitude and pair ledger |
+| `FreeWaveSpectrum::signature` | per-angle attribution entry point |
+| `EndpointKind`, `EndpointWave`, `EndpointPairContribution` | low-Froude endpoint descriptors and pair results |
+| `LowFroudeResistance::endpoint_pairs` | retained endpoint-pair attribution |
 
 ## Phase 0 — ground truth and validation
 
@@ -206,22 +392,28 @@ while its actual error against the independent analytic-Wigley reference was
 `5.781e-7`, an underestimate by a factor of about 113. A single nearly cancelling
 window is not a bound on the accumulated algebraic sequence of later windows.
 
-The failing regression was committed in `406dcc3`. Commit `5a397f7` fixes the
-public result by first attempting the independently bounded endpoint solver and
-accepting it only when its combined bound/estimate meets the requested tolerance;
-unsupported geometry or an insufficient bound falls back to the general marcher.
-The route-selection regression in `db1c764` proves both sides of this gate:
-default tolerance rejects the reduction at `Fn=0.08` and accepts it at `Fn=0.05`.
+The failing regression was committed in `406dcc3`. Commit `5a397f7` first fixed
+the public single-hull result by attempting the independently bounded endpoint
+solver and accepting it only when its combined bound/estimate meets the
+requested tolerance; unsupported geometry or an insufficient bound falls back
+to the general marcher. The route-selection regression in `db1c764` proves both
+sides of this gate: default tolerance rejects the reduction at `Fn=0.08` and
+accepts it at `Fn=0.05`.
 
-Classification: class 2. The general multihull marcher's diagnostic remains a
-heuristic, so callers that specifically request that path still need the explicit
-convergence-status work below.
+The design-ranking gate later proved that the forced marcher's own diagnostic
+was still too small for pairwise design margins. Red commit `5ed4f61` captures
+that failure; `fedd88a` adds the algebraic-tail estimate described in Workstream
+1. It remains heuristic for general multihulls, but the known 113-times
+underestimate is no longer reported as a converged `5e-9` result.
+
+Classification: class 2.
 
 ### Suspected or unverified; no speculative fix
 
-- The outer tail stop's failure is reproduced for the low-Froude Wigley case,
-  but adversarial multi-span and multihull interference envelopes have not been
-  characterized. The bounded low-Froude route does not yet support them.
+- The improved algebraic tail diagnostic is reproduced for the low-Froude
+  Wigley family, but adversarial multi-span and multihull beating envelopes have
+  not been characterized. It is still a heuristic, and the bounded low-Froude
+  route does not yet support those configurations.
 - `solve_dense` uses a debug-only singularity assertion. Invalid or degenerate
   user-supplied 3-D panels could yield non-finite release results. No failure was
   reproduced for the library's builders; input conditioning belongs in a
@@ -474,9 +666,10 @@ It then applies the transpose of the exact control-to-corner-derivative map to
 obtain `dR_w/dP_ij`. The public API returns the primal `WaveResistance`, the
 row-major control gradient, and the number of reverse-pass inner evaluations.
 
-The initial API intentionally accepts only symmetric hulls. An asymmetric hull
-has two physical nets and multiple dipole closures; returning a derivative of
-only its stored symmetric mean would be misleading.
+The initial API at `64925d4` intentionally accepted only symmetric hulls. The
+design-tool upgrade now returns separate physical port/starboard gradients for
+the default strip closure and still refuses to imply coverage of the optional
+solved-lifting closure.
 
 #### Validation and claimed advantage
 
@@ -487,16 +680,16 @@ only its stored symmetric mean would be misleading.
 | Returned primal versus ordinary resistance API | bit-for-bit equal in test |
 | Analytic work versus control count | one primal convergence plus one reverse pass |
 | Full Phase-0 harness | pass |
-| Full Rust workspace | 196 test cases pass, including one doctest |
+| Full Rust workspace | 214 test cases pass, including one doctest |
 
 Release benchmark, 30 samples, default tolerance (latest run):
 
 | Gradient method | Median | Best |
 |---|---:|---:|
-| Exact reverse, 9 controls | 1.426 ms | 1.377 ms |
-| Centered finite differences | 21.046 ms | 20.761 ms |
+| Exact reverse, 9 controls | 1.878 ms | 1.853 ms |
+| Centered finite differences | 23.198 ms | 23.060 ms |
 
-Median speedup: **14.76×**. Aggregate absolute-gradient checksums agree to about
+Median speedup: **12.35×**. Aggregate absolute-gradient checksums agree to about
 `2.4e-11` relative (`1.734433365029e4` versus `1.734433364988e4`, including
 the benchmark's 30-run accumulation).
 
@@ -571,14 +764,14 @@ Latest 30-sample release benchmark:
 
 | Case | Median | Best | Work/diagnostics |
 |---|---:|---:|---|
-| General marcher, `Fn=0.02` | 28.141 ms | 27.794 ms | 877,424 inner evaluations |
+| General marcher, `Fn=0.02` | 35.099 ms | 34.825 ms | 877,424 inner evaluations |
 | Endpoint/NSD, `Fn=0.02` | 0.029 ms | 0.028 ms | 1,152 kernel evaluations |
 | Default API, `Fn=0.05` | 0.029 ms | 0.028 ms | estimate `3.728e-12` |
-| 21 speeds, `Fn=0.10…0.50` | 21.897 ms | 21.584 ms | unchanged checksum |
+| 21 speeds, `Fn=0.10…0.50` | 27.088 ms | 26.934 ms | checksum `2.553250998079e5` |
 
-The direct low-Froude speedup is **971.79×** at `Fn=0.02`. Relative to the
+The direct low-Froude speedup is **1,217.28×** at `Fn=0.02`. Relative to the
 pre-dispatch `Fn=0.05` baseline of 7.494 ms from the same development run, the
-default API is about **268×** faster. The 21-speed production sweep remains on
+default API is about **258×** faster. The 21-speed production sweep remains on
 the general method where appropriate and retains its numerical checksum.
 
 Classification: endpoint integration by parts, endpoint low-speed dominance,
@@ -638,6 +831,16 @@ would require a professional database and patent search plus expert review.
 | `5a397f7` | Tolerance-bounded low-Froude dispatch and bug fix |
 | `db1c764` | Acceptance/fallback routing regression |
 | `e6568d4` | Remove rustdoc ambiguity from the new public API |
+| `6b8c42d` | Failing tail/evaluation-cap status regressions |
+| `ca2d648` | Explicit method/outcome status, CLI propagation, and `.msw` v2 |
+| `45d8c36` | Multihull placement and asymmetric control-net gradients |
+| `2ff748f` | Displacement, LCB, and wetted-area gradients |
+| `3e921b6` | Per-member angular wave signatures and interference attribution |
+| `e8f952e` | Low-Froude endpoint-pair attribution |
+| `5ed4f61` | Failing six-design ranking-margin gate |
+| `fedd88a` | Algebraic marcher-tail diagnostic and tail-limited refinement stop |
+| `282f0f0` | Isolated formatter-only cleanup |
+| `8c338e0` | Remove rustdoc ambiguity from new unit annotations |
 
 ## Ranked backlog
 
@@ -654,24 +857,27 @@ would require a professional database and patent search plus expert review.
 4. Make the entire result rigorous with directed rounding or ball arithmetic,
    a proven Gaussian-contour quadrature remainder, and a certified independent
    reference. The present submerged-term bound is rigorous; contour error is not.
-5. Add explicit convergence status (`converged`, `tail_cap`, `evaluation_cap`)
-   to the legacy marcher and make capped runs impossible to mistake for
-   converged values. Build adversarial multihull interference cases.
-6. Differentiate through the endpoint solver so low-Froude exact gradients get
-   both advances at once; then extend gradients to port and starboard nets,
-   multihull placements, speed, and constrained objectives (volume, wetted
-   area, fairness).
-7. Add a small constrained optimizer example with non-negativity, closure,
+5. Differentiate through the endpoint solver so low-Froude exact gradients get
+   both advances at once. Extend the solved-lifting closure only after deriving
+   and validating its own adjoint; do not silently reuse the strip derivative.
+6. Stress the general tail diagnostic with adversarial multispan and multihull
+   beating envelopes. Replace the power-law heuristic with a certified or
+   envelope-aware bound if practical.
+7. Add speed, draft/waterline, fairness, and curvature derivatives. A production
+   knot-insertion API would also make adaptive design parametrisations easier;
+   current knot insertion exists only as an exact ranking regression helper.
+8. Add a small constrained optimizer example with non-negativity, closure,
    displacement, and curvature regularization; do not optimize wave resistance
-   alone because the published problem is ill-posed.
-8. Implement finite-depth/infinite-width first, then finite-width channel modes.
+   alone because the published problem is ill-posed. This remains deliberately
+   out of the current diff.
+9. Implement finite-depth/infinite-width first, then finite-width channel modes.
    Near critical depth the saddle/mode structure changes, so reuse the uniform-
    asymptotic contour work rather than treating this as a kernel substitution.
-9. Add boundary-layer displacement/tangency corrections behind an explicit
+10. Add boundary-layer displacement/tangency corrections behind an explicit
    model option and validate against the five-hull literature set.
-10. Harden lifting solvers with public dimension/geometry validation and
+11. Harden lifting solvers with public dimension/geometry validation and
    condition estimates instead of debug-only singularity assertions.
-11. Treat Neumann–Michell as a separate higher-fidelity solver sharing the same
+12. Treat Neumann–Michell as a separate higher-fidelity solver sharing the same
    B-spline geometry, benchmarks, and published Wigley cases.
 
 ## Final validation
@@ -680,13 +886,12 @@ would require a professional database and patent search plus expert review.
 |---|---|
 | `cargo build --workspace` | pass |
 | `cargo build --workspace --release` | pass |
-| `cargo test --workspace` | pass: 196 test cases including one doctest; 0 failed |
+| `cargo test --workspace` | pass: 214 test cases including one doctest; 0 failed |
 | `uv run --with pytest --with numpy pytest -q` in `python/` | pass: 11 passed in 0.10 s |
-| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; final numbers recorded above |
-| `cargo doc -p michell --no-deps` | generated successfully; pre-existing broken-link warnings remain outside the new API |
-| strict `cargo clippy -p michell --all-targets -- -D warnings` | does not pass: seven pre-existing current-Clippy findings in `body.rs`, `lifting3d.rs`, `lifting.rs`, and `tests/inclined.rs` |
-| same Clippy command with the four named pre-existing lints allowed | pass |
-| `cargo fmt --all --check` | does not pass: current rustfmt disagrees with already committed formatting in several files; no formatter rewrite was applied |
+| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; sweep checksum exactly `2.553250998079e5` |
+| `cargo doc -p michell --no-deps` | generated successfully; pre-existing broken-link/unit-bracket warnings remain |
+| allowed-lint Clippy command reproduced below | pass |
+| `cargo fmt --all --check` | pass after isolated formatter commit `282f0f0` |
 | `git diff --check` | pass |
 
 The exact passing Clippy command was:
@@ -699,5 +904,6 @@ cargo clippy -p michell --all-targets -- -D warnings \
   -A clippy::unnecessary-cast
 ```
 
-No database-backed tests exist in this repository. No test was skipped. No
-remote push was made.
+No database-backed tests exist in this repository. No test was skipped. The
+pre-existing untracked `python/uv.lock` was deliberately preserved and excluded
+from every commit. No remote push was made.
