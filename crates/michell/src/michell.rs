@@ -175,6 +175,45 @@ pub struct WaveResistanceGradient {
     pub gradient_evaluations: usize,
 }
 
+/// Control-net derivative for one fleet member.
+#[derive(Debug, Clone)]
+pub enum ControlNetGradient {
+    /// One control net represents a port/starboard-symmetric half-breadth.
+    Symmetric(Vec<f64>),
+    /// Independent physical half-breadth control nets for an asymmetric hull.
+    Asymmetric {
+        /// Derivatives with respect to the port half-breadth controls.
+        port: Vec<f64>,
+        /// Derivatives with respect to the starboard half-breadth controls.
+        starboard: Vec<f64>,
+    },
+}
+
+/// Derivatives with respect to one member's rigid placement [N/m].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PlacementGradient {
+    /// ∂R_w/∂x for the longitudinal offset.
+    pub longitudinal: f64,
+    /// ∂R_w/∂y for the transverse offset.
+    pub transverse: f64,
+}
+
+/// Exact derivatives for one member of a multihull resistance result.
+#[derive(Debug, Clone)]
+pub struct MemberWaveResistanceGradient {
+    pub placement: PlacementGradient,
+    pub control: ControlNetGradient,
+}
+
+/// Michell resistance and exact derivatives for every multihull member.
+#[derive(Debug, Clone)]
+pub struct MultihullWaveResistanceGradient {
+    pub wave: WaveResistance,
+    pub members: Vec<MemberWaveResistanceGradient>,
+    /// Outer nodes in the final reverse pass, separate from the primal count.
+    pub gradient_evaluations: usize,
+}
+
 /// Position of one hull of a multihull, in the global (fleet) frame.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Placement {
@@ -238,8 +277,14 @@ pub fn wave_resistance_gradient(
 ///
 /// The derivative holds knots, degrees, speed, and fluid conditions fixed. It
 /// is currently defined for a symmetric [`Hull`]; an asymmetric hull has two
-/// physical control nets and is rejected rather than returning an ambiguous
-/// derivative of only its symmetric mean surface.
+/// physical control nets and should use
+/// [`multihull_wave_resistance_gradient_with`] to receive both.
+///
+/// This gradient deliberately uses [`WaveMethod::GeneralMarcher`] even where
+/// [`wave_resistance_with`] would dispatch the primal value to the endpoint
+/// reduction. At low Froude number the returned primal can therefore differ
+/// from that separate API; differentiating the endpoint reduction is not yet
+/// implemented.
 pub fn wave_resistance_gradient_with(
     hull: &Hull,
     cond: &Conditions,
@@ -250,28 +295,83 @@ pub fn wave_resistance_gradient_with(
             "wave_resistance_gradient requires a symmetric hull".into(),
         ));
     }
-    let members = [(hull, Placement::default())];
-    validate_fleet(&members, cond, opts)?;
+    let fleet = multihull_wave_resistance_gradient_with(
+        &[(hull, Placement::default())],
+        cond,
+        opts,
+    )?;
+    let member = fleet.members.into_iter().next().unwrap();
+    let ControlNetGradient::Symmetric(control_gradient) = member.control else {
+        unreachable!("symmetric hull returned asymmetric controls")
+    };
+    Ok(WaveResistanceGradient {
+        wave: fleet.wave,
+        control_gradient,
+        gradient_evaluations: fleet.gradient_evaluations,
+    })
+}
+
+/// Exact multihull control-net and placement gradients with default options.
+pub fn multihull_wave_resistance_gradient(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+) -> Result<MultihullWaveResistanceGradient> {
+    multihull_wave_resistance_gradient_with(members, cond, &WaveOptions::default())
+}
+
+/// Exact multihull control-net and placement gradients.
+///
+/// Member phases are differentiated analytically, so the placement entries are
+/// derivatives with respect to each raw [`Placement::x`] and [`Placement::y`].
+/// Asymmetric members cover the same source plus prescribed strip-closure
+/// camber/dipole terms as [`multihull_wave_resistance_with`]; the chain rule
+/// returns separate port and starboard control nets. This API does not
+/// differentiate the optional solved-lifting closure.
+///
+/// Like [`wave_resistance_gradient_with`], the primal and reverse pass both
+/// use [`WaveMethod::GeneralMarcher`] at every Froude number.
+pub fn multihull_wave_resistance_gradient_with(
+    members: &[(&Hull, Placement)],
+    cond: &Conditions,
+    opts: &WaveOptions,
+) -> Result<MultihullWaveResistanceGradient> {
+    validate_fleet(members, cond, opts)?;
     let u = cond.speed;
     let g = cond.gravity;
     let nu = g / (u * u);
     let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
-    let params = OuterParams {
-        nu,
-        x_half: hull.x_half_extent(),
-        y_half: 0.0,
-        t_max: hull.draft(),
-    };
+    let (cx_ref, y_ref) = fleet_phase_refs(members);
+    let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
 
-    let mut primal_inner = InnerIntegral::new(hull, nu);
+    let make_members = || {
+        members
+            .iter()
+            .map(|(hull, placement)| SourceMember {
+                inner: InnerIntegral::new(hull, nu),
+                dx: hull.x_center() + placement.x - cx_ref,
+                dy: placement.y - y_ref,
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut primal_members = make_members();
     let (wave, frac) = run_outer_with_frac(&params, opts, coeff, |lambda| {
-        primal_inner.eval(lambda).abs_sq()
+        superpose(&mut primal_members, nu, lambda)
     });
+
+    let mut reverse_members = make_members();
+    let mut source_coeff_adjoint: Vec<Vec<f64>> = members
+        .iter()
+        .map(|(hull, _)| vec![0.0; hull.fx_coeff().len()])
+        .collect();
+    let mut camber_coeff_adjoint: Vec<Option<Vec<f64>>> = members
+        .iter()
+        .map(|(hull, _)| hull.fx_a_coeff().map(|coeff| vec![0.0; coeff.len()]))
+        .collect();
+    let mut placement_gradient = vec![PlacementGradient::default(); members.len()];
+    let mut contributions = vec![SourceContribution::default(); members.len()];
 
     const GL_N: usize = 16;
     let (gx, gw) = gauss_legendre(GL_N);
-    let mut coeff_adjoint = vec![0.0; hull.fx_coeff().len()];
-    let mut reverse_inner = InnerIntegral::new(hull, nu);
     let mut gradient_evaluations = 0usize;
     let reverse = integrate_outer(
         &params,
@@ -279,23 +379,62 @@ pub fn wave_resistance_gradient_with(
         &gx,
         &gw,
         &mut |lambda, weight| {
-            reverse_inner
-                .eval_with_coeff_adjoint(lambda, weight, &mut coeff_adjoint)
-                .abs_sq()
+            source_gradient_integrand(
+                &mut reverse_members,
+                nu,
+                lambda,
+                weight,
+                &mut contributions,
+                &mut source_coeff_adjoint,
+                &mut camber_coeff_adjoint,
+                &mut placement_gradient,
+            )
         },
         &mut gradient_evaluations,
     );
-    debug_assert!((coeff * reverse.integral - wave.resistance).abs()
-        <= 1e-12 * wave.resistance.abs().max(1.0));
+    debug_assert!(
+        (coeff * reverse.integral - wave.resistance).abs()
+            <= 1e-12 * wave.resistance.abs().max(1.0)
+    );
     debug_assert_eq!(reverse.max_lambda, wave.max_lambda);
 
-    let mut control_gradient = hull.fx_control_adjoint(&coeff_adjoint);
-    for derivative in &mut control_gradient {
-        *derivative *= coeff;
-    }
-    Ok(WaveResistanceGradient {
+    let member_gradients = members
+        .iter()
+        .enumerate()
+        .map(|(index, (hull, _))| {
+            let source = hull.fx_control_adjoint(&source_coeff_adjoint[index]);
+            let control = match &camber_coeff_adjoint[index] {
+                None => ControlNetGradient::Symmetric(
+                    source.into_iter().map(|value| coeff * value).collect(),
+                ),
+                Some(camber_coeff) => {
+                    let camber = hull.fx_control_adjoint(camber_coeff);
+                    let port = source
+                        .iter()
+                        .zip(&camber)
+                        .map(|(source, camber)| 0.5 * coeff * (source - camber))
+                        .collect();
+                    let starboard = source
+                        .iter()
+                        .zip(camber)
+                        .map(|(source, camber)| 0.5 * coeff * (source + camber))
+                        .collect();
+                    ControlNetGradient::Asymmetric { port, starboard }
+                }
+            };
+            MemberWaveResistanceGradient {
+                placement: PlacementGradient {
+                    longitudinal: coeff * placement_gradient[index].longitudinal,
+                    transverse: coeff * placement_gradient[index].transverse,
+                },
+                control,
+            }
+        })
+        .collect();
+
+    Ok(MultihullWaveResistanceGradient {
         wave,
-        control_gradient,
+        members: member_gradients,
         gradient_evaluations,
     })
 }
@@ -1006,6 +1145,110 @@ struct SourceMember<'h> {
     dy: f64,
 }
 
+#[derive(Clone, Copy)]
+struct SourceContribution {
+    phase_plus: C64,
+    phase_minus: C64,
+    carried_plus: C64,
+    carried_minus: C64,
+    camber_weight: f64,
+}
+
+impl Default for SourceContribution {
+    fn default() -> Self {
+        Self {
+            phase_plus: C64::ZERO,
+            phase_minus: C64::ZERO,
+            carried_plus: C64::ZERO,
+            carried_minus: C64::ZERO,
+            camber_weight: 0.0,
+        }
+    }
+}
+
+#[inline]
+fn conjugate(value: C64) -> C64 {
+    C64::new(value.re, -value.im)
+}
+
+#[inline]
+fn complex_dot(left: C64, right: C64) -> f64 {
+    left.re * right.re + left.im * right.im
+}
+
+#[inline]
+fn multiply_i(value: C64) -> C64 {
+    C64::new(-value.im, value.re)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn source_gradient_integrand(
+    members: &mut [SourceMember<'_>],
+    nu: f64,
+    lambda: f64,
+    weight: f64,
+    contributions: &mut [SourceContribution],
+    source_coeff_adjoint: &mut [Vec<f64>],
+    camber_coeff_adjoint: &mut [Option<Vec<f64>>],
+    placement_gradient: &mut [PlacementGradient],
+) -> f64 {
+    let kx = nu * lambda;
+    let ky = nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
+    let camber_weight = dipole_weight(lambda);
+    let mut plus = C64::ZERO;
+    let mut minus = C64::ZERO;
+
+    for (member, contribution) in members.iter_mut().zip(contributions.iter_mut()) {
+        let (source, camber) = member.inner.eval_pair(lambda);
+        let weighted_camber =
+            camber.map_or(C64::ZERO, |value| value.scale(camber_weight));
+        let phase_plus = C64::cis(kx * member.dx + ky * member.dy);
+        let phase_minus = C64::cis(kx * member.dx - ky * member.dy);
+        let carried_plus = (source - weighted_camber) * phase_plus;
+        let carried_minus = (source + weighted_camber) * phase_minus;
+        *contribution = SourceContribution {
+            phase_plus,
+            phase_minus,
+            carried_plus,
+            carried_minus,
+            camber_weight,
+        };
+        plus = plus + carried_plus;
+        minus = minus + carried_minus;
+    }
+
+    for index in 0..members.len() {
+        let contribution = contributions[index];
+        let dx_plus = multiply_i(contribution.carried_plus).scale(kx);
+        let dx_minus = multiply_i(contribution.carried_minus).scale(kx);
+        let dy_plus = multiply_i(contribution.carried_plus).scale(ky);
+        let dy_minus = multiply_i(contribution.carried_minus).scale(-ky);
+        placement_gradient[index].longitudinal +=
+            weight * (complex_dot(plus, dx_plus) + complex_dot(minus, dx_minus));
+        placement_gradient[index].transverse +=
+            weight * (complex_dot(plus, dy_plus) + complex_dot(minus, dy_minus));
+
+        // accumulate_coeff_adjoint differentiates |A|² and therefore carries
+        // a factor of two. The half-system average supplies the compensating
+        // 1/2 in these effective local amplitudes.
+        let local_plus = plus * conjugate(contribution.phase_plus);
+        let local_minus = minus * conjugate(contribution.phase_minus);
+        let source_effective = (local_plus + local_minus).scale(0.5);
+        let camber_effective = (local_minus - local_plus)
+            .scale(0.5 * contribution.camber_weight);
+        members[index].inner.accumulate_pair_coeff_adjoint(
+            lambda,
+            source_effective,
+            camber_effective,
+            weight,
+            &mut source_coeff_adjoint[index],
+            camber_coeff_adjoint[index].as_deref_mut(),
+        );
+    }
+
+    0.5 * (plus.abs_sq() + minus.abs_sq())
+}
+
 impl MemberWave for SourceMember<'_> {
     fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
         // Source amplitude plus the strip-closure y-dipole. The dipole spectral
@@ -1099,24 +1342,6 @@ impl<'h> InnerIntegral<'h> {
         self.eval_pair(lambda).0
     }
 
-    /// Evaluate the source amplitude and reverse-accumulate the derivative of
-    /// `weight · |F(λ)|²` with respect to every local `∂f/∂x` coefficient.
-    fn eval_with_coeff_adjoint(
-        &mut self,
-        lambda: f64,
-        weight: f64,
-        coeff_adjoint: &mut [f64],
-    ) -> C64 {
-        let kx = self.nu * lambda;
-        let kappa = self.nu * lambda * lambda;
-        if !self.fill_zm(kappa) {
-            return C64::ZERO;
-        }
-        let amplitude = self.accumulate(kx, self.hull.fx_coeff());
-        self.accumulate_coeff_adjoint(kx, amplitude, weight, coeff_adjoint);
-        amplitude
-    }
-
     /// The source amplitude `F(λ)` and, for an asymmetric hull, the companion
     /// **dipole** amplitude `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz` from the
     /// antisymmetric half-beam. `G` is `None` for a symmetric hull. Both share
@@ -1133,6 +1358,31 @@ impl<'h> InnerIntegral<'h> {
         let f = self.accumulate(kx, hull.fx_coeff());
         let g = hull.fx_a_coeff().map(|c| self.accumulate(kx, c));
         (f, g)
+    }
+
+    /// Reverse-accumulate source and camber coefficient derivatives after an
+    /// [`Self::eval_pair`] call at the same `lambda`. The effective amplitudes
+    /// already contain the fleet superposition and the ±θ system average.
+    fn accumulate_pair_coeff_adjoint(
+        &mut self,
+        lambda: f64,
+        source_effective: C64,
+        camber_effective: C64,
+        weight: f64,
+        source_coeff_adjoint: &mut [f64],
+        camber_coeff_adjoint: Option<&mut [f64]>,
+    ) {
+        let kx = self.nu * lambda;
+        self.accumulate_coeff_adjoint(
+            kx,
+            source_effective,
+            weight,
+            source_coeff_adjoint,
+        );
+        if let Some(adjoint) = camber_coeff_adjoint {
+            debug_assert!(self.hull.fx_a_coeff().is_some());
+            self.accumulate_coeff_adjoint(kx, camber_effective, weight, adjoint);
+        }
     }
 
     /// Fill the per-span z-moments (shifted by the decay to each span start) at
