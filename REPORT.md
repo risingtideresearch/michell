@@ -24,17 +24,20 @@ gate exposed one additional diagnostic bug: at `Fn=0.05` the marcher reported
 `5.123e-9` while its actual error was `5.781e-7`. A power-law tail extrapolation
 fixed that low-Froude failure. Independent follow-up then found that its first
 1.25 safety factor was still 2.97 times optimistic at `Fn=0.35`. A red
-λ-to-4000 analytic-Wigley regression now anchors the design-Froude regime; a
-4.0 finite-λ safety factor reports `1.961e-7` against `1.822e-7` actual error
-there and avoids useless panel refinement once that tail floor dominates.
+λ-to-4000 analytic-Wigley regression anchored the design-Froude regime, but a
+second independent extension found undercoverage again above `Fn≈0.5`.
+Assertion-red commit `cc25d18` reproduces it. The decisive fix separates true
+x/y oscillation phase from vertical exponential decay when forming the quiet
+window and adds, rather than maximizes, refinement and tail diagnostics. The
+12-point `Fn=0.02…1.00` sweep now has 3.87×–4.68× coverage.
 
 The second Phase-4 advance is the larger one. It rewrites each polynomial
 B-spline span exactly as endpoint waves, discards only depth-damped endpoints
 under an explicit absolute bound, expands the squared amplitude into pairwise
 kernels, and evaluates those kernels on a Gaussian-decaying steepest-descent
 contour. At `Fn=0.02` the result needs 1,152 kernel evaluations instead of
-877,424 inner-amplitude evaluations and is **1,217.28 times faster** (0.029 ms
-versus 35.099 ms median in the final run). Against an independent real-axis
+511,504 inner-amplitude evaluations and is **713.48 times faster** (0.029 ms
+versus 20.691 ms median in the final run). Against an independent real-axis
 reference its relative difference is `3.56e-11`; the reference's finite tail,
 rather than the new solver, limits that comparison. Cost is effectively
 independent of the oscillation frequency in the tested low-Froude range.
@@ -48,7 +51,7 @@ endpoint bound in Michell resistance is classified only as **possibly novel**
 (class 4), after the documented searches below found no prior instance. This is
 not a proof of priority and is not called a breakthrough.
 
-The first Phase-4 advance, the exact gradient, remains useful: it is 12.35 times
+The first Phase-4 advance, the exact gradient, remains useful: it is 17.59 times
 faster than centered finite differences for the nine-control benchmark. Its
 quadratic structure is known; the matrix-free B-spline reverse pass is an
 engineering implementation, not a novelty claim.
@@ -122,11 +125,11 @@ The ranking work later exposed a subtler diagnostic failure. At `Fn=0.05`:
 |---|---:|---:|---:|---:|
 | Relative error | `5.123e-9` | about `6.356e-7` | about `2.034e-6` | `5.781e-7` |
 
-The old value only measured panel refinement. The tail value is the larger of
-that difference and a safety-factor extrapolation of the terminating phase
-window. The extrapolation uses the endpoint result `F = O(lambda^-3)`, hence a
-transformed resistance density `O(lambda^-5)` and tail proportional to one
-quarter of the local density times `lambda`.
+The old value only measured panel refinement. The tail diagnostic adds a
+safety-factor extrapolation of the terminating phase window. The extrapolation
+uses the endpoint result `F = O(lambda^-3)`, hence a transformed resistance
+density `O(lambda^-5)` and tail proportional to one quarter of the local
+density times `lambda`.
 
 Independent review found that the initial 1.25 factor covered this low-Froude
 case but not the finite-λ transition at design Froude numbers. Red commit
@@ -140,6 +143,37 @@ to 4.0 and extends the reference sweep:
 | 0.12 | `1.747e-7` | `2.128e-7` | `5.589e-7` | 2.63× |
 | 0.20 | `9.040e-8` | `1.452e-7` | `2.893e-7` | 1.99× |
 | 0.35 | `6.129e-8` | `1.822e-7` | `1.961e-7` | 1.08× |
+
+That factor-only correction moved rather than eliminated the boundary.
+Independent extension found only 0.642× coverage at `Fn=0.70` and 0.346× at
+`Fn=1.00`; assertion-red commit `cc25d18` adds both cases. The proposed
+`max(refinement, tail) → refinement + tail` change was necessary but not
+sufficient: at `Fn=0.70` the two terms summed to about `1.36e-7`, still below
+`1.82e-7` actual error.
+
+The structural cause was subtler. Panel sizing legitimately included the
+vertical exponential-decay rate, but the same combined rate advanced the
+supposed oscillation window. At high Froude number, already-vanished submerged
+terms could therefore advance the window through `8π` while its actual
+longitudinal phase covered only a narrow `cos²` trough. Commit `a2aa894` uses
+only physical longitudinal/transverse phase for the stopping window and sums
+the two distinct error diagnostics. The λ-to-4000 compensated reference now
+covers the experimental program's full range:
+
+| Fn | Reported estimate | Actual relative error | Reported/actual |
+|---:|---:|---:|---:|
+| 0.02 | `2.497e-6` | `6.334e-7` | 3.94× |
+| 0.03 | `1.300e-6` | `3.322e-7` | 3.91× |
+| 0.05 | `5.774e-7` | `1.493e-7` | 3.87× |
+| 0.08 | `2.696e-7` | `6.918e-8` | 3.90× |
+| 0.12 | `1.437e-7` | `3.540e-8` | 4.06× |
+| 0.20 | `6.897e-8` | `1.726e-8` | 4.00× |
+| 0.35 | `4.100e-8` | `9.626e-9` | 4.26× |
+| 0.40 | `2.866e-8` | `6.970e-9` | 4.11× |
+| 0.45 | `2.599e-8` | `5.552e-9` | 4.68× |
+| 0.50 | `2.286e-8` | `5.385e-9` | 4.24× |
+| 0.70 | `1.740e-8` | `4.114e-9` | 4.23× |
+| 1.00 | `1.372e-8` | `3.124e-9` | 4.39× |
 
 The estimator remains a heuristic, not a rigorous bound or a claim about all
 hulls. When its fixed tail floor exceeds the requested tolerance, panel
@@ -194,10 +228,10 @@ Validation results:
 | Displaced volume | every symmetric and per-side asymmetric control | `2e-8` |
 | LCB and wetted area | every symmetric and per-side asymmetric control | `2e-7` |
 
-The recorded 30-sample release implementation benchmark retains the
-constant-cost advantage: exact reverse `1.878 ms` median versus `23.198 ms`
-for centered finite differences, a `12.35x` speedup for nine controls. The aggregate
-gradient checksums agree to about `2.4e-11` relative.
+The final 30-sample release benchmark retains the constant-cost advantage:
+exact reverse `0.820 ms` median versus `14.431 ms` for centered finite
+differences, a `17.59x` speedup for nine controls. The aggregate gradient
+checksums agree to about `8.1e-12` relative.
 
 Classification: analytic phase derivatives, spline-basis integrals, quotient
 rules, and reverse differentiation of a quadratic form are class 1. The fleet,
@@ -254,14 +288,14 @@ in `fedd88a` raises the combined allowance to the physically relevant tail
 scale and closes the test without relaxing its assertion.
 
 At tight general-marcher requests, variants honestly report `RefinementCap`
-when the calibrated tail floor exceeds `rel_tol`; after the design-Froude
-calibration this also occurs in the forced-marcher `Fn=0.05`, `rel_tol=1e-6`
-route comparison. Their ranking is nevertheless identical and every pairwise
-margin difference remains inside the sum of the four reported absolute error
-estimates. This is exactly why outcome is kept separate from a returned finite
-resistance; the test accepts `RefinementCap` for margin accounting but still
-rejects `TailCap` and `EvalCap` and never relabels an unmet tolerance as
-convergence.
+when the tail floor exceeds `rel_tol`. The phase-honest window reduces that
+floor enough for the `Fn=0.05`, `rel_tol=1e-6` route comparison to converge,
+while the `Fn=0.30`, `rel_tol=1e-8` cases remain honestly cap-limited. Rankings
+are identical and every pairwise margin difference remains inside the sum of
+the four reported absolute error estimates. The route-comparison test now
+again requires `Converged`; the broader tolerance sweep accepts honest
+`RefinementCap` results but rejects `TailCap` and `EvalCap` and never relabels
+an unmet tolerance as convergence.
 
 Classification: the gate, exact test-only knot insertion, and six-design corpus
 are class 2. Stable ranking is demonstrated for this corpus, not generalized to
@@ -432,15 +466,18 @@ that failure; `fedd88a` adds the algebraic-tail estimate described in Workstream
 1. Independent review then found the first estimator optimistic at design
 Froude numbers; assertion-red commit `30bc6ef` reproduces the 2.97× `Fn=0.35`
 shortfall, and `8a7ac15` calibrates and checks the finite-λ safety factor across
-`Fn=0.12`, `0.20`, and `0.35`. It remains heuristic for general multihulls, but
-neither reproduced failure is now reported with an uncovered estimate.
+`Fn=0.12`, `0.20`, and `0.35`. A further independent extension found the moved
+boundary above `Fn≈0.5`; red commit `cc25d18` captures it. Commit `a2aa894`
+separates stopping-window phase from vertical decay and sums tail/refinement
+diagnostics. The resulting 12-point `Fn=0.02…1.00` regression covers every
+measured actual error. It remains heuristic for general multihulls.
 
 Classification: class 2.
 
 ### Suspected or unverified; no speculative fix
 
 - The improved algebraic tail diagnostic is reproduced for the Wigley family
-  from low Froude through `Fn=0.35`, but adversarial multi-span and multihull
+  from `Fn=0.02` through `Fn=1.00`, but adversarial multi-span and multihull
   beating envelopes have not been characterized. It is still a heuristic, and
   the bounded low-Froude route does not yet support those configurations.
 - `solve_dense` uses a debug-only singularity assertion. Invalid or degenerate
@@ -472,6 +509,24 @@ The resistance checksums were identical to 12 printed digits and the Phase-0
 harness passed. A second proposed zero-placement phase shortcut was discarded:
 interleaved results were 24.133 versus 24.057 ms for the sweep and 8.469 versus
 8.480 ms at low Froude, i.e. noise rather than a defensible improvement.
+
+The phase-honest stopping fix initially exposed a new cost already located in
+that profiled hot loop: the vertical-decay rate kept forcing shrinking panels
+after the associated submerged term was exponentially absent. Commit
+`b79d46b` caps only this panel-sizing contribution once its exponent exceeds
+eight; it does not discard the term. Same-session 30-sample medians were:
+
+| Case | Uncapped phase-honest | Capped | Change |
+|---|---:|---:|---:|
+| 21-speed Wigley sweep | 72.090 ms | 12.663 ms | 82.4% faster |
+| Forced marcher, `Fn=0.02` | 55.888 ms | 20.691 ms | 63.0% faster |
+| Exact nine-control gradient | 6.924 ms | 0.820 ms | 88.2% faster |
+
+Work at `Fn=0.02` fell from 1,378,528 to 511,504 inner evaluations. This is not
+a bit-identical comparison because adaptive panel locations change: the sweep
+checksums differ by `3.43e-10` relative. Accuracy did not regress—the actual
+λ-to-4000 Wigley error decreased at every one of the 12 Froude numbers, the
+minimum reported/actual margin remained 3.87×, and the Phase-0 harness passed.
 
 Classification: class 2.
 
@@ -711,15 +766,15 @@ solved-lifting closure.
 | Full Phase-0 harness | pass |
 | Full Rust workspace | 215 test cases pass, including one doctest |
 
-Release benchmark, 30 samples, default tolerance (recorded implementation run):
+Final release benchmark, 30 samples, default tolerance:
 
 | Gradient method | Median | Best |
 |---|---:|---:|
-| Exact reverse, 9 controls | 1.878 ms | 1.853 ms |
-| Centered finite differences | 23.198 ms | 23.060 ms |
+| Exact reverse, 9 controls | 0.820 ms | 0.808 ms |
+| Centered finite differences | 14.431 ms | 14.156 ms |
 
-Median speedup: **12.35×**. Aggregate absolute-gradient checksums agree to about
-`2.4e-11` relative (`1.734433365029e4` versus `1.734433364988e4`, including
+Median speedup: **17.59×**. Aggregate absolute-gradient checksums agree to about
+`8.1e-12` relative (`1.734433595800e4` versus `1.734433595786e4`, including
 the benchmark's 30-run accumulation).
 
 Classification: the quadratic derivative is class 1; this matrix-free B-spline
@@ -768,10 +823,10 @@ axis with at most `pi/2` bow-phase advance per panel, and `lambda_max=500`.
 
 | Fn | Reference resistance (N) | Reduced relative difference | Reduced estimate | General marcher difference | Work: marcher / reduced |
 |---:|---:|---:|---:|---:|---:|
-| 0.08 | `1.945940872497e-1` | `1.172e-5` | `3.814e-5` | `3.125e-7` | 114,432 / 1,152 |
-| 0.05 | `1.057847519834e-2` | `1.058e-11` | `3.728e-12` | `5.781e-7` | 235,808 / 1,152 |
-| 0.03 | `5.113923599287e-4` | `2.328e-11` | `3.462e-12` | `1.063e-6` | 501,904 / 1,152 |
-| 0.02 | `4.417234459536e-5` | `3.558e-11` | `7.620e-13` | `2.024e-6` | 877,424 / 1,152 |
+| 0.08 | `1.945940872497e-1` | `1.172e-5` | `3.814e-5` | `6.917e-8` | 56,032 / 1,152 |
+| 0.05 | `1.057847519834e-2` | `1.058e-11` | `3.728e-12` | `1.493e-7` | 119,936 / 1,152 |
+| 0.03 | `5.113923599287e-4` | `2.328e-11` | `3.462e-12` | `3.322e-7` | 267,856 / 1,152 |
+| 0.02 | `4.417234459536e-5` | `3.558e-11` | `7.620e-13` | `6.333e-7` | 511,504 / 1,152 |
 
 At `Fn=0.08` the estimate correctly refuses default-tolerance dispatch. At
 `Fn<=0.05` the observed `1e-11`-scale discrepancies exceed the solver's analytic
@@ -789,19 +844,18 @@ physics terms, not to a formally certified floating-point result.
 
 #### Claimed advantage
 
-Recorded implementation 30-sample release benchmark:
+Final 30-sample release benchmark:
 
 | Case | Median | Best | Work/diagnostics |
 |---|---:|---:|---|
-| General marcher, `Fn=0.02` | 35.099 ms | 34.825 ms | 877,424 inner evaluations |
+| General marcher, `Fn=0.02` | 20.691 ms | 20.561 ms | 511,504 inner evaluations |
 | Endpoint/NSD, `Fn=0.02` | 0.029 ms | 0.028 ms | 1,152 kernel evaluations |
 | Default API, `Fn=0.05` | 0.029 ms | 0.028 ms | estimate `3.728e-12` |
-| 21 speeds, `Fn=0.10…0.50` | 27.088 ms | 26.934 ms | checksum `2.553250998079e5` |
+| 21 speeds, `Fn=0.10…0.50` | 12.663 ms | 12.463 ms | checksum `2.553251156101e5` |
 
-The direct low-Froude speedup is **1,217.28×** at `Fn=0.02`. Relative to the
-pre-dispatch `Fn=0.05` baseline of 7.494 ms from the same development run, the
-default API is about **258×** faster. The 21-speed production sweep remains on
-the general method where appropriate and retains its numerical checksum.
+The direct low-Froude speedup is **713.48×** at `Fn=0.02`. The 21-speed
+production sweep remains on the general method where appropriate; its changed
+checksum is the corrected positive tail, independently checked above.
 
 Classification: endpoint integration by parts, endpoint low-speed dominance,
 Bickley functions, and numerical steepest descent are class 1. The Rust solver,
@@ -872,6 +926,9 @@ would require a professional database and patent search plus expert review.
 | `8c338e0` | Remove rustdoc ambiguity from new unit annotations |
 | `30bc6ef` | Failing design-Froude error-estimate coverage regression |
 | `8a7ac15` | Calibrate the finite-λ tail estimate and document cap semantics |
+| `cc25d18` | Failing high-Froude error-estimate coverage regressions |
+| `a2aa894` | Separate quiet-window phase from decay and sum error sources |
+| `b79d46b` | Cap vanished depth-envelope panel rates with measured speedups |
 
 ## Ranked backlog
 
@@ -919,20 +976,17 @@ would require a professional database and patent search plus expert review.
 | `cargo build --workspace --release` | pass |
 | `cargo test --workspace` | pass: 215 test cases including one doctest; 0 failed |
 | `uv run --with pytest --with numpy pytest -q` in `python/` | pass: 11 passed in 0.10 s |
-| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; sweep checksum exactly `2.553250998079e5` |
+| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; corrected sweep checksum exactly `2.553251156101e5` |
 | `cargo doc -p michell --no-deps` | generated successfully; pre-existing broken-link/unit-bracket warnings remain |
 | allowed-lint Clippy command reproduced below | pass |
 | `cargo fmt --all --check` | pass after isolated formatter commit `282f0f0` |
 | `git diff --check` | pass |
 
-The post-feedback benchmark rerun, under a different desktop load, measured
-`37.833 ms` for the 21-speed sweep, `51.646/0.036 ms` for direct/endpoint
-`Fn=0.02`, and `2.342/36.686 ms` for exact/finite-difference gradients. It is
-not substituted into the controlled implementation tables above because the
-estimator change is not a performance change and the absolute timings are not
-interleaved with their historical baselines. The sweep and gradient checksums
-remained exactly `2.553250998079e5`, `1.734433365029e4`, and
-`1.734433364988e4`, respectively.
+The structural stopping fix deliberately changes resistance values at the old
+`1e-7`-scale truncation-error level; the checksum change is therefore expected,
+not a performance-regression artifact. The new values are checked directly
+against the independent λ-to-4000 reference rather than assumed equivalent to
+the old checksum.
 
 The exact passing Clippy command was:
 
