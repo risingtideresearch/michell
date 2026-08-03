@@ -873,10 +873,19 @@ estimate quadrature error; triangle inequality plus analytic `K_s(0)` bounds
 every pair involving an omitted submerged endpoint.
 
 The current public specialization deliberately requires an upright symmetric
-single hull, x degree at least one, and sufficiently separated endpoint phases.
-It does not silently approximate asymmetric, heeled, multihull, or moderate-
-frequency cases. `wave_resistance_with` accepts it only when the combined
-estimate meets the caller's tolerance and otherwise uses the general solver.
+single hull, both spline degrees in the validated range 1--16, and every
+distinct active endpoint frequency at least 25. For `m` equal longitudinal
+spans with active adjacent endpoints, that last gate gives
+`m <= 1/(25 Fn^2)`. An illustrative 360-pair retained map uses 25,920 ordinary
+contour nodes, versus 1,152 for Wigley's 16 pairs. It does not silently
+approximate asymmetric, heeled, multihull, closely spaced, or moderate-frequency
+cases. `wave_resistance_with` accepts it only when the combined estimate meets
+the caller's tolerance and otherwise uses the general solver.
+
+The existing harness contains Wigley and one synthetic chine geometry, not a
+curated representative multi-span design corpus. An acceptance-rate study
+would therefore measure an arbitrary sampling choice rather than practical
+coverage; the narrow scope and exact span arithmetic are reported instead.
 
 #### Independent validation
 
@@ -896,14 +905,20 @@ At `Fn=0.08` the estimate correctly refuses default-tolerance dispatch. At
 omission bound because the independent reference has a finite real-axis tail;
 tests therefore include a separately justified `2e-10` reference floor. The
 contour part is checked independently against dense real-axis integration for
-orders `s=4,7,10` and frequencies `25,100,400`. The exact endpoint decomposition
-is also checked against production exact moments for both Wigley and a
-multi-span full-multiplicity chine hull.
+orders `s=4,7,10,50,98,128` and frequencies `25,100,400`. The public degree
+envelope reaches `s=98`; `s=128` provides margin. This extension first exposed
+a `5.13e-6` relative error at `s=98`, `omega=25` in the old 48-point result.
+The red regression is commit `a4d011a`; commit `69f9ff4` selects a 48/96 rule
+when `s/|omega| >= 2`, reducing the same independent-reference discrepancy
+below `1e-9` while retaining the 24/48 rule for Wigley. The exact endpoint
+decomposition is also checked against production exact moments for both Wigley
+and a multi-span full-multiplicity chine hull.
 
 The total reported estimate is not an interval proof: the omitted-term part is
-analytically bounded, while the 24/48-node contour difference is an empirical
-quadrature estimate. “Bounded” in this report refers to the discarded submerged
-physics terms, not to a formally certified floating-point result.
+analytically bounded, while the selected 24/48- or 48/96-node contour difference
+is an empirical quadrature estimate. “Bounded” in this report refers to the
+discarded submerged physics terms, not to a formally certified floating-point
+result.
 
 #### Claimed advantage
 

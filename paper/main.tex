@@ -343,8 +343,20 @@ frequency-independent work in high-frequency scattering
 \citep{GibbsEtAl2020}; here, the quadratic phase gives the contour in closed
 form.
 
-The implementation applies 24- and 48-point Gauss--Legendre rules on
-\(0\leq y\leq8\).  The neglected Gaussian tail obeys
+For completeness, take the principal square root in \cref{eq:tform}.  The
+integrand's poles \(t=\pm\iu\) and branch points
+\(t=\pm\iu\sqrt2\) lie outside the closed sector
+\(0\leq\arg t\leq\pi/4\).  It is therefore analytic throughout the deformation.
+On a closing arc \(t=R\e^{\iu\phi}\),
+\(|\e^{\iu\omega t^2}|=\e^{-\omega R^2\sin(2\phi)}\leq1\), while the
+algebraic factor including \(dt\) is \(O(R^{-2s})\).  The arc contribution
+vanishes as \(R\to\infty\); thus the rotation is valid for every kernel order
+used here, \(s\geq4\).
+
+The implementation normally applies 24- and 48-point Gauss--Legendre rules on
+\(0\leq y\leq8\).  When \(s/|\omega|\geq2\), the continued algebraic factor is
+narrow near the origin, so the code uses 48- and 96-point rules.  The neglected
+Gaussian tail obeys
 \begin{equation}
  |K_s-K_s^{(8)}|\leq
  \frac{\e^{-64}}{8\sqrt{2\omega}},
@@ -359,14 +371,14 @@ error.  This difference remains empirical.  Thus the submerged-term bound and
 analytic contour-tail bound are rigorous, but the total floating-point error
 is not certified.
 
-For fixed geometry, every nonzero endpoint pair costs 72 scalar nodes,
-independent of \(\nu|x_i-x_j|\); self pairs use \cref{eq:kzero} without
-quadrature.  The biquadratic Wigley representation has one longitudinal span
-and one vertical span.  Its 16 endpoint terms include eight at the waterline,
-which form 16 distinct nonzero-frequency bow--stern pairs.  Each pair uses
-\(24+48=72\) contour nodes, for \(16\times72=1{,}152\) scalar nodes in all;
-equal-position pairs use \cref{eq:kzero}.  The committed harness checks each
-count.
+For fixed geometry, a nonzero endpoint pair costs either 72 or 144 scalar
+nodes; increasing frequency never increases that cost.  Self pairs use
+\cref{eq:kzero} without quadrature.  The biquadratic Wigley representation has
+one longitudinal span and one vertical span.  Its 16 endpoint terms include
+eight at the waterline, which form 16 distinct nonzero-frequency bow--stern
+pairs.  Each uses the 24/48 rule, for \(16\times72=1{,}152\) scalar nodes in
+all; equal-position pairs use \cref{eq:kzero}.  The committed harness checks
+each count.
 
 \section{Hybrid algorithm and scope}
 \label{sec:algorithm}
@@ -392,6 +404,18 @@ The frequency gate reserves the fixed contour for sufficiently rapid
 oscillation.  For the Wigley bow--stern pair,
 \(\omega=\nu L=gL/U^2=1/\Fn^2\), which equals the implementation's
 \(\nu|x_i-x_j|\).  Thus \(\omega\geq25\) corresponds to \(\Fn\leq0.2\).  The
+same condition makes the geometry restriction explicit.  For \(m\) equal
+longitudinal spans whose adjacent endpoints remain active,
+\(\omega_{\rm adj}=1/(m\Fn^2)\), so the separation gate requires
+\begin{equation}
+ m\leq\frac{1}{25\Fn^2}.
+ \label{eq:spangate}
+\end{equation}
+At \(\Fn=0.05\), for example, this permits at most 16 such spans.  A retained
+multi-span endpoint map with 360 distinct nonzero-frequency pairs would use
+\(360\times72=25{,}920\) ordinary-rule nodes, compared with 1,152 for the
+16-pair Wigley map; this is node-count arithmetic, not a runtime benchmark.
+One closer endpoint invalidates the specialized path for the whole hull.  The
 error gate then bases the final choice on the actual hull, speed, and
 resistance cancellation rather than on nominal Froude number alone.  At the
 default relative tolerance \(10^{-5}\), it rejects the Wigley reduction at
@@ -463,10 +487,10 @@ therefore covers the observed error.  This independently checked marcher
 provides every comparison in \cref{tab:accuracy}.
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
-integration for \(s\in\{4,7,10\}\) and
+integration for \(s\in\{4,7,10,50,98,128\}\) and
 \(|\omega|\in\{25,100,400\}\), with scaled discrepancy below
-\(10^{-9}\).  All 215 Rust tests pass, including one documentation test; all
-11 Python-interface tests also pass.
+\(10^{-9}\).  The public degree envelope reaches at most \(s=98\); order 128
+provides margin.  The full Rust and Python-interface suites pass.
 
 \begin{figure*}[t]
 \centering
@@ -672,8 +696,10 @@ deep-water thin-ship theory.
 
 \begin{itemize}
   \item \textbf{Geometry.}  The reduced solver supports upright symmetric
-        single hulls.  Asymmetric, heeled, and multihull paths fall back to the
-        general method.
+        single hulls of degree 1--16 in each spline direction.  Its active
+        endpoints must satisfy \(\nu|x_i-x_j|\geq25\), so it targets coarse,
+        well-separated endpoint maps.  Asymmetric, heeled, multihull, and
+        closely spaced cases fall back to the general method.
   \item \textbf{Error certification.}  The submerged-pair omission bound and
         Gaussian tail bound are analytic.  The 24/48 quadrature difference and
         floating-point roundoff are not interval-certified.
