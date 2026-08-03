@@ -310,7 +310,8 @@ depend on the visibly difficult high-speed line crossings in the scan.
 - The Doctors--Beck monohull anchor still agrees within 0.04%. The discrepancy
   is separation-dependent, rather than a uniform monohull scale error.
 
-The known formulation difference is a serious candidate, not a resolution:
+At this checkpoint the known formulation difference was a serious candidate,
+not a resolution:
 Insel used a finite-width, finite-depth modal canal Green function and an
 undocumented point-source mesh, while the library uses exact hull moments with
 the unbounded deep-water Michell kernel. The widening disagreement toward
@@ -324,10 +325,9 @@ Accordingly, the earlier implementation evidence remains valid but the last
 sentence of the interpretation addendum is no longer sufficient to close the
 multihull kernel question. This direct theory comparison is a genuine red flag
 for close-spacing equivalence, not proof of a numerical bug in either solver.
-Per the preregistered stop rule, no favourable `CLOSEOUT.md` is written. The
-next review must reproduce Insel's finite-canal calculation or otherwise
-separate Green-function physics from numerical implementation before the
-experimental result is promoted as kernel closure.
+Per the preregistered stop rule, no favourable `CLOSEOUT.md` was written at
+this checkpoint. The finite-canal follow-up below performs the required next
+test.
 
 ### Theory-comparison claim classification
 
@@ -336,7 +336,7 @@ experimental result is promoted as kernel closure.
 | unbounded and finite-canal C2 hump positions agree within `0.010 Fn` | E | validated at all four separations |
 | theory-to-theory amplitude and pointwise equivalence | E | rejected; material disagreement at `S/L = 0.2` |
 | wide-spacing (`S/L = 0.5`) theory equivalence | E | validated under all preregistered components |
-| finite-canal physics explains the close-spacing gap | E | suspected, not isolated or verified |
+| finite-canal physics explains the close-spacing gap | E | suspected at this checkpoint; tested below |
 | frozen numerical kernel is defective | E | unresolved by the direct multihull comparison; not established |
 
 ## Critical-Froude consistency check
@@ -360,5 +360,87 @@ The close-spacing endpoint does not: although the library curve approaches the
 5% band near `Fn = 0.8`, it does not stay there, ending at `tau = 0.9189` at
 `Fn = 0.95`. The `S/L = 0.3` curve likewise ends just outside at `tau =
 0.9434`. This mixed result is consistent with, but does not identify the cause
-of, the separation-dependent theory-to-theory discrepancy. It strengthens the
-reason to stop before closeout and to isolate the finite-canal Green function.
+of, the separation-dependent theory-to-theory discrepancy. It strengthened the
+reason to stop before closeout and to isolate the finite-canal Green function
+in the follow-up below.
+
+## Finite-canal attribution follow-up
+
+`CRITERIA-CANAL.md` was committed before any physical-tank result was computed
+or inspected. The independent reference follows Insel's discrete transverse
+modes, finite-depth dispersion and vertical profile, centered-catamaran
+eigenfunction factors, and modal resistance sum (Chapter 4, printed 40--54,
+PDF 50--64). It integrates the continuous C2 product parabola analytically;
+Insel's source-panel counts remain undocumented.
+
+The implementation exposed one source inconsistency before the tank run.
+Equation (4.25), printed page 47 (PDF 57), contains the dimensional factor
+`K_0 + K_n cos^2(theta_n)` in the wave-elevation coefficient, while equation
+(4.29), printed page 48 (PDF 58), omits it. Literal omission is dimensionally
+inconsistent and failed the preregistered wide/deep limit by the exact
+asymptotic factor `4 K_0^2`. The reference retains the factor from the governing
+equation (4.25); the rationale and algebra are recorded in `METHOD.md`. No
+alternate tank curve using the failed transcription was computed.
+
+Both pre-run gates pass. G1 checks `Fn = 0.25, 0.35, 0.50` at every separation
+against an independent analytic-Wigley quadrature and the frozen library for
+canals scaled by 5, 20, and 80, with the 80-times endpoint inside 0.5% for
+monohull resistance and 0.02 for `tau`. G2 checks the physical tank dimensions
+without exposing comparison values and shows that 128 versus 256 modes changes
+both observables by less than 0.002. The production calculation uses successive
+mode doubling with tighter `5e-6` relative-resistance and `2e-6` absolute-
+interference criteria; all 755 output rows converged.
+
+### Preregistered outcome: UNEXPLAINED
+
+The physical canal reference remains nearly coincident with the unbounded
+library curve at every principal hump. It therefore does not close the
+published-curve amplitude gap:
+
+| `S/L` | median `|tau_canal - tau_Insel|` | canal hump error | gap closure `f` |
+|---|---:|---:|---:|
+| 0.2 | 0.0835 | 15.53% | 0.004 |
+| 0.3 | 0.0510 | 8.43% | 0.010 |
+| 0.4 | 0.0425 | 7.31% | 0.019 |
+| 0.5 | 0.0171 | 3.83% | 0.059 |
+
+The registered close-spacing gate requires `f >= 0.5` at both `S/L = 0.2`
+and 0.3. Values of 0.004 and 0.010 fail by two orders of magnitude. This is not
+a marginal threshold decision: at the `S/L = 0.2` source hump (`Fn = 0.450`),
+the source is `tau = 1.9801`, the unbounded reference is `1.6714`, and the canal
+reference is `1.6725`.
+
+The critical-Froude diagnostic changes only modestly:
+
+| `S/L` | unbounded `Fn_c` | canal `Fn_c` | Insel statement |
+|---|---:|---:|---:|
+| 0.2 | not reached | not reached | about 0.8 |
+| 0.3 | not reached | 0.640 | not stated |
+| 0.4 | 0.585 | 0.595 | not stated |
+| 0.5 | 0.550 | 0.565 | about 0.55 |
+
+The finite canal affects the high-speed 5% settling rule at intermediate
+spacing, but it does not produce the close-spacing principal-hump amplitude in
+Insel's published curves. The original hypothesis is rejected under the
+preregistered definition. The remaining discrepancy cannot be assigned to the
+undocumented point-source mesh or digitization as a bounded residual because
+the PARTIAL gate was not reached. It reopens the possibility of an
+implementation difference in Insel's unpublished calculation, this
+transcription, or the published curve identification; the present evidence
+does not choose among them.
+
+The experimental trust envelope is unchanged. Both the unbounded and canal
+references still overpredict close-spacing interference against measured
+`tau_WP`, so the earlier model-form conclusion remains in force. Per the
+registered UNEXPLAINED stop condition, this study halts here and does not
+create `CLOSEOUT.md`.
+
+### Canal-follow-up claim classification
+
+| claim | class | status |
+|---|---|---|
+| independent canal solver recovers the deep unbounded limit | E | validated by G1 against two references |
+| physical-tank modal sum is truncated below comparison tolerance | E | validated by G2 and tighter production convergence |
+| finite-canal water geometry explains the close-spacing amplitude gap | E | rejected; `f = 0.004` and `0.010` at close spacing |
+| finite-canal and unbounded references are equivalent at the principal hump | E | matched to within 0.33% in `tau` at all four separations |
+| either frozen kernel or Insel's published calculation is defective | E | unresolved; no side identified |
