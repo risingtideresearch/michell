@@ -1,0 +1,9 @@
+Command: cargo test -p michell --test low_froude endpoint_pair_contributions_sum_to_reduced_resistance -- --nocapture
+
+Wigley arithmetic: degrees=(2,2), spans=(1,1), endpoint_terms=16, waterline_terms=8, nonzero_frequency_pairs=16, nodes_per_pair=72, total_nodes=1152, omega_bow_stern=400.0
+
+At Fn=0.05, 1/Fn^2=400.0, equal to nu*L in the harness. Therefore the
+implementation gate omega>=25 corresponds to Fn<=0.2 for the Wigley
+bow-stern pair.
+
+Result: 1 passed; 0 failed; 0 ignored; 3 filtered out.

@@ -317,8 +317,12 @@ tail, but not a fully certified total floating-point error.
 
 For fixed geometry, every nonzero endpoint pair costs 72 scalar nodes,
 independent of \(\nu|x_i-x_j|\); self pairs use \cref{eq:kzero} without
-quadrature.  The Wigley test case requires 1,152 scalar nodes at every supported
-low Froude number.
+quadrature.  The exact Wigley representation is biquadratic with one
+longitudinal and one vertical span.  Its 16 endpoint terms include eight
+waterline terms.  Those form 16 distinct nonzero-frequency bow--stern pairs,
+each using \(24+48=72\) contour nodes, hence \(16\times72=1{,}152\) scalar
+nodes; equal-position pairs use \cref{eq:kzero}.  The committed harness asserts
+each count.
 
 \section{Hybrid algorithm and implementation scope}
 \label{sec:algorithm}
@@ -342,7 +346,10 @@ general solver.  The public algorithm is:
 \end{enumerate}
 
 The frequency gate avoids claiming asymptotic efficiency before oscillation is
-strong enough for the fixed contour policy.  More importantly, the error gate
+strong enough for the fixed contour policy.  For the Wigley bow--stern pair,
+\(\omega=\nu L=gL/U^2=1/\Fn^2\), exactly matching the implementation's
+\(\nu|x_i-x_j|\); hence \(\omega\geq25\) corresponds to \(\Fn\leq0.2\).
+More importantly, the error gate
 uses the actual hull, speed, and resistance cancellation: a low nominal Froude
 number alone is not sufficient.  At the default relative tolerance
 \(10^{-5}\), the Wigley reduction is rejected at \(\Fn=0.08\) and accepted at
@@ -387,7 +394,8 @@ reproduced, not a new accuracy claim.
 \centering
 \caption{Resistance validation against the independent analytic-Wigley,
 resolved-real-axis reference.  ``Reduced estimate'' combines the rigorous
-submerged-pair bound and empirical contour difference.}
+submerged-pair bound and empirical contour difference.  The marcher uses
+requested \(\mathrm{rel\_tol}=10^{-8}\) and at most six refinements.}
 \label{tab:accuracy}
 \small
 \begin{tabular}{@{}ccccc@{}}
