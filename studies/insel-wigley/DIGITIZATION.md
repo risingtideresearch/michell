@@ -181,3 +181,36 @@ uv run --project python --extra plot python \
 python3 studies/insel-wigley/data/digitized/reconcile_theory.py
 python3 studies/insel-wigley/data/digitized/validate_digitization.py
 ```
+
+## Figure 359 full-family attribution audit
+
+The H1 follow-up separately traces all four legend-identified curves in Figure
+359 (printed 358, PDF 368). This source-only audit is additive: it does not
+modify `theory_interference.csv` or any prior pass. Both new passes record the
+model, hull description, printed line style, and a relative-position
+description at source-read checkpoints. Pass A uses a compact local ink
+search; pass B uses an independently read calibration and checkpoints with a
+wider horizontal score to bridge dash and dot gaps. Neither reads solver data
+or the other pass.
+
+The unchanged admission limits accept 503 of 510 anchors and omit seven. The
+reconciled family, mismatch log, peak metrics, and preregistered family checks
+are `theory_family_359.csv`, `passes/h1_figure_359_mismatches.csv`,
+`h1_figure_359_family_metrics.csv`, and
+`h1_figure_359_family_checks.csv`. The resolved amplitude-order reversal
+triggers `CRITERIA-H1.md`'s source-anomaly stop, so no later figure or solver
+overlay is part of this audit.
+
+Reproduce the archived source trace and checks with:
+
+```sh
+mkdir -p tmp/pdfs/insel-h1-family/theory-highres
+pdftoppm -jpeg -r 360 -f 368 -l 369 \
+  studies/insel-wigley/data/raw/insel-1990-thesis.pdf \
+  tmp/pdfs/insel-h1-family/theory-highres/page
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_family_359_pass_a.py
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_family_359_pass_b.py
+python3 studies/insel-wigley/data/digitized/reconcile_family_359.py
+```

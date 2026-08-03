@@ -444,3 +444,53 @@ create `CLOSEOUT.md`.
 | finite-canal water geometry explains the close-spacing amplitude gap | E | rejected; `f = 0.004` and `0.010` at close spacing |
 | finite-canal and unbounded references are equivalent at the principal hump | E | matched to within 0.33% in `tau` at all four separations |
 | either frozen kernel or Insel's published calculation is defective | E | unresolved; no side identified |
+
+## H1 line-attribution follow-up: source-anomaly stop
+
+The independent legend audit refutes H1 without numerical matching. In every
+one of Figures 359--362, the legend assigns the solid line to `C2 (WIGLEY
+HULL)`, the dashed line to C3, the dash-dot line to C4, and the dotted line to
+C5 (Figures 359--360: printed 358, PDF 368; Figures 361--362: printed 359, PDF
+369). This exactly matches the original two-pass attribution. Figures 355--358
+are separately captioned as predictions from monohull wave-pattern analysis,
+so no hybrid/pure panel swap was found (printed 356--357, PDF 366--367).
+
+The preregistered family check then encountered its own stop condition in the
+first and most discriminating panel. Two independent source-only traces of all
+four Figure 359 curves admitted 503 of 510 common anchors. On the registered
+`0.35 <= Fn <= 0.55` window, `A = max(tau) - 1` is:
+
+| model | legend identity | peak `Fn` | `A` | ordinate uncertainty |
+|---|---|---:|---:|---:|
+| C2 | Wigley hull, solid | 0.450 | 0.979 | 0.020 |
+| C3 | RBH `L/B = 7`, dashed | 0.525 | 0.582 | 0.020 |
+| C4 | RBH `L/B = 9`, dash-dot | 0.525 | 0.582 | 0.020 |
+| C5 | RBH `L/B = 11`, dotted | 0.500 | 0.552 | 0.020 |
+
+The C3/C4 intervals overlap and count as tied. C2's hump occurs below the
+earliest RBH hump and passes the registered feature-position ordering. But the
+registered amplitude relation `C4 >= C2` is reversed by `0.397`; even the
+nearest uncertainty bounds remain separated by `0.357`. This is not a line-
+crossing or threshold-edge result. It conflicts with the thesis statement
+that higher `L/B` gives smaller interference amplitude at `S/L = 0.2` and
+0.3 (printed 124, PDF 134), when that statement is applied to the legend
+identities exactly as preregistered.
+
+This is recorded as a **source anomaly**, not as evidence that a plotted curve
+should be relabelled. The machine-readable result is in
+`data/digitized/h1_figure_359_family_checks.csv`; both raw passes, the seven
+omitted anchors, reconciled family, and peak metrics remain archived beside
+it. Per `CRITERIA-H1.md`, work stops here for review. No library overlay was
+used to reinterpret the family, Figures 360--362 were not redigitized, no H2
+implementation variants were run, prior theory scores and predictions remain
+unchanged, and no `CLOSEOUT.md` is created.
+
+### H1-follow-up claim classification
+
+| claim | class | status |
+|---|---|---|
+| original solid-line attribution is wrong | E | rejected by unambiguous legends |
+| Figure 359 satisfies the registered L/B amplitude ordering | E | rejected; source-anomaly stop triggered |
+| Wigley C2 has the lowest broad-hump `Fn` in Figure 359 | K | reproduced within archived digitization uncertainty |
+| a different plotted family member explains the library discrepancy | E | not tested; overlays prohibited after the source-anomaly stop |
+| a specific historical implementation deviation explains the curves | E | not tested; H2 was not entered |
