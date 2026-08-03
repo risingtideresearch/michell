@@ -63,8 +63,8 @@ to a Gaussian-decaying integral whose quadrature cost is independent of
 frequency.  A hybrid implementation accepts the reduced result only when its
 omission bound and a coarse/fine contour estimate meet the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
-instead of 877,424 inner-transform evaluations, reduces median runtime from
-\SI{28.141}{ms} to \SI{0.029}{ms} (a factor of 971.79), and differs from an
+instead of 511,504 inner-transform evaluations, reduces median runtime from
+\SI{39.233}{ms} to \SI{0.045}{ms} (approximately 880-fold), and differs from an
 independent real-axis reference by \(3.56\times10^{-11}\) relatively.  The
 method is presently restricted to upright symmetric monohulls and the contour
 discretization estimate is not a formal interval certificate.
@@ -382,10 +382,10 @@ submerged-pair bound and empirical contour difference.}
 \toprule
 \(\Fn\) & Reference \(\Rw\) (N) & Reduced rel. diff. & Reduced estimate & Marcher rel. diff.\\
 \midrule
-0.08 & \num{1.945940872497e-1} & \num{1.172e-5}  & \num{3.814e-5} & \num{3.125e-7}\\
-0.05 & \num{1.057847519834e-2} & \num{1.058e-11} & \num{3.728e-12}& \num{5.781e-7}\\
-0.03 & \num{5.113923599287e-4} & \num{2.328e-11} & \num{3.462e-12}& \num{1.063e-6}\\
-0.02 & \num{4.417234459536e-5} & \num{3.558e-11} & \num{7.620e-13}& \num{2.024e-6}\\
+0.08 & \num{1.945940872497e-1} & \num{1.172e-5}  & \num{3.814e-5} & \num{6.917e-8}\\
+0.05 & \num{1.057847519834e-2} & \num{1.058e-11} & \num{3.728e-12}& \num{1.493e-7}\\
+0.03 & \num{5.113923599287e-4} & \num{2.328e-11} & \num{3.462e-12}& \num{3.322e-7}\\
+0.02 & \num{4.417234459536e-5} & \num{3.558e-11} & \num{7.620e-13}& \num{6.333e-7}\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -394,14 +394,14 @@ submerged-pair bound and empirical contour difference.}
 terms are still material and the estimate correctly rejects the reduction at
 default tolerance.  At \(\Fn\leq0.05\), the reduced/reference differences are
 at the \(10^{-11}\) level and are dominated by the finite reference.  The
-general marcher's error grows as Froude number falls even though its reported
-tail estimate at \(\Fn=0.05\) was \(5.123\times10^{-9}\); this discrepancy
-motivated the hybrid dispatch.
+general marcher's error grows as Froude number falls.  At \(\Fn=0.05\), its
+reported relative error is \(5.774\times10^{-7}\), compared with the measured
+\(1.493\times10^{-7}\).
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
 integration for \(s\in\{4,7,10\}\) and
 \(|\omega|\in\{25,100,400\}\), with scaled discrepancy below
-\(10^{-9}\).  The complete Rust workspace contains 196 passing test cases,
+\(10^{-9}\).  The complete Rust workspace contains 215 passing test cases,
 including one documentation test; the companion Python interface has 11
 passing tests.
 
@@ -422,7 +422,7 @@ passing tests.
   (0.08,1.172e-5) (0.05,1.058e-11) (0.03,2.328e-11) (0.02,3.558e-11)};
 \addlegendentry{endpoint/NSD}
 \addplot+[mark=square*,thick] coordinates {
-  (0.08,3.125e-7) (0.05,5.781e-7) (0.03,1.063e-6) (0.02,2.024e-6)};
+  (0.08,6.917e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.333e-7)};
 \addlegendentry{real-axis marcher}
 \end{axis}
 \end{tikzpicture}
@@ -442,7 +442,7 @@ passing tests.
   (0.08,1152) (0.05,1152) (0.03,1152) (0.02,1152)};
 \addlegendentry{endpoint/NSD}
 \addplot+[mark=square*,thick] coordinates {
-  (0.08,114432) (0.05,235808) (0.03,501904) (0.02,877424)};
+  (0.08,56032) (0.05,119936) (0.03,267856) (0.02,511504)};
 \addlegendentry{real-axis marcher}
 \end{axis}
 \end{tikzpicture}
@@ -468,18 +468,20 @@ in the same benchmark process.
 \toprule
 Case & Median (ms) & Best (ms) & Diagnostic\\
 \midrule
-21 speeds, \(\Fn=0.10\ldots0.50\) & 21.897 & 21.584 & unchanged checksum\\
-Default API, \(\Fn=0.05\) & 0.029 & 0.028 & 1,152 nodes\\
-Real-axis marcher, \(\Fn=0.02\) & 28.141 & 27.794 & 877,424 evaluations\\
-Endpoint/NSD, \(\Fn=0.02\) & 0.029 & 0.028 & 1,152 nodes\\
+21 speeds, \(\Fn=0.10\ldots0.50\) & 26.289 & 22.843 & corrected checksum\\
+Default API, \(\Fn=0.05\) & 0.050 & 0.050 & 1,152 nodes\\
+Real-axis marcher, \(\Fn=0.02\) & 39.233 & 35.950 & 511,504 evaluations\\
+Endpoint/NSD, \(\Fn=0.02\) & 0.045 & 0.044 & 1,152 nodes\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-At \(\Fn=0.02\), the median speedup is 971.79.  The endpoint solver's cost is
+At \(\Fn=0.02\), the median speedup is approximately 880-fold.  The endpoint solver's cost is
 nearly unchanged between \(\Fn=0.05\) and 0.02, as predicted by
 \cref{eq:gaussian}.  The ordinary 21-speed design sweep remains on whichever
-path satisfies the error gate and preserves its prior numerical checksum.
+path satisfies the error gate.  Its checksum is \(2.553251156101\times10^5\),
+an intentional change from the pre-fix value because the corrected marcher
+retains a previously truncated positive tail.
 
 \section{Relation to prior work and scope of novelty}
 \label{sec:prior}
