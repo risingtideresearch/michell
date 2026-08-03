@@ -1,0 +1,24 @@
+Command: ./paper/reproduce_measurements.sh
+Frozen kernel base: 30d8f53
+Paper head before measurement harness commit: 692c4ec9856a22aaeee0dbfd2b8a82fba0a37df4
+rustc: 1.96.0 (ac68faa20 2026-05-25)
+cargo: 1.96.0 (30a34c682 2026-05-25)
+host: Robs-MacBook-Air-2.local, Darwin 25.5.0, arm64
+
+Fn=0.08: reference=1.945940872497e-1, reduced=1.945918057885e-1, reduced_error=1.172e-5, reduced_est=3.814e-5, marching_error=6.917e-8, marching_est=2.696e-7, marching_evals=56032, kernel_evals=1152, reference_evals=397104, terms=8/16
+Fn=0.05: reference=1.057847519834e-2, reduced=1.057847519845e-2, reduced_error=1.058e-11, reduced_est=3.728e-12, marching_error=1.493e-7, marching_est=5.774e-7, marching_evals=119936, kernel_evals=1152, reference_evals=1016560, terms=8/16
+Fn=0.03: reference=5.113923599287e-4, reduced=5.113923599406e-4, reduced_error=2.328e-11, reduced_est=3.462e-12, marching_error=3.322e-7, marching_est=1.300e-6, marching_evals=267856, kernel_evals=1152, reference_evals=2823776, terms=8/16
+Fn=0.02: reference=4.417234459536e-5, reduced=4.417234459694e-5, reduced_error=3.558e-11, reduced_est=7.620e-13, marching_error=6.333e-7, marching_est=2.497e-6, marching_evals=511504, kernel_evals=1152, reference_evals=6353472, terms=8/16
+dispatch: Fn=0.08 general marcher; Fn=0.05 endpoint reduction; both converged
+
+Benchmark command: MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley
+Build profile: optimized; 30 warmed samples; default rel_tol=1e-5
+case                         median_ms      best_ms
+21 speeds Fn=0.10..0.50         26.289       22.843
+low Froude Fn=0.05                0.050        0.050
+low-Fn diagnostics: evaluations=1152, max_lambda=inf, est_rel_error=3.728e-12
+checksums: sweep=2.553251156101e5, low=3.173542559536e-1
+very-low-Froude method       median_ms      best_ms
+marching Fn=0.02                39.233       35.950
+endpoint/NSD Fn=0.02             0.045        0.044
+very-low-Fn speedup: 879.17x; evaluations 511504 -> 1152; estimated endpoint error 7.620e-13; checksums direct=1.325169498584e-3, endpoint=1.325170337908e-3

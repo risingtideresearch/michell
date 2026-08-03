@@ -98,9 +98,10 @@ fn endpoint_reduction_converges_as_froude_number_falls() {
         let actual_relative_error = (reduced.resistance - reference).abs() / reference;
         let direct_relative_error = (direct.resistance - reference).abs() / reference;
         eprintln!(
-            "Fn={fn_:.2}: reference={reference:.12e}, reduced={:.12e}, reduced_error={actual_relative_error:.3e}, estimated={:.3e}, marching_error={direct_relative_error:.3e}, marching_evals={}, kernel_evals={}, reference_evals={reference_evaluations}, terms={}/{}",
+            "Fn={fn_:.2}: reference={reference:.12e}, reduced={:.12e}, reduced_error={actual_relative_error:.3e}, reduced_est={:.3e}, marching_error={direct_relative_error:.3e}, marching_est={:.3e}, marching_evals={}, kernel_evals={}, reference_evals={reference_evaluations}, terms={}/{}",
             reduced.resistance,
             reduced.est_rel_error,
+            direct.est_rel_error,
             direct.inner_evaluations,
             reduced.kernel_evaluations,
             reduced.waterline_terms,
