@@ -584,7 +584,10 @@ mod tests {
     fn steepest_descent_kernel_matches_resolved_real_axis_reference() {
         let (gx, gw) = gauss_legendre(64);
         let (reference_x, reference_w) = gauss_legendre(16);
-        for s in [4, 7, 10] {
+        // n <= p + 2q + 2 = 50 for the supported p,q <= 16 envelope, so
+        // pair expansion reaches s <= 50 + 50 - 2 = 98. Include s=128 as
+        // margin beyond every kernel order constructible by the public API.
+        for s in [4, 7, 10, 50, 98, 128] {
             for omega in [25.0, 100.0, 400.0] {
                 let got = steepest_descent_kernel(s, omega, &gx, &gw);
                 // Independent real-axis quadrature. Panel boundaries are
