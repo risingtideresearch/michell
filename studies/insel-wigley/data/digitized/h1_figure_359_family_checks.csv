@@ -1,0 +1,5 @@
+check,registered_relation,left_model,left_value,left_uncertainty,right_model,right_value,right_uncertainty,central_margin,status
+broad_hump_amplitude_order,C3 >= C4,C3,0.5823440,0.0200000,C4,0.5821327,0.0200000,0.0002113,UNCERTAINTY_OVERLAP_TIE
+broad_hump_amplitude_order,C4 >= C2,C4,0.5821327,0.0200000,C2,0.9790441,0.0200000,-0.3969114,VIOLATION
+broad_hump_amplitude_order,C2 >= C5,C2,0.9790441,0.0200000,C5,0.5521956,0.0200000,0.4268485,PASS
+broad_hump_fn_order,"C2 <= earliest(C3,C4,C5)",C2,0.4500000,0.0030000,C5,0.4999999,0.0030000,0.0499999,PASS

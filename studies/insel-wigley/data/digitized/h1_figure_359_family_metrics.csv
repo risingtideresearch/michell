@@ -1,0 +1,5 @@
+figure,separation_over_length,model,hull,line_style,amplitude_window_fn_min,amplitude_window_fn_max,peak_fn,peak_tau,amplitude_max_tau_minus_one,fn_digitization_uncertainty,tau_digitization_uncertainty
+359,0.2,C2,Wigley hull,solid,0.35,0.55,0.4500000,1.9790441,0.9790441,0.0030000,0.0200000
+359,0.2,C3,"round-bilge hull, L/B 7",long dashed,0.35,0.55,0.5250001,1.5823440,0.5823440,0.0030000,0.0200000
+359,0.2,C4,"round-bilge hull, L/B 9",dash-dot,0.35,0.55,0.5250001,1.5821327,0.5821327,0.0030000,0.0200000
+359,0.2,C5,"round-bilge hull, L/B 11",dotted,0.35,0.55,0.4999999,1.5521956,0.5521956,0.0030000,0.0200000
