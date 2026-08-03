@@ -128,3 +128,56 @@ The extraction scripts also write labelled candidate overlays beneath the
 ignored `tmp/` tree for manual inspection. Neither OCR nor PDF text extraction
 is used. Reconciliation is deterministic from the committed raw pixel passes;
 plot regeneration is deterministic from the committed final CSVs.
+
+## C2 theoretical-interference curves
+
+The later theory comparison uses the solid C2 curves in Figures 359--362
+(printed pages 358--359, PDF pages 368--369). Those curves are distinct from
+the experimental markers above and were digitized only after
+`CRITERIA-THEORY.md` was committed. The source was rendered at 360 dpi. Each
+panel was calibrated independently from its inner plot border with affine axes
+`0.1 <= Fn <= 1.0` and `0 <= tau <= 2.5`.
+
+Two source-only passes sampled common `Fn = 0.005` anchors. Pass A used local
+pixel-ink centring around source-read guide ordinates. Pass B used a
+continuity-constrained whole-curve path, independent plot-border readings, and
+separately source-read checkpoints before local centring. Neither extraction
+script reads the other pass, a solver prediction, or a comparison overlay.
+The temporary labelled overlays were inspected only against the scanned source
+to check C2 curve identity, including line-style crossings.
+
+`reconcile_theory.py` calibrates each pass separately and admits an anchor only
+when the readings differ by no more than `0.015` in `Fn` and `0.08` in `tau`,
+as preregistered. It averages the two calibrated ordinates and records the
+larger of the preregistered base uncertainty (`0.003` in `Fn`, `0.02` in
+`tau`) and half the pass difference. A source-only reinspection left 36
+over-tolerance or line-ambiguous anchors unresolved; all 36 are omitted in
+`passes/theory_mismatches.csv` rather than assigned from curve smoothness.
+
+| figure | `S/L` | raw anchors per pass | admitted | omitted | admitted 0.01 scoring anchors, `0.20 <= Fn <= 0.80` |
+|---|---:|---:|---:|---:|---:|
+| 359 | 0.2 | 131 | 121 | 10 | 54 |
+| 360 | 0.3 | 161 | 153 | 8 | 57 |
+| 361 | 0.4 | 161 | 153 | 8 | 59 |
+| 362 | 0.5 | 161 | 151 | 10 | 57 |
+
+Thus every panel exceeds the preregistered minimum of 50 of 61 scoring anchors
+and covers the full principal-hump window. The reconciled curve is archived in
+`data/digitized/theory_interference.csv`; it retains both raw pixel centres,
+both calibrated values, pass differences, uncertainty, and source locations.
+
+Reproduce the theory digitization from the fetched thesis without extracting
+PDF text:
+
+```sh
+mkdir -p tmp/pdfs/insel-followup/theory-highres
+pdftoppm -jpeg -r 360 -f 368 -l 369 \
+  studies/insel-wigley/data/raw/insel-1990-thesis.pdf \
+  tmp/pdfs/insel-followup/theory-highres/page
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_theory_pass_a.py
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_theory_pass_b.py
+python3 studies/insel-wigley/data/digitized/reconcile_theory.py
+python3 studies/insel-wigley/data/digitized/validate_digitization.py
+```

@@ -55,6 +55,9 @@ VALUE_BOUNDS = {
     "sinkage_over_draught": (-0.1, 0.2),
 }
 
+THEORY_COUNTS = {"359": 121, "360": 153, "361": 153, "362": 151}
+THEORY_SEPARATIONS = {"359": 0.2, "360": 0.3, "361": 0.4, "362": 0.5}
+
 
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open() as handle:
@@ -98,6 +101,50 @@ def validate_file(path: Path) -> tuple[int, int]:
     return matched, independent_only
 
 
+def validate_theory() -> tuple[int, int]:
+    rows = read_rows(HERE / "theory_interference.csv")
+    counts = Counter(row["figure"] for row in rows)
+    assert counts == Counter(THEORY_COUNTS), counts
+
+    by_figure: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for row in rows:
+        figure = row["figure"]
+        assert float(row["separation_over_length"]) == THEORY_SEPARATIONS[figure]
+        assert row["source_printed_page"] in {"358", "359"}
+        assert int(row["source_pdf_page"]) == int(row["source_printed_page"]) + 10
+        assert row["pass_count"] == "2"
+        assert 0.15 <= float(row["fn"]) <= 0.95
+        assert 0.0 <= float(row["tau"]) <= 2.5
+        assert float(row["fn_pass_difference"]) <= 0.015
+        assert float(row["tau_pass_difference"]) <= 0.08
+        assert float(row["fn_digitization_uncertainty"]) >= 0.003
+        assert float(row["tau_digitization_uncertainty"]) >= 0.02
+        assert abs(float(row["fn"]) - float(row["fn_anchor"])) < 1e-6
+        assert all(row[field] for field in (
+            "pass_a_x_px", "pass_a_y_px", "pass_b_x_px", "pass_b_y_px"
+        ))
+        by_figure[figure].append(row)
+
+    for figure, figure_rows in by_figure.items():
+        anchors = [float(row["fn_anchor"]) for row in figure_rows]
+        assert anchors == sorted(anchors)
+        scoring_anchors = [
+            anchor for anchor in anchors
+            if 0.20 <= anchor <= 0.80 and round(anchor * 1000) % 10 == 0
+        ]
+        assert len(scoring_anchors) >= 50, (figure, len(scoring_anchors))
+        assert min(anchors) <= 0.35 and max(anchors) >= 0.55
+
+    mismatch_rows = read_rows(HERE / "passes/theory_mismatches.csv")
+    assert len(mismatch_rows) == 36
+    assert all(
+        row["resolution"] == "omitted_after_source_only_reinspection"
+        and float(row["tau_pass_difference"]) > 0.08
+        for row in mismatch_rows
+    )
+    return len(rows), len(mismatch_rows)
+
+
 def main() -> None:
     matched = 0
     independent_only = 0
@@ -114,10 +161,15 @@ def main() -> None:
     }
     assert matched == 796
     assert independent_only == 78
+    theory_admitted, theory_omitted = validate_theory()
     print(
         "validated 874 admitted markers: "
         f"{matched} two-pass matches, {independent_only} conservative pass-B-only markers; "
         "525 pass-A-only candidates excluded"
+    )
+    print(
+        f"validated {theory_admitted} two-pass theory anchors; "
+        f"{theory_omitted} source-rechecked anchors omitted"
     )
 
 
