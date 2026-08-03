@@ -451,6 +451,10 @@ passing tests.
 \addplot+[mark=square*,thick] coordinates {
   (0.08,6.918e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.334e-7)};
 \addlegendentry{real-axis marcher}
+\node[font=\scriptsize,text=red!65!black,anchor=north west]
+  at (axis cs:0.08,1.172e-5) {rejected};
+\node[font=\scriptsize,text=green!45!black,anchor=north]
+  at (axis cs:0.035,3e-5) {accepted samples};
 \end{axis}
 \end{tikzpicture}
 \end{minipage}\hfill
@@ -477,7 +481,8 @@ passing tests.
 \caption{Observed accuracy (left) and work (right) as Froude number decreases.
 The deepened independent reference resolves endpoint/NSD differences down to
 the \(10^{-13}\)--\(10^{-12}\) level, while its quadrature work is fixed by
-geometry.}
+geometry.  At default tolerance the hybrid rejects the reduced result at
+\(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
 \label{fig:scaling}
 \end{figure}
 
