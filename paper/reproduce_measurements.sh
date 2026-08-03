@@ -3,7 +3,13 @@ set -eu
 
 samples="${MICHELL_BENCH_SAMPLES:-30}"
 
-git rev-parse HEAD
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git rev-parse HEAD
+elif [ -f ARCHIVE_REVISION ]; then
+    sed -n '1p' ARCHIVE_REVISION
+else
+    printf '%s\n' 'revision unavailable (non-Git source tree)'
+fi
 rustc --version
 cargo --version
 uname -a
