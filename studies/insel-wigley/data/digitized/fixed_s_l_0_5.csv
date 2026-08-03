@@ -1,0 +1,68 @@
+# source: Mustafa Insel, 1990 PhD thesis
+# source_location: printed pages 248; Figures 143,144
+# method: blinded pixel passes, conservative glyph reconciliation; unsnapped Fn
+configuration,attitude,observable,replicate_id,fn,value,value_unit,fn_digitization_uncertainty,value_digitization_uncertainty,source_figure,source_printed_page,source_pdf_page,pass_count,adjudication,pass_a_x_px,pass_a_y_px,independent_pass,independent_x_px,independent_y_px
+s_l_0_5,fixed,ct,1,0.1275377,0.00571577,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,592.510,1219.540,B,592.720,1218.284
+s_l_0_5,fixed,ct,2,0.1730455,0.00540785,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,688.630,1252.980,B,687.025,1262.870
+s_l_0_5,fixed,ct,3,0.2221627,0.00534195,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,793.150,1267.700,B,788.033,1264.851
+s_l_0_5,fixed,ct,4,0.2389267,0.00545674,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,825.470,1252.420,B,825.861,1251.042
+s_l_0_5,fixed,ct,5,0.2513319,0.00563777,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,852.740,1229.590,B,850.500,1228.000
+s_l_0_5,fixed,ct,6,0.2589301,0.00554567,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,866.940,1242.390,B,868.094,1238.536
+s_l_0_5,fixed,ct,7,0.2729518,0.00564752,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,897.870,1223.850,B,895.837,1231.268
+s_l_0_5,fixed,ct,8,0.2849498,0.00579457,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,921.770,1211.470,B,922.142,1206.386
+s_l_0_5,fixed,ct,9,0.2952818,0.00600245,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,943.450,1181.570,B,943.696,1183.609
+s_l_0_5,fixed,ct,10,0.3079000,0.00597136,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,972.840,1189.730,B,967.106,1183.327
+s_l_0_5,fixed,ct,11,0.3246145,0.00583000,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1004.580,1204.850,B,1005.307,1204.029
+s_l_0_5,fixed,ct,12,0.3362696,0.00581399,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1031.160,1206.060,B,1027.497,1206.875
+s_l_0_5,fixed,ct,13,0.3518796,0.00591993,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1062.500,1191.220,B,1061.476,1194.870
+s_l_0_5,fixed,ct,14,0.3648134,0.00610004,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1089.260,1169.760,B,1088.837,1170.691
+s_l_0_5,fixed,ct,15,0.3756385,0.00635690,dimensionless,0.002000,0.00008000,143,248,258,1+source_recheck,pass_a_missing; accepted conservative pass_b glyph,,,B,1111.697,1137.681
+s_l_0_5,fixed,ct,16,0.3883484,0.00676044,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1138.140,1085.540,B,1138.438,1087.565
+s_l_0_5,fixed,ct,17,0.3990404,0.00705113,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1160.950,1046.970,B,1160.368,1052.474
+s_l_0_5,fixed,ct,18,0.4105260,0.00733059,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1184.900,1013.620,B,1184.479,1015.009
+s_l_0_5,fixed,ct,19,0.4318127,0.00774967,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1229.270,958.940,B,1229.182,963.493
+s_l_0_5,fixed,ct,20,0.4622153,0.00796100,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1293.070,933.720,B,1292.600,935.162
+s_l_0_5,fixed,ct,21,0.4969832,0.00799774,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1365.290,930.950,B,1365.864,928.622
+s_l_0_5,fixed,ct,22,0.5288940,0.00795363,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1432.170,936.370,B,1432.513,934.380
+s_l_0_5,fixed,ct,23,0.5535118,0.00789472,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1483.930,941.860,B,1483.765,943.817
+s_l_0_5,fixed,ct,24,0.5754990,0.00773603,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1529.840,963.600,B,1529.859,962.289
+s_l_0_5,fixed,ct,25,0.5866703,0.00760857,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1552.410,979.010,B,1554.035,979.178
+s_l_0_5,fixed,ct,26,0.6298075,0.00739575,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1644.400,1009.450,B,1642.550,1002.666
+s_l_0_5,fixed,ct,27,0.6743405,0.00711997,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1736.920,1043.450,B,1736.376,1038.549
+s_l_0_5,fixed,ct,28,0.7188657,0.00698690,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1829.950,1058.220,B,1829.659,1057.500
+s_l_0_5,fixed,ct,29,0.7615796,0.00654500,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,1919.290,1116.680,B,1919.053,1111.018
+s_l_0_5,fixed,ct,30,0.8523849,0.00612874,dimensionless,0.002000,0.00008000,143,248,258,2,independent pixel-center match; averaged,2109.080,1166.580,B,2109.233,1166.598
+s_l_0_5,fixed,cwp,1,0.1725123,0.00011065,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,680.000,3294.000,B,678.779,3287.894
+s_l_0_5,fixed,cwp,2,0.1859282,0.00009929,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,709.000,3296.000,B,705.798,3288.781
+s_l_0_5,fixed,cwp,3,0.1993240,0.00017517,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,736.000,3282.000,B,734.733,3283.508
+s_l_0_5,fixed,cwp,4,0.2077766,0.00013162,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,753.000,3290.000,B,753.027,3286.568
+s_l_0_5,fixed,cwp,5,0.2225159,0.00028422,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,784.000,3268.000,B,783.572,3269.809
+s_l_0_5,fixed,cwp,6,0.2379788,0.00033692,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,816.000,3263.000,B,816.138,3261.422
+s_l_0_5,fixed,cwp,7,0.2577119,0.00026217,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,857.000,3273.000,B,857.535,3270.409
+s_l_0_5,fixed,cwp,8,0.2738212,0.00056990,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,891.000,3232.000,B,890.800,3233.246
+s_l_0_5,fixed,cwp,9,0.2844435,0.00077823,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,913.000,3206.000,B,913.154,3206.329
+s_l_0_5,fixed,cwp,10,0.2940685,0.00099567,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,933.000,3178.000,B,933.344,3179.100
+s_l_0_5,fixed,cwp,11,0.3089969,0.00105042,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,964.000,3172.000,B,964.678,3171.193
+s_l_0_5,fixed,cwp,12,0.3244980,0.00096893,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,996.000,3182.000,B,997.404,3181.892
+s_l_0_5,fixed,cwp,13,0.3368573,0.00095907,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1022.000,3184.000,B,1023.011,3182.396
+s_l_0_5,fixed,cwp,14,0.3514020,0.00107543,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1052.000,3169.000,B,1053.743,3167.842
+s_l_0_5,fixed,cwp,15,0.3639194,0.00139507,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1080.000,3127.000,B,1078.010,3128.651
+s_l_0_5,fixed,cwp,16,0.3754989,0.00158441,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1103.000,3103.000,B,1103.361,3104.560
+s_l_0_5,fixed,cwp,17,0.3877943,0.00179893,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1129.000,3076.000,B,1128.701,3077.072
+s_l_0_5,fixed,cwp,18,0.3987883,0.00210036,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1152.000,3038.000,B,1151.607,3038.509
+s_l_0_5,fixed,cwp,19,0.4102275,0.00229079,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1176.000,3014.000,B,1175.372,3014.139
+s_l_0_5,fixed,cwp,20,0.4305268,0.00266169,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1219.000,2967.000,B,1217.133,2966.930
+s_l_0_5,fixed,cwp,21,0.4436918,0.00300843,dimensionless,0.002000,0.00008000,144,248,258,1+source_recheck,pass_a_missing; accepted conservative pass_b glyph,,,B,1245.552,2922.930
+s_l_0_5,fixed,cwp,22,0.4578278,0.00330913,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1279.000,2880.000,B,1271.130,2889.481
+s_l_0_5,fixed,cwp,23,0.4614077,0.00317123,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1283.000,2902.000,B,1282.078,2902.507
+s_l_0_5,fixed,cwp,24,0.4971179,0.00393673,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1357.000,2804.000,B,1357.188,2806.071
+s_l_0_5,fixed,cwp,25,0.5170166,0.00374734,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1399.000,2830.000,B,1398.276,2828.175
+s_l_0_5,fixed,cwp,26,0.5286407,0.00337625,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1423.000,2877.000,B,1422.813,2875.432
+s_l_0_5,fixed,cwp,27,0.5534824,0.00319916,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1475.000,2900.000,B,1474.541,2897.413
+s_l_0_5,fixed,cwp,28,0.5860426,0.00311850,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1543.000,2910.000,B,1542.498,2907.902
+s_l_0_5,fixed,cwp,29,0.6303780,0.00348064,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1635.000,2864.000,B,1635.623,2861.918
+s_l_0_5,fixed,cwp,30,0.6748598,0.00323582,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1728.000,2895.000,B,1728.359,2893.101
+s_l_0_5,fixed,cwp,31,0.7192422,0.00288199,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1821.000,2940.000,B,1820.680,2937.975
+s_l_0_5,fixed,cwp,32,0.7619387,0.00218029,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,1909.000,3029.000,B,1910.962,3027.206
+s_l_0_5,fixed,cwp,33,0.8064483,0.00228038,dimensionless,0.002000,0.00008000,144,248,258,2,independent pixel-center match; averaged,2003.000,3015.000,B,2002.814,3015.783
+s_l_0_5,fixed,cwp,34,0.8519742,0.00220302,dimensionless,0.002000,0.00008000,144,248,258,1+source_recheck,pass_a_missing; accepted conservative pass_b glyph,,,B,2097.955,3025.216
