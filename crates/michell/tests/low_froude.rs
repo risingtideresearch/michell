@@ -72,8 +72,7 @@ fn resolved_wigley_reference(
                 let t = mid + sign * half * node;
                 let lambda = 1.0 + t * t;
                 let j = wigley_j(length, beam, draft, nu, lambda);
-                let term =
-                    weight * half * j * j * 2.0 * lambda.powi(2) / (2.0 + t * t).sqrt();
+                let term = weight * half * j * j * 2.0 * lambda.powi(2) / (2.0 + t * t).sqrt();
                 let corrected_term = term - correction;
                 let next = integral + corrected_term;
                 correction = (next - integral) - corrected_term;
@@ -138,8 +137,7 @@ fn low_froude_reported_error_covers_actual_error() {
     let speed = fn_ * (STANDARD_GRAVITY * length).sqrt();
     let conditions = Conditions::freshwater(speed);
     let result = wave_resistance_with(&hull, &conditions, &WaveOptions::default()).unwrap();
-    let (reference, _) =
-        resolved_wigley_reference(length, beam, draft, &conditions, 4_000.0);
+    let (reference, _) = resolved_wigley_reference(length, beam, draft, &conditions, 4_000.0);
     let actual_relative_error = (result.resistance - reference).abs() / reference;
     assert!(
         actual_relative_error <= 10.0 * result.est_rel_error.max(1e-12),
