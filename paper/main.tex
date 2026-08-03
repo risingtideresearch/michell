@@ -108,7 +108,10 @@ An analytic reduction lineage addresses the same computational goal.
 \citet{Michelsen1960}, building on Birkhoff and Kotik's transformation, splits
 the calculation into a hull function and a speed-dependent Michell function,
 derives a convergent special-function series for polynomial hull functions,
-and proposes tabulation for systematic design.  \citet{Michelsen1972} later
+and proposes tabulation for systematic design.  Michelsen next treated
+polynomial centerline singularity distributions \citep{Michelsen1963} and
+high- and low-speed asymptotic approximations \citep{Michelsen1966}.
+\citet{Michelsen1972} later
 uses Gegenbauer source distributions and orthogonality to reduce the integral
 to a finite double sum.  The verified abstract of
 \citet{SendagortaGrases1988} likewise describes rapidly convergent series,
@@ -763,6 +766,18 @@ Birkhoff--Kotik via \citet[eqs.~39--45]{Wehausen1973}
 & Appendix proves series convergence; computer tabulation is proposed
 & Antecedent of analytic polynomial reduction for design use\\
 \addlinespace
+\citet{Michelsen1963}, program record
+& Polynomial centerline singularity distributions
+& Direct evaluation of their wave-resistance contribution
+& The verified seminar program establishes topic and venue; detailed controls await source access
+& Connects the dissertation's polynomial program to centerplane distributions\\
+\addlinespace
+\citet{Michelsen1966}, bibliographic record
+& High- and low-speed asymptotic approximations to Michell's integral
+& Speed-limit formulas rather than a general finite-speed kernel
+& The verified journal record establishes scope; detailed remainder control awaits source access
+& Extends the lineage explicitly into both speed limits\\
+\addlinespace
 \citet{Michelsen1972}, verified record
 & Gegenbauer expansion of the centerplane Havelock-source distribution
 & Orthogonality reduces resistance to a finite double sum depending on source coefficients, \(\Fn\), and length--draft ratio
@@ -805,16 +820,21 @@ representations lies outside this paper and remains future work.
 
 The endpoint structure is also established independently.
 \citet{KellerAhluwalia1976} express leading small-Froude resistance and waves
-through bow and stern waterline slopes.  \citet{Gotman2002} repeatedly
-differentiates polynomial hull functions, separates endpoint self terms from
-bow--stern interference, and discusses higher endpoint derivatives.  Our
+through bow and stern waterline slopes.  \citet[pp.~83--85]{Gotman2002}
+derives finite endpoint-derivative sums, forms their products in resistance,
+and separates bow, stern, and bow--stern contributions; this is closer to the
+present pair structure than a generic integration-by-parts citation.  Our
 finite B-spline decomposition puts that mechanism into implementation form; it
 does not introduce a new physical asymptotic principle.
 
 Tuck and Lazauskas also establish exact or Filon-like integration of
-piecewise-polynomial inner data \citep{Tuck1989,Lazauskas2009}.  As
-\citet{Lazauskas2009} describes it, Michlet combines exact
-piecewise-quadratic longitudinal formulas with a fixed angular rule.  Our
+piecewise-polynomial inner data.  In particular,
+\citet[sec.~6.5, pp.~6-10--6-12]{Lazauskas2009} gives exact
+piecewise-quadratic hull integrals, compares equally spaced Simpson and
+cosine-spaced trapezoidal angular rules, and reports that very low Froude
+number remains exceptional.  The accessible thesis supports those numerical
+practices but does not, by itself, document the internals of every Michlet
+release.  Our
 solver retains the same thin-ship physics but, for accepted B-spline hulls,
 keeps low-Froude outer work from growing with frequency.  We classify that result
 as an engineering improvement and make no head-to-head performance claim
