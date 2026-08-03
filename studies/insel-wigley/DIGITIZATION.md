@@ -247,3 +247,23 @@ uv run --project python --extra plot python \
   studies/insel-wigley/data/digitized/extract_experimental_family_pass_b.py
 python3 studies/insel-wigley/data/digitized/reconcile_experimental_family.py
 ```
+
+## Complete attributed C2 theory family
+
+The final separation probe uses all four theoretical C2 panels. Figure 359
+comes from the later full-family audit; Figures 360--362 already had complete
+blind two-pass pixel traces in `pass_a_theory.tsv` and `pass_b_theory.tsv`.
+Repeating those readings would create pseudoreplication. Instead,
+`attribute_c2_theory_family.py` attaches the independently audited solid-C2
+identity and a source-position description to every unchanged pass row.
+
+The attributed pass records are
+`passes/final_c2_360_362_pass_a_attributed.tsv` and
+`passes/final_c2_360_362_pass_b_attributed.tsv`. The combined reconciled input
+`theory_c2_attributed_359_362.csv` contains 581 admitted points and records the
+original archive for every row. The script never selects, moves, or drops a
+pixel reading.
+
+```sh
+python3 studies/insel-wigley/data/digitized/attribute_c2_theory_family.py
+```

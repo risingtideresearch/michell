@@ -1,0 +1,585 @@
+# source: Mustafa Insel, 1990 PhD thesis, Figures 359--362
+# source_location: printed pages 358--359; PDF pages 368--369
+# identity: solid C2 (Wigley hull), independently audited before this attribution
+figure,source_printed_page,source_pdf_page,separation_over_length,model,hull,line_style,relative_position_description,fn_anchor,fn,tau,fn_digitization_uncertainty,tau_digitization_uncertainty,pass_count,source_archive
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.150,0.1500001,1.1852043,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.155,0.1550000,1.1379845,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.160,0.1599999,1.1463987,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.165,0.1650001,1.1085424,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.170,0.1699999,1.1332103,0.0030000,0.0211776,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.175,0.1750001,1.1251262,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.180,0.1800000,1.1688488,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.185,0.1849999,1.2248037,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.190,0.1900000,1.2793362,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.195,0.1950001,1.3332337,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.200,0.2000000,1.3541624,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.205,0.2049999,1.2494105,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.210,0.2100001,1.1384619,0.0030000,0.0212024,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.230,0.2299999,0.9165689,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.235,0.2350000,1.0129576,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.240,0.2400001,1.0430138,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.245,0.2450000,1.1442418,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.250,0.2499999,1.2148532,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.255,0.2550001,1.1882559,0.0030000,0.0289499,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.260,0.2599999,1.0657789,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.285,0.2850001,1.0537918,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.290,0.2900000,1.1982918,0.0030000,0.0292555,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.295,0.2949999,1.3456869,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.300,0.3000001,1.4757987,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.305,0.3049999,1.4041509,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.310,0.3100001,1.3180294,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.315,0.3150000,1.2642100,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.320,0.3199999,1.1114766,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.325,0.3250000,1.0526755,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.330,0.3300001,1.0011631,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.335,0.3350000,0.9144473,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.340,0.3399999,0.8452193,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.345,0.3450001,0.7853218,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.350,0.3499999,0.7556141,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.355,0.3550001,0.8433385,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.360,0.3600000,0.9756945,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.365,0.3649999,1.0405849,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.370,0.3700000,1.1421278,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.375,0.3750001,1.2714978,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.380,0.3800000,1.3575812,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.385,0.3849999,1.4589811,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.390,0.3900001,1.5603942,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.395,0.3949999,1.6664525,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.400,0.4000001,1.7766175,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.405,0.4050000,1.7950401,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.410,0.4099999,1.8368554,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.415,0.4150000,1.8640387,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.420,0.4200001,1.9096155,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.425,0.4250000,1.9352345,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.430,0.4299999,1.9514612,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.435,0.4350001,1.9640389,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.440,0.4399999,1.9731710,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.445,0.4450001,1.9789958,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.450,0.4500000,1.9790441,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.455,0.4549999,1.9731436,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.460,0.4600000,1.9647788,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.465,0.4650001,1.9513170,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.470,0.4700000,1.9379981,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.475,0.4749999,1.9061741,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.480,0.4800001,1.8708063,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.485,0.4849999,1.8551538,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.490,0.4900001,1.8212451,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.495,0.4950000,1.7999131,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.500,0.4999999,1.7546662,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.505,0.5050000,1.7307935,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.510,0.5100001,1.7015010,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.515,0.5150000,1.6946571,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.520,0.5199999,1.6494668,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.525,0.5250001,1.5823440,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.530,0.5299999,1.5686781,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.535,0.5350001,1.5490019,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.540,0.5400000,1.5693190,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.545,0.5449999,1.5307513,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.550,0.5500000,1.5264426,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.555,0.5550001,1.4782609,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.560,0.5600000,1.4562040,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.565,0.5649999,1.4293933,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.570,0.5700001,1.4151466,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.575,0.5749999,1.3980456,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.580,0.5800001,1.3595412,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.585,0.5850000,1.3422474,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.590,0.5899999,1.3294569,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.595,0.5950000,1.3085708,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.600,0.6000001,1.3008928,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.605,0.6050000,1.2639169,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.610,0.6099999,1.2607401,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.615,0.6150001,1.2480423,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.620,0.6199999,1.2369558,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.625,0.6250001,1.2233176,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.630,0.6300000,1.2098054,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.635,0.6349999,1.1977275,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.640,0.6400000,1.1920723,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.645,0.6450001,1.1444724,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.650,0.6500000,1.1240356,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.655,0.6549999,1.1135219,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.660,0.6600001,1.1017375,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.665,0.6649999,1.0903604,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.670,0.6700001,1.0598474,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.675,0.6750000,1.0564309,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.680,0.6799999,1.0473783,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.685,0.6850000,1.0395411,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.690,0.6900001,1.0273291,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.695,0.6950000,1.0145734,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.700,0.6999999,1.0045509,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.705,0.7050001,0.9957558,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.710,0.7099999,0.9932621,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.715,0.7150001,0.9942542,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.720,0.7200000,0.9589572,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.725,0.7249999,0.9600215,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.730,0.7300000,0.9551309,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.735,0.7350001,0.9502183,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.740,0.7400000,0.9455641,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.745,0.7449999,0.9412271,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.750,0.7500001,0.9340337,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.755,0.7549999,0.9062890,0.0030000,0.0255623,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.760,0.7600001,0.8760827,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.765,0.7650000,0.8662168,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.770,0.7699999,0.8563510,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.775,0.7750000,0.8474725,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.780,0.7800001,0.8376067,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.785,0.7850000,0.8287282,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.790,0.7899999,0.8188624,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.795,0.7950001,0.8099839,0.0030000,0.0200000,2,theory_family_359.csv
+359,358,368,0.2,C2,Wigley hull,solid,solid C2: oscillatory left branch; isolated upper broad crest near Fn 0.45,0.800,0.7999999,0.8001181,0.0030000,0.0200000,2,theory_family_359.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.150,0.1500001,1.3690023,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.155,0.1550000,1.3979585,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.160,0.1599999,1.3543782,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.165,0.1650001,1.2984445,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.170,0.1699999,1.1552937,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.175,0.1750001,1.0897648,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.180,0.1800000,1.0687738,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.185,0.1849999,1.1021310,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.190,0.1900000,1.1564055,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.195,0.1950001,1.2469073,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.200,0.2000000,1.2674165,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.205,0.2049999,1.2355027,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.215,0.2149999,1.0835521,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.220,0.2200001,1.0849247,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.225,0.2250000,1.0777257,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.230,0.2299999,1.0696774,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.235,0.2350000,1.0193977,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.240,0.2400001,0.9257643,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.245,0.2450000,0.7902073,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.250,0.2499999,0.7132659,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.255,0.2550001,0.7526051,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.260,0.2599999,1.0420183,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.265,0.2650001,1.0886758,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.270,0.2700000,1.2823371,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.275,0.2749999,1.4299495,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.280,0.2800000,1.5346900,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.285,0.2850001,1.4408625,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.290,0.2900000,1.3493059,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.295,0.2949999,1.2441042,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.300,0.3000001,1.0815773,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.310,0.3100001,0.8468250,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.315,0.3150000,0.7586507,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.320,0.3199999,0.6658882,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.325,0.3250000,0.6018494,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.330,0.3300001,0.5490125,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.335,0.3350000,0.5824758,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.340,0.3399999,0.6446378,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.345,0.3450001,0.7455909,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.350,0.3499999,0.8948278,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.355,0.3550001,1.0008659,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.360,0.3600000,1.2460836,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.365,0.3649999,1.2836776,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.370,0.3700000,1.4437870,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.375,0.3750001,1.5267358,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.380,0.3800000,1.6057384,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.385,0.3849999,1.6491473,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.390,0.3900001,1.6767265,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.395,0.3949999,1.7018526,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.400,0.4000001,1.7134895,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.405,0.4050000,1.7162084,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.410,0.4099999,1.7163181,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.415,0.4150000,1.7102650,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.420,0.4200001,1.7018793,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.425,0.4250000,1.6868608,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.430,0.4299999,1.6651144,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.435,0.4350001,1.6484645,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.440,0.4399999,1.6269621,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.445,0.4450001,1.6069386,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.450,0.4500000,1.5707335,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.455,0.4549999,1.5574133,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.460,0.4600000,1.5329548,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.465,0.4650001,1.5064601,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.475,0.4749999,1.4231195,0.0030000,0.0317499,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.480,0.4800001,1.4345301,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.485,0.4849999,1.3904777,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.490,0.4900001,1.3668135,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.495,0.4950000,1.3595641,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.500,0.4999999,1.3478443,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.505,0.5050000,1.3161285,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.510,0.5100001,1.2976539,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.515,0.5150000,1.3335260,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.520,0.5199999,1.2918893,0.0030000,0.0369408,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.535,0.5350001,1.2047355,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.540,0.5400000,1.1889256,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.545,0.5449999,1.1682602,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.550,0.5500000,1.1548589,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.555,0.5550001,1.1419859,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.560,0.5600000,1.1283771,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.565,0.5649999,1.1162748,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.570,0.5700001,1.1045708,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.575,0.5749999,1.0907258,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.580,0.5800001,1.0803385,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.585,0.5850000,1.0668315,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.590,0.5899999,1.0585506,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.595,0.5950000,1.0492908,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.600,0.6000001,1.0431053,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.605,0.6050000,1.0360397,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.610,0.6099999,1.0288502,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.615,0.6150001,1.0230313,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.625,0.6250001,1.0123697,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.630,0.6300000,1.0061961,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.640,0.6400000,0.9995659,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.645,0.6450001,0.9957861,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.650,0.6500000,0.9896272,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.655,0.6549999,0.9867443,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.660,0.6600001,1.0625241,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.665,0.6649999,1.0549477,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.670,0.6700001,1.0486416,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.675,0.6750000,1.0436003,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.680,0.6799999,0.9999231,0.0030000,0.0353105,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.690,0.6900001,0.9598557,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.695,0.6950000,0.9560532,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.700,0.6999999,0.9538807,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.705,0.7050001,0.9819859,0.0030000,0.0314741,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.710,0.7099999,1.0102644,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.715,0.7150001,0.9810162,0.0030000,0.0344233,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.720,0.7200000,1.0110328,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.725,0.7249999,1.0046155,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.730,0.7300000,1.0003184,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.735,0.7350001,0.9650489,0.0030000,0.0305964,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.740,0.7400000,0.9936867,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.745,0.7449999,0.9878648,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.750,0.7500001,0.9870555,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.755,0.7549999,0.9265693,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.760,0.7600001,0.9692381,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.765,0.7650000,0.9640496,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.770,0.7699999,0.9576872,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.775,0.7750000,0.9525619,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.780,0.7800001,0.9501710,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.785,0.7850000,0.9424009,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.790,0.7899999,0.9174869,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.795,0.7950001,0.9197078,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.800,0.7999999,0.9135618,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.805,0.8050001,0.9089742,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.810,0.8100000,0.9033410,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.815,0.8149999,0.8990997,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.820,0.8200000,0.8969519,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.825,0.8250001,0.8963140,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.830,0.8300000,0.8994564,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.835,0.8349999,0.9139747,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.840,0.8400001,0.8967948,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.845,0.8449999,0.8960156,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.850,0.8500001,0.8669334,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.855,0.8550000,0.8950541,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.860,0.8599999,0.8866803,0.0030000,0.0238502,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.865,0.8650000,0.8617459,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.870,0.8700001,0.8629006,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.875,0.8750000,0.9103882,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.880,0.8799999,0.9118354,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.885,0.8850001,0.8614405,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.890,0.8899999,0.8617034,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.895,0.8950001,0.8916253,0.0030000,0.0268229,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.900,0.9000000,0.8668563,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.905,0.9049999,0.8694705,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.910,0.9100000,0.8828505,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.915,0.9150001,0.8819493,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.920,0.9200000,0.8879678,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.925,0.9249999,0.8907352,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.930,0.9300001,0.8931682,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.935,0.9349999,0.8969381,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.940,0.9400001,0.9031108,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.945,0.9450000,0.9068392,0.0030000,0.0200000,2,theory_interference.csv
+360,358,368,0.3,C2,Wigley hull,solid,solid C2: oscillatory left branch; leftmost principal crest near Fn 0.41,0.950,0.9499999,0.9119605,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.150,0.1500001,0.9732706,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.155,0.1550000,0.9450711,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.160,0.1599999,0.9184095,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.165,0.1650001,0.8976777,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.170,0.1699999,0.8908118,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.175,0.1750001,0.8965657,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.180,0.1800000,0.9029120,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.185,0.1849999,0.9035627,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.190,0.1900000,0.8913219,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.195,0.1950001,0.8564995,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.200,0.2000000,0.8464429,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.205,0.2049999,0.8616506,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.210,0.2100001,0.9984590,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.215,0.2149999,1.0486690,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.220,0.2200001,1.1899730,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.225,0.2250000,1.2870702,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.230,0.2299999,1.1139984,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.235,0.2350000,1.1178048,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.240,0.2400001,1.0190784,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.250,0.2499999,0.8513465,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.255,0.2550001,0.9047793,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.260,0.2599999,1.0299444,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.270,0.2700000,1.2344059,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.275,0.2749999,1.2836118,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.280,0.2800000,1.2842960,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.285,0.2850001,1.2486337,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.290,0.2900000,1.0733916,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.295,0.2949999,1.1080020,0.0030000,0.0235146,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.300,0.3000001,1.0810490,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.310,0.3100001,0.9212835,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.315,0.3150000,0.8587374,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.320,0.3199999,0.8202289,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.325,0.3250000,0.8001191,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.330,0.3300001,0.7919317,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.335,0.3350000,0.8031900,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.340,0.3399999,0.8412175,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.345,0.3450001,0.9124525,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.350,0.3499999,0.9586625,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.355,0.3550001,1.0648350,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.360,0.3600000,1.1404570,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.365,0.3649999,1.1545412,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.375,0.3750001,1.4586931,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.380,0.3800000,1.4964880,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.385,0.3849999,1.5202883,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.390,0.3900001,1.5341251,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.395,0.3949999,1.5387063,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.400,0.4000001,1.5368337,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.405,0.4050000,1.5278941,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.410,0.4099999,1.5136762,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.415,0.4150000,1.4966655,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.420,0.4200001,1.4826128,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.425,0.4250000,1.4591093,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.430,0.4299999,1.4382996,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.435,0.4350001,1.4168786,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.440,0.4399999,1.3991414,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.445,0.4450001,1.3452778,0.0030000,0.0370286,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.450,0.4500000,1.3370494,0.0030000,0.0215604,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.455,0.4549999,1.3319305,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.460,0.4600000,1.3256162,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.465,0.4650001,1.3216659,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.470,0.4700000,1.3083042,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.475,0.4749999,1.3217369,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.480,0.4800001,1.2579715,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.485,0.4849999,1.2757396,0.0030000,0.0316638,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.490,0.4900001,1.2310057,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.495,0.4950000,1.2166740,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.500,0.4999999,1.2044427,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.505,0.5050000,1.1925376,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.510,0.5100001,1.2611667,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.515,0.5150000,1.1652879,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.520,0.5199999,1.1569418,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.525,0.5250001,1.0631925,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.530,0.5299999,1.0964326,0.0030000,0.0350840,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.535,0.5350001,1.0617783,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.550,0.5500000,1.0578340,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.555,0.5550001,1.0560994,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.560,0.5600000,1.1550209,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.565,0.5649999,1.1451018,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.570,0.5700001,1.0556873,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.575,0.5749999,1.0538531,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.580,0.5800001,1.0497658,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.585,0.5850000,1.0468812,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.590,0.5899999,1.0412190,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.595,0.5950000,1.0376256,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.600,0.6000001,1.0330956,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.605,0.6050000,1.0300982,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.610,0.6099999,1.0239707,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.615,0.6150001,1.0250640,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.620,0.6199999,1.0211137,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.625,0.6250001,1.0191415,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.630,0.6300000,1.0142094,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.635,0.6349999,1.0132230,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.640,0.6400000,1.0132240,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.645,0.6450001,1.0073390,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.650,0.6500000,1.0068254,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.655,0.6549999,1.0050721,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.660,0.6600001,1.0036263,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.665,0.6649999,1.0002296,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.670,0.6700001,0.9975501,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.675,0.6750000,0.9958983,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.680,0.6799999,0.9948760,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.685,0.6850000,0.9941055,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.690,0.6900001,0.9942534,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.695,0.6950000,0.9905032,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.700,0.6999999,0.9900379,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.705,0.7050001,0.9917029,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.710,0.7099999,0.9900498,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.715,0.7150001,0.9836176,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.720,0.7200000,0.9895707,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.725,0.7249999,0.9883161,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.730,0.7300000,0.9830498,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.735,0.7350001,0.9831957,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.740,0.7400000,0.9658447,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.745,0.7449999,0.9799069,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.750,0.7500001,0.9781970,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.755,0.7549999,0.9798024,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.760,0.7600001,0.9404170,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.765,0.7650000,0.9560546,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.770,0.7699999,0.9737597,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.775,0.7750000,0.9717915,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.780,0.7800001,0.9665113,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.785,0.7850000,0.9644445,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.790,0.7899999,0.9233757,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.795,0.7950001,0.9202979,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.800,0.7999999,0.9563334,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.805,0.8050001,0.9544293,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.810,0.8100000,0.9083248,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.815,0.8149999,0.9515062,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.820,0.8200000,0.9029130,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.825,0.8250001,0.9238277,0.0030000,0.0253285,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.830,0.8300000,0.8985388,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.835,0.8349999,0.9437722,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.840,0.8400001,0.8931162,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.845,0.8449999,0.9417646,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.850,0.8500001,0.9700519,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.855,0.8550000,0.9399501,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.860,0.8599999,0.9129751,0.0030000,0.0269933,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.865,0.8650000,0.8849968,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.870,0.8700001,0.8849968,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.875,0.8750000,0.9374702,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.880,0.8799999,0.9372948,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.885,0.8850001,0.8829733,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.890,0.8899999,0.8828541,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.895,0.8950001,0.8834248,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.900,0.9000000,0.9378774,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.915,0.9150001,0.8828343,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.920,0.9200000,0.8845299,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.925,0.9249999,0.8887923,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.930,0.9300001,0.9372948,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.935,0.9349999,0.8944969,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.940,0.9400001,0.8968772,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.945,0.9450000,0.9423911,0.0030000,0.0200000,2,theory_interference.csv
+361,359,369,0.4,C2,Wigley hull,solid,solid C2: oscillatory left branch; principal crest near Fn 0.40,0.950,0.9499999,0.9462389,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.150,0.1500001,0.9891569,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.155,0.1550000,0.9860559,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.160,0.1599999,0.9835465,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.165,0.1650001,0.9844289,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.170,0.1699999,0.9879666,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.175,0.1750001,0.9919341,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.180,0.1800000,0.9961804,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.185,0.1849999,0.9943043,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.190,0.1900000,0.9839961,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.195,0.1950001,0.9690853,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.200,0.2000000,0.9595148,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.205,0.2049999,0.9650521,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.210,0.2100001,0.9829308,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.215,0.2149999,1.0156752,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.220,0.2200001,1.0472754,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.225,0.2250000,1.0259020,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.230,0.2299999,1.0194100,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.235,0.2350000,1.0164949,0.0030000,0.0366849,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.245,0.2450000,1.0230866,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.250,0.2499999,1.0242200,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.255,0.2550001,1.0627824,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.260,0.2599999,1.0719953,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.265,0.2650001,1.0367844,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.270,0.2700000,1.0393808,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.275,0.2749999,1.0404134,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.280,0.2800000,1.0481544,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.285,0.2850001,1.0462995,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.290,0.2900000,1.0455149,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.295,0.2949999,1.0460396,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.300,0.3000001,1.0422891,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.305,0.3049999,1.0523269,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.310,0.3100001,1.0571320,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.315,0.3150000,1.0680861,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.320,0.3199999,0.9107801,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.325,0.3250000,0.9166543,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.330,0.3300001,0.9346077,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.335,0.3350000,0.9657497,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.340,0.3399999,1.0201343,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.345,0.3450001,1.0487849,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.350,0.3499999,0.9523352,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.355,0.3550001,1.0156249,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.360,0.3600000,1.1917108,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.365,0.3649999,1.2015891,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.370,0.3700000,1.1815270,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.385,0.3849999,1.3464128,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.390,0.3900001,1.3424453,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.395,0.3949999,1.3360799,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.400,0.4000001,1.3262272,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.405,0.4050000,1.3182141,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.410,0.4099999,1.3070802,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.415,0.4150000,1.2956277,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.420,0.4200001,1.2739968,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.425,0.4250000,1.2718777,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.430,0.4299999,1.2575687,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.435,0.4350001,1.2518071,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.440,0.4399999,1.2432970,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.445,0.4450001,1.2230125,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.450,0.4500000,1.2120703,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.455,0.4549999,1.2405443,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.460,0.4600000,1.2132038,0.0030000,0.0215966,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.465,0.4650001,1.1799197,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.475,0.4749999,1.2194708,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.480,0.4800001,1.2148738,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.490,0.4900001,1.1271611,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.495,0.4950000,1.1182438,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.500,0.4999999,1.1126472,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.505,0.5050000,1.1045965,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.515,0.5150000,1.0924201,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.520,0.5199999,1.0839780,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.525,0.5250001,1.0773996,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.530,0.5299999,1.1091866,0.0030000,0.0368941,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.535,0.5350001,1.0368249,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.540,0.5400000,1.0370433,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.545,0.5449999,1.0432971,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.550,0.5500000,1.0442985,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.555,0.5550001,1.0443855,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.560,0.5600000,1.0410493,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.565,0.5649999,1.0392879,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.570,0.5700001,1.0376016,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.575,0.5749999,1.0325717,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.580,0.5800001,1.0345980,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.585,0.5850000,1.0473649,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.590,0.5899999,1.0462313,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.595,0.5950000,1.0445386,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.600,0.6000001,1.0418764,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.605,0.6050000,1.0397345,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.610,0.6099999,1.0389381,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.615,0.6150001,1.0360437,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.620,0.6199999,1.0059688,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.625,0.6250001,1.0296552,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.630,0.6300000,1.0294688,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.635,0.6349999,1.0284850,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.640,0.6400000,1.0127722,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.645,0.6450001,0.9981677,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.650,0.6500000,1.0066510,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.655,0.6549999,0.9982527,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.660,0.6600001,1.0096347,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.665,0.6649999,0.9980821,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.670,0.6700001,0.9976345,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.675,0.6750000,0.9958009,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.680,0.6799999,0.9939920,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.685,0.6850000,0.9956339,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.690,0.6900001,1.0210578,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.695,0.6950000,1.0196813,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.700,0.6999999,1.0177796,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.705,0.7050001,0.9938438,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.710,0.7099999,1.0048393,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.715,0.7150001,0.9988278,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.720,0.7200000,0.9976898,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.725,0.7249999,0.9990076,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.730,0.7300000,1.0007977,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.735,0.7350001,0.9998040,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.740,0.7400000,0.9978865,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.745,0.7449999,0.9969932,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.750,0.7500001,0.9967679,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.755,0.7549999,0.9933576,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.760,0.7600001,0.9898940,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.765,0.7650000,0.9919776,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.770,0.7699999,0.9940414,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.775,0.7750000,0.9859591,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.780,0.7800001,0.9938586,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.785,0.7850000,0.9938448,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.790,0.7899999,0.9933823,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.795,0.7950001,0.9912800,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.800,0.7999999,0.9919677,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.805,0.8050001,0.9729719,0.0030000,0.0226734,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.810,0.8100000,0.9450735,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.815,0.8149999,0.9816066,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.820,0.8200000,1.0023382,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.825,0.8250001,0.9989448,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.830,0.8300000,0.9757491,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.835,0.8349999,0.9300526,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.840,0.8400001,1.0039623,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.845,0.8449999,1.0046886,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.850,0.8500001,0.9224525,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.855,0.8550000,0.9457845,0.0030000,0.0241284,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.860,0.8599999,1.0090978,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.865,0.8650000,0.9914140,0.0030000,0.0215011,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.870,0.8700001,0.9208116,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.875,0.8750000,1.0151061,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.880,0.8799999,1.0161990,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.890,0.8899999,0.9210418,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.900,0.9000000,0.9221472,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.905,0.9049999,0.9263469,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.910,0.9100000,0.9471483,0.0030000,0.0207825,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.915,0.9150001,0.9647130,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.925,0.9249999,0.9362836,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.930,0.9300001,0.9383830,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.935,0.9349999,0.9424523,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.945,0.9450000,0.9661978,0.0030000,0.0200000,2,theory_interference.csv
+362,359,369,0.5,C2,Wigley hull,solid,solid C2: small left oscillations; sharp principal crest near Fn 0.40,0.950,0.9499999,0.9670334,0.0030000,0.0200000,2,theory_interference.csv
