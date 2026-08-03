@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn reported_error_charges_shared_coefficients_and_endpoint_accumulation() {
         let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-        let speed = 0.05 * (STANDARD_GRAVITY * hull.length()).sqrt();
+        let speed = 0.08 * (STANDARD_GRAVITY * hull.length()).sqrt();
         let reduced = low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
         assert!(reduced.coefficient_rel_error_bound > 0.0);
         assert!(reduced.endpoint_summation_abs_error_bound > 0.0);
@@ -576,7 +576,10 @@ mod tests {
             + (reduced.omitted_abs_error_bound
                 + reduced.quadrature_abs_error_estimate
                 + reduced.endpoint_summation_abs_error_bound)
-                / reduced.resistance.abs();
+                / (reduced.resistance.abs()
+                    - reduced.omitted_abs_error_bound
+                    - reduced.quadrature_abs_error_estimate
+                    - reduced.endpoint_summation_abs_error_bound);
         assert_eq!(reduced.est_rel_error, accounted);
     }
 
