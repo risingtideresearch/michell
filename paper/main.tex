@@ -89,9 +89,14 @@ Lazauskas used exact piecewise-quadratic formulas and a fixed angular rule;
 the latter reports that very low Froude number remains exceptional
 \citep{Tuck1989,Lazauskas2009}.  A real-axis adaptive marcher must spend more
 work as the frequency rises and must decide when an oscillatory algebraic tail
-is negligible.  In the implementation studied here, a single quiet-window
-criterion understated the actual error at \(\Fn=0.05\) by a factor of about
-113.
+is negligible.  At the pre-fix revision \texttt{64925d4}, a single
+quiet-window criterion reported \(5.123\times10^{-9}\) relative error at
+\(\Fn=0.05\), while the measured error was \(5.781\times10^{-7}\): an
+understatement by a factor of about 113.  The frozen kernel corrects this
+engineering defect by advancing quiet windows on oscillatory phase alone and
+summing refinement and tail errors.  Across \(0.02\leq\Fn\leq1\), its reported
+estimate covers the measured error by approximately fourfold; actual marcher
+error falls by factors of 3--100 and evaluation counts are roughly halved.
 
 Low-speed endpoint dominance is not new.  Keller and Ahluwalia showed that the
 small-Froude wave field and resistance are controlled by bow and stern
@@ -395,8 +400,10 @@ terms are still material and the estimate correctly rejects the reduction at
 default tolerance.  At \(\Fn\leq0.05\), the reduced/reference differences are
 at the \(10^{-11}\) level and are dominated by the finite reference.  The
 general marcher's error grows as Froude number falls.  At \(\Fn=0.05\), its
-reported relative error is \(5.774\times10^{-7}\), compared with the measured
-\(1.493\times10^{-7}\).
+corrected reported relative error is \(5.774\times10^{-7}\), compared with the
+measured \(1.493\times10^{-7}\), so the estimate covers rather than understates
+the observed error.  This corrected, independently checked marcher is the
+comparison method throughout \cref{tab:accuracy}.
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
 integration for \(s\in\{4,7,10\}\) and
