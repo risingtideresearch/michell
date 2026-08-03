@@ -79,7 +79,7 @@ submerged pairs, and coarse/fine contour quadrature; the dispatcher falls back
 to a real-axis marcher when the estimate exceeds the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
-\SI{20.319}{ms} to \SI{0.029}{ms} (about 700-fold), and differs from an
+\SI{21.541}{ms} to \SI{0.030}{ms} (about 700-fold), and differs from an
 independent real-axis reference by \(1.83\times10^{-13}\) relatively.  The
 implementation is an engineering improvement for upright symmetric monohulls
 with coarse, well-separated active endpoints.  Its contour-discretization
@@ -705,15 +705,15 @@ counts and checksums are deterministic.
 \toprule
 Case & Median (ms) & IQR (ms) & Diagnostic\\
 \midrule
-21 speeds, \(\Fn=0.10\ldots0.50\) & 12.514 & 12.307--12.584 & checksum \(2.553251156101\times10^5\)\\
-Default API, \(\Fn=0.05\) & 0.029 & 0.029--0.029 & 1,152 nodes; batch 256\\
-Real-axis marcher, \(\Fn=0.02\) & 20.319 & 20.080--20.434 & 511,504 evaluations; batch 1\\
-Endpoint/NSD, \(\Fn=0.02\) & 0.029 & 0.029--0.029 & 1,152 nodes; batch 256\\
+21 speeds, \(\Fn=0.10\ldots0.50\) & 13.059 & 12.952--13.126 & checksum \(2.553251156101\times10^5\)\\
+Default API, \(\Fn=0.05\) & 0.030 & 0.030--0.030 & 1,152 nodes; batch 256\\
+Real-axis marcher, \(\Fn=0.02\) & 21.541 & 21.311--21.666 & 511,504 evaluations; batch 1\\
+Endpoint/NSD, \(\Fn=0.02\) & 0.030 & 0.030--0.030 & 1,152 nodes; batch 256\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-At \(\Fn=0.02\), the frozen paired run gives a 702-fold median speedup; repeated
+At \(\Fn=0.02\), the frozen paired run gives a 718-fold median speedup; repeated
 protocols on this host have spanned roughly 608--865-fold, so the ratio is not
 portable.  The comparison uses equal \emph{requested} tolerance, not matched
 observed accuracy: the endpoint/reference difference is
