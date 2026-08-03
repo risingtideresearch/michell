@@ -866,14 +866,21 @@ deep-water thin-ship theory.
         endpoints must satisfy \(\nu|x_i-x_j|\geq25\), so it targets coarse,
         well-separated endpoint maps.  Asymmetric, heeled, multihull, and
         closely spaced cases fall back to the general method.
+  \item \textbf{Contour degree.}  The fixed 48-node rule was accurate through
+        \(s\simeq50\) and degraded beyond it in scans to \(s=400\); its
+        24/48 difference nevertheless remained conservative against the
+        192-node same-contour comparator throughout that scan.  Production
+        therefore switches to 48/96 when \(s/|\omega|\geq2\), and the claimed
+        envelope ends at the independently tested public maximum \(s=98\).
   \item \textbf{Error certification.}  The submerged-pair omission bound and
         Gaussian tail bound are analytic.  The selected coarse/fine quadrature
         difference and floating-point roundoff are not interval-certified.
-  \item \textbf{Reference floor.}  The independent real-axis reference uses
-        compensated summation through \(\lambda=4000\); at \(\Fn=0.02\), a
-        cutoff-doubling check changes it by \(1.23\times10^{-15}\).  Differences
-        near the observed \(10^{-13}\) scale are resolution measurements, not
-        interval-certified digits.
+  \item \textbf{Reference floor.}  The independent \(1+t^2\) and
+        \(\sec\theta\) references use compensated summation through
+        \(\lambda=4000\).  At \(\Fn=0.02\), their cutoff-doubling changes are
+        \(1.38\times10^{-15}\) and \(1.23\times10^{-15}\), respectively.
+        Differences near the observed \(10^{-13}\) scale are resolution
+        measurements, not interval-certified digits.
   \item \textbf{Physical model.}  Michell theory is linear, inviscid, slender,
         deep-water, and fixed-attitude.  At very low speed, viscous effects may
         dominate the already small wave resistance.  For free-surface flow
@@ -919,7 +926,7 @@ repository}.  On acceptance for submission, the immutable source, test, and
 artifact package will be archived and the placeholder
 \href{https://doi.org/\ArchiveDOI}{\nolinkurl{\ArchiveDOI}} replaced with its
 minted DOI.  The current numerical kernel will be identified by the immutable
-local tag \texttt{paper-a-jsr-v2}; that tag will not be moved after creation.
+local tag \texttt{paper-a-jsr-v3}; that tag will not be moved after creation.
 
 \section*{Acknowledgments}
 
