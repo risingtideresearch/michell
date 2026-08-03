@@ -687,4 +687,43 @@ mod tests {
         assert!(contour_requires_high_order(128, 25.0));
         assert!(!contour_requires_high_order(128, 400.0));
     }
+
+    #[test]
+    fn fixed_rule_difference_covers_contour_scan_through_s_400() {
+        let (coarse_x, coarse_w) = gauss_legendre(24);
+        let (fine_x, fine_w) = gauss_legendre(48);
+        let (reference_x, reference_w) = gauss_legendre(192);
+        let mut max_relative_through_50: f64 = 0.0;
+        let mut max_relative_above_50: f64 = 0.0;
+        let mut minimum_coverage: f64 = f64::INFINITY;
+
+        for s in 4..=400 {
+            for omega in [25.0, 100.0, 400.0] {
+                let coarse = steepest_descent_kernel(s, omega, &coarse_x, &coarse_w);
+                let fine = steepest_descent_kernel(s, omega, &fine_x, &fine_w);
+                let reference = steepest_descent_kernel(s, omega, &reference_x, &reference_w);
+                let actual = (fine - reference).abs();
+                let estimate = (fine - coarse).abs();
+                let relative = actual / reference.abs().max(f64::MIN_POSITIVE);
+                if s <= 50 {
+                    max_relative_through_50 = max_relative_through_50.max(relative);
+                } else {
+                    max_relative_above_50 = max_relative_above_50.max(relative);
+                }
+                let comparison_floor = 1e-10 * reference.abs();
+                if actual > comparison_floor {
+                    minimum_coverage = minimum_coverage.min(estimate / actual);
+                }
+                assert!(
+                    actual <= estimate + comparison_floor,
+                    "s={s} omega={omega}: 48-node error {actual:.3e} exceeds 24/48 difference {estimate:.3e}"
+                );
+            }
+        }
+        eprintln!(
+            "fixed 48-node contour scan: max_relative_s_le_50={max_relative_through_50:.3e}, max_relative_s_gt_50={max_relative_above_50:.3e}, minimum_24_48_coverage={minimum_coverage:.3e}"
+        );
+        assert!(max_relative_through_50 < 1e-10);
+        assert!(max_relative_above_50 > 1e-8);
+    }
 }
