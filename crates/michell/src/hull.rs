@@ -14,6 +14,13 @@ use crate::quadrature::gauss_legendre;
 /// finite but catastrophically wrong resistance values.
 pub const MAX_SUPPORTED_SPLINE_DEGREE: usize = 16;
 
+// The independent high-precision degree-(16, 12) stress case differed by
+// 1.12e-9 in resistance. This 2e-8 validated floor is intentionally about 18
+// times larger; the permanent exact degree-elevation sweep enforces it across
+// the supported envelope, and every accepted result is charged for it.
+const VALIDATED_COEFFICIENT_RESISTANCE_REL_ERROR: f64 = 2.0e-8;
+const MAX_SPAN_RECONSTRUCTION_REL_ERROR: f64 = 1.0e-8;
+
 /// One non-empty knot span in one direction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Span {
@@ -63,6 +70,9 @@ pub struct Hull {
     /// i.e. index `((sx * nsz + sz) * p + a) * (q + 1) + b`,
     /// with `a = 0..p` (p = degree_x) and `b = 0..=q` (q = degree_z).
     fx_coeff: Vec<f64>,
+    /// Validated resistance-level error floor for the shared local coefficient
+    /// representation. Both numerical routes charge this same contribution.
+    fx_coeff_rel_error_bound: f64,
     /// `∂f_a/∂x` coefficients for the **antisymmetric** half-beam
     /// `f_a = (f₊ − f₋)/2` of an asymmetric hull, same layout as `fx_coeff`.
     /// `None` for a port/starboard-symmetric hull (the default contract), in
@@ -140,7 +150,7 @@ impl Hull {
             .collect();
 
         // Local polynomial coefficients of fx = ∂f/∂x on every span pair.
-        let fx_coeff = compute_fx_coeff(&surface, &xs, &zs)?;
+        let (fx_coeff, fx_coeff_rel_error_bound) = compute_fx_coeff(&surface, &xs, &zs)?;
 
         // Geometric integrals by per-span Gauss-Legendre.
         // Volume: integrand is polynomial of degree (p, q) => exact.
@@ -212,6 +222,7 @@ impl Hull {
             spans_x,
             spans_z,
             fx_coeff,
+            fx_coeff_rel_error_bound,
             fx_a_coeff: None,
             a_surface: None,
             length: x1 - x0,
@@ -328,7 +339,9 @@ impl Hull {
         // Antisymmetric ∂f_a/∂x on the same spans.
         let xs = a_surface.x_span_indices();
         let zs = a_surface.z_span_indices();
-        hull.fx_a_coeff = Some(compute_fx_coeff(&a_surface, &xs, &zs)?);
+        let (fx_a_coeff, fx_a_rel_error_bound) = compute_fx_coeff(&a_surface, &xs, &zs)?;
+        hull.fx_a_coeff = Some(fx_a_coeff);
+        hull.fx_coeff_rel_error_bound = hull.fx_coeff_rel_error_bound.max(fx_a_rel_error_bound);
         hull.a_surface = Some(a_surface);
 
         // Two-sided geometry corrections: wetted surface and the centreplane
@@ -556,6 +569,10 @@ impl Hull {
         &self.fx_coeff
     }
 
+    pub(crate) fn fx_coeff_rel_error_bound(&self) -> f64 {
+        self.fx_coeff_rel_error_bound
+    }
+
     /// Reverse the linear map from surface controls to the local polynomial
     /// coefficients of `∂f/∂x` used by the exact Michell inner integral.
     pub(crate) fn fx_control_adjoint(&self, coeff_adjoint: &[f64]) -> Vec<f64> {
@@ -633,7 +650,11 @@ fn zj_map(sz: &Span, node: f64) -> f64 {
 /// Local polynomial coefficients of `∂f/∂x` per span pair, in the flattened
 /// layout documented on [`Hull::fx_coeff`]. Shared by the symmetric and
 /// asymmetric constructors so both paths use identical arithmetic.
-fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Result<Vec<f64>> {
+fn compute_fx_coeff(
+    surface: &BSplineSurface,
+    xs: &[usize],
+    zs: &[usize],
+) -> Result<(Vec<f64>, f64)> {
     let p = surface.degree_x();
     let q = surface.degree_z();
     // Factorials up to max degree (degrees are small).
@@ -667,7 +688,87 @@ fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Res
             }
         }
     }
-    Ok(fx_coeff)
+    let reconstruction_rel_error = span_reconstruction_rel_error(surface, xs, zs, &fx_coeff);
+    if !reconstruction_rel_error.is_finite()
+        || reconstruction_rel_error > MAX_SPAN_RECONSTRUCTION_REL_ERROR
+    {
+        return Err(Error::Unsupported(format!(
+            "local resistance coefficients failed the independent span-reconstruction gate: \
+             relative residual {reconstruction_rel_error:.3e} exceeds \
+             {MAX_SPAN_RECONSTRUCTION_REL_ERROR:.3e}"
+        )));
+    }
+    Ok((
+        fx_coeff,
+        VALIDATED_COEFFICIENT_RESISTANCE_REL_ERROR.max(4.0 * reconstruction_rel_error),
+    ))
+}
+
+fn span_reconstruction_rel_error(
+    surface: &BSplineSurface,
+    xs: &[usize],
+    zs: &[usize],
+    coefficients: &[f64],
+) -> f64 {
+    let p = surface.degree_x();
+    let q = surface.degree_z();
+    let (nodes_x, _) = gauss_legendre(p + 1);
+    let (nodes_z, _) = gauss_legendre(q + 1);
+    let mut max_reference = 0.0f64;
+    let mut max_residual = 0.0f64;
+    let control_scale = surface
+        .control()
+        .iter()
+        .fold(0.0f64, |scale, value| scale.max(value.abs()));
+    let min_x_span = xs
+        .iter()
+        .map(|&span| surface.knots_x()[span + 1] - surface.knots_x()[span])
+        .fold(f64::INFINITY, f64::min);
+    let characteristic_slope = control_scale / min_x_span;
+    for (span_x_index, &span_x) in xs.iter().enumerate() {
+        let x0 = surface.knots_x()[span_x];
+        let dx = surface.knots_x()[span_x + 1] - x0;
+        for (span_z_index, &span_z) in zs.iter().enumerate() {
+            let z0 = surface.knots_z()[span_z];
+            let dz = surface.knots_z()[span_z + 1] - z0;
+            let offset = (span_x_index * zs.len() + span_z_index) * p * (q + 1);
+            let span_coefficients = &coefficients[offset..offset + p * (q + 1)];
+            for &node_x in &nodes_x {
+                let local_x = dx * (node_x + 1.0) / 2.0;
+                let x = x0 + local_x;
+                for &node_z in &nodes_z {
+                    let local_z = dz * (node_z + 1.0) / 2.0;
+                    let z = z0 + local_z;
+                    let reference = surface.eval_deriv(x, z, 1, 0);
+                    let reconstructed =
+                        evaluate_local_polynomial(span_coefficients, p, q, local_x, local_z);
+                    max_reference = max_reference.max(reference.abs());
+                    max_residual = max_residual.max((reconstructed - reference).abs());
+                }
+            }
+        }
+    }
+    let scale = max_reference.max(characteristic_slope);
+    if scale == 0.0 {
+        if max_residual == 0.0 {
+            0.0
+        } else {
+            f64::INFINITY
+        }
+    } else {
+        max_residual / scale
+    }
+}
+
+fn evaluate_local_polynomial(coefficients: &[f64], p: usize, q: usize, x: f64, z: f64) -> f64 {
+    (0..p).rev().fold(0.0, |sum_x, a| {
+        let row = &coefficients[a * (q + 1)..(a + 1) * (q + 1)];
+        let sum_z = row
+            .iter()
+            .rev()
+            .fold(0.0, |sum_z, coefficient| sum_z * z + coefficient);
+        sum_x * x + sum_z
+    })
 }
 
 fn validate_resistance_degree(surface: &BSplineSurface) -> Result<()> {

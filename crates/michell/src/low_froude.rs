@@ -25,9 +25,13 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI};
 pub struct LowFroudeResistance {
     /// Approximate wave resistance, in newtons.
     pub resistance: f64,
-    /// Estimated relative error: the analytical bound for omitted submerged
-    /// endpoint terms plus the coarse/fine steepest-descent difference.
+    /// Estimated relative error: coefficient construction, endpoint-map
+    /// accumulation, omitted submerged endpoints, and contour quadrature.
     pub est_rel_error: f64,
+    /// Resistance-level relative error floor for the shared span coefficients.
+    pub coefficient_rel_error_bound: f64,
+    /// Absolute resistance bound for roundoff while combining endpoint terms.
+    pub endpoint_summation_abs_error_bound: f64,
     /// Analytical absolute resistance bound, in newtons, for all pair terms
     /// involving at least one omitted endpoint below the waterline.
     pub omitted_abs_error_bound: f64,
@@ -95,6 +99,47 @@ struct EndpointTerm {
     z: f64,
     lambda_power: usize,
     coeff: C64,
+    coeff_abs_error_bound: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ComplexAccumulator {
+    sum: C64,
+    correction: C64,
+    absolute_sum: f64,
+    additions: usize,
+}
+
+impl Default for ComplexAccumulator {
+    fn default() -> Self {
+        Self {
+            sum: C64::ZERO,
+            correction: C64::ZERO,
+            absolute_sum: 0.0,
+            additions: 0,
+        }
+    }
+}
+
+impl ComplexAccumulator {
+    fn add(&mut self, value: C64) {
+        let adjusted = value - self.correction;
+        let next = self.sum + adjusted;
+        self.correction = (next - self.sum) - adjusted;
+        self.sum = next;
+        self.absolute_sum += value.abs();
+        self.additions += 1;
+    }
+
+    fn error_bound(self) -> f64 {
+        let operations = 2.0 * self.additions as f64 + 2.0;
+        let gamma = operations * f64::EPSILON;
+        if gamma < 1.0 {
+            gamma / (1.0 - gamma) * self.absolute_sum
+        } else {
+            f64::INFINITY
+        }
+    }
 }
 
 /// Evaluate the low-Froude waterline-endpoint reduction of Michell's integral.
@@ -197,23 +242,32 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
     }
 
     let mut omitted_bound = 0.0;
+    let mut endpoint_summation_bound = 0.0;
     for left in &terms {
         for right in &terms {
-            if left.z == 0.0 && right.z == 0.0 {
-                continue;
-            }
             let s = left.lambda_power + right.lambda_power - 2;
             let decay = (-nu * (left.z + right.z)).exp();
-            omitted_bound +=
-                left.coeff.abs() * right.coeff.abs() * decay * zero_frequency_kernel(s);
+            let kernel_bound = decay * zero_frequency_kernel(s);
+            if !(left.z == 0.0 && right.z == 0.0) {
+                omitted_bound += left.coeff.abs() * right.coeff.abs() * kernel_bound;
+            }
+            endpoint_summation_bound += (left.coeff_abs_error_bound * right.coeff.abs()
+                + left.coeff.abs() * right.coeff_abs_error_bound
+                + left.coeff_abs_error_bound * right.coeff_abs_error_bound)
+                * kernel_bound;
         }
     }
 
     let resistance = physical_coeff * integral;
     let omitted_abs_error_bound = physical_coeff * omitted_bound;
     let quadrature_abs_error_estimate = physical_coeff * quadrature_error;
-    let abs_error = omitted_abs_error_bound + quadrature_abs_error_estimate;
-    let est_rel_error = abs_error / resistance.abs().max(f64::MIN_POSITIVE);
+    let endpoint_summation_abs_error_bound = physical_coeff * endpoint_summation_bound;
+    let coefficient_rel_error_bound = hull.fx_coeff_rel_error_bound();
+    let abs_error = omitted_abs_error_bound
+        + quadrature_abs_error_estimate
+        + endpoint_summation_abs_error_bound;
+    let est_rel_error =
+        coefficient_rel_error_bound + abs_error / resistance.abs().max(f64::MIN_POSITIVE);
     for pair in &mut endpoint_pairs {
         pair.resistance_fraction = pair.resistance / resistance;
     }
@@ -222,6 +276,7 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
         && est_rel_error.is_finite()
         && omitted_abs_error_bound.is_finite()
         && quadrature_abs_error_estimate.is_finite()
+        && endpoint_summation_abs_error_bound.is_finite()
         && endpoint_pairs.iter().all(|pair| {
             pair.resistance.is_finite()
                 && pair.resistance_fraction.is_finite()
@@ -236,6 +291,8 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
     Ok(LowFroudeResistance {
         resistance,
         est_rel_error,
+        coefficient_rel_error_bound,
+        endpoint_summation_abs_error_bound,
         omitted_abs_error_bound,
         quadrature_abs_error_estimate,
         endpoint_terms: terms.len(),
@@ -266,7 +323,7 @@ fn endpoint_terms(hull: &Hull, nu: f64) -> Vec<EndpointTerm> {
     let p = hull.surface().degree_x();
     let q = hull.surface().degree_z();
     let nsz = hull.spans_z().len();
-    let mut combined: BTreeMap<(usize, usize, usize), C64> = BTreeMap::new();
+    let mut combined: BTreeMap<(usize, usize, usize), ComplexAccumulator> = BTreeMap::new();
 
     for (sx_index, sx) in hull.spans_x().iter().enumerate() {
         for (sz_index, sz) in hull.spans_z().iter().enumerate() {
@@ -305,8 +362,7 @@ fn endpoint_terms(hull: &Hull, nu: f64) -> Vec<EndpointTerm> {
                                     }
                                     let key = (ix, iz, lambda_power);
                                     let contribution = complex_scale.scale(x_factor * z_factor);
-                                    let old = combined.get(&key).copied().unwrap_or(C64::ZERO);
-                                    combined.insert(key, old + contribution);
+                                    combined.entry(key).or_default().add(contribution);
                                 }
                             }
                         }
@@ -325,12 +381,14 @@ fn endpoint_terms(hull: &Hull, nu: f64) -> Vec<EndpointTerm> {
 
     combined
         .into_iter()
-        .filter_map(|((ix, iz, lambda_power), coeff)| {
-            (coeff != C64::ZERO).then_some(EndpointTerm {
+        .filter_map(|((ix, iz, lambda_power), accumulator)| {
+            let error_bound = accumulator.error_bound();
+            (accumulator.sum != C64::ZERO || error_bound > 0.0).then_some(EndpointTerm {
                 x: x_endpoints[ix],
                 z: z_endpoints[iz],
                 lambda_power,
-                coeff,
+                coeff: accumulator.sum,
+                coeff_abs_error_bound: error_bound,
             })
         })
         .collect()
@@ -500,6 +558,21 @@ mod tests {
             pair.left.kind == EndpointKind::InteriorKnot
                 || pair.right.kind == EndpointKind::InteriorKnot
         }));
+    }
+
+    #[test]
+    fn reported_error_charges_shared_coefficients_and_endpoint_accumulation() {
+        let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let speed = 0.05 * (STANDARD_GRAVITY * hull.length()).sqrt();
+        let reduced = low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+        assert!(reduced.coefficient_rel_error_bound > 0.0);
+        assert!(reduced.endpoint_summation_abs_error_bound > 0.0);
+        let accounted = reduced.coefficient_rel_error_bound
+            + (reduced.omitted_abs_error_bound
+                + reduced.quadrature_abs_error_estimate
+                + reduced.endpoint_summation_abs_error_bound)
+                / reduced.resistance.abs();
+        assert_eq!(reduced.est_rel_error, accounted);
     }
 
     #[test]

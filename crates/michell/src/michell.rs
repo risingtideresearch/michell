@@ -79,8 +79,12 @@ impl Default for WaveOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveMethod {
     /// General real-axis marching quadrature, valid for every supported hull.
+    /// It consumes the same validated local `fx_coeff` representation as
+    /// [`Self::EndpointReduction`]; agreement between the routes is therefore
+    /// not independent evidence of coefficient correctness.
     GeneralMarcher,
-    /// Low-Froude endpoint reduction on a steepest-descent contour.
+    /// Low-Froude endpoint reduction on a steepest-descent contour. This
+    /// shares `fx_coeff` with [`Self::GeneralMarcher`].
     EndpointReduction,
 }
 
@@ -150,13 +154,15 @@ pub struct WaveResistance {
     pub resistance: f64,
     /// Method-specific relative error diagnostic.
     ///
-    /// For [`WaveMethod::GeneralMarcher`] this is the sum of the last-pass
-    /// refinement difference and a power-law extrapolation of the terminating
-    /// quiet window. It remains a heuristic rather than a rigorous bound, but
-    /// accounts separately for discretization and the aggregate omitted tail.
-    /// For [`WaveMethod::EndpointReduction`] it combines a rigorous bound on
-    /// omitted submerged endpoints with an empirical contour-quadrature
-    /// estimate.
+    /// Both routes include the validated error floor for their shared local
+    /// `fx_coeff` representation, so their agreement is not treated as an
+    /// independent coefficient check. For [`WaveMethod::GeneralMarcher`] this
+    /// also includes the last-pass refinement difference and a power-law
+    /// extrapolation of the terminating quiet window. That tail component
+    /// remains heuristic rather than rigorous. For
+    /// [`WaveMethod::EndpointReduction`] it additionally combines a rigorous
+    /// bound on omitted submerged endpoints, an endpoint-map accumulation
+    /// bound, and an empirical contour-quadrature estimate.
     pub est_rel_error: f64,
     /// Total number of inner-integral evaluations performed, or transformed
     /// kernel nodes for an accepted low-Froude endpoint reduction.
@@ -824,6 +830,7 @@ pub(crate) fn dipole_weight(lambda: f64) -> f64 {
 /// Geometry-derived phase-rate parameters for the outer quadrature.
 struct OuterParams {
     nu: f64,
+    coefficient_rel_error_bound: f64,
     /// Half-extent of the whole fleet about its longitudinal phase centre.
     x_half: f64,
     /// Largest transverse offset from the fleet's phase centre.
@@ -1077,7 +1084,7 @@ fn run_outer_with_limits(
         // These diagnose different omissions. Adding them is the appropriate
         // conservative combination; max() discarded one source whenever both
         // were nonzero.
-        est_rel = refinement_rel + tail_rel;
+        est_rel = params.coefficient_rel_error_bound + refinement_rel + tail_rel;
         // Panel halving cannot reduce the fixed quiet-window truncation. Once
         // its discretisation change is already below that tail floor, further
         // refinement is pure cost; stop and report RefinementCap below.
@@ -1198,6 +1205,10 @@ fn fleet_outer_params(
 ) -> OuterParams {
     OuterParams {
         nu,
+        coefficient_rel_error_bound: members
+            .iter()
+            .map(|(hull, _)| hull.fx_coeff_rel_error_bound())
+            .fold(0.0, f64::max),
         x_half: members
             .iter()
             .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + h.x_half_extent())
@@ -1649,6 +1660,7 @@ mod tests {
     fn synthetic_outer_with_limits(limits: OuterLimits) -> WaveResistance {
         let params = OuterParams {
             nu: 1.0,
+            coefficient_rel_error_bound: 0.0,
             x_half: 0.0,
             y_half: 0.0,
             t_max: 0.0,
@@ -1735,5 +1747,19 @@ mod tests {
                 "lambda={lambda}: {a} vs {b}"
             );
         }
+    }
+
+    #[test]
+    fn general_marcher_charges_the_shared_coefficient_error_floor() {
+        let hull = wigley(10.0, 1.0, 0.625).unwrap();
+        let speed = 0.35 * (crate::STANDARD_GRAVITY * hull.length()).sqrt();
+        let result = multihull_wave_resistance_with(
+            &[(&hull, Placement::default())],
+            &crate::Conditions::freshwater(speed),
+            &WaveOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(result.method, WaveMethod::GeneralMarcher);
+        assert!(result.est_rel_error >= hull.fx_coeff_rel_error_bound());
     }
 }
