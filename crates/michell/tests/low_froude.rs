@@ -172,8 +172,54 @@ fn default_solver_accepts_only_a_reduction_within_tolerance() {
 #[test]
 fn endpoint_pair_contributions_sum_to_reduced_resistance() {
     let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    let speed = 0.05 * (STANDARD_GRAVITY * hull.length()).sqrt();
+    let fn_: f64 = 0.05;
+    let speed = fn_ * (STANDARD_GRAVITY * hull.length()).sqrt();
     let result = low_froude_wave_resistance(&hull, &Conditions::freshwater(speed)).unwrap();
+
+    assert_eq!(hull.surface().degree_x(), 2);
+    assert_eq!(hull.surface().degree_z(), 2);
+    let x_spans = hull
+        .surface()
+        .knots_x()
+        .windows(2)
+        .filter(|pair| pair[1] > pair[0])
+        .count();
+    let z_spans = hull
+        .surface()
+        .knots_z()
+        .windows(2)
+        .filter(|pair| pair[1] > pair[0])
+        .count();
+    assert_eq!(x_spans, 1);
+    assert_eq!(z_spans, 1);
+    assert_eq!(result.endpoint_terms, 16);
+    assert_eq!(result.waterline_terms, 8);
+    let nonzero_frequency_pairs = result
+        .endpoint_pairs
+        .iter()
+        .filter(|pair| pair.kernel_evaluations > 0)
+        .count();
+    assert_eq!(nonzero_frequency_pairs, 16);
+    assert!(result
+        .endpoint_pairs
+        .iter()
+        .filter(|pair| pair.kernel_evaluations > 0)
+        .all(|pair| pair.kernel_evaluations == 72));
+    assert_eq!(result.kernel_evaluations, 16 * 72);
+    let nu = STANDARD_GRAVITY / speed.powi(2);
+    assert!((nu * hull.length() - 1.0 / fn_.powi(2)).abs() < 1e-12);
+    eprintln!(
+        "Wigley arithmetic: degrees=({},{}), spans=({},{}), endpoint_terms={}, waterline_terms={}, nonzero_frequency_pairs={}, nodes_per_pair=72, total_nodes={}, omega_bow_stern={:.1}",
+        hull.surface().degree_x(),
+        hull.surface().degree_z(),
+        x_spans,
+        z_spans,
+        result.endpoint_terms,
+        result.waterline_terms,
+        nonzero_frequency_pairs,
+        result.kernel_evaluations,
+        nu * hull.length(),
+    );
 
     assert_eq!(
         result.endpoint_pairs.len(),
