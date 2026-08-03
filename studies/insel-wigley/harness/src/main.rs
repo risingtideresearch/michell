@@ -1,3 +1,4 @@
+use insel_wigley_harness::canal::{converged_resistance, Canal, Flow, ModalOptions, WigleyHull};
 use michell::{
     hulls, multihull_wave_resistance_with, Conditions, Fluid, Hull, Placement, WaveOptions,
     WaveResistance,
@@ -185,11 +186,95 @@ fn output_path(theory: bool) -> PathBuf {
         .join(filename)
 }
 
+fn run_canal() {
+    let output =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/predictions/canal_predictions.csv");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let hull = WigleyHull {
+        length: LENGTH,
+        beam: BEAM,
+        draft: DRAFT,
+    };
+    let canal = Canal {
+        width: 3.7,
+        depth: 1.85,
+    };
+    let options = ModalOptions::default();
+    let mut writer = BufWriter::new(File::create(&output).unwrap());
+    writeln!(
+        writer,
+        "# geometry: C2 Wigley L=1.8m B=0.18m T=0.1125m; continuous analytic source amplitude"
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "# fluid: rho=1000kg/m3 g=9.80665m/s2; model scale; canal W=3.7m H=1.85m"
+    )
+    .unwrap();
+    writeln!(writer, "# solver: Insel equations 4.25-4.50; modes doubled from 32 through 1048576; resistance_rel_tol=5e-6 interference_abs_tol=2e-6").unwrap();
+    writeln!(writer, "configuration,fn,speed_m_s,member_count,separation_over_length,separation_m,wetted_surface_m2,rw_n,cw,interference,solo_rw_n,modes,resistance_rel_change,interference_abs_change,method,outcome").unwrap();
+
+    let mut rows = 0usize;
+    for configuration in CONFIGURATIONS {
+        let separation = configuration.separation_over_length.unwrap_or(0.0) * LENGTH;
+        for index in 0..=150 {
+            let fn_ = 0.20 + 0.005 * index as f64;
+            let speed = fn_ * (GRAVITY * LENGTH).sqrt();
+            let result = converged_resistance(
+                hull,
+                Flow {
+                    speed,
+                    density: DENSITY,
+                    gravity: GRAVITY,
+                },
+                canal,
+                separation,
+                options,
+            )
+            .unwrap_or_else(|error| panic!("{} Fn={fn_:.3}: {error}", configuration.name));
+            let (members, area, resistance, interference) =
+                if configuration.separation_over_length.is_some() {
+                    (
+                        2,
+                        2.0 * DEMIHULL_WETTED_SURFACE,
+                        result.catamaran_resistance,
+                        result.interference,
+                    )
+                } else {
+                    (1, DEMIHULL_WETTED_SURFACE, result.monohull_resistance, 1.0)
+                };
+            let cw = resistance / (0.5 * DENSITY * speed.powi(2) * area);
+            writeln!(
+                writer,
+                "{},{fn_:.7},{speed:.12},{members},{},{separation:.12},{area:.12},{resistance:.12e},{cw:.12e},{interference:.12e},{:.12e},{},{:.12e},{:.12e},insel_finite_canal_modal_continuous_wigley,converged",
+                configuration.name,
+                configuration
+                    .separation_over_length
+                    .map(|value| format!("{value:.1}"))
+                    .unwrap_or_default(),
+                result.monohull_resistance,
+                result.modes,
+                result.resistance_rel_change,
+                result.interference_abs_change,
+            )
+            .unwrap();
+            rows += 1;
+        }
+    }
+    writer.flush().unwrap();
+    eprintln!("wrote {rows} converged canal rows to {}", output.display());
+}
+
 fn main() {
-    let theory = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments.as_slice() == ["--canal"] {
+        run_canal();
+        return;
+    }
+    let theory = match arguments.as_slice() {
         [] => false,
         [flag] if flag == "--theory" => true,
-        _ => panic!("usage: insel-wigley-harness [--theory]"),
+        _ => panic!("usage: insel-wigley-harness [--theory | --canal]"),
     };
     let study = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let digitized = study.join("data/digitized");

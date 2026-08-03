@@ -1,6 +1,7 @@
-# criteria_commit: 7f588d8
-configuration,s_over_l,critical_fn,insel_stated_fn,definition,source_location
-s_l_0_2,0.2,not_reached,about 0.8,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
-s_l_0_3,0.3,not_reached,,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
-s_l_0_4,0.4,0.585,,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
-s_l_0_5,0.5,0.550,about 0.55,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
+# theory_criteria_commit: 7f588d8
+# canal_criteria_commit: 79e267d
+configuration,s_over_l,unbounded_critical_fn,canal_critical_fn,insel_stated_fn,definition,source_location
+s_l_0_2,0.2,not_reached,not_reached,about 0.8,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
+s_l_0_3,0.3,not_reached,0.640,,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
+s_l_0_4,0.4,0.585,0.595,,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141
+s_l_0_5,0.5,0.550,0.565,about 0.55,first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95,Insel printed page 131; PDF page 141

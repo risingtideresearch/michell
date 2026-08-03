@@ -42,3 +42,18 @@ cargo test --manifest-path studies/insel-wigley/harness/Cargo.toml
 Its transcription, the resolved equation (4.25)/(4.29) inconsistency, and the
 explicit modal truncation rule are recorded in `../METHOD.md`. The tests do not
 write prediction data or expose the physical-tank comparison.
+
+After `CRITERIA-CANAL.md` is committed, the physical `W = 3.7 m`, `H = 1.85 m`
+canal grid and its preregistered scores, plots, and critical-Froude diagnostics
+are regenerated with:
+
+```sh
+cargo run --release --manifest-path studies/insel-wigley/harness/Cargo.toml -- --canal
+python/.venv/bin/python studies/insel-wigley/plots/analyze_canal.py
+python/.venv/bin/python studies/insel-wigley/plots/critical_froude.py
+```
+
+The first command writes `data/predictions/canal_predictions.csv`; the analysis
+commands write `data/analysis/canal_scores.csv`, update
+`data/analysis/critical_froude.csv`, and regenerate the eight `canal-*.png`
+overlays. The Python environment is the repository's existing plotting extra.

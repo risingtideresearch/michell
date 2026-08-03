@@ -9,9 +9,11 @@ from pathlib import Path
 
 
 STUDY = Path(__file__).resolve().parents[1]
-PREDICTIONS = STUDY / "data/predictions/theory_predictions.csv"
+UNBOUNDED = STUDY / "data/predictions/theory_predictions.csv"
+CANAL = STUDY / "data/predictions/canal_predictions.csv"
 OUTPUT = STUDY / "data/analysis/critical_froude.csv"
-CRITERIA_COMMIT = "7f588d8"
+THEORY_CRITERIA_COMMIT = "7f588d8"
+CANAL_CRITERIA_COMMIT = "79e267d"
 
 CONFIGURATIONS = {
     "s_l_0_2": 0.2,
@@ -21,12 +23,13 @@ CONFIGURATIONS = {
 }
 
 
-def read_predictions() -> dict[str, list[dict[str, str]]]:
+def read_predictions(path: Path) -> dict[str, list[dict[str, str]]]:
     grouped: dict[str, list[dict[str, str]]] = defaultdict(list)
-    with PREDICTIONS.open() as handle:
+    with path.open() as handle:
         rows = csv.DictReader(line for line in handle if not line.startswith("#"))
         for row in rows:
-            grouped[row["configuration"]].append(row)
+            if row["configuration"] in CONFIGURATIONS:
+                grouped[row["configuration"]].append(row)
     assert set(grouped) == set(CONFIGURATIONS)
     for configuration, rows in grouped.items():
         rows.sort(key=lambda row: float(row["fn"]))
@@ -34,38 +37,43 @@ def read_predictions() -> dict[str, list[dict[str, str]]]:
         assert [float(row["fn"]) for row in rows] == [
             round(0.20 + 0.005 * index, 3) for index in range(151)
         ]
-        assert all(
-            row["outcome"] == "converged" and row["solo_outcome"] == "converged"
-            for row in rows
-        )
+        assert all(row["outcome"] == "converged" for row in rows)
+        if "solo_outcome" in rows[0]:
+            assert all(row["solo_outcome"] == "converged" for row in rows)
     return grouped
 
 
+def critical_fn(rows: list[dict[str, str]]) -> str:
+    within = [abs(float(row["interference"]) - 1.0) < 0.05 for row in rows]
+    critical_index = next(
+        (index for index in range(len(within)) if all(within[index:])), None
+    )
+    return (
+        "not_reached"
+        if critical_index is None
+        else f"{float(rows[critical_index]['fn']):.3f}"
+    )
+
+
 def main() -> None:
-    predictions = read_predictions()
+    unbounded = read_predictions(UNBOUNDED)
+    canal = read_predictions(CANAL)
     source_statements = {"s_l_0_2": "about 0.8", "s_l_0_5": "about 0.55"}
     output_rows = []
     for configuration, separation in CONFIGURATIONS.items():
-        rows = predictions[configuration]
-        within = [abs(float(row["interference"]) - 1.0) < 0.05 for row in rows]
-        critical_index = next(
-            (index for index in range(len(within)) if all(within[index:])), None
-        )
         output_rows.append({
             "configuration": configuration,
             "s_over_l": separation,
-            "critical_fn": (
-                "not_reached"
-                if critical_index is None
-                else f"{float(rows[critical_index]['fn']):.3f}"
-            ),
+            "unbounded_critical_fn": critical_fn(unbounded[configuration]),
+            "canal_critical_fn": critical_fn(canal[configuration]),
             "insel_stated_fn": source_statements.get(configuration, ""),
             "definition": "first 0.005-grid Fn with abs(tau-1)<0.05 through Fn=0.95",
             "source_location": "Insel printed page 131; PDF page 141",
         })
 
     with OUTPUT.open("w", newline="") as handle:
-        handle.write(f"# criteria_commit: {CRITERIA_COMMIT}\n")
+        handle.write(f"# theory_criteria_commit: {THEORY_CRITERIA_COMMIT}\n")
+        handle.write(f"# canal_criteria_commit: {CANAL_CRITERIA_COMMIT}\n")
         writer = csv.DictWriter(
             handle, fieldnames=output_rows[0].keys(), lineterminator="\n"
         )
@@ -73,7 +81,8 @@ def main() -> None:
         writer.writerows(output_rows)
 
     print("critical Fn: " + ", ".join(
-        f"S/L={row['s_over_l']:.1f}: {row['critical_fn']}" for row in output_rows
+        f"S/L={row['s_over_l']:.1f}: unbounded={row['unbounded_critical_fn']}, "
+        f"canal={row['canal_critical_fn']}" for row in output_rows
     ))
 
 
