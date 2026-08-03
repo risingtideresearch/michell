@@ -25,6 +25,14 @@ matching an independently coded real-axis reference to `1.526e-13`
 relatively. The implementation is an engineering improvement. Only the
 specific combination of known ideas is classified as possibly novel.
 
+A final prose audit applied the complete `writing-clearly-and-concisely` skill
+to the manuscript. The revision gives each paragraph one topic, favors active
+voice, replaces abstract claims with named actions and measured quantities,
+keeps parallel ideas in parallel form, and removes needless or promotional
+language. It preserves all equations, citations, data values, scope limits,
+and novelty qualifications. The final abstract contains 224 prose words, and
+the manuscript contains approximately 3,200 source-text words.
+
 ## Reproducible build and validation
 
 Final toolchain and host:

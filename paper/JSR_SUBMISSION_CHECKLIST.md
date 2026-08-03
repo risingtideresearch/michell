@@ -12,9 +12,9 @@ Official materials checked 2 August 2026:
 
 - Named manuscript: Rob Story and Avi Bryant, Rising Tide Research Foundation.
 - Seven-word title (template maximum: ten words).
-- 236-word abstract (template maximum: 250 words).
+- 224-word abstract (template maximum: 250 words).
 - Six keywords (template maximum: seven).
-- Approximately 3,300 source-text words, one figure, and two tables (within
+- Approximately 3,200 source-text words, one figure, and two tables (within
   the template's typical 3,000–8,000 words and ten-illustration guidance).
 - Letter paper, Times-compatible type, 10-point body, two 3.6-inch columns,
   0.35-inch gutter, and unnumbered section headings.
