@@ -271,8 +271,15 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
     let abs_error = omitted_abs_error_bound
         + quadrature_abs_error_estimate
         + endpoint_summation_abs_error_bound;
-    let est_rel_error =
-        coefficient_rel_error_bound + abs_error / resistance.abs().max(f64::MIN_POSITIVE);
+    let abs_rel_error =
+        absolute_to_relative_error_bound(resistance, abs_error).ok_or_else(|| {
+            Error::Unsupported(format!(
+                "low-Froude absolute error bound {abs_error:.6e} reaches or exceeds the computed \
+             resistance magnitude {:.6e}",
+                resistance.abs()
+            ))
+        })?;
+    let est_rel_error = coefficient_rel_error_bound + abs_rel_error;
     for pair in &mut endpoint_pairs {
         pair.resistance_fraction = pair.resistance / resistance;
     }
@@ -305,6 +312,16 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
         kernel_evaluations,
         endpoint_pairs,
     })
+}
+
+/// Convert `|R - R_e| <= B` into a relative bound against the unknown exact
+/// resistance. The reverse triangle inequality gives `|R| >= |R_e| - B`.
+fn absolute_to_relative_error_bound(estimate: f64, abs_bound: f64) -> Option<f64> {
+    if !(estimate.is_finite() && abs_bound.is_finite() && abs_bound >= 0.0) {
+        return None;
+    }
+    let denominator = estimate.abs() - abs_bound;
+    (denominator > 0.0).then_some(abs_bound / denominator)
 }
 
 fn endpoint_wave(term: EndpointTerm, x0: f64, x1: f64) -> EndpointWave {
@@ -581,6 +598,14 @@ mod tests {
                     - reduced.quadrature_abs_error_estimate
                     - reduced.endpoint_summation_abs_error_bound);
         assert_eq!(reduced.est_rel_error, accounted);
+    }
+
+    #[test]
+    fn absolute_error_conversion_refuses_a_nonpositive_denominator() {
+        assert_eq!(absolute_to_relative_error_bound(5.0, 1.0), Some(0.25));
+        assert_eq!(absolute_to_relative_error_bound(1.0, 1.0), None);
+        assert_eq!(absolute_to_relative_error_bound(1.0, 2.0), None);
+        assert_eq!(absolute_to_relative_error_bound(0.0, 0.0), None);
     }
 
     #[test]
