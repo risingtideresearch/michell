@@ -37,15 +37,16 @@ B-spline span exactly as endpoint waves, discards only depth-damped endpoints
 under an explicit absolute bound, expands the squared amplitude into pairwise
 kernels, and evaluates those kernels on a Gaussian-decaying steepest-descent
 contour. At `Fn=0.02` the result needs 1,152 kernel evaluations instead of
-511,504 inner-amplitude evaluations and is about **700 times faster** (0.031 ms
-versus 21.506 ms median in the frozen paired run). Against an independent
-real-axis reference its relative difference is `1.526e-13`. Quadrature work
+511,504 inner-amplitude evaluations and is about **700 times faster** (0.030 ms
+versus 21.541 ms median in the frozen paired run). Against two independently
+regularized real-axis references its relative difference is `1.829e-13`.
+Quadrature work
 does not grow with oscillation frequency in the tested low-Froude range.
 
 The constituent mathematics has a substantial analytic lineage: Birkhoff and
 Kotik's kernel separation, Michelsen's 1960 polynomial reduction and 1972 JSR
 sequel, the Sendagorta--Grases tabulation program, low-speed endpoint
-asymptotics, Bickley--Naylor functions, and numerical steepest descent. The
+asymptotics, Bickley functions, and numerical steepest descent. The
 validated B-spline implementation, cancellation accounting, omission bound,
 contour evaluator, error-gated dispatch, and real-axis fallback are class-2
 engineering improvements. This report makes no priority claim for their
@@ -291,14 +292,13 @@ Validation results:
 | LCB and wetted area | every symmetric and per-side asymmetric control | `2e-7` |
 
 The final 30-sample release benchmark retains the constant-cost advantage:
-exact reverse `0.820 ms` median versus `14.431 ms` for centered finite
-differences, a `17.59x` speedup for nine controls. The aggregate gradient
+exact reverse `0.853 ms` median versus `14.998 ms` for centered finite
+differences, a `17.58x` speedup for nine controls. The aggregate gradient
 checksums agree to about `8.1e-12` relative.
 
 Classification: analytic phase derivatives, spline-basis integrals, quotient
 rules, and reverse differentiation of a quadratic form are class 1. The fleet,
-asymmetric, constraint APIs and their implementation are class 2. No class-4
-claim.
+asymmetric, constraint APIs and their implementation are class 2.
 
 ### Workstream 3 — attributable wave signatures: complete
 
@@ -724,8 +724,10 @@ handle coalescing endpoints and stationary points for general polynomial phases
 machinery, not direct prior implementations of the solver here.
 
 After `lambda=cosh(t)`, each endpoint-pair kernel is
-`Ki_s(-i omega)`, the analytic continuation of a Bickley--Naylor function.
-The standard integral definition and recurrence are documented by DLMF
+`Ki_s(-i omega)`, the analytic continuation of a Bickley function. DLMF uses
+that name and cites Bickley and Nayler (1935); the compound
+``Bickley--Naylor'' spelling belongs to later literature, including the 2026
+Ruffa--Toni preprint. The standard integral definition and recurrence are documented by DLMF
 ([definition](https://dlmf.nist.gov/10.43.E3)). A June 2026 preprint expresses
 all integer-order Bickley functions using a four-generator module of modified
 Bessel and Struve functions
@@ -734,7 +736,7 @@ may eventually replace contour quadrature with special-function evaluation,
 but stability on a purely imaginary argument has not been established here.
 
 The implemented contour starts from `lambda=1+t^2` and rotates
-`t=exp(i*pi/4)y/sqrt(omega)`, turning the oscillation into Gaussian decay. Its
+`t=exp(i*pi/4)r/sqrt(omega)`, turning the oscillation into Gaussian decay. Its
 bounded 24/48- or 48/96-node work never grows with `omega`. This realizes the
 outer phase decomposition that the first research pass left as backlog.
 
@@ -826,21 +828,21 @@ solved-lifting closure.
 | Returned primal versus ordinary resistance API | bit-for-bit equal in test |
 | Analytic work versus control count | one primal convergence plus one reverse pass |
 | Full Phase-0 harness | pass |
-| Full Rust workspace | 227 test cases pass, including one doctest |
+| Full Rust workspace | 229 test cases pass, including one doctest |
 
 Final release benchmark, 30 samples, default tolerance:
 
 | Gradient method | Median | Best |
 |---|---:|---:|
-| Exact reverse, 9 controls | 0.820 ms | 0.808 ms |
-| Centered finite differences | 14.431 ms | 14.156 ms |
+| Exact reverse, 9 controls | 0.853 ms | 0.841 ms |
+| Centered finite differences | 14.998 ms | 14.623 ms |
 
-Median speedup: **17.59×**. Aggregate absolute-gradient checksums agree to about
+Median speedup: **17.58×**. Aggregate absolute-gradient checksums agree to about
 `8.1e-12` relative (`1.734433595800e4` versus `1.734433595786e4`, including
 the benchmark's 30-run accumulation).
 
 Classification: the quadratic derivative is class 1; this matrix-free B-spline
-implementation and API are class 2. No class-4 claim.
+implementation and API are class 2.
 
 ### Advance B: bounded endpoint/steepest-descent solver at low Froude
 
@@ -866,7 +868,7 @@ K_s(omega) = integral_1^infinity
 
 `lambda=cosh(t)` identifies `K_s(omega)=Ki_s(-i omega)`. For nonzero frequency,
 `lambda=1+t^2` removes the square-root endpoint and the exact contour rotation
-`t=exp(i*pi/4)y/sqrt(|omega|)` makes the phase Gaussian-decaying. Zero-frequency
+`t=exp(i*pi/4)r/sqrt(|omega|)` makes the phase Gaussian-decaying. Zero-frequency
 self terms use the beta-function recurrence exactly. Coarse/fine contour rules
 estimate quadrature error; triangle inequality plus analytic `K_s(0)` bounds
 every pair involving an omitted submerged endpoint.
@@ -888,22 +890,33 @@ coverage; the narrow scope and exact span arithmetic are reported instead.
 
 #### Independent validation
 
-The reference does not call production moments or outer quadrature. It uses the
-closed-form Wigley inner amplitude, 16-point Gauss panels on the positive real
-axis with at most `pi/2` bow-phase advance per panel, and `lambda_max=500`.
+The primary reference does not call production moments or outer quadrature. It
+uses the closed-form Wigley inner amplitude after `lambda=1+t^2`, 16-point
+Gauss panels with `delta_lambda=pi/(nu L)` (at most `pi/2` phase advance at
+either hull endpoint), `lambda_max=4000`, and Kahan accumulation. A separately
+constructed `lambda=sec(theta)` reference maps the same phase-resolved panel
+boundaries into theta, uses the transformed `sec(theta)^3` weight, generates
+its own Gauss rule, and accumulates independently. Tuck (1989), p. 371,
+identifies the square-root endpoint singularity and its `sec(theta)` removal.
 
-| Fn | Reference resistance (N) | Reduced relative difference | Reduced estimate | General marcher difference | Work: marcher / reduced |
-|---:|---:|---:|---:|---:|---:|
-| 0.08 | `1.945940872497e-1` | `1.172e-5` | `3.814e-5` | `6.917e-8` | 56,032 / 1,152 |
-| 0.05 | `1.057847519834e-2` | `1.058e-11` | `3.728e-12` | `1.493e-7` | 119,936 / 1,152 |
-| 0.03 | `5.113923599287e-4` | `2.328e-11` | `3.462e-12` | `3.322e-7` | 267,856 / 1,152 |
-| 0.02 | `4.417234459536e-5` | `3.558e-11` | `7.620e-13` | `6.333e-7` | 511,504 / 1,152 |
+Across the four rows, the two endpoint maps agree within `4.7e-15`. Their
+8/16-node differences are `8.0e-11`--`3.7e-10`, while their 16/24-node
+differences are at most `6.2e-15`. At `Fn=0.02`, increasing `lambda_max` to
+8000 changes the two references by `1.381e-15` and `1.227e-15`.
 
-At `Fn=0.08` the estimate correctly refuses default-tolerance dispatch. At
-`Fn<=0.05` the observed `1e-11`-scale discrepancies exceed the solver's analytic
-omission bound because the independent reference has a finite real-axis tail;
-tests therefore include a separately justified `2e-10` reference floor. The
-contour part is checked independently against dense real-axis integration for
+| Fn | Reference resistance (N) | Reduced diff. | Reduced estimate | Marcher diff. | Marcher estimate | Status / work |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.08 | `1.945940872510e-1` | `1.172e-5` | `3.817e-5` | `6.918e-8` | `2.896e-7` | `RefinementCap` / 56,032 |
+| 0.05 | `1.057847519846e-2` | `1.963e-13` | `2.000e-8` | `1.493e-7` | `5.974e-7` | `RefinementCap` / 119,936 |
+| 0.03 | `5.113923599401e-4` | `1.045e-12` | `2.000e-8` | `3.322e-7` | `1.320e-6` | `RefinementCap` / 267,856 |
+| 0.02 | `4.417234459694e-5` | `1.829e-13` | `2.000e-8` | `6.334e-7` | `2.517e-6` | `RefinementCap` / 511,504 |
+
+Every marcher row hit the configured refinement cap, so none is described as
+meeting the requested `1e-8` tolerance. At `Fn=0.03` and `0.02`, the physical
+omission terms are only `6.153e-32` and `5.508e-70` relatively; the reduced
+differences there measure quadrature agreement, not omission physics.
+
+The contour part is checked independently against dense real-axis integration for
 orders `s=4,7,10,50,98,128` and frequencies `25,100,400`. The public degree
 envelope reaches `s=98`; `s=128` provides margin. This extension first exposed
 a `5.13e-6` relative error at `s=98`, `omega=25` in the old 48-point result.
@@ -912,6 +925,20 @@ when `s/|omega| >= 2`, reducing the same independent-reference discrepancy
 below `1e-9` while retaining the 24/48 rule for Wigley. The exact endpoint
 decomposition is also checked against production exact moments for both Wigley
 and a multi-span full-multiplicity chine hull.
+
+A second fixed-rule scan through `s=400` at `omega={25,100,400}` uses a
+192-node same-contour comparator and a `1e-10` comparison floor. The 48-node
+rule is accurate through about `s=50` (`1.836e-11` maximum discrepancy) and
+degrades beyond it (`3.157e-1` maximum), while the 24/48 difference covers the
+meaningful 48/192 discrepancy by at least `2.222x`. Production therefore uses
+48/96 nodes for `s/abs(omega)>=2` within the public `s<=98` envelope.
+
+The printed estimator is explicit. It forms absolute omission `B_o`, weighted
+coarse/fine contour `B_q`, and endpoint-accumulation `B_r` terms, sums
+`B=B_o+B_q+B_r`, and refuses when `B>=abs(R_e)`. Otherwise it reports the
+validated coefficient floor plus `B/(abs(R_e)-B)`. Commits `195c633` and
+`101ac9b` preserve the red test and correction; the prior `B/abs(R_e)` form was
+optimistic relative to the unknown exact resistance.
 
 The total reported estimate is not an interval proof: the omitted-term part is
 analytically bounded, while the selected 24/48- or 48/96-node contour difference
@@ -925,17 +952,20 @@ Final 30-sample release benchmark:
 
 | Case | Median | Best | Work/diagnostics |
 |---|---:|---:|---|
-| General marcher, `Fn=0.02` | 21.506 ms | 21.464--21.557 ms IQR | 511,504 inner evaluations |
-| Endpoint/NSD, `Fn=0.02` | 0.031 ms | 0.030--0.031 ms IQR | 1,152 kernel evaluations |
+| General marcher, `Fn=0.02` | 21.541 ms | 21.311--21.666 ms IQR | 511,504 inner evaluations; batch 1 |
+| Endpoint/NSD, `Fn=0.02` | 0.030 ms | 0.030--0.030 ms IQR | 1,152 kernel evaluations; batch 256 |
 | Default API, `Fn=0.05` | 0.030 ms | 0.030--0.030 ms IQR | estimate `2.000e-8` |
-| 21 speeds, `Fn=0.10…0.50` | 13.035 ms | 12.996--13.064 ms IQR | checksum `2.553251156101e5` |
+| 21 speeds, `Fn=0.10…0.50` | 13.059 ms | 12.952--13.126 ms IQR | checksum `2.553251156101e5` |
 
-The frozen paired run gives about **700×** at `Fn=0.02`. Two immediately
-repeated paired runs gave 702--707×; a cold-host run gave 608×, while the older
+The frozen paired run gives **718×**, reported as about **700×**, at `Fn=0.02`.
+Repeated protocols span roughly 608--865×; the older
 fixed-order reviewer protocol gave about 750--865×. The result is therefore
 reported as a rounded, protocol-specific improvement rather than a portable
-point ratio. The 21-speed production sweep remains on the general method where
-appropriate; its checksum is independently checked above.
+point ratio. Fast calls are timed in batches of 256 and divided by 256, and
+checksums come from separate untimed calls. The methods receive the same
+requested tolerance, but their observed errors differ: about `1.83e-13` for
+the endpoint route and `6.33e-7` for the capped marcher. The 21-speed grid is
+`Fn=0.10,0.12,...,0.50`, and its checksum is the sum of one untimed sweep.
 
 Classification: endpoint integration by parts, endpoint low-speed dominance,
 Bickley functions, and numerical steepest descent are class 1. The Rust solver,
@@ -959,11 +989,18 @@ Lazauskas, Gotman, Motygin, and oscillatory-quadrature papers. Queries included:
 Equation-level follow-up established a broader analytic lineage than the first
 pass recognized. Birkhoff and Kotik separate hull data from a reusable kernel;
 Michelsen's 1960 dissertation reduces polynomial hull functions to tabulatable
-special-function expressions; its verified 1972 JSR record describes a finite
-Gegenbauer double sum; and the verified Sendagorta--Grases record describes
+special-function expressions; the 1963 University of Michigan seminar record
+extends that program to polynomial centerline singularity distributions; the
+1966 Schiffstechnik record addresses high- and low-speed asymptotics; the
+verified 1972 JSR record describes a finite Gegenbauer double sum; and the
+verified Sendagorta--Grases record describes
 rapidly convergent, shape-separated Michell/Havelock series for design use.
-Gotman supplies endpoint-derivative structure, Motygin supplies ship-wave
-steepest descent, and Keller--Ahluwalia supplies low-speed endpoint dominance.
+Gotman pp. 83--85 supplies finite endpoint-derivative sums, products, and
+explicit bow/stern separation; Motygin supplies ship-wave steepest descent;
+and Keller--Ahluwalia supplies low-speed endpoint dominance. Lazauskas
+sec. 6.5, pp. 6-10--6-12, documents exact piecewise-quadratic hull integration
+and fixed angular-rule comparisons; the accessible thesis does not establish
+the internals of every Michlet release, so the paper makes no stronger claim.
 The full Michelsen 1972 and Sendagorta--Grases papers remain interlibrary-loan
 due-diligence items, but their records already justify withdrawing the earlier
 priority-seeking classification. The method lineage is class 1/class 3; the
@@ -1015,6 +1052,15 @@ bound, contour evaluation, error-gated dispatch, and fallback are class 2.
 | `a54acb2` | Bound endpoint-method scope and state the contour conditions |
 | `cd22f44` | Pair benchmark comparisons and report dispersion |
 | `2f4d2fa` | Make the exported archive self-identifying and reproducible without Git metadata |
+| `195c633` | Failing guarded absolute-to-relative conversion regression |
+| `101ac9b` | Refuse invalid denominators and use `B/(abs(R_e)-B)` |
+| `ee306bb` | Add independent `1+t^2` / `sec(theta)` reference convergence |
+| `fc39e8c` | Quantify fixed contour-rule degree dependence through `s=400` |
+| `701711a` | Batch sub-millisecond benchmark timings |
+| `1c49e5a` | Publish estimator equations and self-contained validation tables |
+| `7ce69bc` | Extend and qualify the Michelsen/Gotman/Lazauskas lineage |
+| `1a0deac` | State the measured contour envelope and immutable v3 tag |
+| `3bbc636` | Freeze endpoint-reference and timing evidence |
 
 ## Ranked backlog
 
@@ -1059,8 +1105,8 @@ bound, contour evaluation, error-gated dispatch, and fallback are class 2.
 | Command | Result |
 |---|---|
 | `cargo build --workspace --all-targets` | pass |
-| `cargo test --workspace` | pass: 227 test cases including one doctest; 0 failed |
-| `uv run --no-project --with pytest --with numpy python -m pytest -q` in `python/` | pass: 11 passed in 0.11 s |
+| `cargo test --workspace` | pass: 229 test cases including one doctest; 0 failed |
+| `UV_CACHE_DIR=/private/tmp/michell-uv-cache uv run --no-project --with pytest --with numpy python -m pytest -q` in `python/` | pass: 11 passed in 0.10 s |
 | `cargo test --release -p michell --test high_degree_hardening -- --nocapture` before K2 | expected red: all five independent regressions failed |
 | `cargo test --release -p michell --test degree_envelope -- --nocapture` | pass: degree 2–16 endpoint/marcher sweeps covered; degree 17 refused |
 | `cargo test -p michell --test ranking_stability ordering_is_invariant_under_exact_knot_insertion -- --exact` | pass: unchanged knot-insertion gate |

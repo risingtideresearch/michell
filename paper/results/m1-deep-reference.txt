@@ -1,10 +1,13 @@
 Command: cargo test -p michell --test low_froude endpoint_reduction_converges_as_froude_number_falls -- --nocapture
-Reference: analytic Wigley inner transform; 16-point Gauss-Legendre phase panels; Kahan summation; lambda_max=4000
+Primary reference: analytic Wigley inner transform; lambda=1+t^2 endpoint regularization; 16-point Gauss-Legendre phase panels; Kahan summation; lambda_max=4000
+Second reference: independently coded lambda=sec(theta) endpoint regularization with separate panel mapping, quadrature construction, and Kahan summation
 
-Fn=0.08: reference=1.945940872510e-1, reduced=1.945918057885e-1, reduced_error=1.172e-5, reduced_est=3.814e-5, marching_error=6.918e-8, marching_est=2.696e-7, marching_evals=56032, kernel_evals=1152, reference_evals=3182304, terms=8/16
-Fn=0.05: reference=1.057847519846e-2, reduced=1.057847519845e-2, reduced_error=2.070e-13, reduced_est=3.728e-12, marching_error=1.493e-7, marching_est=5.774e-7, marching_evals=119936, kernel_evals=1152, reference_evals=8146704, terms=8/16
-Fn=0.03: reference=5.113923599401e-4, reduced=5.113923599406e-4, reduced_error=1.034e-12, reduced_est=3.462e-12, marching_error=3.322e-7, marching_est=1.300e-6, marching_evals=267856, kernel_evals=1152, reference_evals=22629712, terms=8/16
-Fn=0.02 cutoff check: lambda_max 4000 -> 8000 relative change=1.227e-15
-Fn=0.02: reference=4.417234459694e-5, reduced=4.417234459694e-5, reduced_error=1.526e-13, reduced_est=7.620e-13, marching_error=6.334e-7, marching_est=2.497e-6, marching_evals=511504, kernel_evals=1152, reference_evals=50916864, terms=8/16
+Fn=0.08: reference=1.945940872510e-1, map_difference=1.284e-15, reduced_error=1.172e-5, reduced_est=3.817e-5, marching_error=6.918e-8, marching_est=2.896e-7, marching_status=refinement_cap, marching_evals=56032, kernel_evals=1152, reference_evals/map=3182304
+Fn=0.05: reference=1.057847519846e-2, map_difference=3.280e-16, reduced_error=1.963e-13, reduced_est=2.000e-8, marching_error=1.493e-7, marching_est=5.974e-7, marching_status=refinement_cap, marching_evals=119936, kernel_evals=1152, reference_evals/map=8146704
+Fn=0.03: reference=5.113923599401e-4, map_difference=4.664e-15, reduced_error=1.045e-12, reduced_est=2.000e-8, omitted_physical_rel=6.153e-32, marching_error=3.322e-7, marching_est=1.320e-6, marching_status=refinement_cap, marching_evals=267856, kernel_evals=1152, reference_evals/map=22629712
+Fn=0.02: reference=4.417234459694e-5, map_difference=1.534e-15, reduced_error=1.829e-13, reduced_est=2.000e-8, omitted_physical_rel=5.508e-70, marching_error=6.334e-7, marching_est=2.517e-6, marching_status=refinement_cap, marching_evals=511504, kernel_evals=1152, reference_evals/map=50916864
+
+Fn=0.02 cutoff check, lambda_max 4000 -> 8000: 1+t^2 change=1.381e-15; sec(theta) change=1.227e-15
+Maximum 16/24 panel-order change: 6.136e-15 (1+t^2); 5.523e-15 (sec(theta))
 
 Result: 1 passed; 0 failed; 0 ignored; 3 filtered out.

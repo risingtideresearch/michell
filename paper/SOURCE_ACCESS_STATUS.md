@@ -39,3 +39,23 @@ Havelock Integrals,” *Journal of Ship Research* 32(1), 19–28 (1988), DOI:
 When either full text arrives, update the equation-level table with positive
 facts observed in the source. Do not infer an omission from the abstract or
 from the current lack of access.
+
+## Additional records and full texts checked
+
+- Michelsen's 1963 University of Michigan seminar program record verifies the
+  title “Evaluation of Wave-Resistance for Polynomial Centerline Singularity
+  Distributions,” author, venue, and date. The manuscript makes no claim about
+  detailed formulas not established by that record.
+- The bibliographic record for Michelsen's 1966 *Schiffstechnik* article
+  verifies the title “Asymptotic Approximations of Michell's Integral for High
+  and Low Speeds,” volume 13, number 66, and pages 33--38.
+- Gotman's full text was inspected at journal pages 83--85 for finite endpoint
+  derivative sums, their products, and bow/stern separation.
+- Lazauskas's thesis was inspected at section 6.5, pages 6-10--6-12. Those
+  pages support exact piecewise-quadratic hull integrals and comparison of
+  fixed angular rules; they do not establish the internals of every Michlet
+  release.
+- DLMF section 10.43 was inspected for its “Bickley function” terminology and
+  its citation of Bickley and Nayler (1935). Ruffa and Toni's full preprint is
+  cited as arXiv:2606.26415; the compound “Bickley--Naylor” spelling is
+  attributed to later literature, not DLMF.

@@ -9,7 +9,8 @@ DOI has been created by this work.
    the repository currently has no root `LICENSE` file.
 2. Confirm the final branch is clean and rerun the exact commands in
    `paper/COMPLETION_REPORT.md`.
-3. Create the local annotated tag `paper-a-jsr-v2` only after the final source,
+3. Preserve the existing immutable `paper-a-jsr-v2` tag. Create the local
+   annotated tag `paper-a-jsr-v3` only after the final source,
    tests, numerical evidence, completion report, and reviewed PDF are committed.
    Treat that tag as immutable: never move, force-update, or reuse it. If the
    paper changes, create a new monotonically numbered tag.
@@ -17,10 +18,10 @@ DOI has been created by this work.
 
    ```sh
    mkdir -p output/archive
-   git archive --format=tar.gz --prefix=michell-paper-a-jsr-v2/ \
-     -o output/archive/michell-paper-a-jsr-v2.tar.gz paper-a-jsr-v2
-   shasum -a 256 output/archive/michell-paper-a-jsr-v2.tar.gz \
-     > output/archive/michell-paper-a-jsr-v2.tar.gz.sha256
+   git archive --format=tar.gz --prefix=michell-paper-a-jsr-v3/ \
+     -o output/archive/michell-paper-a-jsr-v3.tar.gz paper-a-jsr-v3
+   shasum -a 256 output/archive/michell-paper-a-jsr-v3.tar.gz \
+     > output/archive/michell-paper-a-jsr-v3.tar.gz.sha256
    ```
 
    Confirm that the tarball contains no `.git` directory. Extract it into a
@@ -35,7 +36,7 @@ DOI has been created by this work.
    must say that the archive *will* be deposited and must display
    `10.5281/zenodo.REPLACE-ME` only as a placeholder. After minting, replace the
    placeholder, rebuild with Tectonic, inspect the PDF, and create a new tag;
-   do not move `paper-a-jsr-v2`.
+   do not move `paper-a-jsr-v2` or `paper-a-jsr-v3`.
 8. Verify the DOI resolves to an archive containing the tagged source,
    `paper/results/`, the measurement script, and the manuscript PDF before
    submitting to JSR.
