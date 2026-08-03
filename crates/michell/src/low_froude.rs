@@ -189,7 +189,12 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
             "non-finite endpoint coefficient encountered in low-Froude resistance".into(),
         ));
     }
-    let waterline: Vec<_> = terms.iter().copied().filter(|term| term.z == 0.0).collect();
+    let endpoint_term_count = terms.iter().filter(|term| term.coeff != C64::ZERO).count();
+    let waterline: Vec<_> = terms
+        .iter()
+        .copied()
+        .filter(|term| term.z == 0.0 && term.coeff != C64::ZERO)
+        .collect();
     if waterline.is_empty() {
         return Err(Error::Unsupported(
             "low-Froude endpoint reduction found no nonzero waterline terms".into(),
@@ -295,7 +300,7 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
         endpoint_summation_abs_error_bound,
         omitted_abs_error_bound,
         quadrature_abs_error_estimate,
-        endpoint_terms: terms.len(),
+        endpoint_terms: endpoint_term_count,
         waterline_terms: waterline.len(),
         kernel_evaluations,
         endpoint_pairs,
