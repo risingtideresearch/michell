@@ -1,0 +1,41 @@
+2f4d2faacd301537e4e28ccc6349f9722fc9fe94
+rustc 1.96.0 (ac68faa20 2026-05-25)
+cargo 1.96.0 (30a34c682 2026-05-25)
+Darwin Robs-MacBook-Air-2.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:17 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T8142 arm64
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/low_froude.rs (target/debug/deps/low_froude-857102a674abd7cd)
+
+running 1 test
+Fn=0.08: reference=1.945940872510e-1, reduced=1.945918057885e-1, reduced_error=1.172e-5, reduced_est=3.816e-5, marching_error=6.918e-8, marching_est=2.896e-7, marching_evals=56032, kernel_evals=1152, reference_evals=3182304, terms=8/16
+Fn=0.05: reference=1.057847519846e-2, reduced=1.057847519845e-2, reduced_error=2.070e-13, reduced_est=2.000e-8, marching_error=1.493e-7, marching_est=5.974e-7, marching_evals=119936, kernel_evals=1152, reference_evals=8146704, terms=8/16
+Fn=0.03: reference=5.113923599401e-4, reduced=5.113923599406e-4, reduced_error=1.034e-12, reduced_est=2.000e-8, marching_error=3.322e-7, marching_est=1.320e-6, marching_evals=267856, kernel_evals=1152, reference_evals=22629712, terms=8/16
+Fn=0.02 cutoff check: lambda_max 4000 -> 8000 relative change=1.227e-15
+Fn=0.02: reference=4.417234459694e-5, reduced=4.417234459694e-5, reduced_error=1.526e-13, reduced_est=2.000e-8, marching_error=6.334e-7, marching_est=2.517e-6, marching_evals=511504, kernel_evals=1152, reference_evals=50916864, terms=8/16
+test endpoint_reduction_converges_as_froude_number_falls ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 10.89s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running tests/low_froude.rs (target/debug/deps/low_froude-857102a674abd7cd)
+
+running 1 test
+test default_solver_accepts_only_a_reduction_within_tolerance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.02s
+
+    Finished `bench` profile [optimized] target(s) in 0.03s
+     Running benches/wigley.rs (target/release/deps/wigley-c8e923850a5eaba8)
+michell Wigley benchmark (30 samples, default rel_tol=1e-5)
+case                         median_ms       IQR_ms          best_ms
+21 speeds Fn=0.10..0.50         13.035     12.996..13.064       12.945
+low Froude Fn=0.05               0.030      0.030..0.030         0.029
+low-Fn diagnostics: evaluations=1152, max_lambda=inf, est_rel_error=2.000e-8
+checksums: sweep=2.553251156101e5, low=3.173542559536e-1
+very-low-Froude method       median_ms       IQR_ms          best_ms
+marching Fn=0.02                21.506     21.464..21.557       21.412
+endpoint/NSD Fn=0.02             0.031      0.030..0.031         0.030
+very-low-Fn speedup: 702.23x; evaluations 511504 -> 1152; estimated endpoint error 2.000e-8; checksums direct=1.325169498584e-3, endpoint=1.325170337908e-3
+gradient method              median_ms       IQR_ms          best_ms
+exact reverse (9 controls)       0.848      0.843..0.853         0.836
+centered finite differences     14.671     14.619..14.708       14.450
+gradient speedup: 17.31x; checksums exact=1.734433595800e4, finite=1.734433595786e4

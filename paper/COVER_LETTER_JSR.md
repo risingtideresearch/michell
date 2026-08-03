@@ -20,10 +20,10 @@ that makes the corrected estimate cover the tested range. We then revive the
 analytic-reduction lineage of Birkhoff and Kotik, Michelsen, and Sendagorta and
 Grases as a degree-bounded B-spline implementation. It provides an exact
 endpoint representation, a bound for omitted submerged endpoint pairs, a
-Bickley-kernel contour evaluation whose quadrature cost is independent of
+Bickley-kernel contour evaluation whose quadrature cost does not grow with
 oscillation frequency, an error gate, and a real-axis fallback. On the standard
 Wigley case at length Froude number 0.02, the committed validation harness
-measures roughly a 750-fold median speedup at unchanged requested accuracy.
+measures roughly a 700-fold median speedup at unchanged requested accuracy.
 
 The manuscript distinguishes known analytic reductions and a reproduced
 published Wigley result from engineering improvements to this codebase. It

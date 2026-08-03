@@ -73,13 +73,13 @@ K_s(\omega)=\int_1^\infty
 \)
 analytically continued Bickley functions.  An exact contour rotation converts
 each sufficiently separated nonzero-frequency pair to a Gaussian-decaying
-integral whose quadrature cost is independent of frequency.  The reported
+integral whose quadrature cost does not grow with frequency.  The reported
 error includes coefficient construction, endpoint accumulation, omitted
 submerged pairs, and coarse/fine contour quadrature; the dispatcher falls back
 to a real-axis marcher when the estimate exceeds the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
-\SI{21.791}{ms} to \SI{0.029}{ms} (about 750-fold), and differs from an
+\SI{21.506}{ms} to \SI{0.031}{ms} (about 700-fold), and differs from an
 independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
 implementation is an engineering improvement for upright symmetric monohulls
 with coarse, well-separated active endpoints.  Its contour-discretization
@@ -366,8 +366,8 @@ Gaussian tail obeys
 using \(|1+\iu y^2/\omega|\geq1\),
 \(|\sqrt{2+\iu y^2/\omega}|\geq\sqrt2\), and the standard Gaussian-tail
 bound.  At the minimum supported nonzero frequency \(\omega=25\), this is
-below \(4\times10^{-30}\).  The 24/48 difference estimates discretization
-error.  This difference remains empirical.  Thus the submerged-term bound and
+below \(4\times10^{-30}\).  The selected coarse/fine difference estimates
+discretization error.  This difference remains empirical.  Thus the submerged-term bound and
 analytic contour-tail bound are rigorous, but the total floating-point error
 is not certified.
 
@@ -395,7 +395,7 @@ between them:
   \item reject it if any distinct retained endpoint pair has
         \(0<|\omega_{ij}|<25\);
   \item evaluate \cref{eq:pairresistance}, the bound \cref{eq:omitbound}, and
-        the weighted 24/48 contour difference; and
+        the weighted coarse/fine contour difference; and
   \item use the reduced result if their combined relative estimate meets the
         requested tolerance; otherwise run the general real-axis marcher.
 \end{enumerate}
@@ -550,10 +550,12 @@ default tolerance, the hybrid rejects the reduced result at
 
 \subsection{Runtime}
 
-Timing used an optimized build, 30 warmed samples, and the default relative
-tolerance \(10^{-5}\).  Absolute timings are host-dependent; the work counts
-and checksums are deterministic.  One benchmark process measured both
-\(\Fn=0.02\) methods.
+Timing used an optimized build, 30 samples per case, and the default relative
+tolerance \(10^{-5}\).  Each case received its own unmeasured warm call.  The
+two method comparisons alternated execution order on every sample; other cases
+were sampled separately in the printed order.  Absolute timings are
+host-dependent; the work counts and checksums are deterministic.  The host was
+an Apple M5 MacBook Air running Darwin 25.5.0, with Rust/Cargo 1.96.0.
 
 \begin{table*}[t]
 \centering
@@ -561,22 +563,25 @@ and checksums are deterministic.  One benchmark process measured both
 \label{tab:timing}
 \begin{tabular}{@{}lrrl@{}}
 \toprule
-Case & Median (ms) & Best (ms) & Diagnostic\\
+Case & Median (ms) & IQR (ms) & Diagnostic\\
 \midrule
-21 speeds, \(\Fn=0.10\ldots0.50\) & 26.289 & 22.843 & corrected checksum\\
-Default API, \(\Fn=0.05\) & 0.050 & 0.050 & 1,152 nodes\\
-Real-axis marcher, \(\Fn=0.02\) & 39.233 & 35.950 & 511,504 evaluations\\
-Endpoint/NSD, \(\Fn=0.02\) & 0.045 & 0.044 & 1,152 nodes\\
+21 speeds, \(\Fn=0.10\ldots0.50\) & 13.035 & 12.996--13.064 & corrected checksum\\
+Default API, \(\Fn=0.05\) & 0.030 & 0.030--0.030 & 1,152 nodes\\
+Real-axis marcher, \(\Fn=0.02\) & 21.506 & 21.464--21.557 & 511,504 evaluations\\
+Endpoint/NSD, \(\Fn=0.02\) & 0.031 & 0.030--0.031 & 1,152 nodes\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-At \(\Fn=0.02\), the endpoint solver is approximately 880 times faster.  Its
-cost changes little between \(\Fn=0.05\) and 0.02, as \cref{eq:gaussian}
-predicts.  During the 21-speed design sweep, the hybrid selects the path that
-satisfies the error gate.  The checksum is \(2.553251156101\times10^5\); it
-differs from the pre-fix value because the corrected marcher retains a positive
-tail that the earlier rule truncated.
+At \(\Fn=0.02\), the frozen paired run gives about a 700-fold median speedup.
+Two immediately repeated paired runs gave 702--707-fold; an earlier cold-host
+run gave 608-fold, while the former fixed-order reviewer protocol gave
+approximately 750--865-fold.  We therefore do not treat any point ratio as
+portable.  Cost changes little between \(\Fn=0.05\) and 0.02, as
+\cref{eq:gaussian} predicts.  During the 21-speed design sweep, the hybrid
+selects the path that satisfies the error gate.  The checksum is
+\(2.553251156101\times10^5\); it differs from the pre-fix value because the
+corrected marcher retains a positive tail that the earlier rule truncated.
 
 \section{Analytic lineage and implementation scope}
 \label{sec:prior}
@@ -648,7 +653,7 @@ The implementation differs from that lineage in five engineering details:
   \item it bounds the resistance contribution of every omitted submerged
         endpoint pair;
   \item it evaluates retained \(K_s\) pairs on a frequency-scaled contour with
-        fixed node count; and
+        a bounded, order-aware node count; and
   \item it accepts the reduction only when the combined estimate meets the
         requested tolerance, otherwise returning to the general marcher.
 \end{enumerate}
@@ -670,7 +675,7 @@ piecewise-polynomial inner data \citep{Tuck1989,Lazauskas2009}.  As
 \citet{Lazauskas2009} describes it, Michlet combines exact
 piecewise-quadratic longitudinal formulas with a fixed angular rule.  Our
 solver retains the same thin-ship physics but, for accepted B-spline hulls,
-makes low-Froude outer work independent of frequency.  We classify that result
+keeps low-Froude outer work from growing with frequency.  We classify that result
 as an engineering improvement and make no head-to-head performance claim
 against the Michlet executable.  Exact endpoint reduction also survives the
 outer modulus square: pair expansion converts it into a small set of reusable
@@ -701,8 +706,8 @@ deep-water thin-ship theory.
         well-separated endpoint maps.  Asymmetric, heeled, multihull, and
         closely spaced cases fall back to the general method.
   \item \textbf{Error certification.}  The submerged-pair omission bound and
-        Gaussian tail bound are analytic.  The 24/48 quadrature difference and
-        floating-point roundoff are not interval-certified.
+        Gaussian tail bound are analytic.  The selected coarse/fine quadrature
+        difference and floating-point roundoff are not interval-certified.
   \item \textbf{Reference floor.}  The independent real-axis reference uses
         compensated summation through \(\lambda=4000\); at \(\Fn=0.02\), a
         cutoff-doubling check changes it by \(1.23\times10^{-15}\).  Differences
@@ -737,7 +742,8 @@ quadrature work.  The submerged-pair bound lets the hybrid reject the reduction
 whenever it exceeds the requested tolerance.
 
 For the standard Wigley hull at \(\Fn=0.02\), the reduced solver is more
-accurate than the general marcher and approximately 750 times faster.  This
+accurate than the general marcher and about 700 times faster in the frozen
+paired run.  This
 result is an engineering improvement for the supported geometry, built from
 the analytic reduction lineage summarized in \cref{tab:lineage}.  Claims
 beyond the current scope require broader geometry and certified total error

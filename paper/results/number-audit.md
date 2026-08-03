@@ -1,58 +1,55 @@
 # Paper A numerical audit
 
-Unless noted otherwise, new values come from
-`./paper/reproduce_measurements.sh` on frozen kernel base `30d8f53`; captured
-output is in `frozen-kernel-2026-08-02.txt`. Timings used the optimized profile,
-30 warmed samples, and default `rel_tol=1e-5` on the same development host.
+Frozen measurement revision: `2f4d2faacd301537e4e28ccc6349f9722fc9fe94`
+Captured output: `frozen-paper-a-r2-2026-08-03.txt`
 
-| Manuscript quantity | Draft at `64925d4` | Frozen kernel | Generator |
-|---|---:|---:|---|
-| Marcher rel. diff., Fn 0.08 | 3.125e-7 | 6.917e-8 | `cargo test -p michell --test low_froude endpoint_reduction_converges_as_froude_number_falls -- --nocapture` |
-| Marcher rel. diff., Fn 0.05 | 5.781e-7 | 1.493e-7 | same |
-| Marcher rel. diff., Fn 0.03 | 1.063e-6 | 3.322e-7 | same |
-| Marcher rel. diff., Fn 0.02 | 2.024e-6 | 6.333e-7 | same |
-| Marcher estimate, Fn 0.05 | 5.123e-9 (pre-fix) | 5.774e-7 | same |
-| Marcher evaluations, Fn 0.08 | 114,432 | 56,032 | same |
-| Marcher evaluations, Fn 0.05 | 235,808 | 119,936 | same |
-| Marcher evaluations, Fn 0.03 | 501,904 | 267,856 | same |
-| Marcher evaluations, Fn 0.02 | 877,424 | 511,504 | same |
-| 21-speed median / best (ms) | 21.897 / 21.584 | 26.289 / 22.843 | `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` |
-| Default API Fn 0.05 median / best (ms) | 0.029 / 0.028 | 0.050 / 0.050 | same |
-| Marcher Fn 0.02 median / best (ms) | 28.141 / 27.794 | 39.233 / 35.950 | same |
-| Endpoint Fn 0.02 median / best (ms) | 0.029 / 0.028 | 0.045 / 0.044 | same |
-| Fn 0.02 median speedup | 971.79x | 879.17x measured; approximately 880-fold reported | same |
-| 21-speed checksum | 2.553250998079e5 | 2.553251156101e5 | same |
-| Rust test count | 196 | 215 | `cargo test --workspace` |
-| Independent reference cutoff | 500 | 4,000 (8,000 cutoff check at Fn 0.02) | `cargo test -p michell --test low_froude endpoint_reduction_converges_as_froude_number_falls -- --nocapture` |
-| Reduced rel. diff., Fn 0.05 | 1.058e-11 | 2.070e-13 | same |
-| Reduced rel. diff., Fn 0.03 | 2.328e-11 | 1.034e-12 | same |
-| Reduced rel. diff., Fn 0.02 | 3.558e-11 | 1.526e-13 | same |
-| Fn 0.02 reference cutoff check | not measured | 1.227e-15 relative (4,000 to 8,000) | same |
-| Published Wigley anchor, Fn 0.35 | 1.2486e-3 published | 1.2479219624e-3 reproduced; 5.430383e-4 relative difference | `cargo test -p michell --test phase0_validation wigley_matches_published_thin_ship_value -- --nocapture` |
+The frozen run used `MICHELL_BENCH_SAMPLES=30`, the optimized Rust benchmark
+profile, and default `rel_tol=1e-5` on an Apple M5 MacBook Air running Darwin
+25.5.0 with Rust/Cargo 1.96.0. Each benchmark case received one unmeasured warm
+call. Direct/reduced and adjoint/finite-difference comparisons alternated order
+on each sample. The table reports the upper-middle median and empirical
+quartiles selected by integer indices `n/4` and `3n/4` after sorting 30 samples.
 
-The checksum change is intentional: the corrected marcher retains a positive
-tail that the old stopping rule truncated. Timing changes are host-state
-sensitive; deterministic resistance values, evaluation counts, and checksums
-are the primary reproducibility data.
+## Frozen numerical values
+
+| Manuscript quantity | Frozen value | Generator |
+|---|---:|---|
+| Marcher rel. diff., Fn 0.08 / 0.05 / 0.03 / 0.02 | `6.918e-8` / `1.493e-7` / `3.322e-7` / `6.334e-7` | `cargo test -p michell --test low_froude endpoint_reduction_converges_as_froude_number_falls -- --nocapture` |
+| Marcher estimate, Fn 0.05 | `5.974e-7` | same |
+| Marcher evaluations, Fn 0.08 / 0.05 / 0.03 / 0.02 | 56,032 / 119,936 / 267,856 / 511,504 | same |
+| Reduced rel. diff., Fn 0.05 / 0.03 / 0.02 | `2.070e-13` / `1.034e-12` / `1.526e-13` | same |
+| Reference cutoff check, 4,000 to 8,000 at Fn 0.02 | `1.227e-15` relative | same |
+| 21-speed median; IQR; best | 13.035 ms; 12.996--13.064 ms; 12.945 ms | `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` |
+| Default API Fn 0.05 median; IQR; best | 0.030 ms; 0.030--0.030 ms; 0.029 ms | same |
+| Marcher Fn 0.02 median; IQR; best | 21.506 ms; 21.464--21.557 ms; 21.412 ms | same |
+| Endpoint Fn 0.02 median; IQR; best | 0.031 ms; 0.030--0.031 ms; 0.030 ms | same |
+| Fn 0.02 frozen median speedup | `702.23x`; about 700-fold in prose | same |
+| 21-speed checksum | `2.553251156101e5` | same |
+| Published Wigley anchor, Fn 0.35 | `1.2479219624e-3`, 0.05430383% from published `1.2486e-3` | Phase-0 published-value test |
+| Full suites | 227 Rust tests, including one doctest; 11 Python tests | `cargo test --workspace`; Python `pytest` |
+
+Two immediately repeated paired benchmark runs gave 702.23x and 706.51x.
+An earlier cold-host paired run gave 607.94x. The former fixed-order reviewer
+protocol gave approximately 750--865x. The manuscript reports the paired frozen
+result as about 700-fold and states the measured protocol sensitivity; it does
+not present a three-significant-figure point ratio as portable.
 
 ## Derived and structural claims
 
-| Manuscript claim | Value | Derivation or generator |
+| Claim | Value | Derivation or generator |
 |---|---:|---|
-| Historical error understatement | 112.84-fold; reported as about 113-fold | `5.781e-7 / 5.123e-9` using the pre-fix values above |
-| Frozen/pre-fix marcher error improvement over the four reported low-Froude cases | 3.20--4.52-fold; reported as 3.2--4.5 | row-wise ratios of the draft and frozen marcher relative differences above |
-| Frozen evaluation-count reduction over the same cases | 41.7--51.0%; reported as 42--51% | row-wise reductions from the draft to frozen evaluation counts above |
-| Gaussian-tail bound at the frequency gate | below `4e-30` | `exp(-64) / (8 sqrt(2*25))` from the analytic bound in `paper/main.tex` |
-| Wigley frequency gate | `Fn <= 0.2` | `omega = 1/Fn^2` and `omega >= 25` |
-| Wigley endpoint/contour work | 1,152 scalar nodes | 16 nonzero-frequency pairs times `(24 + 48)` Gauss--Legendre nodes |
-| Accepted reduced/reference range, Fn 0.05--0.02 | `1.526e-13`--`1.034e-12` | frozen low-Froude test rows above |
-| Fn 0.05 corrected marcher-estimate coverage | 3.87-fold | `5.774e-7 / 1.493e-7` |
-| Published Wigley difference | 0.05430383% | `100 * 5.430383e-4` |
-| Fn 0.02 cutoff check | `1.227e-15` | independent analytic-Wigley reference with cutoffs 4,000 and 8,000 |
-| Kernel test matrix | 9 cases, scaled discrepancy below `1e-9` | `s in {4,7,10}` crossed with `abs(omega) in {25,100,400}` in the low-Froude unit test |
-| Rust/Python test totals | 215 / 11 | `cargo test --workspace` (214 ordinary plus one documentation test) and Python `pytest` |
+| Historical error understatement | about 113-fold | `5.781e-7 / 5.123e-9` at pre-fix revision `64925d4` |
+| Corrected marcher-estimate coverage at Fn 0.05 | 4.00-fold | `5.974e-7 / 1.493e-7` |
+| Gaussian-tail bound at the frequency gate | below `4e-30` | `exp(-64) / (8 sqrt(2*25))` |
+| Wigley frequency gate | `Fn <= 0.2` | `omega = 1/Fn^2`, `omega >= 25` |
+| Equal-span frequency gate | `m <= 1/(25 Fn^2)` | adjacent spacing `L/m` gives `omega_adj=1/(m Fn^2)` |
+| Illustrative multi-span work | 25,920 nodes | 360 ordinary pairs times 72 nodes; arithmetic example, not runtime evidence |
+| Wigley endpoint work | 1,152 nodes | 16 nonzero-frequency pairs times 72 nodes |
+| Kernel order maximum | `s=98` | `n_max=p+2q+2=50`, then `s_max=2n_max-2`, for `p,q<=16` |
+| Kernel test matrix | 18 cases through `s=128` | `s in {4,7,10,50,98,128}` crossed with `abs(omega) in {25,100,400}` |
 
-The runtime table remains the frozen, same-process 30-sample measurement used
-to prepare the manuscript. A later verification run may differ in absolute
-time because of host state; matching checksums and work counts, not timing
-identity, are the accuracy invariant.
+The high-order extension was red before the fix: the old 48-point result at
+`s=98`, `omega=25` differed from the independent real-axis reference by
+`5.13e-6` relatively. Commit `a4d011a` records the failing coverage; `69f9ff4`
+selects a 48/96 rule when `s/abs(omega) >= 2`, while ordinary Wigley kernels
+retain the 24/48 rule and 1,152-node count.

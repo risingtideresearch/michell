@@ -37,11 +37,10 @@ B-spline span exactly as endpoint waves, discards only depth-damped endpoints
 under an explicit absolute bound, expands the squared amplitude into pairwise
 kernels, and evaluates those kernels on a Gaussian-decaying steepest-descent
 contour. At `Fn=0.02` the result needs 1,152 kernel evaluations instead of
-511,504 inner-amplitude evaluations and is **713.48 times faster** (0.029 ms
-versus 20.691 ms median in the final run). Against an independent real-axis
-reference its relative difference is `3.56e-11`; the reference's finite tail,
-rather than the new solver, limits that comparison. Cost is effectively
-independent of the oscillation frequency in the tested low-Froude range.
+511,504 inner-amplitude evaluations and is about **700 times faster** (0.031 ms
+versus 21.506 ms median in the frozen paired run). Against an independent
+real-axis reference its relative difference is `1.526e-13`. Quadrature work
+does not grow with oscillation frequency in the tested low-Froude range.
 
 The constituent mathematics has a substantial analytic lineage: Birkhoff and
 Kotik's kernel separation, Michelsen's 1960 polynomial reduction and 1972 JSR
@@ -736,7 +735,7 @@ but stability on a purely imaginary argument has not been established here.
 
 The implemented contour starts from `lambda=1+t^2` and rotates
 `t=exp(i*pi/4)y/sqrt(omega)`, turning the oscillation into Gaussian decay. Its
-fixed 24/48-node work is therefore independent of `omega`. This realizes the
+bounded 24/48- or 48/96-node work never grows with `omega`. This realizes the
 outer phase decomposition that the first research pass left as backlog.
 
 ### Finite depth and restricted water
@@ -773,7 +772,7 @@ whereas the work in Phases 0–2 addresses numerical error.
 - Stable origin, recurrence, and endpoint regimes for real, oscillatory, and
   complex-decay moments.
 - Adaptive endpoint-regularized outer integration with diagnostics.
-- Frequency-independent low-Froude endpoint-pair integration with an analytic
+- Frequency-bounded low-Froude endpoint-pair integration with an analytic
   bound on every omitted submerged term and error-gated automatic fallback.
 - Coherent multihull phase superposition, heel via complex vertical decay, and
   experimental asymmetric/dipole paths.
@@ -827,7 +826,7 @@ solved-lifting closure.
 | Returned primal versus ordinary resistance API | bit-for-bit equal in test |
 | Analytic work versus control count | one primal convergence plus one reverse pass |
 | Full Phase-0 harness | pass |
-| Full Rust workspace | 215 test cases pass, including one doctest |
+| Full Rust workspace | 227 test cases pass, including one doctest |
 
 Final release benchmark, 30 samples, default tolerance:
 
@@ -926,14 +925,17 @@ Final 30-sample release benchmark:
 
 | Case | Median | Best | Work/diagnostics |
 |---|---:|---:|---|
-| General marcher, `Fn=0.02` | 20.691 ms | 20.561 ms | 511,504 inner evaluations |
-| Endpoint/NSD, `Fn=0.02` | 0.029 ms | 0.028 ms | 1,152 kernel evaluations |
-| Default API, `Fn=0.05` | 0.029 ms | 0.028 ms | estimate `3.728e-12` |
-| 21 speeds, `Fn=0.10…0.50` | 12.663 ms | 12.463 ms | checksum `2.553251156101e5` |
+| General marcher, `Fn=0.02` | 21.506 ms | 21.464--21.557 ms IQR | 511,504 inner evaluations |
+| Endpoint/NSD, `Fn=0.02` | 0.031 ms | 0.030--0.031 ms IQR | 1,152 kernel evaluations |
+| Default API, `Fn=0.05` | 0.030 ms | 0.030--0.030 ms IQR | estimate `2.000e-8` |
+| 21 speeds, `Fn=0.10…0.50` | 13.035 ms | 12.996--13.064 ms IQR | checksum `2.553251156101e5` |
 
-The direct low-Froude speedup is **713.48×** at `Fn=0.02`. The 21-speed
-production sweep remains on the general method where appropriate; its changed
-checksum is the corrected positive tail, independently checked above.
+The frozen paired run gives about **700×** at `Fn=0.02`. Two immediately
+repeated paired runs gave 702--707×; a cold-host run gave 608×, while the older
+fixed-order reviewer protocol gave about 750--865×. The result is therefore
+reported as a rounded, protocol-specific improvement rather than a portable
+point ratio. The 21-speed production sweep remains on the general method where
+appropriate; its checksum is independently checked above.
 
 Classification: endpoint integration by parts, endpoint low-speed dominance,
 Bickley functions, and numerical steepest descent are class 1. The Rust solver,
@@ -1007,6 +1009,12 @@ bound, contour evaluation, error-gated dispatch, and fallback are class 2.
 | `0ddda93` | Degree-16 support cap and non-finite-result refusal |
 | `84e2885` | Shared coefficient validation and endpoint-cancellation error accounting |
 | `7b824f5` | Exact degree-elevation validation of the supported envelope |
+| `649c351` | Reframe the paper and repository claims in the historical analytic lineage |
+| `a4d011a` | Failing high-order contour-kernel regression through the supported envelope |
+| `69f9ff4` | Resolve stiff high-order endpoint kernels with an order-aware rule |
+| `a54acb2` | Bound endpoint-method scope and state the contour conditions |
+| `cd22f44` | Pair benchmark comparisons and report dispersion |
+| `2f4d2fa` | Make the exported archive self-identifying and reproducible without Git metadata |
 
 ## Ranked backlog
 
@@ -1051,8 +1059,8 @@ bound, contour evaluation, error-gated dispatch, and fallback are class 2.
 | Command | Result |
 |---|---|
 | `cargo build --workspace --all-targets` | pass |
-| `cargo test --workspace` | pass: 226 test cases including one doctest; 0 failed |
-| `uv run --with pytest --with numpy pytest -q` in `python/` | pass: 11 passed in 0.10 s |
+| `cargo test --workspace` | pass: 227 test cases including one doctest; 0 failed |
+| `uv run --no-project --with pytest --with numpy python -m pytest -q` in `python/` | pass: 11 passed in 0.11 s |
 | `cargo test --release -p michell --test high_degree_hardening -- --nocapture` before K2 | expected red: all five independent regressions failed |
 | `cargo test --release -p michell --test degree_envelope -- --nocapture` | pass: degree 2–16 endpoint/marcher sweeps covered; degree 17 refused |
 | `cargo test -p michell --test ranking_stability ordering_is_invariant_under_exact_knot_insertion -- --exact` | pass: unchanged knot-insertion gate |

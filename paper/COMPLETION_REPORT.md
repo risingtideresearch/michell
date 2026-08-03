@@ -1,193 +1,176 @@
-# Paper A completion report
+# Paper A reconstruction completion report
 
-Date: 2 August 2026  
-Target: *Journal of Ship Research* (JSR)  
+Date: 3 August 2026
+Target: *Journal of Ship Research* (JSR)
 Local branch: `story-paper-a-r2`
-Frozen numerical kernel: pending immutable tag `paper-a-jsr-v2`
+Frozen measurement revision: `2f4d2faacd301537e4e28ccc6349f9722fc9fe94`
+Release tag: immutable local tag `paper-a-jsr-v2` on the final artifact commit
 Remote operations: none
 
 ## Outcome
 
-Paper A has been taken from technical draft to a locally reproducible JSR
-submission package. The manuscript is a named, six-page, two-column paper by
-Rob Story and Avi Bryant for the Rising Tide Research Foundation. It follows
-the public SNAME journal template's visible constraints, carries a transparent
-AI-use disclosure, links the public repository, and reserves a Zenodo DOI
-slot. No journal was contacted, no submission was made, and no branch or tag
-was pushed.
+Paper A is reconstructed as “Error-Gated Endpoint Evaluation of Michell
+Resistance for Low-Froude B-Spline Hulls.” The former method-priority claim is
+withdrawn without a hedged remnant. The paper now presents a largely forgotten
+analytic lineage—Birkhoff and Kotik, Michelsen's 1960 dissertation and 1972 JSR
+sequel, and the verified Sendagorta--Grases record—revived as a modern,
+validated, error-bounded implementation for B-spline hulls.
 
-The paper's leading result is deliberately bounded: the real-axis marcher's
-historical error diagnostic understated measured error by about 113-fold in a
-reproduced case; the corrected estimate covers the tested Wigley range. The
-endpoint--Bickley construction gives a roughly 750-fold median improvement at
-`Fn=0.02` in the current same-process measurement, while matching an
-independently coded real-axis reference to `1.526e-13` relatively. Michelsen's
-polynomial and Gegenbauer reductions, the Birkhoff--Kotik kernel separation,
-and the Sendagorta--Grases record establish the historical analytic lineage.
-The validated B-spline implementation and routing are engineering improvements;
-the paper makes no method-priority claim.
+The historical reduction lineage is class 1/class 3. The degree-bounded
+B-spline endpoint implementation, coefficient and cancellation accounting,
+submerged-pair omission bound, contour evaluator, error gate, and real-axis
+fallback are class 2. The paper makes no claim of method priority.
 
-A final prose audit applied the complete `writing-clearly-and-concisely` skill
-to the manuscript. The revision gives each paragraph one topic, favors active
-voice, replaces abstract claims with named actions and measured quantities,
-keeps parallel ideas in parallel form, and removes needless or promotional
-language. It preserves all equations, citations, data values, scope limits,
-and claim qualifications. The final abstract contains 224 prose words, and
-the manuscript contains approximately 3,200 source-text words.
+The final numerical claim is deliberately protocol-specific. In the frozen
+30-sample paired run, the Fn=0.02 marcher and endpoint medians were 21.506 ms
+and 0.031 ms, about 700-fold apart. Two immediate paired reruns gave 702--707x;
+an earlier cold-host run gave 608x. The older fixed-order reviewer protocol gave
+approximately 750--865x. The manuscript reports the dispersion and these ranges
+instead of treating a three-significant-figure ratio as portable.
 
-## Reproducible build and validation
+## Old-to-new audit
 
-Final toolchain and host:
+| Topic | Reviewed v1 state | Final v2 state |
+|---|---|---|
+| Title | Previous Endpoint--Bickley reduction title | “Error-Gated Endpoint Evaluation…” |
+| Historical framing | Near-prior-art discussion supporting a priority category | Equation-level Birkhoff--Kotik/Michelsen/Sendagorta lineage; no priority category |
+| Spline scope | Unbounded-degree language | Both degrees explicitly validated only for 1--16; degree 17 refuses |
+| Geometry scope | Upright symmetric monohull | Additionally restricted to coarse, well-separated active endpoints |
+| Span consequence | Unstated | `m <= 1/(25 Fn^2)` for equal active spans; one short spacing forces fallback |
+| Multi-span cost | Unstated | 25,920-node illustrative arithmetic versus Wigley's 1,152 nodes |
+| Contour conditions | Rotation stated without full conditions | Principal branch, poles, branch points, sector, closing-arc decay, and `s>=4` stated |
+| Kernel-order evidence | `s={4,7,10}` | Public maximum `s=98` plus margin at `s=128` |
+| Contour rule | Fixed 24/48 nodes | 24/48 normally; 48/96 for stiff `s/abs(omega)>=2` kernels |
+| Benchmark protocol | One unrelated warm call, fixed case order, median/best | Per-case warmup, alternating paired comparisons, median/IQR/best |
+| Frozen runtime claim | Approximately 880-fold from 39.233/0.045 ms | About 700-fold from 21.506/0.031 ms, with protocol ranges disclosed |
+| Rust suite | 215 tests in the reviewed report | 227 tests, including one doctest |
+| Archive | v1 tag had been moved during concurrent review | New immutable-tag rule; v2 is never moved |
 
-- macOS Darwin 25.5.0, Apple M5 MacBook Air, 10 cores, 24 GB memory.
+## P4 representativeness choice
+
+The narrow option was chosen. The existing harness contains Wigley and one
+synthetic full-multiplicity-chine geometry, not a curated corpus of realistic
+multi-span designs. A cheap acceptance-rate survey would therefore measure an
+arbitrary sampling distribution. Rather than present that as representative,
+the abstract, algorithm section, limitations, and conclusion now scope the
+contribution to degrees 1--16 and coarse, well-separated endpoint maps. The
+paper gives the exact equal-span gate and labels the 25,920-node example as
+arithmetic rather than a measured benchmark.
+
+## Additional defect found and fixed
+
+Extending the contour test to the public degree envelope exposed a genuine
+coverage defect. At `s=98`, `omega=25`, the old 48-point contour value differed
+from an independent resolved-real-axis value by `5.13e-6` relatively. Commit
+`a4d011a` preserves the failing test. Commit `69f9ff4` adds a lazy 48/96 rule
+for `s/abs(omega)>=2`; the permanent 18-case matrix covers
+`s={4,7,10,50,98,128}` and `omega={25,100,400}` below the scaled `1e-9`
+threshold. Ordinary Wigley cases retain 72 nodes per nonzero pair.
+
+## Claim-class audit
+
+| Claim | Class | Disposition |
+|---|---:|---|
+| Michell theory and published Wigley coefficient | 1 | Known results reproduced by committed tests |
+| Birkhoff--Kotik kernel separation and Michelsen polynomial/Gegenbauer reduction lineage | 1/3 | Attributed through inspected equations or verified records |
+| Sendagorta--Grases shape/velocity separation and design-tabulation program | 3 | Described only to the extent established by its verified abstract |
+| Low-speed endpoint dominance, Bickley kernels, and steepest descent | 1 | Known ingredients, explicitly attributed |
+| Validated degree envelope, endpoint construction, cancellation accounting, omission bound, contour evaluation, dispatch, and fallback | 2 | Engineering improvements to this codebase |
+| High-order contour rule and its regression matrix | 2 | Red-before-fix engineering correction |
+
+The downgrade is justified by direct inspection of Michelsen's 1960 equations
+3.3--3.4, 3.21--3.22, and 3.38--3.40; Wehausen's equations 39--45 describing
+the Birkhoff--Kotik lineage; and verified records for Michelsen (1972) and de
+Sendagorta and Grases (1988). Full method-by-method performance benchmarking is
+future work.
+
+## Validation
+
+Host and toolchain:
+
+- Darwin 25.5.0, Apple M5 MacBook Air, arm64.
 - `rustc 1.96.0 (ac68faa20 2026-05-25)`.
 - `cargo 1.96.0 (30a34c682 2026-05-25)`.
 - Tectonic 0.17.0.
 
-Final validation commands:
+Commands and results:
 
 ```sh
 cargo test --workspace
+```
+
+Result: 227 passed, zero failed, zero ignored, including one doctest. The
+longest CLI integration group completed in 90.08 s.
+
+```sh
 cd python
 UV_CACHE_DIR=/private/tmp/michell-uv-cache \
   uv run --no-project --with pytest --with numpy python -m pytest -q
-cd ..
-MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley
+```
+
+Result: 11 passed in 0.11 s. The first sandboxed invocation could not resolve
+PyPI; the authorized network retry obtained the declared environment and is
+the result reported here.
+
+```sh
+MICHELL_BENCH_SAMPLES=30 ./paper/reproduce_measurements.sh
+```
+
+Result: both focused validation tests passed; sweep checksum
+`2.553251156101e5`; direct and endpoint 30-run checksums
+`1.325169498584e-3` and `1.325170337908e-3`; frozen timing and IQR values are
+recorded in `paper/results/frozen-paper-a-r2-2026-08-03.txt`.
+
+```sh
 cd paper
 tectonic main.tex --outdir ../output/pdf --keep-logs --keep-intermediates
 ```
 
-Results:
+Result: zero undefined references, zero undefined citations, and zero overfull
+boxes. The seven letter-size pages were rendered at 120 dpi and inspected page
+by page. Equations, tables, links, and margins are intact; the accuracy/work
+figure uses black solid/dashed lines and distinct circle/square markers, so it
+does not depend on color discrimination.
 
-- Rust: 215 passed, zero failed, zero ignored; this total includes one
-  documentation test. The longest CLI integration group completed in 92.57 s.
-- Python: 11 passed in 0.08 s.
-- Final verification benchmark: checksum
-  `2.553251156101e5` for the 21-speed sweep and identical direct/endpoint
-  resistance checksums to the frozen precision. The current host-state run
-  measured 12.788 ms for the 21-speed median, 22.293 ms for the `Fn=0.02`
-  marcher, and 0.030 ms for endpoint/NSD, a 736.96-fold median speedup. These
-  timings are a verification rerun, not replacements for the frozen,
-  same-process numbers reported in the paper.
-- Manuscript evidence remains the committed 30-sample frozen run: 26.289 ms
-  for the 21-speed median, 39.233 ms for the `Fn=0.02` marcher, 0.045 ms for
-  endpoint/NSD, and 879.17-fold measured speedup (reported as approximately
-  880-fold). Deterministic checksums and work counts match the final rerun.
-- LaTeX: Tectonic completed with zero undefined references, zero undefined
-  citations, and zero overfull boxes. Font-loader and underfull-box messages
-  are non-fatal and were checked visually rather than suppressed.
-- PDF: six letter-size pages, rendered and inspected page by page. Final file:
-  `output/pdf/endpoint-bickley-michell-jsr.pdf`.
+The exported-tag validation extracts `paper-a-jsr-v2` without `.git`, verifies
+the tar listing contains no `.git` entry, and runs
+`MICHELL_BENCH_SAMPLES=3 paper/reproduce_measurements.sh` from that exact tree.
+The checksum is stored beside the ignored local tarball under `output/archive/`.
 
-One initial Python invocation from the repository root was invalid because the
-package is rooted in `python/`; rerunning the same suite from that directory is
-the result reported above. No database-backed tests exist in this repository.
+## Source and submission status
 
-## Numerical-claim audit
+Still requires Rob or the authors:
 
-Every manuscript measurement is mapped to its generator in
-`paper/results/number-audit.md`. The final audit made one substantive wording
-correction: the draft's unsupported “3--100” improvement range was replaced
-with the four-case evidence, 3.2--4.5-fold lower measured error and 42--51%
-fewer evaluations. The hard stale-number search found no occurrence of the
-superseded 971.79-fold speedup, `3.558e-11` reduced error, pre-fix evaluation
-counts, or cutoff `lambda=500` in `paper/main.tex`.
+1. Keep the interlibrary-loan requests open for Michelsen (1972) and de
+   Sendagorta and Grases (1988). Their verified records suffice for the current
+   wording; update the table with positive equation-level facts when received.
+2. Choose the corresponding author and complete contact details.
+3. Obtain both authors' and any required foundation approval of the exact PDF.
+4. Confirm live JSR blinding and generative-AI requirements, funding,
+   conflicts, contributions, permissions, membership information, and reviewer
+   nominations.
+5. Push only after authorization, create the release, mint the Zenodo DOI,
+   replace `10.5281/zenodo.REPLACE-ME`, rebuild, inspect, and create a new tag.
+   Do not move `paper-a-jsr-v2`.
+6. Decide whether to add a repository-level license before public archiving.
 
-The paper's most important numerical anchors are:
+The DOI is explicitly a placeholder; no text asserts that the archive already
+exists. No journal was contacted, no submission was made, no DOI was minted,
+and nothing was pushed.
 
-| Quantity | Final manuscript value | Evidence |
-|---|---:|---|
-| Published Wigley anchor at `Fn=0.35` | `10^3 Cw = 1.247922`, 0.0543% from 1.2486 | Doctors and Beck (1987), Table 1; committed Phase-0 test |
-| Historical error understatement at `Fn=0.05` | about 113-fold | `5.781e-7 / 5.123e-9` at pre-fix revision `64925d4` |
-| Corrected marcher coverage at `Fn=0.05` | 3.87-fold | `5.774e-7 / 1.493e-7` |
-| Endpoint/reference difference at `Fn=0.02` | `1.526e-13` | independent analytic-Wigley real-axis reference |
-| Reference cutoff check, 4,000 to 8,000 | `1.227e-15` | same independent reference |
-| Endpoint work at `Fn=0.02` | 1,152 nodes | 16 pairs times 72 contour nodes |
-| Marcher work at `Fn=0.02` | 511,504 evaluations | benchmark diagnostics |
-| Frozen median runtime at `Fn=0.02` | 39.233 ms to 0.045 ms | 30 warmed, same-process optimized samples |
-| Frozen speedup | 879.17-fold; about 880-fold in prose | same benchmark |
-| 21-speed checksum | `2.553251156101e5` | frozen and final verification runs |
+## Local commit map
 
-## Claim-class audit
+| Commit | Logical change |
+|---|---|
+| `649c351` | Reclassify claims and restore the historical analytic lineage |
+| `a4d011a` | Add failing high-order contour-kernel coverage |
+| `69f9ff4` | Resolve stiff high-order endpoint kernels |
+| `a54acb2` | Bound endpoint scope and state contour conditions |
+| `cd22f44` | Pair benchmark comparisons and report dispersion |
+| `2f4d2fa` | Make exported archives self-identifying and reproducible |
+| final artifact commit | Freeze evidence, reports, and the visually checked PDF |
 
-The manuscript uses the active claim classes from `REPORT.md`.
-
-| Paper claim | Class | Final disposition |
-|---|---:|---|
-| Michell theory, low-speed endpoint dominance, Bickley kernels, and numerical steepest descent | 1 — known result reproduced | Attributed to primary or authoritative sources; no novelty wording |
-| Published Wigley coefficient and classical physical properties | 1 — known result reproduced | Reproduced by committed validation tests |
-| Corrected marcher termination diagnostic | 2 — engineering improvement | Described as a reproduced historical defect and codebase correction, not a general theorem |
-| Exact spline-span endpoint implementation and error-gated hybrid dispatch | 2 — engineering improvement | Claimed only for the supported upright symmetric monohull path and validated degree envelope |
-| Exact polynomial inner integration comparable with published practice | 3 — matches published state of the art | No breakthrough language and no head-to-head Michlet performance claim |
-| Birkhoff--Kotik, Michelsen, and Sendagorta--Grases analytic reductions | 1/3 — known lineage reproduced or matched | Equation-level comparison added; verified records used where full text is unavailable |
-| Degree-1--16 B-spline endpoint pairs, Bickley continuation, contour evaluation, omission accounting, dispatch, and fallback | 2 — engineering improvement | Former priority-seeking classification withdrawn after historical adjudication |
-
-The downgrade follows direct inspection of Michelsen's 1960 equations and
-verified records for Michelsen (1972) and de Sendagorta and Grases (1988),
-alongside Wehausen's presentation of the Birkhoff--Kotik reduction. The two
-unavailable full texts remain due-diligence items, not blockers and not a basis
-for claims about what either paper omits. The manuscript describes only what
-the accessible records establish.
-
-## Submission and archive status
-
-Prepared locally:
-
-- JSR-formatted manuscript and review PDF.
-- JSR cover-letter draft and submission checklist.
-- Venue decision memo based on official SNAME and APNUM materials.
-- `.zenodo.json`, DOI placeholder, and archive checklist.
-- Exact frozen measurement output and numerical audit.
-- Transparent AI-use acknowledgment.
-
-Still requires human action before submission:
-
-1. Choose the corresponding author and add contact details.
-2. Obtain both authors' and any required foundation approval of the exact PDF.
-3. Keep the Michelsen (1972) and de Sendagorta--Grases (1988) interlibrary-loan
-   requests open; update the equation-level comparison with positive facts
-   when the sources arrive.
-4. Confirm JSR's current blinding and generative-AI rules in the live
-   ScholarOne form or with SNAME publications staff.
-5. Confirm funding, conflicts, author contributions, permissions, membership
-   information, and reviewer nominations requested by the live form.
-6. Add a repository-level license if the foundation intends the package-wide
-   MIT declaration currently present only in package manifests.
-7. Push and release only after authorization, mint the Zenodo DOI, replace
-   `10.5281/zenodo.REPLACE-ME`, rebuild, and inspect the archived PDF.
-8. Preserve the no-priority framing unless a separate historical study supports
-   a different claim.
-
-Skipped by design: live ScholarOne submission, journal contact, DOI minting,
-remote push, patent search, and access-controlled full-text review. None is
-reported as passed.
-
-## Ranked post-submission backlog
-
-1. Extend the endpoint kernels to multihull transverse phases using uniform or
-   automated steepest-descent contours; this has the highest practical leverage.
-2. Add interval-certified contour quadrature and floating-point error bounds so
-   the full estimate, not only omission and Gaussian tails, is rigorous.
-3. Differentiate the endpoint representation for cheap low-Froude design
-   gradients and connect it to the existing exact general-route adjoint.
-4. Retain shallow submerged endpoints through mixed linear/quadratic contours,
-   widening the acceptance region above the present waterline-only reduction.
-5. Evaluate stable imaginary-argument Bickley recurrences or the recent
-   Bessel--Struve representation as a faster kernel backend.
-6. Develop finite-depth/Sretensky endpoint kernels and test the changed
-   dispersion singularities.
-7. Compare systematically with Filon and Levin methods on broader polynomial
-   hull families, including adverse cancellation and multiple chine knots.
-8. Add a true external implementation comparison if a reproducible Michlet or
-   equivalent executable and licensing path become available.
-
-## Local history and handoff
-
-The paper branch consists of one logical commit per revision stage: draft,
-authorship, frozen measurements, number audit, literature/reproducibility
-passes, venue selection, claim tightening, JSR formatting, and submission
-logistics. The local annotated tag `paper-a-jsr-v1` is to identify the final
-review candidate. It must not be pushed until the authors authorize release.
-
-The final branch should be clean except for ignored LaTeX intermediates. No
-remote operation is part of this completion.
+The final branch is expected to be clean after the ignored local archive is
+created. The v1 retagging incident is recorded here to make the standing rule
+unambiguous: release tags are immutable; every revised state receives a new
+tag.

@@ -155,8 +155,9 @@ impl ComplexAccumulator {
 /// The retained waterline pair kernels are integrated after
 /// `lambda = 1 + t^2` and the exact contour rotation
 /// `t = exp(i pi/4) y / sqrt(omega)`. The resulting Gaussian-decaying integral
-/// has a cost independent of the longitudinal frequency `omega`, which is the
-/// source of the speed advantage as Froude number decreases.
+/// has a bounded quadrature cost that does not grow with longitudinal frequency
+/// `omega`, which is the source of the speed advantage as Froude number
+/// decreases.
 ///
 /// Currently restricted to upright symmetric hulls whose spline domain begins
 /// exactly at `z = 0`.
