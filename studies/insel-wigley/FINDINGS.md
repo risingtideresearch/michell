@@ -431,9 +431,10 @@ does not choose among them.
 
 The experimental trust envelope is unchanged. Both the unbounded and canal
 references still overpredict close-spacing interference against measured
-`tau_WP`, so the earlier model-form conclusion remains in force. Per the
-registered UNEXPLAINED stop condition, this study halts here and does not
-create `CLOSEOUT.md`.
+`tau_WP`, so the earlier model-form conclusion remains in force. At this
+checkpoint the registered UNEXPLAINED condition stopped the study without a
+closeout; the later, explicitly requested final investigation resumes from
+that stop and closes unconditionally in `CLOSEOUT.md`.
 
 ### Canal-follow-up claim classification
 
@@ -482,8 +483,9 @@ should be relabelled. The machine-readable result is in
 omitted anchors, reconciled family, and peak metrics remain archived beside
 it. Per `CRITERIA-H1.md`, work stops here for review. No library overlay was
 used to reinterpret the family, Figures 360--362 were not redigitized, no H2
-implementation variants were run, prior theory scores and predictions remain
-unchanged, and no `CLOSEOUT.md` is created.
+implementation variants were run, and prior theory scores and predictions
+remain unchanged. That checkpoint had no closeout; the later final
+investigation resumes from the registered stop and closes in `CLOSEOUT.md`.
 
 ### H1-follow-up claim classification
 
