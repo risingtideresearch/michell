@@ -29,7 +29,7 @@
   linkcolor=blue!45!black,
   citecolor=blue!45!black,
   urlcolor=blue!55!black,
-  pdftitle={Conservative Endpoint--Bickley Reduction for Low-Froude Michell Resistance}
+  pdftitle={Error-Gated Endpoint Evaluation of Michell Resistance for Low-Froude B-Spline Hulls}
 }
 
 \newtheorem{proposition}{Proposition}
@@ -44,8 +44,8 @@
 \setlength{\emergencystretch}{2em}
 
 \title{\fontsize{18}{21}\selectfont\bfseries
-Conservative Endpoint--Bickley Reduction for\\
-Low-Froude Michell Resistance}
+Error-Gated Endpoint Evaluation of Michell Resistance\\
+for Low-Froude B-Spline Hulls}
 \author{Rob Story \qquad Avi Bryant\\[0.5ex]
 \small Rising Tide Research Foundation}
 \date{}
@@ -60,32 +60,30 @@ Low-Froude Michell Resistance}
 \itshape
 Reliable low-Froude wave-resistance prediction requires both resolving an
 increasingly oscillatory Michell integral and estimating its algebraic tail.
-For a conventional real-axis marcher, we found that a quiet-window estimate
-understated the actual error by a factor of 113.  A structural correction makes the
-estimate conservative over the tested range.  For polynomial tensor-product
-B-spline hulls, the exact inner transform is a finite sum of waves attached to
-spline-span endpoints.  At low Froude number, an explicit absolute bound
-permits the omission of terms below the waterline.  Expanding the squared
-transform before outer integration then reduces the resistance to pairwise
-kernels
+Michelsen's 1960 dissertation and 1972 sequel developed analytic reductions
+of Michell resistance for polynomial and orthogonal-basis hull descriptions.
+We revive that lineage as a validated implementation for tensor-product
+B-spline hulls of degree at most 16 in each direction.  Repeated integration
+by parts expresses the exact inner transform as endpoint waves.  At low Froude
+number, an absolute bound permits the omission of terms below the waterline.
+Pair expansion then reduces resistance to kernels
 \(
 K_s(\omega)=\int_1^\infty
 \e^{\iu\omega\lambda}\lambda^{-s}(\lambda^2-1)^{-1/2}\,d\lambda,
 \)
-which are analytically continued Bickley kernels.  The substitution
-\(\lambda=1+t^2\), followed by the exact rotation
-\(t=\e^{\iu\pi/4}y/\sqrt{|\omega|}\), converts each nonzero-frequency kernel
-to a Gaussian-decaying integral whose quadrature cost is independent of
-frequency.  A hybrid implementation accepts the reduced result only when its
-omission bound and a coarse/fine contour estimate meet the requested tolerance.
+analytically continued Bickley functions.  An exact contour rotation converts
+each sufficiently separated nonzero-frequency pair to a Gaussian-decaying
+integral whose quadrature cost is independent of frequency.  The reported
+error includes coefficient construction, endpoint accumulation, omitted
+submerged pairs, and coarse/fine contour quadrature; the dispatcher falls back
+to a real-axis marcher when the estimate exceeds the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
-\SI{39.233}{ms} to \SI{0.045}{ms} (approximately 880-fold), and differs from an
+\SI{21.791}{ms} to \SI{0.029}{ms} (about 750-fold), and differs from an
 independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
-solver is an engineering improvement; its specific combination of known
-endpoint and contour methods may be new.  It applies only to upright symmetric
-monohulls, and its contour-discretization estimate is not a formal interval
-certificate.
+implementation is an engineering improvement for upright symmetric monohulls
+with coarse, well-separated active endpoints.  Its contour-discretization
+estimate is not a formal interval certificate.
 \end{abstract}
 
 \noindent\textbf{KEY WORDS:} Wave resistance; Michell integral; low Froude
@@ -106,6 +104,19 @@ for preliminary design, multihull studies, and mathematical shape optimization
 \citep{Lazauskas2009,DambrinePierreRousseaux2016}.  At low speed, however, a
 fast result is useful only if its error estimate remains trustworthy.
 
+An analytic reduction lineage addresses the same computational goal.
+\citet{Michelsen1960}, building on Birkhoff and Kotik's transformation, splits
+the calculation into a hull function and a speed-dependent Michell function,
+derives a convergent special-function series for polynomial hull functions,
+and proposes tabulation for systematic design.  \citet{Michelsen1972} later
+uses Gegenbauer source distributions and orthogonality to reduce the integral
+to a finite double sum.  The verified abstract of
+\citet{SendagortaGrases1988} likewise describes rapidly convergent series,
+products of shape functions, and shape-independent velocity functions for
+tabulation and computer-aided design.  We treat this history as the method's
+foundation and contribute an implementation-grade B-spline realization with
+measured error accounting and automatic fallback.
+
 The apparent simplicity conceals a difficult numerical limit.  Let
 \(\nu=g/U^2\), where \(U\) is speed and \(g\) gravitational acceleration.
 As \(U\) and therefore \(\Fn=U/\sqrt{gL}\) decrease, the phase
@@ -124,7 +135,8 @@ estimate covers measured error by about fourfold.  In the four low-Froude cases
 reported below, measured error falls by factors of 3.2--4.5, and evaluations
 fall by 42--51\%.
 
-Earlier work supplies each part of our method.  \citet{Wehausen1973} surveys
+Earlier work also supplies the endpoint and contour ingredients.
+\citet{Wehausen1973} surveys
 classical thin-ship theory and its limits.  Keller and Ahluwalia show that bow
 and stern waterline data control the small-Froude wave field and resistance
 \citep{KellerAhluwalia1976}.  Gotman separates polynomial-hull contributions
@@ -143,15 +155,14 @@ combine these ideas in four steps:
   \item identify the retained pair kernels as analytically continued
         Bickley--Naylor functions and evaluate them on a frequency-scaled
         Gaussian contour; and
-  \item dispatch conservatively between the reduced solver and the general
-        real-axis method.
+  \item accept the reduced result only when its error estimate meets the
+        requested tolerance; otherwise use the general real-axis method.
 \end{enumerate}
 
-Each ingredient has precedent.  Our priority claim, therefore, extends only to
-the combined algorithm and implementation.  A targeted search found no source
-that contains all four elements, but a negative search cannot establish
-novelty.  In particular, we could not obtain the full text of
-\citet{SendagortaGrases1988}, a closely related study.
+These are implementation deltas within established analytic and numerical
+traditions, not claims of method priority.  The accessible publisher and index
+records establish the statements above for \citet{Michelsen1972} and
+\citet{SendagortaGrases1988}; their full texts remain due-diligence items.
 
 \section{Michell resistance and spline geometry}
 \label{sec:michell}
@@ -543,31 +554,106 @@ satisfies the error gate.  The checksum is \(2.553251156101\times10^5\); it
 differs from the pre-fix value because the corrected marcher retains a positive
 tail that the earlier rule truncated.
 
-\section{Relation to prior work and scope of novelty}
+\section{Analytic lineage and implementation scope}
 \label{sec:prior}
 
-The endpoint structure is well established.  \citet{KellerAhluwalia1976}
-express leading small-Froude resistance and waves through bow and stern
-waterline slopes.  \citet{Gotman2002} repeatedly differentiates polynomial
-hull functions, separates endpoint self terms from bow--stern interference,
-and discusses higher endpoint derivatives.  Our finite B-spline decomposition
-puts that known mechanism into a form suitable for implementation; it does not
-introduce a new physical asymptotic principle.
+The present solver revives a substantial analytic lineage.  The
+equation-level comparison in \cref{tab:lineage} separates the historical
+reductions from the implementation work reported here.  For the 1972 and 1988
+papers, the table states only what their verified publisher or index records
+establish; both full texts remain due-diligence items rather than dependencies
+of our classification.
+
+\begin{table*}[t]
+\centering
+\caption{Equation-level comparison of polynomial and basis reductions of
+Michell resistance.  ``Record'' denotes a verified publisher or bibliographic
+record where the full text was unavailable.}
+\label{tab:lineage}
+\scriptsize
+\begin{tabular}{@{}p{0.15\textwidth}p{0.20\textwidth}p{0.20\textwidth}p{0.17\textwidth}p{0.17\textwidth}@{}}
+\toprule
+Source & Basis and reduction & Kernel or speed dependence & Error control and dispatch & Relation to this implementation\\
+\midrule
+Birkhoff--Kotik via \citet[eqs.~39--45]{Wehausen1973}
+& Hull autocorrelation \(M(u,v)\), with equivalent \((P,Q)\) transforms and separable elementary ships
+& Geometry-independent kernel \(K(\nu u,\nu v)\); a \(Y_0\) reduction is also reported
+& Absolute convergence justifies the change of integration order
+& Establishes separation of hull data from a reusable kernel\\
+\addlinespace
+\citet[eqs.~3.3--3.4]{Michelsen1960}
+& Polynomial hull function \(H(\xi,\zeta)\) after the Birkhoff--Kotik transformation
+& Michell function \(C(s,t)\) contains speed dependence
+& Convergence conditions accompany the transformation
+& Direct historical antecedent of shape/kernel separation\\
+\addlinespace
+\citet[eqs.~3.21--3.22, 3.38--3.40]{Michelsen1960}
+& Monomial expansion of \(H\); each coefficient contributes through a closed series expression
+& Confluent-hypergeometric, Bessel, and Struve functions; speed-and-degree terms can be tabulated
+& Appendix proves series convergence; computer tabulation is proposed
+& Antecedent of analytic polynomial reduction for design use\\
+\addlinespace
+\citet{Michelsen1972}, verified record
+& Gegenbauer expansion of the centerplane Havelock-source distribution
+& Orthogonality reduces resistance to a finite double sum depending on source coefficients, \(\Fn\), and length--draft ratio
+& The accessible abstract states the reduction and identifies its governing inputs
+& Published JSR continuation of the basis-reduction program\\
+\addlinespace
+\citet{SendagortaGrases1988}, verified record
+& Products of integral shape functions
+& Rapidly convergent series with linear, shape-independent velocity functions suitable for tabulation
+& The abstract reports that few terms give suitable accuracy; detailed controls await source access
+& Antecedent of separated, table-driven computer-aided design\\
+\addlinespace
+Present implementation
+& Degree-\(\leq16\) tensor-product B-spline span polynomials reduced to active endpoint waves
+& Continued Bickley pair kernels on a frequency-scaled Gaussian contour
+& Coefficient, accumulation, omission, and quadrature estimates; explicit acceptance gate and real-axis fallback
+& Modern error-accounted realization for coarse, well-separated endpoints\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+The implementation differs from that lineage in five engineering details:
+
+\begin{enumerate}
+  \item it operates span by span on tensor-product B-splines, including
+        full-multiplicity chine knots;
+  \item it restricts both spline degrees to the independently validated range
+        1--16 and charges coefficient construction and endpoint cancellation;
+  \item it bounds the resistance contribution of every omitted submerged
+        endpoint pair;
+  \item it evaluates retained \(K_s\) pairs on a frequency-scaled contour with
+        fixed node count; and
+  \item it accepts the reduction only when the combined estimate meets the
+        requested tolerance, otherwise returning to the general marcher.
+\end{enumerate}
+
+These deltas are engineering improvements, not priority claims.  A full
+method-by-method benchmark against the Michelsen and Sendagorta--Grases
+representations lies outside this paper and remains future work.
+
+The endpoint structure is also established independently.
+\citet{KellerAhluwalia1976} express leading small-Froude resistance and waves
+through bow and stern waterline slopes.  \citet{Gotman2002} repeatedly
+differentiates polynomial hull functions, separates endpoint self terms from
+bow--stern interference, and discusses higher endpoint derivatives.  Our
+finite B-spline decomposition puts that mechanism into implementation form; it
+does not introduce a new physical asymptotic principle.
 
 Tuck and Lazauskas also establish exact or Filon-like integration of
 piecewise-polynomial inner data \citep{Tuck1989,Lazauskas2009}.  As
 \citet{Lazauskas2009} describes it, Michlet combines exact
 piecewise-quadratic longitudinal formulas with a fixed angular rule.  Our
-solver retains the same thin-ship physics but, for supported B-spline hulls,
+solver retains the same thin-ship physics but, for accepted B-spline hulls,
 makes low-Froude outer work independent of frequency.  We classify that result
 as an engineering improvement and make no head-to-head performance claim
 against the Michlet executable.  Exact endpoint reduction also survives the
 outer modulus square: pair expansion converts it into a small set of reusable
-special-function kernels.  We found no use of the relation
-\(K_s=\Ki_s(-\iu\omega)\) in the Michell sources we inspected.  Ruffa and Toni
-give finite Bessel--Struve module representations for integer-order Bickley
-functions \citep{RuffaToni2026}; their stability on the imaginary axis remains
-to be tested as a possible kernel backend.
+special-function kernels.  Ruffa and Toni give finite Bessel--Struve module
+representations for integer-order Bickley functions \citep{RuffaToni2026};
+their stability on the imaginary axis remains to be tested as a possible
+kernel backend.
 
 Contour deformation is well established for oscillatory quadrature
 \citep{HuybrechsVandewalle2006}.  \citet{Motygin2017} applies steepest descent
@@ -577,18 +663,6 @@ Automated methods now handle general phases and coalescing saddles
 \citep{GibbsHewettHuybrechs2024}.  Such methods could treat multihull transverse
 phases; the present quadratic phase needs only the closed contour in
 \cref{eq:gaussian}.
-
-Our literature search included publisher and DOI records, arXiv, TRID, the
-Adelaide repository, DLMF, and backward references in the sources above.  It
-did not find a previous method combining arbitrary-degree B-spline endpoint
-terms, Bickley analytic continuation, frequency-scaled Gaussian quadrature, and
-a submerged-endpoint error gate for Michell resistance.  The closest unresolved
-JSR source is \citet{SendagortaGrases1988}: we verified its bibliographic record
-and abstract but could not obtain the full text, so we cannot determine whether
-it contains a finite endpoint-pair expansion or a related low-speed
-construction.  The search was not exhaustive and included no patent search.
-We therefore classify the algorithmic combination as possibly new, subject to
-full-text and expert literature review.
 
 \section{Limitations and open extensions}
 \label{sec:limits}
@@ -637,20 +711,22 @@ quadrature work.  The submerged-pair bound lets the hybrid reject the reduction
 whenever it exceeds the requested tolerance.
 
 For the standard Wigley hull at \(\Fn=0.02\), the reduced solver is more
-accurate than the general marcher and approximately 880 times faster.  This
-result establishes an engineering improvement for the supported geometry.  Our
-literature search suggests that the specific combination may be new, but that
-classification still requires full-text and expert review.  Claims beyond the
-current scope also require broader geometry and certified total error control.
+accurate than the general marcher and approximately 750 times faster.  This
+result is an engineering improvement for the supported geometry, built from
+the analytic reduction lineage summarized in \cref{tab:lineage}.  Claims
+beyond the current scope require broader geometry and certified total error
+control.
 
 \section*{Reproducibility statement}
 
 The implementation, tests, benchmark harness, generated results, and number
 audit are available in the public
 \href{https://github.com/risingtideresearch/michell}{\texttt{michell}
-repository}.  The immutable version supporting this paper is archived at
-\href{https://doi.org/\ArchiveDOI}{\nolinkurl{\ArchiveDOI}}.  The numerical
-kernel is frozen at repository revision \texttt{30d8f53}.
+repository}.  On acceptance for submission, the immutable source, test, and
+artifact package will be archived and the placeholder
+\href{https://doi.org/\ArchiveDOI}{\nolinkurl{\ArchiveDOI}} replaced with its
+minted DOI.  The current numerical kernel will be identified by the immutable
+local tag \texttt{paper-a-jsr-v2}; that tag will not be moved after creation.
 
 \section*{Acknowledgments}
 

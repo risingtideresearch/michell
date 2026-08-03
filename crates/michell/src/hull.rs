@@ -102,7 +102,7 @@ impl Hull {
     /// Beyond spline validity this requires:
     /// - the z-domain starts at the waterline: `z0 = 0` (small negative
     ///   tolerance rejected) and has positive draft;
-    /// - a non-negative control net (a conservative sufficient condition for
+    /// - a non-negative control net (a simple sufficient condition for
     ///   `f >= 0`, by the B-spline convex-hull property).
     pub fn new(surface: BSplineSurface) -> Result<Hull> {
         validate_resistance_degree(&surface)?;

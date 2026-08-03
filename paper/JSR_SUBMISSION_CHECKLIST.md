@@ -11,7 +11,7 @@ Official materials checked 2 August 2026:
 ## Already prepared
 
 - Named manuscript: Rob Story and Avi Bryant, Rising Tide Research Foundation.
-- Seven-word title (template maximum: ten words).
+- Ten-word title (template maximum: ten words).
 - 224-word abstract (template maximum: 250 words).
 - Six keywords (template maximum: seven).
 - Approximately 3,200 source-text words, one figure, and two tables (within
@@ -38,8 +38,9 @@ manuscript nevertheless discloses the substantive use transparently.
 2. Obtain both authors' approval of the exact submitted PDF and confirm that
    the work is original, is not under review elsewhere, and has any required
    foundation approval.
-3. Obtain and review de Sendagorta and Grases (1988), DOI
-   `10.5957/jsr.1988.32.1.19`, or retain the manuscript's explicit uncertainty.
+3. Keep the interlibrary-loan requests in `SOURCE_ACCESS_STATUS.md` open for
+   Michelsen (1972) and de Sendagorta and Grases (1988); update the comparison
+   with positive equation-level facts if either full text arrives.
 4. Mint the Zenodo DOI by following `ARCHIVE_CHECKLIST.md`; replace
    `10.5281/zenodo.REPLACE-ME` and rebuild before upload.
 5. Confirm conflicts of interest, funding, author contributions, permissions,

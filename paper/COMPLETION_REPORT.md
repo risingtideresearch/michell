@@ -2,8 +2,8 @@
 
 Date: 2 August 2026  
 Target: *Journal of Ship Research* (JSR)  
-Local branch: `story-paper-a-submission`  
-Frozen numerical kernel: `30d8f53ba8fb48c3c77d3f2a0d95bddde74381e8`  
+Local branch: `story-paper-a-r2`
+Frozen numerical kernel: pending immutable tag `paper-a-jsr-v2`
 Remote operations: none
 
 ## Outcome
@@ -18,19 +18,21 @@ was pushed.
 
 The paper's leading result is deliberately bounded: the real-axis marcher's
 historical error diagnostic understated measured error by about 113-fold in a
-reproduced case; the frozen correction is conservative over the tested Wigley
-range. The endpoint--Bickley construction then gives an approximately
-880-fold median improvement at `Fn=0.02` in the frozen 30-sample run, while
-matching an independently coded real-axis reference to `1.526e-13`
-relatively. The implementation is an engineering improvement. Only the
-specific combination of known ideas is classified as possibly novel.
+reproduced case; the corrected estimate covers the tested Wigley range. The
+endpoint--Bickley construction gives a roughly 750-fold median improvement at
+`Fn=0.02` in the current same-process measurement, while matching an
+independently coded real-axis reference to `1.526e-13` relatively. Michelsen's
+polynomial and Gegenbauer reductions, the Birkhoff--Kotik kernel separation,
+and the Sendagorta--Grases record establish the historical analytic lineage.
+The validated B-spline implementation and routing are engineering improvements;
+the paper makes no method-priority claim.
 
 A final prose audit applied the complete `writing-clearly-and-concisely` skill
 to the manuscript. The revision gives each paragraph one topic, favors active
 voice, replaces abstract claims with named actions and measured quantities,
 keeps parallel ideas in parallel form, and removes needless or promotional
 language. It preserves all equations, citations, data values, scope limits,
-and novelty qualifications. The final abstract contains 224 prose words, and
+and claim qualifications. The final abstract contains 224 prose words, and
 the manuscript contains approximately 3,200 source-text words.
 
 ## Reproducible build and validation
@@ -108,27 +110,24 @@ The paper's most important numerical anchors are:
 
 ## Claim-class audit
 
-The manuscript follows the four-class honesty contract from `REPORT.md`.
+The manuscript uses the active claim classes from `REPORT.md`.
 
 | Paper claim | Class | Final disposition |
 |---|---:|---|
 | Michell theory, low-speed endpoint dominance, Bickley kernels, and numerical steepest descent | 1 — known result reproduced | Attributed to primary or authoritative sources; no novelty wording |
 | Published Wigley coefficient and classical physical properties | 1 — known result reproduced | Reproduced by committed validation tests |
 | Corrected marcher termination diagnostic | 2 — engineering improvement | Described as a reproduced historical defect and codebase correction, not a general theorem |
-| Exact spline-span endpoint implementation and conservative hybrid dispatch | 2 — engineering improvement | Claimed only for the supported upright symmetric monohull path |
+| Exact spline-span endpoint implementation and error-gated hybrid dispatch | 2 — engineering improvement | Claimed only for the supported upright symmetric monohull path and validated degree envelope |
 | Exact polynomial inner integration comparable with published practice | 3 — matches published state of the art | No breakthrough language and no head-to-head Michlet performance claim |
-| Arbitrary-degree B-spline endpoint pairs plus Bickley continuation, frequency-scaled Gaussian contour, and submerged-endpoint gate | 4 — possibly novel | Preserved only with explicit negative-search, full-text, expert-review, and no-patent-search caveats |
+| Birkhoff--Kotik, Michelsen, and Sendagorta--Grases analytic reductions | 1/3 — known lineage reproduced or matched | Equation-level comparison added; verified records used where full text is unavailable |
+| Degree-1--16 B-spline endpoint pairs, Bickley continuation, contour evaluation, omission accounting, dispatch, and fallback | 2 — engineering improvement | Former priority-seeking classification withdrawn after historical adjudication |
 
-The class-4 search covered publisher and DOI records, arXiv, TRID, the
-University of Adelaide repository, DLMF, and backward references in the
-verified sources. Searches included endpoint/asymptotic Michell resistance,
-Bickley/Bickley--Naylor ship-wave kernels, polynomial and B-spline Michell
-integrals, steepest-descent ship-wave quadrature, and combinations of those
-terms. The closest unresolved source is de Sendagorta and Grases (1988), DOI
-`10.5957/jsr.1988.32.1.19`: its record and abstract were verified, but the full
-text was unavailable. No patent search was performed. The manuscript therefore
-uses “possibly new combination,” never “breakthrough” or an unqualified claim
-of priority.
+The downgrade follows direct inspection of Michelsen's 1960 equations and
+verified records for Michelsen (1972) and de Sendagorta and Grases (1988),
+alongside Wehausen's presentation of the Birkhoff--Kotik reduction. The two
+unavailable full texts remain due-diligence items, not blockers and not a basis
+for claims about what either paper omits. The manuscript describes only what
+the accessible records establish.
 
 ## Submission and archive status
 
@@ -145,8 +144,9 @@ Still requires human action before submission:
 
 1. Choose the corresponding author and add contact details.
 2. Obtain both authors' and any required foundation approval of the exact PDF.
-3. Obtain and inspect the full de Sendagorta--Grases paper, then use the
-   prepared novelty-paragraph variant if its contents change the comparison.
+3. Keep the Michelsen (1972) and de Sendagorta--Grases (1988) interlibrary-loan
+   requests open; update the equation-level comparison with positive facts
+   when the sources arrive.
 4. Confirm JSR's current blinding and generative-AI rules in the live
    ScholarOne form or with SNAME publications staff.
 5. Confirm funding, conflicts, author contributions, permissions, membership
@@ -155,8 +155,8 @@ Still requires human action before submission:
    MIT declaration currently present only in package manifests.
 7. Push and release only after authorization, mint the Zenodo DOI, replace
    `10.5281/zenodo.REPLACE-ME`, rebuild, and inspect the archived PDF.
-8. Consider a patent search or professional novelty review before making any
-   stronger priority statement.
+8. Preserve the no-priority framing unless a separate historical study supports
+   a different claim.
 
 Skipped by design: live ScholarOne submission, journal contact, DOI minting,
 remote push, patent search, and access-controlled full-text review. None is

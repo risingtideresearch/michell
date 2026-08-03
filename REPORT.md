@@ -43,15 +43,14 @@ reference its relative difference is `3.56e-11`; the reference's finite tail,
 rather than the new solver, limits that comparison. Cost is effectively
 independent of the oscillation frequency in the tested low-Froude range.
 
-The constituent mathematics is not new: endpoint low-speed asymptotics,
-Bickley--Naylor functions, and numerical steepest descent all have substantial
-literatures. The implementation is class 2. The *combination* of an exact
-polynomial B-spline endpoint reduction within the validated degree envelope,
-analytically continued Bickley kernels, frequency-independent contour
-quadrature, and a computable omitted-endpoint bound in Michell resistance is
-classified only as **possibly novel** (class 4), after the documented searches
-below found no prior instance. This is not a proof of priority and is not called
-a breakthrough.
+The constituent mathematics has a substantial analytic lineage: Birkhoff and
+Kotik's kernel separation, Michelsen's 1960 polynomial reduction and 1972 JSR
+sequel, the Sendagorta--Grases tabulation program, low-speed endpoint
+asymptotics, Bickley--Naylor functions, and numerical steepest descent. The
+validated B-spline implementation, cancellation accounting, omission bound,
+contour evaluator, error-gated dispatch, and real-axis fallback are class-2
+engineering improvements. This report makes no priority claim for their
+combination.
 
 The first Phase-4 advance, the exact gradient, remains useful: it is 17.59 times
 faster than centered finite differences for the nine-control benchmark. Its
@@ -117,15 +116,17 @@ resistance checksums.
 
 ## Claim classification
 
-The required honesty classes are used throughout this report:
+The active honesty classes used throughout this report are:
 
 1. **Known result reproduced.** An external or analytic result reproduced here.
 2. **Engineering improvement to this codebase.** A new test, fix, API, or
    measured optimization, without a priority claim.
 3. **Matches published state of the art.** The implementation reaches a method
    or capability demonstrated in the cited literature.
-4. **Possibly novel.** A result for which a documented search did not find prior
-   art.
+
+The former priority category has been withdrawn after equation-level review of
+the Michelsen and Birkhoff--Kotik lineage. No current result is assigned a
+priority-seeking classification.
 
 | Claim | Class | Evidence |
 |---|---:|---|
@@ -146,14 +147,16 @@ The required honesty classes are used throughout this report:
 | Low-speed dominance by waterline bow/stern data | 1 | Keller–Ahluwalia, Wehausen/Kotik, and Gotman endpoint results reproduced computationally |
 | Steepest-descent evaluation of oscillatory ship-wave integrals | 1 | Motygin and the general numerical-steepest-descent literature |
 | Bounded low-Froude solver and automatic fallback | 2 | New implementation, independent reference tests, and routing regression |
-| Exact B-spline endpoint/Bickley/steepest-descent Michell reduction | 4, qualified | No prior instance found by the searches recorded below; priority is unproved |
+| Historical analytic reduction lineage: Birkhoff--Kotik, Michelsen, and Sendagorta--Grases | 1 and 3 | Known kernel/basis separation and polynomial or orthogonal-basis reductions, reproduced or matched in implementation scope |
+| B-spline endpoint/Bickley/steepest-descent solver, error accounting, and fallback | 2 | Validated implementation within the degree-16 and endpoint-separation envelope; no method-priority claim |
 
 The gradient searches (“analytic gradient Michell wave resistance”, “Michell
 integral shape derivative”, “B-spline hull optimization Michell”, and “adjoint
-thin-ship wave resistance”) found prior quadratic-form and sensitivity work, so
-the gradient is not class 4. The low-Froude search was broader and found close
-precursors, discussed explicitly below rather than hidden behind a novelty
-label.
+thin-ship wave resistance”) found prior quadratic-form and sensitivity work.
+The low-Froude review found the older analytic-reduction lineage summarized in
+the manuscript's equation-level comparison table. Those findings support the
+class-1/class-3 historical classification and the class-2 implementation
+classification above.
 
 ## Design-tool-grade upgrade from `64925d4`
 
@@ -326,7 +329,7 @@ Regressions prove that:
 
 Classification: quadratic pair expansion and endpoint-wave decomposition are
 class 1; the typed attribution APIs and asymmetric spectrum correction are
-class 2. No novelty claim beyond the already qualified low-Froude combination.
+class 2. No priority claim is made.
 
 ### Workstream 4 — design-ranking stability: complete
 
@@ -771,16 +774,15 @@ whereas the work in Phases 0–2 addresses numerical error.
   complex-decay moments.
 - Adaptive endpoint-regularized outer integration with diagnostics.
 - Frequency-independent low-Froude endpoint-pair integration with an analytic
-  bound on every omitted submerged term and conservative automatic fallback.
+  bound on every omitted submerged term and error-gated automatic fallback.
 - Coherent multihull phase superposition, heel via complex vertical decay, and
   experimental asymmetric/dipole paths.
 - A matrix-free exact control gradient whose cost does not grow by one primal
   solve per design variable.
 
 The exact inner integration and gradient match known published practice in their
-respective areas. The low-Froude components also reproduce known mathematics;
-only their specific composition is the qualified class-4 claim. No exhaustive
-search can establish priority, and no patent search was performed.
+respective areas. The low-Froude components reproduce known mathematics, while
+their validated B-spline realization and routing are engineering improvements.
 
 ## Phase 4 — two validated advances
 
@@ -920,15 +922,13 @@ checksum is the corrected positive tail, independently checked above.
 
 Classification: endpoint integration by parts, endpoint low-speed dominance,
 Bickley functions, and numerical steepest descent are class 1. The Rust solver,
-error-bound routing, tests, and diagnostics are class 2. Their specific combined
-Michell/B-spline construction is the qualified class-4 claim described next.
+error-bound routing, tests, and diagnostics are class 2.
 
-#### Novelty falsification log
+#### Literature due diligence and reclassification
 
 Searches were run across general web indexing, arXiv, DOI/publisher pages,
 TRID, the Adelaide repository, DLMF, and references inside the fetched Tuck,
-Lazauskas, Gotman, Motygin, and oscillatory-quadrature papers. Exact queries
-that did **not** find this combination included:
+Lazauskas, Gotman, Motygin, and oscillatory-quadrature papers. Queries included:
 
 - `"Michell integral" "Bickley-Naylor"`
 - `"ship wave resistance" "Bickley function"`
@@ -939,21 +939,19 @@ that did **not** find this combination included:
 - `thin-ship steepest descent wave resistance`
 - `Michell wave resistance Fresnel integral bow stern interference low Froude`
 
-The search *did* find substantial near-prior art: Gotman's endpoint-derivative
-series for polynomial, separable hulls; de Sendagorta and Grases's 1988 abstract
-describing rapidly convergent Michell/Havelock series and tabulatable velocity
-functions ([fetched record](https://trid.trb.org/View/397494)); Motygin's
-steepest-descent Kelvin Green function; Keller--Ahluwalia low-speed endpoints;
-and the Bickley literature. The full de Sendagorta--Grases article was not
-available for inspection, so it is a material uncertainty, explicitly not
-silence that proves novelty. No source found all four elements: validated-degree
-B-spline span endpoints, Bickley analytic continuation of the pair kernel,
-fixed-cost contour evaluation, and a submerged-endpoint omission bound with
-automatic tolerance routing.
-
-Accordingly, class 4 means only “possibly novel implementation-level
-combination after a serious but non-exhaustive search.” Establishing priority
-would require a professional database and patent search plus expert review.
+Equation-level follow-up established a broader analytic lineage than the first
+pass recognized. Birkhoff and Kotik separate hull data from a reusable kernel;
+Michelsen's 1960 dissertation reduces polynomial hull functions to tabulatable
+special-function expressions; its verified 1972 JSR record describes a finite
+Gegenbauer double sum; and the verified Sendagorta--Grases record describes
+rapidly convergent, shape-separated Michell/Havelock series for design use.
+Gotman supplies endpoint-derivative structure, Motygin supplies ship-wave
+steepest descent, and Keller--Ahluwalia supplies low-speed endpoint dominance.
+The full Michelsen 1972 and Sendagorta--Grases papers remain interlibrary-loan
+due-diligence items, but their records already justify withdrawing the earlier
+priority-seeking classification. The method lineage is class 1/class 3; the
+validated B-spline endpoint implementation, cancellation accounting, omission
+bound, contour evaluation, error-gated dispatch, and fallback are class 2.
 
 ## Commit map
 

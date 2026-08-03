@@ -1,6 +1,6 @@
 {
-  "title": "Conservative Endpoint-Bickley Reduction for Low-Froude Michell Resistance",
-  "description": "Reproducible software, manuscript sources, validation tests, benchmark harness, and generated numerical evidence for an endpoint-pair reduction and frequency-scaled contour evaluation of low-Froude Michell wave resistance.",
+  "title": "Error-Gated Endpoint Evaluation of Michell Resistance for Low-Froude B-Spline Hulls",
+  "description": "Reproducible software, manuscript sources, validation tests, benchmark harness, and generated numerical evidence for a modern error-bounded B-spline implementation of the historical analytic reduction lineage for low-Froude Michell wave resistance.",
   "upload_type": "software",
   "creators": [
     {

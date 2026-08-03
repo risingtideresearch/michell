@@ -9,27 +9,28 @@ Editor-in-Chief
 
 Dear Editor-in-Chief,
 
-We submit “Conservative Endpoint–Bickley Reduction for Low-Froude Michell
-Resistance” for consideration as a research paper in the *Journal of Ship
-Research*.
+We submit “Error-Gated Endpoint Evaluation of Michell Resistance for
+Low-Froude B-Spline Hulls” for consideration as a research paper in the
+*Journal of Ship Research*.
 
 The paper addresses a practical reliability problem in low-Froude thin-ship
 calculation. We first document a historical 113-fold understatement of actual
 error by a real-axis marcher's quiet-window estimate and the structural fix
-that makes the corrected estimate conservative on the tested range. We then
-derive an exact endpoint representation for polynomial B-spline hulls, a bound
-for omitted submerged endpoint pairs, and a Bickley-kernel contour evaluation
-whose quadrature cost is independent of oscillation frequency. On the standard
+that makes the corrected estimate cover the tested range. We then revive the
+analytic-reduction lineage of Birkhoff and Kotik, Michelsen, and Sendagorta and
+Grases as a degree-bounded B-spline implementation. It provides an exact
+endpoint representation, a bound for omitted submerged endpoint pairs, a
+Bickley-kernel contour evaluation whose quadrature cost is independent of
+oscillation frequency, an error gate, and a real-axis fallback. On the standard
 Wigley case at length Froude number 0.02, the committed validation harness
-measures an approximately 880-fold median speedup at unchanged requested
-accuracy.
+measures roughly a 750-fold median speedup at unchanged requested accuracy.
 
-The manuscript distinguishes a published Wigley result reproduced from an
-engineering improvement to this codebase. It classifies only the specific
-combination of endpoint pairs, Bickley continuation, frequency-scaled Gaussian
-quadrature, and conservative dispatch as possibly new. The paper explicitly
-records that the full text of de Sendagorta and Grases (1988) remains a
-literature uncertainty **[CONFIRM THAT THIS IS STILL TRUE AT SUBMISSION]**.
+The manuscript distinguishes known analytic reductions and a reproduced
+published Wigley result from engineering improvements to this codebase. It
+makes no priority claim for the method or its combination of components. The
+full texts of Michelsen (1972) and de Sendagorta and Grases (1988) remain
+due-diligence requests; the comparison states only what their verified records
+establish **[UPDATE ACCESS STATUS BEFORE SUBMISSION]**.
 
 The manuscript includes reproducible tests, generated numerical evidence, and
 an archive link **[INSERT MINTED ZENODO DOI]**. It also transparently discloses

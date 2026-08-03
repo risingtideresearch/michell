@@ -1081,9 +1081,8 @@ fn run_outer_with_limits(
         let scale = refined.integral.abs().max(f64::MIN_POSITIVE);
         let refinement_rel = (refined.integral - pass.integral).abs() / scale;
         let tail_rel = refined.tail_abs_estimate / scale;
-        // These diagnose different omissions. Adding them is the appropriate
-        // conservative combination; max() discarded one source whenever both
-        // were nonzero.
+        // These diagnose different omissions. Add them: max() discarded one
+        // source whenever both were nonzero.
         est_rel = params.coefficient_rel_error_bound + refinement_rel + tail_rel;
         // Panel halving cannot reduce the fixed quiet-window truncation. Once
         // its discretisation change is already below that tail floor, further

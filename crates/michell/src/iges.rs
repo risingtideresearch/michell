@@ -6,7 +6,7 @@
 //! produced by SubD/T-spline → NURBS exports, are supported approximately:
 //! each base surface is restricted to the parameter-space **bounding box** of
 //! its boundary curves, which is exact for rectangular boundaries (the common
-//! natural-patch case) and conservative otherwise. Genuinely *trimmed*
+//! natural-patch case) and an outer approximation otherwise. Genuinely *trimmed*
 //! surfaces (entities 142/144) are rejected. This is a hull-surface importer,
 //! not a CAD kernel.
 //!
