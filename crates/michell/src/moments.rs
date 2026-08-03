@@ -47,6 +47,11 @@ impl C64 {
         self.abs_sq().sqrt()
     }
 
+    #[inline]
+    pub fn is_finite(self) -> bool {
+        self.re.is_finite() && self.im.is_finite()
+    }
+
     /// Complex exponential `e^{z}`.
     #[inline]
     pub fn exp(self) -> C64 {

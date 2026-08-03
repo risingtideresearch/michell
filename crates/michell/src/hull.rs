@@ -5,6 +5,15 @@ use crate::bspline::{ders_basis, BSplineSurface};
 use crate::error::{Error, Result};
 use crate::quadrature::gauss_legendre;
 
+/// Largest spline degree accepted by [`Hull`] in either parametric direction.
+///
+/// The resistance kernels use local power-basis coefficients. Independent
+/// degree-elevation and high-precision tests validate that representation
+/// through degree 16. Higher degrees are rejected because the former
+/// corner-derivative/Taylor conversion becomes ill-conditioned and can return
+/// finite but catastrophically wrong resistance values.
+pub const MAX_SUPPORTED_SPLINE_DEGREE: usize = 16;
+
 /// One non-empty knot span in one direction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Span {
@@ -86,6 +95,7 @@ impl Hull {
     /// - a non-negative control net (a conservative sufficient condition for
     ///   `f >= 0`, by the B-spline convex-hull property).
     pub fn new(surface: BSplineSurface) -> Result<Hull> {
+        validate_resistance_degree(&surface)?;
         let (z0, z1) = surface.z_domain();
         let (x0, x1) = surface.x_domain();
         let draft = z1;
@@ -130,7 +140,7 @@ impl Hull {
             .collect();
 
         // Local polynomial coefficients of fx = ∂f/∂x on every span pair.
-        let fx_coeff = compute_fx_coeff(&surface, &xs, &zs);
+        let fx_coeff = compute_fx_coeff(&surface, &xs, &zs)?;
 
         // Geometric integrals by per-span Gauss-Legendre.
         // Volume: integrand is polynomial of degree (p, q) => exact.
@@ -318,7 +328,7 @@ impl Hull {
         // Antisymmetric ∂f_a/∂x on the same spans.
         let xs = a_surface.x_span_indices();
         let zs = a_surface.z_span_indices();
-        hull.fx_a_coeff = Some(compute_fx_coeff(&a_surface, &xs, &zs));
+        hull.fx_a_coeff = Some(compute_fx_coeff(&a_surface, &xs, &zs)?);
         hull.a_surface = Some(a_surface);
 
         // Two-sided geometry corrections: wetted surface and the centreplane
@@ -623,7 +633,7 @@ fn zj_map(sz: &Span, node: f64) -> f64 {
 /// Local polynomial coefficients of `∂f/∂x` per span pair, in the flattened
 /// layout documented on [`Hull::fx_coeff`]. Shared by the symmetric and
 /// asymmetric constructors so both paths use identical arithmetic.
-fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Vec<f64> {
+fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Result<Vec<f64>> {
     let p = surface.degree_x();
     let q = surface.degree_z();
     // Factorials up to max degree (degrees are small).
@@ -636,17 +646,40 @@ fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Vec
     for (isx, &sx) in xs.iter().enumerate() {
         for (isz, &sz) in zs.iter().enumerate() {
             let d = surface.corner_partials(sx, sz);
+            if d.iter().flatten().any(|value| !value.is_finite()) {
+                return Err(Error::Unsupported(
+                    "non-finite span derivative encountered while constructing resistance coefficients"
+                        .into(),
+                ));
+            }
             for a in 0..p {
                 for b in 0..=q {
                     // f = Σ D[a][b]/(a! b!) X^a Z^b  =>
                     // fx coefficient of X^a Z^b is D[a+1][b]/(a! b!).
-                    fx_coeff[((isx * nsz + isz) * p + a) * (q + 1) + b] =
-                        d[a + 1][b] / (fact[a] * fact[b]);
+                    let coefficient = d[a + 1][b] / (fact[a] * fact[b]);
+                    if !coefficient.is_finite() {
+                        return Err(Error::Unsupported(
+                            "non-finite local resistance coefficient encountered".into(),
+                        ));
+                    }
+                    fx_coeff[((isx * nsz + isz) * p + a) * (q + 1) + b] = coefficient;
                 }
             }
         }
     }
-    fx_coeff
+    Ok(fx_coeff)
+}
+
+fn validate_resistance_degree(surface: &BSplineSurface) -> Result<()> {
+    let degree_x = surface.degree_x();
+    let degree_z = surface.degree_z();
+    if degree_x > MAX_SUPPORTED_SPLINE_DEGREE || degree_z > MAX_SUPPORTED_SPLINE_DEGREE {
+        return Err(Error::Unsupported(format!(
+            "resistance evaluation supports spline degrees up to {MAX_SUPPORTED_SPLINE_DEGREE} \
+             in each direction; got degree ({degree_x}, {degree_z})"
+        )));
+    }
+    Ok(())
 }
 
 /// One-sided wetted surface `∬ √(1 + fx² + fz²) dx dz` of a half-breadth

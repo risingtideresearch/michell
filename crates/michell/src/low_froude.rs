@@ -136,6 +136,14 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
 
     let nu = cond.gravity / (cond.speed * cond.speed);
     let terms = endpoint_terms(hull, nu);
+    if terms
+        .iter()
+        .any(|term| !(term.x.is_finite() && term.z.is_finite() && term.coeff.is_finite()))
+    {
+        return Err(Error::Unsupported(
+            "non-finite endpoint coefficient encountered in low-Froude resistance".into(),
+        ));
+    }
     let waterline: Vec<_> = terms.iter().copied().filter(|term| term.z == 0.0).collect();
     if waterline.is_empty() {
         return Err(Error::Unsupported(
@@ -208,6 +216,21 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
     let est_rel_error = abs_error / resistance.abs().max(f64::MIN_POSITIVE);
     for pair in &mut endpoint_pairs {
         pair.resistance_fraction = pair.resistance / resistance;
+    }
+
+    if !(resistance.is_finite()
+        && est_rel_error.is_finite()
+        && omitted_abs_error_bound.is_finite()
+        && quadrature_abs_error_estimate.is_finite()
+        && endpoint_pairs.iter().all(|pair| {
+            pair.resistance.is_finite()
+                && pair.resistance_fraction.is_finite()
+                && pair.quadrature_abs_error_estimate.is_finite()
+        }))
+    {
+        return Err(Error::Unsupported(
+            "non-finite value encountered in low-Froude resistance evaluation".into(),
+        ));
     }
 
     Ok(LowFroudeResistance {

@@ -93,7 +93,7 @@ pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
 pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, ViscousResistance};
 pub use grid::SampleGrid;
-pub use hull::{ConstraintGradient, Hull, HullConstraintGradients};
+pub use hull::{ConstraintGradient, Hull, HullConstraintGradients, MAX_SUPPORTED_SPLINE_DEGREE};
 pub use low_froude::{
     low_froude_wave_resistance, EndpointKind, EndpointPairContribution, EndpointWave,
     LowFroudeResistance,

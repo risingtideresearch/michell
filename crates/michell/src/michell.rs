@@ -361,6 +361,7 @@ pub fn multihull_wave_resistance_gradient_with(
     let (wave, frac) = run_outer_with_frac(&params, opts, coeff, |lambda| {
         superpose(&mut primal_members, nu, lambda)
     });
+    let wave = validate_wave_result(wave)?;
 
     let mut reverse_members = make_members();
     let mut source_coeff_adjoint: Vec<Vec<f64>> = members
@@ -436,11 +437,13 @@ pub fn multihull_wave_resistance_gradient_with(
         })
         .collect();
 
-    Ok(MultihullWaveResistanceGradient {
+    let result = MultihullWaveResistanceGradient {
         wave,
         members: member_gradients,
         gradient_evaluations,
-    })
+    };
+    validate_gradient_result(&result)?;
+    Ok(result)
 }
 
 /// Wave resistance of a hull **heeled** by `heel` radians about its
@@ -548,7 +551,7 @@ pub fn multihull_heel_wave_resistance(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
+    validate_wave_result(run_outer(&params, opts, coeff, |lambda| {
         superpose(&mut mem, nu, lambda)
     }))
 }
@@ -604,7 +607,7 @@ pub fn multihull_wave_resistance_with(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
+    validate_wave_result(run_outer(&params, opts, coeff, |lambda| {
         superpose(&mut mem, nu, lambda)
     }))
 }
@@ -744,7 +747,7 @@ pub fn multihull_wave_resistance_lifting(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
+    validate_wave_result(run_outer(&params, opts, coeff, |lambda| {
         superpose(&mut mem, nu, lambda)
     }))
 }
@@ -765,6 +768,11 @@ pub fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f
     let nu = cond.gravity / (cond.speed * cond.speed);
     let mut inner = InnerIntegral::new(hull, nu);
     let f = inner.eval(lambda);
+    if !f.is_finite() {
+        return Err(Error::Unsupported(
+            "non-finite Michell inner integral encountered".into(),
+        ));
+    }
     Ok((f.re, f.im))
 }
 
@@ -1132,6 +1140,40 @@ fn validate_fleet(
         ));
     }
     Ok(())
+}
+
+fn validate_wave_result(wave: WaveResistance) -> Result<WaveResistance> {
+    if wave.resistance.is_finite()
+        && wave.est_rel_error.is_finite()
+        && wave.max_lambda >= 1.0
+        && !wave.max_lambda.is_nan()
+    {
+        Ok(wave)
+    } else {
+        Err(Error::Unsupported(
+            "non-finite value encountered in wave-resistance evaluation".into(),
+        ))
+    }
+}
+
+fn validate_gradient_result(result: &MultihullWaveResistanceGradient) -> Result<()> {
+    let controls_are_finite = |control: &ControlNetGradient| match control {
+        ControlNetGradient::Symmetric(values) => values.iter().all(|value| value.is_finite()),
+        ControlNetGradient::Asymmetric { port, starboard } => {
+            port.iter().chain(starboard).all(|value| value.is_finite())
+        }
+    };
+    if result.members.iter().all(|member| {
+        member.placement.longitudinal.is_finite()
+            && member.placement.transverse.is_finite()
+            && controls_are_finite(&member.control)
+    }) {
+        Ok(())
+    } else {
+        Err(Error::Unsupported(
+            "non-finite value encountered in wave-resistance gradient".into(),
+        ))
+    }
 }
 
 /// Fleet phase references: the mean hull x-centre and mean transverse position.
