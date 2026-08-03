@@ -1,10 +1,18 @@
-\documentclass[11pt]{article}
+\documentclass[10pt]{article}
 
-\usepackage[margin=1in]{geometry}
+\usepackage[
+  letterpaper,
+  top=0.51in,
+  bottom=1.04in,
+  left=0.47in,
+  right=0.47in,
+  columnsep=0.35in
+]{geometry}
 \usepackage[T1]{fontenc}
-\usepackage{lmodern}
+\usepackage{newtxtext}
 \usepackage{microtype}
 \usepackage{amsmath,amssymb,amsthm}
+\usepackage{newtxmath}
 \usepackage{booktabs}
 \usepackage{siunitx}
 \usepackage{xcolor}
@@ -32,17 +40,24 @@
 \newcommand{\e}{\mathrm{e}}
 \newcommand{\Rw}{R_{\mathrm{w}}}
 \newcommand{\ArchiveDOI}{10.5281/zenodo.REPLACE-ME}
+\setcounter{secnumdepth}{0}
+\setlength{\emergencystretch}{2em}
 
-\title{Conservative Endpoint--Bickley Reduction for\\
+\title{\fontsize{18}{21}\selectfont\bfseries
+Conservative Endpoint--Bickley Reduction for\\
 Low-Froude Michell Resistance}
 \author{Rob Story \qquad Avi Bryant\\[0.5ex]
 \small Rising Tide Research Foundation}
 \date{}
 
 \begin{document}
+\makeatletter
+\twocolumn[
+\begin{@twocolumnfalse}
 \maketitle
 
 \begin{abstract}
+\itshape
 Reliable low-Froude wave-resistance prediction requires both resolving an
 increasingly oscillatory Michell integral and knowing when its algebraic tail
 has become negligible.  In a conventional real-axis marcher, we found a
@@ -73,6 +88,13 @@ known endpoint and contour ideas is possibly new.  The method is restricted to
 upright symmetric monohulls and its contour-discretization estimate is not a
 formal interval certificate.
 \end{abstract}
+
+\noindent\textbf{KEY WORDS:} Wave resistance; Michell integral; low Froude
+number; oscillatory quadrature; B-splines; Bickley--Naylor function.
+\vspace{1em}
+\end{@twocolumnfalse}
+]
+\makeatother
 
 \section{Introduction}
 
@@ -198,10 +220,12 @@ derivatives.  Equal endpoint/power triples may be combined exactly.
 \begin{proof}
 \Cref{eq:xparts,eq:zparts} replace a monomial of derivative orders
 \((r,u)\) by endpoint factors proportional to
-\((\nu\lambda)^{-(r+1)}(\nu\lambda^2)^{-(u+1)}\).  Its power of \(\lambda\)
-is therefore \(n=r+2u+3\).  Both sums terminate at the polynomial degrees, and
-summing the finite contributions from all nonzero knot rectangles gives
-\cref{eq:endpointsum}.
+\[
+(\nu\lambda)^{-(r+1)}(\nu\lambda^2)^{-(u+1)}.
+\]
+The resulting power of \(\lambda\) is \(n=r+2u+3\).  Both sums terminate at
+the polynomial degrees, and summing the finite contributions from all nonzero
+knot rectangles gives \cref{eq:endpointsum}.
 \end{proof}
 
 The code tests \cref{eq:endpointsum} directly against its independent exact
@@ -209,7 +233,7 @@ moment machinery for the Wigley hull and for a multi-span hull containing a
 full-multiplicity chine.  Across \(1\leq\lambda\leq20\), the discrepancy is
 below the test's scaled \(5\times10^{-10}\) threshold.
 
-\section{Waterline reduction with an omission bound}
+\section{Waterline reduction and omission bound}
 \label{sec:bound}
 
 Partition \cref{eq:endpointsum} into waterline terms \(W\), for which
@@ -268,7 +292,7 @@ The zero-frequency kernel is analytic:
 \end{equation}
 and is evaluated by a stable even/odd recurrence.
 
-\section{Bickley kernels and Gaussian contour quadrature}
+\section{Bickley kernels and contour quadrature}
 \label{sec:contour}
 
 With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
@@ -334,7 +358,7 @@ each using \(24+48=72\) contour nodes, hence \(16\times72=1{,}152\) scalar
 nodes; equal-position pairs use \cref{eq:kzero}.  The committed harness asserts
 each count.
 
-\section{Hybrid algorithm and implementation scope}
+\section{Hybrid algorithm and scope}
 \label{sec:algorithm}
 
 The reduced method is an asymptotic companion, not a blind replacement for the
@@ -400,7 +424,7 @@ classical thin-ship value \(10^3 C_w=1.2486\) for this Wigley hull at
 difference of \(5.43\times10^{-4}\) (\(0.0543\%\)).  This is a known result
 reproduced, not a new accuracy claim.
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
 \caption{Resistance validation against the independent analytic-Wigley,
 resolved-real-axis reference.  ``Reduced estimate'' combines the rigorous
@@ -418,7 +442,7 @@ requested \(\mathrm{rel\_tol}=10^{-8}\) and at most six refinements.}
 0.02 & \num{4.417234459694e-5} & \num{1.526e-13}& \num{7.620e-13}& \num{6.334e-7}\\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
 \Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), omitted submerged
 terms are still material and the estimate correctly rejects the reduction at
@@ -438,7 +462,7 @@ integration for \(s\in\{4,7,10\}\) and
 including one documentation test; the companion Python interface has 11
 passing tests.
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
 \begin{minipage}[t]{0.48\textwidth}
 \centering
@@ -490,7 +514,7 @@ the \(10^{-13}\)--\(10^{-12}\) level, while its quadrature work is fixed by
 geometry.  At default tolerance the hybrid rejects the reduced result at
 \(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
 \label{fig:scaling}
-\end{figure}
+\end{figure*}
 
 \subsection{Runtime}
 
@@ -499,7 +523,7 @@ tolerance \(10^{-5}\).  Absolute timings are host-dependent; the work counts
 and checksums are deterministic.  The two \(\Fn=0.02\) methods were measured
 in the same benchmark process.
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
 \caption{Final release benchmark on the development host.}
 \label{tab:timing}
@@ -513,7 +537,7 @@ Real-axis marcher, \(\Fn=0.02\) & 39.233 & 35.950 & 511,504 evaluations\\
 Endpoint/NSD, \(\Fn=0.02\) & 0.045 & 0.044 & 1,152 nodes\\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
 
 At \(\Fn=0.02\), the median speedup is approximately 880-fold.  The endpoint solver's cost is
 nearly unchanged between \(\Fn=0.05\) and 0.02, as predicted by
@@ -631,8 +655,8 @@ The implementation, tests, benchmark harness, generated results, and number
 audit are available in the public
 \href{https://github.com/risingtideresearch/michell}{\texttt{michell}
 repository}.  The immutable version supporting this paper is archived at
-\href{https://doi.org/\ArchiveDOI}{doi:\ArchiveDOI}.  The numerical kernel is
-frozen at repository revision \texttt{30d8f53}.
+\href{https://doi.org/\ArchiveDOI}{\nolinkurl{\ArchiveDOI}}.  The numerical
+kernel is frozen at repository revision \texttt{30d8f53}.
 
 \section*{Acknowledgments}
 
