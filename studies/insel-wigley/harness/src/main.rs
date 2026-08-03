@@ -265,16 +265,104 @@ fn run_canal() {
     eprintln!("wrote {rows} converged canal rows to {}", output.display());
 }
 
+fn run_separation_grid() {
+    let output = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../data/predictions/separation_grid_predictions.csv");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let hull = hulls::wigley(LENGTH, BEAM, DRAFT).expect("valid exact Wigley geometry");
+    let options = WaveOptions {
+        rel_tol: REL_TOL,
+        max_refinements: 10,
+    };
+    let mut solo_cache = BTreeMap::new();
+    let mut writer = BufWriter::new(File::create(&output).unwrap());
+    writeln!(writer, "# criteria: CRITERIA-SEPARATION.md").unwrap();
+    writeln!(
+        writer,
+        "# geometry: exact C2 Wigley L=1.8m B=0.18m T=0.1125m; centreline separation"
+    )
+    .unwrap();
+    writeln!(
+        writer,
+        "# grid: S/L=0.080:0.005:0.550; Fn=0.150:0.005:1.000; rel_tol=1e-6; max_refinements=10"
+    )
+    .unwrap();
+    writeln!(writer, "separation_over_length,separation_m,fn,speed_m_s,interference,pair_rw_n,solo_rw_n,pair_method,pair_outcome,pair_est_rel_error,pair_evaluations,pair_max_lambda,solo_method,solo_outcome,solo_est_rel_error,solo_evaluations,solo_max_lambda,rel_tol").unwrap();
+    let mut rows = 0usize;
+    for separation_index in 0..=94 {
+        let separation_over_length = 0.080 + 0.005 * separation_index as f64;
+        let separation = separation_over_length * LENGTH;
+        for fn_index in 0..=170 {
+            let fn_ = 0.150 + 0.005 * fn_index as f64;
+            let condition = conditions(fn_);
+            let solo = solo_result(&hull, fn_, &options, &mut solo_cache);
+            let members = [
+                (
+                    &hull,
+                    Placement {
+                        x: 0.0,
+                        y: -separation / 2.0,
+                    },
+                ),
+                (
+                    &hull,
+                    Placement {
+                        x: 0.0,
+                        y: separation / 2.0,
+                    },
+                ),
+            ];
+            let pair = require_converged(
+                "separation grid pair",
+                fn_,
+                multihull_wave_resistance_with(&members, &condition, &options).unwrap(),
+            );
+            let interference = pair.resistance / (2.0 * solo.resistance);
+            assert!(interference.is_finite() && interference >= 0.0);
+            writeln!(
+                writer,
+                "{separation_over_length:.3},{separation:.12},{fn_:.7},{:.12},{interference:.12e},{:.12e},{:.12e},{},{},{:.12e},{},{:.12e},{},{},{:.12e},{},{:.12e},{:.1e}",
+                condition.speed,
+                pair.resistance,
+                solo.resistance,
+                pair.method.as_str(),
+                pair.outcome.as_str(),
+                pair.est_rel_error,
+                pair.inner_evaluations,
+                pair.max_lambda,
+                solo.method.as_str(),
+                solo.outcome.as_str(),
+                solo.est_rel_error,
+                solo.inner_evaluations,
+                solo.max_lambda,
+                REL_TOL,
+            )
+            .unwrap();
+            rows += 1;
+        }
+    }
+    writer.flush().unwrap();
+    eprintln!(
+        "wrote {rows} converged separation-grid rows to {} ({} unique standalone solves)",
+        output.display(),
+        solo_cache.len()
+    );
+}
+
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if arguments.as_slice() == ["--canal"] {
         run_canal();
         return;
     }
+    if arguments.as_slice() == ["--separation-grid"] {
+        run_separation_grid();
+        return;
+    }
     let theory = match arguments.as_slice() {
         [] => false,
         [flag] if flag == "--theory" => true,
-        _ => panic!("usage: insel-wigley-harness [--theory | --canal]"),
+        _ => panic!("usage: insel-wigley-harness [--theory | --canal | --separation-grid]"),
     };
     let study = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let digitized = study.join("data/digitized");

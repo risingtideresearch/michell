@@ -57,3 +57,17 @@ The first command writes `data/predictions/canal_predictions.csv`; the analysis
 commands write `data/analysis/canal_scores.csv`, update
 `data/analysis/critical_froude.csv`, and regenerate the eight `canal-*.png`
 overlays. The Python environment is the repository's existing plotting extra.
+
+The preregistered separation-definition probe uses a denser harness-only grid:
+
+```sh
+cargo run --release --manifest-path studies/insel-wigley/harness/Cargo.toml -- --separation-grid
+python/.venv/bin/python studies/insel-wigley/plots/analyze_separation.py
+```
+
+The first command writes 16,245 converged rows for `S/L = 0.080:0.005:0.550`
+and `Fn = 0.150:0.005:1.000` to
+`data/predictions/separation_grid_predictions.csv`. The analysis applies
+`../CRITERIA-SEPARATION.md`, writes both score tables, and creates four
+`separation-fit-*.png` overlays. This mode allows ten refinements because one
+`Fn = 1.0` pair hit the eight-refinement cap; the tolerance remains `1e-6`.

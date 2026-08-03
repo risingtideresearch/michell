@@ -558,3 +558,43 @@ exclude vertical averaging or point-source quadrature without a mesh study.
 | Figure 359 agrees with the measured close-spacing cross-model ordering | E | rejected at both close separations |
 | centred station differences recover the Wigley longitudinal derivative | K | exact by the quadratic identity above |
 | every mesh-resolution mechanism is thereby excluded | E | rejected; vertical averaging and point-source phase quadrature remain |
+
+## Separation-definition probe
+
+`CRITERIA-SEPARATION.md` was committed before the harness evaluated any new
+separation. The exact C2 solver then produced 16,245 converged pair rows on
+`S/L = 0.080:0.005:0.550` and `Fn = 0.150:0.005:1.000`. One `Fn = 1.0` row hit
+the original eight-refinement harness cap; the completed run raised only that
+harness allowance to ten and retained `rel_tol = 1e-6`.
+
+The registered median-error fits are:
+
+| figure | label `S/L` | best `S_eff/L` | fit interval | best median error | best p90 | best-fit agreement |
+|---:|---:|---:|---:|---:|---:|---|
+| 359 | 0.200 | 0.195 | 0.1875--0.2025 | 0.0913 | 0.2952 | no |
+| 360 | 0.300 | 0.300 | 0.2775--0.3325 | 0.0413 | 0.1431 | no |
+| 361 | 0.400 | 0.345 | 0.3275--0.3725 | 0.0215 | 0.1512 | no |
+| 362 | 0.500 | 0.460 | 0.4225--0.5500 | 0.0185 | 0.0967 | yes |
+
+The fitted values do not follow one definition change. `S_label - B` and
+`S_label/2` are consistent with zero of four panels. The label itself passes
+the interval and full-agreement requirements only for Figure 362. The null
+mapping therefore scores one of four; no mapping reaches the three-panel
+PARTIAL threshold. The preregistered outcome is **REFUTED**.
+
+The result also rejects a looser spacing explanation. Allowing each figure its
+own free separation cannot bring Figures 359--361 inside every unchanged
+agreement threshold: their 90th-percentile errors remain 0.295, 0.143, and
+0.151. The close-spacing amplitude excess is therefore not a gap-versus-
+centreline or half-spacing transcription hidden in the labels. Insel defines
+`S` as demihull-centreline separation in the theoretical derivation (printed
+52, PDF 62), consistent with the null interpretation tested here.
+
+### Separation-probe claim classification
+
+| claim | class | status |
+|---|---|---|
+| printed `S/L` means clear gap rather than centreline separation | E | rejected by the registered fit and primary definition |
+| printed `S/L` is twice the implemented half-spacing | E | rejected; zero panels fit the half-spacing mapping |
+| one shared separation transformation explains all C2 curves | E | rejected; best fits are mutually inconsistent |
+| free per-panel separation restores theory agreement | E | rejected for Figures 359--361; Figure 362 agrees |

@@ -1,0 +1,8 @@
+# criteria_commit: f878a9a
+# source: attributed Insel Figures 359--362
+# prediction: exact C2 library solver, all rows converged
+figure,label_separation_over_length,best_separation_over_length,fit_grid_lower,fit_grid_upper,fit_reported_lower,fit_reported_upper,minimum_median_absolute_error,label_median_absolute_error,best_median_absolute_error,best_p90_absolute_error,best_absolute_hump_fn_error,best_peak_ratio,best_agreement
+359,0.200,0.195,0.190,0.200,0.1875,0.2025,0.0818702,0.1040497,0.0912820,0.2952294,0.0000000,0.8465268,false
+360,0.300,0.300,0.280,0.330,0.2775,0.3325,0.0460334,0.0412692,0.0412692,0.1431316,0.0050000,0.9168402,false
+361,0.400,0.345,0.330,0.370,0.3275,0.3725,0.0242782,0.0337898,0.0215453,0.1511680,0.0000000,0.9839691,false
+362,0.500,0.460,0.425,0.550,0.4225,0.5500,0.0188926,0.0202954,0.0184668,0.0966586,0.0050000,1.0029469,true

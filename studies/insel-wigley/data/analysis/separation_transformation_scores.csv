@@ -1,0 +1,16 @@
+# criteria_commit: f878a9a
+# source: attributed Insel Figures 359--362
+# prediction: exact C2 library solver, all rows converged
+transformation,figure,label_separation_over_length,predicted_separation_over_length,best_separation_over_length,fit_reported_lower,fit_reported_upper,fit_interval_consistent,scoring_points,median_absolute_error,p90_absolute_error,source_hump_fn,prediction_hump_fn,absolute_hump_fn_error,prediction_source_peak_ratio,count_pass,median_pass,p90_pass,hump_position_pass,hump_amplitude_pass,agreement,panel_consistent,transformation_consistent_panels,registered_winner,registered_outcome
+gap_minus_beam,359,0.200,0.100,0.195,0.1875,0.2025,false,58,0.3192835,0.5160077,0.450,0.465,0.015,0.8824304,true,false,false,false,false,false,false,0,null_label,REFUTED
+gap_minus_beam,360,0.300,0.200,0.300,0.2775,0.3325,false,57,0.1958275,0.3373294,0.410,0.445,0.035,0.9739209,true,false,false,false,true,false,false,0,null_label,REFUTED
+gap_minus_beam,361,0.400,0.300,0.345,0.3275,0.3725,false,59,0.0590479,0.2775975,0.395,0.405,0.010,1.0226704,true,false,false,true,true,false,false,0,null_label,REFUTED
+gap_minus_beam,362,0.500,0.400,0.460,0.4225,0.5500,false,57,0.0318406,0.1496329,0.385,0.385,0.000,1.0661040,true,true,false,true,true,false,false,0,null_label,REFUTED
+half_spacing,359,0.200,0.100,0.195,0.1875,0.2025,false,58,0.3192835,0.5160077,0.450,0.465,0.015,0.8824304,true,false,false,false,false,false,false,0,null_label,REFUTED
+half_spacing,360,0.300,0.150,0.300,0.2775,0.3325,false,57,0.2521408,0.4602362,0.410,0.485,0.075,0.9916019,true,false,false,false,true,false,false,0,null_label,REFUTED
+half_spacing,361,0.400,0.200,0.345,0.3275,0.3725,false,59,0.2147660,0.3728751,0.395,0.445,0.050,1.0863399,true,false,false,false,true,false,false,0,null_label,REFUTED
+half_spacing,362,0.500,0.250,0.460,0.4225,0.5500,false,57,0.1586204,0.3649913,0.385,0.420,0.035,1.2099474,true,false,false,false,false,false,false,0,null_label,REFUTED
+null_label,359,0.200,0.200,0.195,0.1875,0.2025,true,58,0.1040497,0.2978489,0.450,0.445,0.005,0.8446290,true,false,false,true,false,false,false,1,null_label,REFUTED
+null_label,360,0.300,0.300,0.300,0.2775,0.3325,true,57,0.0412692,0.1431316,0.410,0.405,0.005,0.9168402,true,true,false,true,true,false,false,1,null_label,REFUTED
+null_label,361,0.400,0.400,0.345,0.3275,0.3725,false,59,0.0337898,0.1272630,0.395,0.385,0.010,0.9328721,true,true,false,true,true,false,false,1,null_label,REFUTED
+null_label,362,0.500,0.500,0.460,0.4225,0.5500,true,57,0.0202954,0.0798127,0.385,0.375,0.010,0.9644400,true,true,true,true,true,true,true,1,null_label,REFUTED
