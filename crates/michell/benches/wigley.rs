@@ -33,25 +33,38 @@ fn sample_stats(mut times: Vec<Duration>, checksum: f64) -> SampleStats {
     }
 }
 
-fn measure(samples: usize, mut run: impl FnMut() -> f64) -> SampleStats {
-    black_box(run());
+fn measure(samples: usize, batch: usize, mut run: impl FnMut() -> f64) -> SampleStats {
+    for _ in 0..batch {
+        black_box(run());
+    }
     let mut times = Vec::with_capacity(samples);
     let mut checksum = 0.0;
     for _ in 0..samples {
         let start = Instant::now();
+        for _ in 0..batch {
+            black_box(run());
+        }
+        times.push(Duration::from_secs_f64(
+            start.elapsed().as_secs_f64() / batch as f64,
+        ));
         checksum += black_box(run());
-        times.push(start.elapsed());
     }
     sample_stats(times, checksum)
 }
 
 fn measure_pair(
     samples: usize,
+    left_batch: usize,
+    right_batch: usize,
     mut left: impl FnMut() -> f64,
     mut right: impl FnMut() -> f64,
 ) -> (SampleStats, SampleStats) {
-    black_box(left());
-    black_box(right());
+    for _ in 0..left_batch {
+        black_box(left());
+    }
+    for _ in 0..right_batch {
+        black_box(right());
+    }
     let mut left_times = Vec::with_capacity(samples);
     let mut right_times = Vec::with_capacity(samples);
     let mut left_checksum = 0.0;
@@ -59,13 +72,21 @@ fn measure_pair(
     for sample in 0..samples {
         let mut run_left = || {
             let start = Instant::now();
-            left_checksum += black_box(left());
-            left_times.push(start.elapsed());
+            for _ in 0..left_batch {
+                black_box(left());
+            }
+            left_times.push(Duration::from_secs_f64(
+                start.elapsed().as_secs_f64() / left_batch as f64,
+            ));
         };
         let mut run_right = || {
             let start = Instant::now();
-            right_checksum += black_box(right());
-            right_times.push(start.elapsed());
+            for _ in 0..right_batch {
+                black_box(right());
+            }
+            right_times.push(Duration::from_secs_f64(
+                start.elapsed().as_secs_f64() / right_batch as f64,
+            ));
         };
         if sample.is_multiple_of(2) {
             run_left();
@@ -74,6 +95,8 @@ fn measure_pair(
             run_right();
             run_left();
         }
+        left_checksum += black_box(left());
+        right_checksum += black_box(right());
     }
     (
         sample_stats(left_times, left_checksum),
@@ -119,10 +142,11 @@ fn marching_wave_resistance(hull: &Hull, conditions: &Conditions) -> WaveResista
 }
 
 fn main() {
+    const FAST_BATCH: usize = 256;
     let hull = hulls::wigley(10.0, 1.0, 0.625).expect("valid Wigley hull");
     let samples = sample_count();
 
-    let sweep = measure(samples, || {
+    let sweep = measure(samples, 1, || {
         let mut total = 0.0;
         for index in 0..=20 {
             let fn_ = 0.10 + 0.02 * index as f64;
@@ -138,7 +162,7 @@ fn main() {
     let low_speed = low_fn * (STANDARD_GRAVITY * hull.length()).sqrt();
     let low_cond = Conditions::freshwater(low_speed);
     let low_diagnostics = wave_resistance(&hull, &low_cond).unwrap();
-    let low = measure(samples, || {
+    let low = measure(samples, FAST_BATCH, || {
         wave_resistance(&hull, &low_cond).unwrap().resistance
     });
 
@@ -149,6 +173,8 @@ fn main() {
     let very_low_reduced = low_froude_wave_resistance(&hull, &very_low_cond).unwrap();
     let (very_low_direct_samples, very_low_reduced_samples) = measure_pair(
         samples,
+        1,
+        FAST_BATCH,
         || marching_wave_resistance(&hull, &very_low_cond).resistance,
         || {
             low_froude_wave_resistance(&hull, &very_low_cond)
@@ -169,6 +195,8 @@ fn main() {
     let gradient_cond = Conditions::freshwater(gradient_speed);
     let (gradient_samples, finite_samples) = measure_pair(
         samples,
+        1,
+        1,
         || {
             wave_resistance_gradient(&gradient_hull, &gradient_cond)
                 .unwrap()
@@ -204,7 +232,7 @@ fn main() {
     print_stats("21 speeds Fn=0.10..0.50", &sweep);
     print_stats(&format!("low Froude Fn={low_fn:.2}"), &low);
     println!(
-        "low-Fn diagnostics: evaluations={}, max_lambda={:.3}, est_rel_error={:.3e}",
+        "low-Fn diagnostics: timed_batch={FAST_BATCH}, evaluations={}, max_lambda={:.3}, est_rel_error={:.3e}",
         low_diagnostics.inner_evaluations,
         low_diagnostics.max_lambda,
         low_diagnostics.est_rel_error
@@ -223,7 +251,7 @@ fn main() {
         &very_low_reduced_samples,
     );
     println!(
-        "very-low-Fn speedup: {:.2}x; evaluations {} -> {}; estimated endpoint error {:.3e}; checksums direct={:.12e}, endpoint={:.12e}",
+        "very-low-Fn speedup: {:.2}x; timed_batches 1 -> {FAST_BATCH}; evaluations {} -> {}; estimated endpoint error {:.3e}; checksums direct={:.12e}, endpoint={:.12e}",
         very_low_direct_samples.median.as_secs_f64()
             / very_low_reduced_samples.median.as_secs_f64(),
         very_low_direct.inner_evaluations,
