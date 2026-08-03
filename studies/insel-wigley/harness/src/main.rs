@@ -21,6 +21,7 @@ const FN_SCALE: f64 = 10_000_000.0;
 const FIXED_GRID: u8 = 1;
 const FREE_GRID: u8 = 2;
 const FINE_GRID: u8 = 4;
+const THEORY_GRID: u8 = 8;
 
 #[derive(Clone, Copy)]
 struct Configuration {
@@ -106,6 +107,12 @@ fn grid_for(data: &Path, configuration: Configuration) -> BTreeMap<i64, u8> {
     grid
 }
 
+fn theory_grid() -> BTreeMap<i64, u8> {
+    (0..=150)
+        .map(|index| (fn_key(0.20 + 0.005 * index as f64), THEORY_GRID))
+        .collect()
+}
+
 fn grid_source(mask: u8) -> String {
     let mut names = Vec::new();
     if mask & FIXED_GRID != 0 {
@@ -116,6 +123,9 @@ fn grid_source(mask: u8) -> String {
     }
     if mask & FINE_GRID != 0 {
         names.push("fine");
+    }
+    if mask & THEORY_GRID != 0 {
+        names.push("theory");
     }
     names.join("+")
 }
@@ -164,14 +174,26 @@ fn solo_result(
     result
 }
 
-fn output_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../data/predictions/predictions.csv")
+fn output_path(theory: bool) -> PathBuf {
+    let filename = if theory {
+        "theory_predictions.csv"
+    } else {
+        "predictions.csv"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../data/predictions")
+        .join(filename)
 }
 
 fn main() {
+    let theory = match std::env::args().skip(1).collect::<Vec<_>>().as_slice() {
+        [] => false,
+        [flag] if flag == "--theory" => true,
+        _ => panic!("usage: insel-wigley-harness [--theory]"),
+    };
     let study = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let digitized = study.join("data/digitized");
-    let output = output_path();
+    let output = output_path(theory);
     fs::create_dir_all(output.parent().unwrap()).unwrap();
 
     let hull = hulls::wigley(LENGTH, BEAM, DRAFT).expect("valid exact Wigley geometry");
@@ -199,8 +221,18 @@ fn main() {
     .unwrap();
 
     let mut rows = 0usize;
-    for configuration in CONFIGURATIONS {
-        for (key, source) in grid_for(&digitized, configuration) {
+    let configurations = if theory {
+        &CONFIGURATIONS[1..]
+    } else {
+        &CONFIGURATIONS[..]
+    };
+    for &configuration in configurations {
+        let grid = if theory {
+            theory_grid()
+        } else {
+            grid_for(&digitized, configuration)
+        };
+        for (key, source) in grid {
             let fn_ = fn_value(key);
             let condition = conditions(fn_);
             let solo = solo_result(&hull, fn_, &options, &mut solo_cache);

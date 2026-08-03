@@ -18,3 +18,16 @@ multihull path and options.
 
 Every solve requests `rel_tol = 1e-6` and the binary aborts on a non-converged
 outcome. Both pair and standalone diagnostics are retained in every row.
+
+The preregistered theory comparison and critical-Froude check use a separate
+`0.20 <= Fn <= 0.95` grid at `0.005` spacing for all four catamaran
+separations. It is generated without rewriting the frozen experimental-grid
+output:
+
+```sh
+cargo run --release --manifest-path studies/insel-wigley/harness/Cargo.toml -- --theory
+```
+
+That mode writes `data/predictions/theory_predictions.csv` and retains the
+same geometry, fluid properties, solver options, convergence assertions, and
+standalone-path normalization.

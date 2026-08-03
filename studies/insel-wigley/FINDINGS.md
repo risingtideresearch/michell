@@ -263,3 +263,78 @@ this study indicts the frozen numerical kernel.
 | Doctors--Beck C2 thin-ship value at `Fn = 0.35` | K | reproduced within 0.04% |
 | preregistered cell-by-cell trust envelope | E | quantitative codebase contribution; no continuous interval admitted |
 | frozen numerical kernel is defective | E | rejected by the evidence in this study |
+
+## Preregistered theory-to-theory comparison
+
+This follow-up adds a stronger test than the experiment overlay: the frozen
+library prediction is compared directly with Insel's calculated C2
+interference curves in Figures 359--362 (printed pages 358--359, PDF pages
+368--369). `CRITERIA-THEORY.md` was committed before either source curve was
+digitized or any prediction overlay was produced. The source archive retains
+two source-only readings, rejects 36 over-tolerance or line-ambiguous anchors,
+and leaves 54--59 of the 61 exact scoring anchors per panel.
+
+The preregistered study verdict is **material disagreement**:
+
+| `S/L` | median `|delta tau|` | 90th percentile | pointwise | `|delta Fn_hump|` | hump position | peak ratio, library/Insel | hump amplitude | configuration |
+|---|---:|---:|---|---:|---|---:|---|---|
+| 0.2 | 0.0820 | 0.2993 | disagreement | 0.005 | agreement | 0.844 | partial | disagreement |
+| 0.3 | 0.0413 | 0.1450 | partial | 0.005 | agreement | 0.917 | agreement | partial |
+| 0.4 | 0.0369 | 0.1270 | partial | 0.010 | agreement | 0.933 | agreement | partial |
+| 0.5 | 0.0203 | 0.0714 | agreement | 0.010 | agreement | 0.964 | agreement | agreement |
+
+The result is not a repeat of the experimental phase-shift finding. All four
+principal-hump positions agree within `0.010` in `Fn`; the discrepancy is
+predominantly an amplitude excess in Insel's finite-canal calculation that
+grows as separation decreases. At `S/L = 0.2`, the unambiguous broad source
+peak is `tau = 1.980` at `Fn = 0.450`, versus `1.672` at `Fn = 0.445` from the
+library. That `0.309` peak difference is much larger than the archived source
+reading uncertainty. The pointwise 90th-percentile failure therefore does not
+depend on the visibly difficult high-speed line crossings in the scan.
+
+### Post-result audit permitted by the preregistration
+
+- The plotted source is the solid C2 curve, not the dashed C3--C5 curves or
+  Figures 355--358's wave-pattern reconstruction. Plot borders and affine axes
+  were checked against the rendered source; both passes and both calibrations
+  remain archived.
+- `S` is demihull-centreline spacing, and the placements remain `+/- S/2`.
+  The ratio is `R_w,pair / (2 R_w,solo)`, equivalent to Insel's catamaran-
+  coefficient/monohull-coefficient normalization when the catamaran reference
+  area is twice the demihull area. Unity therefore has the same noninteracting
+  meaning in both calculations.
+- Every one of the 604 new pair solves and 151 cached standalone solves
+  converged at the frozen settings. Regenerating the original 578-row harness
+  output leaves its SHA-256 unchanged at
+  `5addfb836c80e5385de6b7b92819addfc529d22c140a433d50a6d2221d9fefff`.
+- The Doctors--Beck monohull anchor still agrees within 0.04%. The discrepancy
+  is separation-dependent, rather than a uniform monohull scale error.
+
+The known formulation difference is a serious candidate, not a resolution:
+Insel used a finite-width, finite-depth modal canal Green function and an
+undocumented point-source mesh, while the library uses exact hull moments with
+the unbounded deep-water Michell kernel. The widening disagreement toward
+small `S/L` is qualitatively compatible with a transverse-boundary effect, but
+this study has not isolated wall, depth, or mesh contributions. It would be
+incorrect to use the source's ordinary tank-effect estimates to explain away a
+16% principal-peak difference without reproducing the finite-canal
+calculation.
+
+Accordingly, the earlier implementation evidence remains valid but the last
+sentence of the interpretation addendum is no longer sufficient to close the
+multihull kernel question. This direct theory comparison is a genuine red flag
+for close-spacing equivalence, not proof of a numerical bug in either solver.
+Per the preregistered stop rule, no favourable `CLOSEOUT.md` is written. The
+next review must reproduce Insel's finite-canal calculation or otherwise
+separate Green-function physics from numerical implementation before the
+experimental result is promoted as kernel closure.
+
+### Theory-comparison claim classification
+
+| claim | class | status |
+|---|---|---|
+| unbounded and finite-canal C2 hump positions agree within `0.010 Fn` | E | validated at all four separations |
+| theory-to-theory amplitude and pointwise equivalence | E | rejected; material disagreement at `S/L = 0.2` |
+| wide-spacing (`S/L = 0.5`) theory equivalence | E | validated under all preregistered components |
+| finite-canal physics explains the close-spacing gap | E | suspected, not isolated or verified |
+| frozen numerical kernel is defective | E | unresolved by the direct multihull comparison; not established |
