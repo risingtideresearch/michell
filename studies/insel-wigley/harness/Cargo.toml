@@ -1,0 +1,11 @@
+[package]
+name = "insel-wigley-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+michell = { path = "../../../crates/michell" }
+
+[workspace]
+
