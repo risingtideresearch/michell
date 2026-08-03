@@ -338,3 +338,27 @@ experimental result is promoted as kernel closure.
 | wide-spacing (`S/L = 0.5`) theory equivalence | E | validated under all preregistered components |
 | finite-canal physics explains the close-spacing gap | E | suspected, not isolated or verified |
 | frozen numerical kernel is defective | E | unresolved by the direct multihull comparison; not established |
+
+## Critical-Froude consistency check
+
+The preregistered diagnostic defines `Fn_c` as the first point on the committed
+`0.005` grid after which `|tau - 1| < 0.05` remains true through `Fn = 0.95`.
+It is intentionally not interpolated, smoothed, or graded. Insel describes the
+separation-dependent progression as approximately `Fn = 0.55` at `S/L = 0.5`
+to `Fn = 0.8` at `S/L = 0.2` (printed 131, PDF 141); he does not give numerical
+intermediate thresholds there.
+
+| `S/L` | library `Fn_c` | Insel statement |
+|---|---:|---:|
+| 0.2 | not reached by 0.95 | about 0.8 |
+| 0.3 | not reached by 0.95 | not stated |
+| 0.4 | 0.585 | not stated |
+| 0.5 | 0.550 | about 0.55 |
+
+The wide-spacing endpoint reproduces Insel's statement exactly on this grid.
+The close-spacing endpoint does not: although the library curve approaches the
+5% band near `Fn = 0.8`, it does not stay there, ending at `tau = 0.9189` at
+`Fn = 0.95`. The `S/L = 0.3` curve likewise ends just outside at `tau =
+0.9434`. This mixed result is consistent with, but does not identify the cause
+of, the separation-dependent theory-to-theory discrepancy. It strengthens the
+reason to stop before closeout and to isolate the finite-canal Green function.
