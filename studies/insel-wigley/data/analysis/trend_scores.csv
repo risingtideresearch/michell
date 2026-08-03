@@ -1,0 +1,4 @@
+# criteria_commit: 3f81c2a
+metric,points,spearman,grade
+pointwise_separation_ranking,12,0.39999999999999997,partial
+rms_interference_envelope_ranking,4,0.7999999999999999,agreement

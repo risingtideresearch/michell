@@ -1,0 +1,7 @@
+# criteria_commit: 3f81c2a
+configuration,below_or_at_fn_0_4_points,below_or_at_fn_0_4_median_d,above_fn_0_4_points,above_fn_0_4_median_d
+monohull,0,nan,15,0.031204076706019605
+s_l_0_2,0,nan,15,0.834926768971544
+s_l_0_3,1,0.7464427520387682,14,0.07028794687887145
+s_l_0_4,0,nan,11,0.09781654144181469
+s_l_0_5,0,nan,17,0.16646071208268054
