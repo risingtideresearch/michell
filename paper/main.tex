@@ -466,19 +466,20 @@ integration for \(s\in\{4,7,10\}\) and
   width=\linewidth,height=5.2cm,
   xlabel={Froude number $\Fn$},ylabel={relative difference},
   ymode=log,x dir=reverse,
-  grid=both,minor grid style={gray!15},major grid style={gray!30},
-  legend style={font=\footnotesize,at={(0.03,0.03)},anchor=south west},
+  grid=major,major grid style={black!20,densely dotted},
+  legend style={font=\footnotesize,draw=black,fill=white,
+    at={(0.03,0.03)},anchor=south west},
   tick label style={font=\footnotesize},label style={font=\small}
 ]
-\addplot+[mark=*,thick] coordinates {
+\addplot+[black,solid,mark=*,mark options={fill=black},thick] coordinates {
   (0.08,1.172e-5) (0.05,2.070e-13) (0.03,1.034e-12) (0.02,1.526e-13)};
 \addlegendentry{endpoint/NSD}
-\addplot+[mark=square*,thick] coordinates {
+\addplot+[black,dashed,mark=square,mark options={solid},thick] coordinates {
   (0.08,6.918e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.334e-7)};
 \addlegendentry{real-axis marcher}
-\node[font=\scriptsize,text=red!65!black,anchor=north west]
+\node[font=\scriptsize,text=black,anchor=north west]
   at (axis cs:0.08,1.172e-5) {rejected};
-\node[font=\scriptsize,text=green!45!black,anchor=north]
+\node[font=\scriptsize,text=black,anchor=north]
   at (axis cs:0.035,3e-5) {accepted samples};
 \end{axis}
 \end{tikzpicture}
@@ -490,14 +491,15 @@ integration for \(s\in\{4,7,10\}\) and
   width=\linewidth,height=5.2cm,
   xlabel={Froude number $\Fn$},ylabel={kernel/inner evaluations},
   ymode=log,x dir=reverse,
-  grid=both,minor grid style={gray!15},major grid style={gray!30},
-  legend style={font=\footnotesize,at={(0.03,0.97)},anchor=north west},
+  grid=major,major grid style={black!20,densely dotted},
+  legend style={font=\footnotesize,draw=black,fill=white,
+    at={(0.03,0.97)},anchor=north west},
   tick label style={font=\footnotesize},label style={font=\small}
 ]
-\addplot+[mark=*,thick] coordinates {
+\addplot+[black,solid,mark=*,mark options={fill=black},thick] coordinates {
   (0.08,1152) (0.05,1152) (0.03,1152) (0.02,1152)};
 \addlegendentry{endpoint/NSD}
-\addplot+[mark=square*,thick] coordinates {
+\addplot+[black,dashed,mark=square,mark options={solid},thick] coordinates {
   (0.08,56032) (0.05,119936) (0.03,267856) (0.02,511504)};
 \addlegendentry{real-axis marcher}
 \end{axis}
