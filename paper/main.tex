@@ -163,15 +163,15 @@ equal to the degree represents a continuous chine exactly.
 \label{sec:endpoint}
 
 The finite polynomial degree makes repeated integration by parts terminate.
-For a polynomial \(p\) of degree \(d\),
+For a polynomial \(p\) of degree \(m\),
 \begin{align}
- \int_a^b p(x)\e^{\iu kx}\,dx
- &=\sum_{r=0}^{d}\frac{(-1)^r}{(\iu k)^{r+1}}
-   \left[p^{(r)}(x)\e^{\iu kx}\right]_a^b,
+ \int_{x_a}^{x_b} p(x)\e^{\iu kx}\,dx
+ &=\sum_{r=0}^{m}\frac{(-1)^r}{(\iu k)^{r+1}}
+   \left[p^{(r)}(x)\e^{\iu kx}\right]_{x_a}^{x_b},
  \label{eq:xparts}\\
- \int_c^d p(z)\e^{-\kappa z}\,dz
- &=-\sum_{u=0}^{d}\frac{1}{\kappa^{u+1}}
-   \left[p^{(u)}(z)\e^{-\kappa z}\right]_c^d.
+ \int_{z_a}^{z_b} p(z)\e^{-\kappa z}\,dz
+ &=-\sum_{u=0}^{m}\frac{1}{\kappa^{u+1}}
+   \left[p^{(u)}(z)\e^{-\kappa z}\right]_{z_a}^{z_b}.
  \label{eq:zparts}
 \end{align}
 Applying \cref{eq:xparts,eq:zparts} to every monomial in
