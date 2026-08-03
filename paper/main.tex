@@ -59,15 +59,14 @@ Low-Froude Michell Resistance}
 \begin{abstract}
 \itshape
 Reliable low-Froude wave-resistance prediction requires both resolving an
-increasingly oscillatory Michell integral and knowing when its algebraic tail
-has become negligible.  In a conventional real-axis marcher, we found a
-113-fold understatement of actual error by a quiet-window estimate; a
-structural correction now makes that estimate conservative on the tested
-range.  For hulls represented by polynomial tensor-product B-splines, we then
-show that the exact inner transform is a finite sum of waves attached to
-spline-span endpoints.  Terms attached below the waterline may be omitted at
-low Froude number with an explicit absolute bound.  Expanding the squared
-transform before integration reduces the remaining resistance to pairwise
+increasingly oscillatory Michell integral and estimating its algebraic tail.
+For a conventional real-axis marcher, we found that a quiet-window estimate
+understated the actual error by a factor of 113.  A structural correction makes the
+estimate conservative over the tested range.  For polynomial tensor-product
+B-spline hulls, the exact inner transform is a finite sum of waves attached to
+spline-span endpoints.  At low Froude number, an explicit absolute bound
+permits the omission of terms below the waterline.  Expanding the squared
+transform before outer integration then reduces the resistance to pairwise
 kernels
 \(
 K_s(\omega)=\int_1^\infty
@@ -82,11 +81,11 @@ omission bound and a coarse/fine contour estimate meet the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
 \SI{39.233}{ms} to \SI{0.045}{ms} (approximately 880-fold), and differs from an
-independent real-axis reference by \(1.53\times10^{-13}\) relatively.  This is
-an engineering improvement to the present solver; only the combination of
-known endpoint and contour ideas is possibly new.  The method is restricted to
-upright symmetric monohulls and its contour-discretization estimate is not a
-formal interval certificate.
+independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
+solver is an engineering improvement; its specific combination of known
+endpoint and contour methods may be new.  It applies only to upright symmetric
+monohulls, and its contour-discretization estimate is not a formal interval
+certificate.
 \end{abstract}
 
 \noindent\textbf{KEY WORDS:} Wave resistance; Michell integral; low Froude
@@ -100,13 +99,12 @@ number; oscillatory quadrature; B-splines; Bickley--Naylor function.
 
 Michell's 1898 thin-ship theory expresses wave resistance as a one-dimensional
 integral of the squared Fourier--Laplace transform of the longitudinal hull
-slope \citep{Michell1898,Tuck1989}.  It is inexpensive compared with nonlinear
-free-surface computation and retains the bow--stern interference that makes
-resistance strongly dependent on speed and hull shape.  These properties have
-sustained its use in preliminary design, multihull studies, and mathematical
-shape optimization \citep{Lazauskas2009,DambrinePierreRousseaux2016}.
-For design use, however, a fast resistance value is insufficient unless its
-reported numerical error remains trustworthy as speed falls.
+slope \citep{Michell1898,Tuck1989}.  Compared with nonlinear free-surface
+methods, Michell's formula costs little and retains the bow--stern interference
+that couples resistance to speed and hull shape.  Designers therefore use it
+for preliminary design, multihull studies, and mathematical shape optimization
+\citep{Lazauskas2009,DambrinePierreRousseaux2016}.  At low speed, however, a
+fast result is useful only if its error estimate remains trustworthy.
 
 The apparent simplicity conceals a difficult numerical limit.  Let
 \(\nu=g/U^2\), where \(U\) is speed and \(g\) gravitational acceleration.
@@ -114,47 +112,46 @@ As \(U\) and therefore \(\Fn=U/\sqrt{gL}\) decrease, the phase
 \(\nu\lambda x\) oscillates increasingly rapidly over the unbounded outer
 coordinate \(\lambda\).  Tuck used Filon-like longitudinal integration, while
 Lazauskas used exact piecewise-quadratic formulas and a fixed angular rule;
-the latter reports that very low Froude number remains exceptional
+Lazauskas reports that very low Froude number remains exceptional
 \citep{Tuck1989,Lazauskas2009}.  A real-axis adaptive marcher must spend more
-work as the frequency rises and must decide when an oscillatory algebraic tail
-is negligible.  At the pre-fix revision \texttt{64925d4}, a single
-quiet-window criterion reported \(5.123\times10^{-9}\) relative error at
-\(\Fn=0.05\), while the measured error was \(5.781\times10^{-7}\): an
-understatement by a factor of about 113.  The frozen kernel corrects this
-engineering defect by advancing quiet windows on oscillatory phase alone and
-summing refinement and tail errors.  Across \(0.02\leq\Fn\leq1\), its reported
-estimate covers the measured error by approximately fourfold; actual marcher
-error falls by factors of 3.2--4.5 and evaluation counts fall by 42--51\% in
-the four low-Froude cases reported below.
+effort as frequency rises and must decide where to truncate the oscillatory
+algebraic tail.  At the pre-fix revision \texttt{64925d4}, one quiet-window
+criterion reported \(5.123\times10^{-9}\) relative error at \(\Fn=0.05\), but
+the measured error was \(5.781\times10^{-7}\), about 113 times larger.  The
+frozen kernel advances quiet windows by oscillatory phase alone and adds the
+refinement and tail estimates.  Across \(0.02\leq\Fn\leq1\), the corrected
+estimate covers measured error by about fourfold.  In the four low-Froude cases
+reported below, measured error falls by factors of 3.2--4.5, and evaluations
+fall by 42--51\%.
 
-The classical thin-ship lineage and its limiting theories are surveyed by
-\citet{Wehausen1973}.  Low-speed endpoint dominance is not new: Keller and Ahluwalia showed that the
-small-Froude wave field and resistance are controlled by bow and stern
-waterline data \citep{KellerAhluwalia1976}.  Gotman later separated polynomial
-hull contributions into endpoint derivatives and bow--stern interference
-terms \citep{Gotman2002}.  Numerical steepest descent is likewise mature
-\citep{HuybrechsVandewalle2006}; it has been applied to the Kelvin
-Green-function integral in linear ship-wave theory \citep{Motygin2017}.
-The contribution of the present work is the following specific composition:
+Earlier work supplies each part of our method.  \citet{Wehausen1973} surveys
+classical thin-ship theory and its limits.  Keller and Ahluwalia show that bow
+and stern waterline data control the small-Froude wave field and resistance
+\citep{KellerAhluwalia1976}.  Gotman separates polynomial-hull contributions
+into endpoint derivatives and bow--stern interference terms
+\citep{Gotman2002}.  Huybrechs and Vandewalle develop numerical steepest descent
+\citep{HuybrechsVandewalle2006}, and Motygin applies it to the Kelvin
+Green-function integral in linear ship-wave theory \citep{Motygin2017}.  We
+combine these ideas in four steps:
 
 \begin{enumerate}
-  \item an exact, finite endpoint decomposition on every polynomial B-spline
-        span, including interior knots and full-multiplicity chine knots;
-  \item an explicit bound on all resistance pairs involving an omitted
-        submerged endpoint;
-  \item identification of the retained outer pair kernels as analytically
-        continued Bickley--Naylor functions and their evaluation on a
-        frequency-scaled Gaussian contour; and
-  \item conservative automatic dispatch between this reduced solver and the
-        general real-axis method.
+  \item decompose every polynomial B-spline span exactly into finitely many
+        endpoint terms, including terms at interior and full-multiplicity
+        chine knots;
+  \item bound every resistance pair that contains an omitted submerged
+        endpoint;
+  \item identify the retained pair kernels as analytically continued
+        Bickley--Naylor functions and evaluate them on a frequency-scaled
+        Gaussian contour; and
+  \item dispatch conservatively between the reduced solver and the general
+        real-axis method.
 \end{enumerate}
 
-Each mathematical ingredient has precedent.  We therefore claim a new
-algorithmic construction and implementation, not priority for endpoint
-asymptotics or steepest descent themselves.  A targeted search found no prior
-source containing all four elements, but this negative search is not a proof of
-novelty; \citet{SendagortaGrases1988}, whose full text was unavailable to us,
-is a particularly relevant uncertainty.
+Each ingredient has precedent.  Our priority claim, therefore, extends only to
+the combined algorithm and implementation.  A targeted search found no source
+that contains all four elements, but a negative search cannot establish
+novelty.  In particular, we could not obtain the full text of
+\citet{SendagortaGrases1988}, a closely related study.
 
 \section{Michell resistance and spline geometry}
 \label{sec:michell}
@@ -180,10 +177,10 @@ exact bivariate polynomial,
   c^{S}_{ab}(x-x_0)^a(z-z_0)^b.
   \label{eq:spanpoly}
 \end{equation}
-No station or waterline sampling is introduced: the coefficients are extracted
-once from exact spline derivatives at span corners.  Repeated knots create
-zero-length intervals, which are discarded, while an interior multiplicity
-equal to the degree represents a continuous chine exactly.
+The method extracts these coefficients once from exact spline derivatives at
+span corners; it does not sample stations or waterlines.  The implementation
+discards the zero-length intervals created by repeated knots.  An interior knot
+whose multiplicity equals the degree represents a continuous chine exactly.
 
 \section{Exact endpoint decomposition}
 \label{sec:endpoint}
@@ -200,9 +197,9 @@ For a polynomial \(p\) of degree \(m\),
    \left[p^{(u)}(z)\e^{-\kappa z}\right]_{z_a}^{z_b}.
  \label{eq:zparts}
 \end{align}
-Applying \cref{eq:xparts,eq:zparts} to every monomial in
+Apply \cref{eq:xparts,eq:zparts} to every monomial in
 \cref{eq:spanpoly}, with \(k=\nu\lambda\) and
-\(\kappa=\nu\lambda^2\), yields the following exact representation.
+\(\kappa=\nu\lambda^2\).  The result is an exact endpoint representation.
 
 \begin{proposition}[Finite endpoint representation]
 For a polynomial tensor-product B-spline hull with longitudinal degree at least
@@ -229,10 +226,10 @@ the polynomial degrees, and summing the finite contributions from all nonzero
 knot rectangles gives \cref{eq:endpointsum}.
 \end{proof}
 
-The code tests \cref{eq:endpointsum} directly against its independent exact
-moment machinery for the Wigley hull and for a multi-span hull containing a
-full-multiplicity chine.  Across \(1\leq\lambda\leq20\), the discrepancy is
-below the test's scaled \(5\times10^{-10}\) threshold.
+Tests compare \cref{eq:endpointsum} directly with independent exact-moment
+calculations for both the Wigley hull and a multi-span hull with a
+full-multiplicity chine.  Across \(1\leq\lambda\leq20\), every discrepancy
+falls below the scaled \(5\times10^{-10}\) threshold.
 
 \section{Waterline reduction and omission bound}
 \label{sec:bound}
@@ -247,8 +244,8 @@ number, every submerged term contains at least \(\e^{-\nu z_j}\) because
  \label{eq:waterline}
 \end{equation}
 
-Expanding \(|\widetilde F|^2\) before outer integration is essential.  It
-removes the nonanalytic complex conjugation from the integrand and gives
+Expanding \(|\widetilde F|^2\) before outer integration removes the
+nonanalytic complex conjugation from the integrand:
 \begin{equation}
  \widetilde R_{\mathrm w}=C
  \sum_{i,j\in W}\Re\!\left\{
@@ -291,7 +288,7 @@ The zero-frequency kernel is analytic:
  = \frac{\sqrt\pi\,\Gamma(s/2)}{2\Gamma((s+1)/2)},
  \label{eq:kzero}
 \end{equation}
-and is evaluated by a stable even/odd recurrence.
+A stable even/odd recurrence evaluates this kernel.
 
 \section{Bickley kernels and contour quadrature}
 \label{sec:contour}
@@ -303,16 +300,16 @@ With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
  =\Ki_s(-\iu\omega),
  \label{eq:bickley}
 \end{equation}
-where the final equality is understood by analytic continuation of the
-Bickley--Naylor function \citep{BickleyNayler1935,DLMF1043}.\footnote{The 1935
+where the final equality denotes analytic continuation of the Bickley--Naylor
+function \citep{BickleyNayler1935,DLMF1043}.\footnote{The 1935
 paper is by W.~G. Bickley and
 J.~Nayler; later literature and DLMF use the conventional function name
 ``Bickley--Naylor.''  We retain each spelling in its historical context.}
-This identification supplies recurrences and possible special-function
-implementations, although the present solver evaluates the contour directly.
+This identity supplies recurrences and other possible implementations.  The
+present solver instead evaluates the contour directly.
 
-The square-root endpoint in \cref{eq:kernel} is first removed by
-\(\lambda=1+t^2\):
+The substitution \(\lambda=1+t^2\) removes the square-root endpoint in
+\cref{eq:kernel}:
 \begin{equation}
  K_s(\omega)=2\e^{\iu\omega}\int_0^\infty
  \frac{\e^{\iu\omega t^2}}{
@@ -328,11 +325,12 @@ rotation
  (1+\iu y^2/\omega)^s\sqrt{2+\iu y^2/\omega}}.
  \label{eq:gaussian}
 \end{equation}
-Negative frequencies follow by conjugation.  The oscillation is gone, and the
-frequency dependence now varies slowly in the amplitude.  This is the same
-general numerical-asymptotic principle that yields frequency-independent work
-in high-frequency scattering \citep{GibbsEtAl2020}, specialized here to a
-simple phase with a closed contour.
+Conjugation gives the negative-frequency kernels.  The rotation replaces
+oscillation with Gaussian decay and leaves slowly varying frequency dependence
+in the amplitude.  The same numerical-asymptotic principle yields
+frequency-independent work in high-frequency scattering
+\citep{GibbsEtAl2020}; here, the quadratic phase gives the contour in closed
+form.
 
 The implementation applies 24- and 48-point Gauss--Legendre rules on
 \(0\leq y\leq8\).  The neglected Gaussian tail obeys
@@ -346,24 +344,24 @@ using \(|1+\iu y^2/\omega|\geq1\),
 \(|\sqrt{2+\iu y^2/\omega}|\geq\sqrt2\), and the standard Gaussian-tail
 bound.  At the minimum supported nonzero frequency \(\omega=25\), this is
 below \(4\times10^{-30}\).  The 24/48 difference estimates discretization
-error.  That difference is empirical, not a proof; the method therefore has a
-rigorous submerged-term bound and an effectively negligible analytic contour
-tail, but not a fully certified total floating-point error.
+error.  This difference remains empirical.  Thus the submerged-term bound and
+analytic contour-tail bound are rigorous, but the total floating-point error
+is not certified.
 
 For fixed geometry, every nonzero endpoint pair costs 72 scalar nodes,
 independent of \(\nu|x_i-x_j|\); self pairs use \cref{eq:kzero} without
-quadrature.  The exact Wigley representation is biquadratic with one
-longitudinal and one vertical span.  Its 16 endpoint terms include eight
-waterline terms.  Those form 16 distinct nonzero-frequency bow--stern pairs,
-each using \(24+48=72\) contour nodes, hence \(16\times72=1{,}152\) scalar
-nodes; equal-position pairs use \cref{eq:kzero}.  The committed harness asserts
-each count.
+quadrature.  The biquadratic Wigley representation has one longitudinal span
+and one vertical span.  Its 16 endpoint terms include eight at the waterline,
+which form 16 distinct nonzero-frequency bow--stern pairs.  Each pair uses
+\(24+48=72\) contour nodes, for \(16\times72=1{,}152\) scalar nodes in all;
+equal-position pairs use \cref{eq:kzero}.  The committed harness checks each
+count.
 
 \section{Hybrid algorithm and scope}
 \label{sec:algorithm}
 
-The reduced method is an asymptotic companion, not a blind replacement for the
-general solver.  The public algorithm is:
+The reduced method supplements the general solver.  The following gates choose
+between them:
 
 \begin{enumerate}
   \item validate the physical conditions and exact spline geometry;
@@ -375,27 +373,25 @@ general solver.  The public algorithm is:
         \(0<|\omega_{ij}|<25\);
   \item evaluate \cref{eq:pairresistance}, the bound \cref{eq:omitbound}, and
         the weighted 24/48 contour difference; and
-  \item accept the result only if their combined relative estimate is no
-        greater than the caller's requested tolerance.  Otherwise run the
-        general real-axis marcher.
+  \item use the reduced result if their combined relative estimate meets the
+        requested tolerance; otherwise run the general real-axis marcher.
 \end{enumerate}
 
-The frequency gate avoids claiming asymptotic efficiency before oscillation is
-strong enough for the fixed contour policy.  For the Wigley bow--stern pair,
-\(\omega=\nu L=gL/U^2=1/\Fn^2\), exactly matching the implementation's
-\(\nu|x_i-x_j|\); hence \(\omega\geq25\) corresponds to \(\Fn\leq0.2\).
-More importantly, the error gate
-uses the actual hull, speed, and resistance cancellation: a low nominal Froude
-number alone is not sufficient.  At the default relative tolerance
-\(10^{-5}\), the Wigley reduction is rejected at \(\Fn=0.08\) and accepted at
-\(\Fn=0.05\).
+The frequency gate reserves the fixed contour for sufficiently rapid
+oscillation.  For the Wigley bow--stern pair,
+\(\omega=\nu L=gL/U^2=1/\Fn^2\), which equals the implementation's
+\(\nu|x_i-x_j|\).  Thus \(\omega\geq25\) corresponds to \(\Fn\leq0.2\).  The
+error gate then bases the final choice on the actual hull, speed, and
+resistance cancellation rather than on nominal Froude number alone.  At the
+default relative tolerance \(10^{-5}\), it rejects the Wigley reduction at
+\(\Fn=0.08\) and accepts it at \(\Fn=0.05\).
 
-The implementation is in safe Rust and uses no external numerical dependency.
-The reduced solver is tested independently at three levels: exact inner
-decomposition, isolated Bickley kernels, and total resistance.  The general
-validation harness additionally covers Froude similarity, zero camber for
-symmetric sides, classical catamaran \(4\cos^2\) interference, tolerance
-self-convergence, and reported versus observed error.
+The implementation uses safe Rust and no external numerical library.  Tests
+check the reduced solver at three independent levels: exact inner
+decomposition, isolated Bickley kernels, and total resistance.  The broader
+validation harness checks Froude similarity, zero camber for symmetric sides,
+classical catamaran \(4\cos^2\) interference, tolerance self-convergence, and
+reported against observed error.
 
 \section{Numerical experiments}
 \label{sec:results}
@@ -410,20 +406,20 @@ The standard Wigley half-breadth is
  \label{eq:wigley}
 \end{equation}
 with \(L=\SI{10}{m}\), \(B=\SI{1}{m}\), and
-\(T=\SI{0.625}{m}\).  The independent reference does not call the production
-moment or outer-integral code.  It evaluates the analytic Wigley inner
-transform and applies 16-point Gauss--Legendre panels on the positive real
-\(\lambda\) axis with Kahan-compensated accumulation.  Panel boundaries
-advance the bow phase by at most \(\pi/2\), and the integration is continued to
-\(\lambda=4000\).  At \(\Fn=0.02\), doubling the cutoff to 8000 changes the
-reference by \(1.23\times10^{-15}\) relatively; floating-point effects remain,
-so this cutoff check is a resolution diagnostic rather than an interval bound.
+\(T=\SI{0.625}{m}\).  The independent reference shares neither the production
+moment code nor its outer integrator.  Instead, it evaluates the analytic
+Wigley transform on the positive real \(\lambda\) axis with 16-point
+Gauss--Legendre panels and Kahan-compensated accumulation.  Panel boundaries
+advance the bow phase by at most \(\pi/2\), and integration continues to
+\(\lambda=4000\).  At \(\Fn=0.02\), doubling this cutoff to 8000 changes the
+reference by \(1.23\times10^{-15}\) relatively.  Because floating-point effects
+remain, this check measures resolution but does not provide an interval bound.
 
 As a published-value anchor, \citet[Table~1]{DoctorsBeck1987} report the
 classical thin-ship value \(10^3 C_w=1.2486\) for this Wigley hull at
 \(\Fn=0.35\).  The committed harness gives \(10^3 C_w=1.247922\), a relative
-difference of \(5.43\times10^{-4}\) (\(0.0543\%\)).  This is a known result
-reproduced, not a new accuracy claim.
+difference of \(5.43\times10^{-4}\) (\(0.0543\%\)).  We classify this agreement
+as a known result reproduced (class 1).
 
 \begin{table*}[t]
 \centering
@@ -445,23 +441,21 @@ requested \(\mathrm{rel\_tol}=10^{-8}\) and at most six refinements.}
 \end{tabular}
 \end{table*}
 
-\Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), omitted submerged
-terms are still material and the estimate correctly rejects the reduction at
-default tolerance.  At \(\Fn\leq0.05\), the reduced/reference differences are
-between \(1.53\times10^{-13}\) and \(1.03\times10^{-12}\), within the reduced
-solver's empirical estimates.  The
-general marcher's error grows as Froude number falls.  At \(\Fn=0.05\), its
-corrected reported relative error is \(5.774\times10^{-7}\), compared with the
-measured \(1.493\times10^{-7}\), so the estimate covers rather than understates
-the observed error.  This corrected, independently checked marcher is the
-comparison method throughout \cref{tab:accuracy}.
+\Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), submerged terms remain
+material, and the estimate rejects the reduction at default tolerance.  At
+\(\Fn\leq0.05\), reduced/reference differences range from
+\(1.53\times10^{-13}\) to \(1.03\times10^{-12}\) and remain within the reduced
+solver's empirical estimates.  The general marcher's error, by contrast,
+grows as Froude number falls.  At \(\Fn=0.05\), its corrected estimate is
+\(5.774\times10^{-7}\), versus \(1.493\times10^{-7}\) measured.  The estimate
+therefore covers the observed error.  This independently checked marcher
+provides every comparison in \cref{tab:accuracy}.
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
 integration for \(s\in\{4,7,10\}\) and
 \(|\omega|\in\{25,100,400\}\), with scaled discrepancy below
-\(10^{-9}\).  The complete Rust workspace contains 215 passing test cases,
-including one documentation test; the companion Python interface has 11
-passing tests.
+\(10^{-9}\).  All 215 Rust tests pass, including one documentation test; all
+11 Python-interface tests also pass.
 
 \begin{figure*}[t]
 \centering
@@ -510,9 +504,9 @@ passing tests.
 \end{tikzpicture}
 \end{minipage}
 \caption{Observed accuracy (left) and work (right) as Froude number decreases.
-The deepened independent reference resolves endpoint/NSD differences down to
-the \(10^{-13}\)--\(10^{-12}\) level, while its quadrature work is fixed by
-geometry.  At default tolerance the hybrid rejects the reduced result at
+The independent reference resolves endpoint/NSD differences at the
+\(10^{-13}\)--\(10^{-12}\) level, while geometry fixes its quadrature work.  At
+default tolerance, the hybrid rejects the reduced result at
 \(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
 \label{fig:scaling}
 \end{figure*}
@@ -521,8 +515,8 @@ geometry.  At default tolerance the hybrid rejects the reduced result at
 
 Timing used an optimized build, 30 warmed samples, and the default relative
 tolerance \(10^{-5}\).  Absolute timings are host-dependent; the work counts
-and checksums are deterministic.  The two \(\Fn=0.02\) methods were measured
-in the same benchmark process.
+and checksums are deterministic.  One benchmark process measured both
+\(\Fn=0.02\) methods.
 
 \begin{table*}[t]
 \centering
@@ -540,48 +534,47 @@ Endpoint/NSD, \(\Fn=0.02\) & 0.045 & 0.044 & 1,152 nodes\\
 \end{tabular}
 \end{table*}
 
-At \(\Fn=0.02\), the median speedup is approximately 880-fold.  The endpoint solver's cost is
-nearly unchanged between \(\Fn=0.05\) and 0.02, as predicted by
-\cref{eq:gaussian}.  The ordinary 21-speed design sweep remains on whichever
-path satisfies the error gate.  Its checksum is \(2.553251156101\times10^5\),
-an intentional change from the pre-fix value because the corrected marcher
-retains a previously truncated positive tail.
+At \(\Fn=0.02\), the endpoint solver is approximately 880 times faster.  Its
+cost changes little between \(\Fn=0.05\) and 0.02, as \cref{eq:gaussian}
+predicts.  During the 21-speed design sweep, the hybrid selects the path that
+satisfies the error gate.  The checksum is \(2.553251156101\times10^5\); it
+differs from the pre-fix value because the corrected marcher retains a positive
+tail that the earlier rule truncated.
 
 \section{Relation to prior work and scope of novelty}
 \label{sec:prior}
 
-The endpoint structure has a long lineage.  The small-Froude analysis of
-\citet{KellerAhluwalia1976} expresses leading resistance and waves through bow
-and stern waterline slopes.  \citet{Gotman2002} repeatedly differentiates
-polynomial hull functions, separates endpoint self terms from bow--stern
-interference, and discusses higher endpoint derivatives.  The present finite
-B-spline decomposition should be viewed as a general, implementation-ready
-form of that known mechanism, not a new physical asymptotic principle.
+The endpoint structure is well established.  \citet{KellerAhluwalia1976}
+express leading small-Froude resistance and waves through bow and stern
+waterline slopes.  \citet{Gotman2002} repeatedly differentiates polynomial
+hull functions, separates endpoint self terms from bow--stern interference,
+and discusses higher endpoint derivatives.  Our finite B-spline decomposition
+puts that known mechanism into a form suitable for implementation; it does not
+introduce a new physical asymptotic principle.
 
-Similarly, exact or Filon-like integration of piecewise-polynomial inner data
-is established practice \citep{Tuck1989,Lazauskas2009}.  Michlet, as described
-by \citet{Lazauskas2009}, combines exact piecewise-quadratic longitudinal
-formulas with a fixed angular rule.  The present solver retains the same
-thin-ship physics but makes low-Froude outer work independent of frequency for
-its supported B-spline geometry.  That is an engineering improvement in this
-codebase, not a head-to-head performance claim against the Michlet executable.
-The special feature here is that exact endpoint reduction continues through the nonlinear-looking
-outer modulus square: analytic pair expansion converts the outer problem into
-a small set of reusable special-function kernels.  The relation
-\(K_s=\Ki_s(-\iu\omega)\) appears not to have been exploited in the inspected
-Michell literature.  Very recent work gives finite Bessel--Struve module
-representations for integer-order Bickley functions \citep{RuffaToni2026}; its
-stability on the imaginary axis may support an even faster future kernel
-implementation.
+Tuck and Lazauskas also establish exact or Filon-like integration of
+piecewise-polynomial inner data \citep{Tuck1989,Lazauskas2009}.  As
+\citet{Lazauskas2009} describes it, Michlet combines exact
+piecewise-quadratic longitudinal formulas with a fixed angular rule.  Our
+solver retains the same thin-ship physics but, for supported B-spline hulls,
+makes low-Froude outer work independent of frequency.  We classify that result
+as an engineering improvement and make no head-to-head performance claim
+against the Michlet executable.  Exact endpoint reduction also survives the
+outer modulus square: pair expansion converts it into a small set of reusable
+special-function kernels.  We found no use of the relation
+\(K_s=\Ki_s(-\iu\omega)\) in the Michell sources we inspected.  Ruffa and Toni
+give finite Bessel--Struve module representations for integer-order Bickley
+functions \citep{RuffaToni2026}; their stability on the imaginary axis remains
+to be tested as a possible kernel backend.
 
 Contour deformation is well established for oscillatory quadrature
 \citep{HuybrechsVandewalle2006}.  \citet{Motygin2017} applies steepest descent
 and Clenshaw--Curtis quadrature in ship-wave theory, but to the oscillatory part
 of the Kelvin Green function rather than Michell's resistance integral.
 Automated methods now handle general phases and coalescing saddles
-\citep{GibbsHewettHuybrechs2024}.  Such machinery is a promising route to
-multihull transverse phases, but is unnecessary for the present quadratic
-phase.
+\citep{GibbsHewettHuybrechs2024}.  Such methods could treat multihull transverse
+phases; the present quadratic phase needs only the closed contour in
+\cref{eq:gaussian}.
 
 Our literature search included publisher and DOI records, arXiv, TRID, the
 Adelaide repository, DLMF, and backward references in the sources above.  It
@@ -592,14 +585,14 @@ JSR source is \citet{SendagortaGrases1988}: we verified its bibliographic record
 and abstract but could not obtain the full text, so we cannot determine whether
 it contains a finite endpoint-pair expansion or a related low-speed
 construction.  The search was not exhaustive and included no patent search.
-The defensible classification is therefore a possibly new algorithmic
-combination, subject to full-text and expert literature review.
+We therefore classify the algorithmic combination as possibly new, subject to
+full-text and expert literature review.
 
 \section{Limitations and open extensions}
 \label{sec:limits}
 
-The current evidence establishes a sharp numerical advantage within a narrow
-model, not a universal low-speed ship-wave solution.
+The evidence covers a narrow model: upright symmetric monohulls in linear,
+deep-water thin-ship theory.
 
 \begin{itemize}
   \item \textbf{Geometry.}  The reduced solver supports upright symmetric
@@ -611,7 +604,7 @@ model, not a universal low-speed ship-wave solution.
   \item \textbf{Reference floor.}  The independent real-axis reference uses
         compensated summation through \(\lambda=4000\); at \(\Fn=0.02\), a
         cutoff-doubling check changes it by \(1.23\times10^{-15}\).  Differences
-        near the observed \(10^{-13}\) scale should still not be read as
+        near the observed \(10^{-13}\) scale are resolution measurements, not
         interval-certified digits.
   \item \textbf{Physical model.}  Michell theory is linear, inviscid, slender,
         deep-water, and fixed-attitude.  At very low speed, viscous effects may
@@ -624,31 +617,29 @@ model, not a universal low-speed ship-wave solution.
 
 The highest-leverage numerical extension is multihull support.  A transverse
 placement introduces phase
-\(\nu y\lambda\sqrt{\lambda^2-1}\), with moving saddles absent from
-\cref{eq:gaussian}; a uniform or automated contour treatment is required.
-Retaining shallow submerged endpoints similarly produces mixed linear and
-quadratic complex phases.  Other priorities are interval-certified contour
-errors, stable imaginary-argument Bickley recurrences, finite-depth dispersion,
-and differentiation of the endpoint representation for low-Froude hull
+\(\nu y\lambda\sqrt{\lambda^2-1}\) and moving saddles that
+\cref{eq:gaussian} does not contain.  A uniform or automated contour must
+account for them.  Retaining shallow submerged endpoints likewise produces
+mixed linear and quadratic complex phases.  Further work should certify the
+contour error, test imaginary-argument Bickley recurrences, derive finite-depth
+kernels, and differentiate the endpoint representation for low-Froude hull
 optimization.
 
 \section{Conclusions}
 
-Polynomial B-spline geometry permits more than exact evaluation of Michell's
-inner transform.  By carrying integration by parts to its finite endpoint form,
-expanding the squared transform into analytic endpoint pairs, and recognizing
-their outer integrals as continued Bickley functions, the low-Froude problem
-can be moved from an increasingly oscillatory real axis to a fixed Gaussian
-contour.  The resulting work is determined by geometry rather than Froude
-number.  An explicit submerged-pair bound makes the approximation testable and
-allows a conservative hybrid solver to fall back outside its useful regime.
+Finite integration by parts converts the B-spline inner transform into endpoint
+waves.  Pair expansion then turns the outer modulus square into continued
+Bickley kernels, and contour rotation replaces real-axis oscillation with
+Gaussian decay.  Geometry, rather than Froude number, sets the reduced
+quadrature work.  The submerged-pair bound lets the hybrid reject the reduction
+whenever it exceeds the requested tolerance.
 
-On the standard Wigley case, this construction is both more accurate and almost
-three orders of magnitude faster than the existing low-Froude march.  The
-result is a strong engineering advance and a possibly new combination of known
-ideas.  Broader geometry, fully certified error control, and independent review
-of the novelty claim remain necessary before presenting it as a general
-state-of-the-art replacement.
+For the standard Wigley hull at \(\Fn=0.02\), the reduced solver is more
+accurate than the general marcher and approximately 880 times faster.  This
+result establishes an engineering improvement for the supported geometry.  Our
+literature search suggests that the specific combination may be new, but that
+classification still requires full-text and expert review.  Claims beyond the
+current scope also require broader geometry and certified total error control.
 
 \section*{Reproducibility statement}
 
@@ -661,12 +652,12 @@ kernel is frozen at repository revision \texttt{30d8f53}.
 
 \section*{Acknowledgments}
 
-This work was conducted for the Rising Tide Research Foundation.  The
-manuscript and underlying research---including code development, numerical
-experiments, and literature mapping---were substantially drafted with OpenAI
-Codex under human direction.  The authors directed the work, reviewed and
-edited the resulting material, independently checked the cited sources and
-numerical evidence, and accept full responsibility for the content.
+We conducted this work for the Rising Tide Research Foundation.  Under the
+authors' direction, OpenAI Codex substantially drafted the manuscript and
+assisted with code development, numerical experiments, and literature mapping.
+The authors reviewed and edited the material, independently checked the cited
+sources and numerical evidence, and accept full responsibility for the
+content.
 
 \bibliographystyle{plainnat}
 \bibliography{references}
