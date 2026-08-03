@@ -34,3 +34,25 @@ The checksum change is intentional: the corrected marcher retains a positive
 tail that the old stopping rule truncated. Timing changes are host-state
 sensitive; deterministic resistance values, evaluation counts, and checksums
 are the primary reproducibility data.
+
+## Derived and structural claims
+
+| Manuscript claim | Value | Derivation or generator |
+|---|---:|---|
+| Historical error understatement | 112.84-fold; reported as about 113-fold | `5.781e-7 / 5.123e-9` using the pre-fix values above |
+| Frozen/pre-fix marcher error improvement over the four reported low-Froude cases | 3.20--4.52-fold; reported as 3.2--4.5 | row-wise ratios of the draft and frozen marcher relative differences above |
+| Frozen evaluation-count reduction over the same cases | 41.7--51.0%; reported as 42--51% | row-wise reductions from the draft to frozen evaluation counts above |
+| Gaussian-tail bound at the frequency gate | below `4e-30` | `exp(-64) / (8 sqrt(2*25))` from the analytic bound in `paper/main.tex` |
+| Wigley frequency gate | `Fn <= 0.2` | `omega = 1/Fn^2` and `omega >= 25` |
+| Wigley endpoint/contour work | 1,152 scalar nodes | 16 nonzero-frequency pairs times `(24 + 48)` Gauss--Legendre nodes |
+| Accepted reduced/reference range, Fn 0.05--0.02 | `1.526e-13`--`1.034e-12` | frozen low-Froude test rows above |
+| Fn 0.05 corrected marcher-estimate coverage | 3.87-fold | `5.774e-7 / 1.493e-7` |
+| Published Wigley difference | 0.05430383% | `100 * 5.430383e-4` |
+| Fn 0.02 cutoff check | `1.227e-15` | independent analytic-Wigley reference with cutoffs 4,000 and 8,000 |
+| Kernel test matrix | 9 cases, scaled discrepancy below `1e-9` | `s in {4,7,10}` crossed with `abs(omega) in {25,100,400}` in the low-Froude unit test |
+| Rust/Python test totals | 215 / 11 | `cargo test --workspace` (214 ordinary plus one documentation test) and Python `pytest` |
+
+The runtime table remains the frozen, same-process 30-sample measurement used
+to prepare the manuscript. A later verification run may differ in absolute
+time because of host state; matching checksums and work counts, not timing
+identity, are the accuracy invariant.
