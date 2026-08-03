@@ -290,3 +290,75 @@ extraction and without seeing any digitized CSV. It confirmed the geometry,
 test matrix, coefficient definitions, fixed/free policy, tank treatment,
 figure locations, lack of resistance tables, and Report 72 source mismatch.
 The audit made no repository edits and computed no predictions.
+
+## Theory-to-theory source audit
+
+The comparison target in the follow-up study is Insel's own calculated C2
+interference factor, not a curve reconstructed from experimental wave cuts.
+Direct inspection changes the initial theory label in an important way: Insel
+did **not** use the unbounded, infinite-depth Michell integral implemented by
+this library. Chapter 4 derives a Kelvin-source potential for a canal of finite
+width `W` and depth `H`, imposes wall images, and reduces the radiating field to
+discrete transverse modes. The modal wavenumbers obey both
+
+```text
+K_m sin(theta_m) = m pi / W
+K_m - K_0 sec^2(theta_m) tanh(K_m H) = 0.
+```
+
+The assumptions are inviscid, homogeneous, steady, irrotational flow, small
+waves, and linearized free-surface conditions (printed 40--43, PDF 50--53).
+The finite-width reduction and finite-depth dispersion relation are developed
+on printed 43--49 (PDF 53--59), and the resulting modal wave-resistance sum is
+given on printed 51 (PDF 61). Calling these curves "deep-water Michell" or
+"Sretensky theory" would therefore be inaccurate. They are Insel's own
+finite-canal, linear thin-ship source calculation.
+
+For a thin hull, Insel distributes sources on the centreplane. The program
+divides that plane into rectangular elements, replaces each continuous element
+by a point source at its centre, and obtains source strength from centred
+differences of the tabulated offsets (printed 50, 55--56; PDF 60, 65--66;
+Figures 35--36, printed 192--193, PDF 202--203). The thesis does not state the
+lengthwise and depthwise element counts used for the published C2 curves. The
+grid drawn in Figure 35 is schematic and is not promoted to an undocumented
+count. This remains a reproducibility limitation; the 20-by-50 mesh reported
+in Ship Science Report 72 belongs to its separate NPL implementation and must
+not be transferred to Insel's C2 calculation.
+
+The program can re-form the source mesh from measured trim and sinkage and can
+add a hydrostatic transom term (printed 54--56, PDF 64--66). The theory curves
+selected here are the fixed-attitude C2 Wigley hull. Accordingly, no running-
+attitude correction is active, and a transom term is geometrically inapplicable
+to the pointed product-parabola stern. The latter statement is an inference
+from the documented C2 geometry and program option, not an explicit program
+input listing.
+
+Figure 37 benchmarks the current monohull calculation against several earlier
+linear thin-ship Wigley results (printed 194, PDF 204). Figures 39--41 compare
+the monohull theory with Insel's measurements and fitted wave-pattern curves
+(printed 195--196, PDF 205--206). These are useful implementation checks, but
+they are not the decisive multihull theory-to-theory target.
+
+The appendix figure labels establish the following multihull distinction:
+
+- Figures 355--358 are interference ratios **predicted from monohull wave-
+  pattern analysis** at `S/L = 0.2, 0.3, 0.4, 0.5` (printed 356--357,
+  PDF 366--367). They inherit experimental wave-pattern processing and are not
+  Insel's source-theory result.
+- Figures 359--362 are the **theoretical wave-resistance interference ratio**
+  for the same four separations (printed 358--359, PDF 368--369). Each contains
+  C2--C5; the C2 curve is identified by the solid line. These four C2 curves are
+  the sole primary overlay target.
+- Figures 375--377 give empirical hump/hollow phase-correction locations only
+  for C3--C5 (printed 366--367, PDF 376--377), and Figures 380--382 give total-
+  resistance prediction errors only for C3--C5 (printed 368--369,
+  PDF 378--379). Neither set supplies a missing C2 theory curve.
+
+Thus this is a comparison between two members of the same linear thin-ship
+family with different outer Green functions and different geometry
+discretizations: Insel's finite-canal point-source/modal calculation versus the
+library's unbounded deep-water Michell integral with exact B-spline moments.
+The canal dimensions used for the experiment and theory are `W = 3.7 m` and
+`H = 1.85 m` (printed 62, PDF 72). Agreement would validate the common
+multihull phase physics and C2 geometry implementation; a small residual is
+not, by itself, evidence that either numerical integration is wrong.
