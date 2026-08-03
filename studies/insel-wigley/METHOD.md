@@ -362,3 +362,80 @@ The canal dimensions used for the experiment and theory are `W = 3.7 m` and
 `H = 1.85 m` (printed 62, PDF 72). Agreement would validate the common
 multihull phase physics and C2 geometry implementation; a small residual is
 not, by itself, evidence that either numerical integration is wrong.
+
+## Independent finite-canal reference
+
+The study harness now implements the canal calculation independently of the
+library kernel. For a centered symmetric hull only the even transverse modes
+remain, so the implemented roots satisfy
+
+```text
+K_n sin(theta_n) = 2 n pi / W
+K_n - K_0 sec^2(theta_n) tanh(K_n H) = 0,
+K_0 = g / U^2.
+```
+
+These are Insel's equations (4.35)--(4.36), printed page 49 (PDF 59), derived
+from the general mode equations (4.26), printed page 48 (PDF 58). Each positive
+root is bracketed and bisected. The calculation is restricted to `K_0 H > 1`,
+the regime stated immediately after equation (4.9), printed page 43 (PDF 53).
+
+The source density is `mu = -U f_x/(2 pi)`, equation (4.38), printed page 50
+(PDF 60). The harness integrates this continuous density exactly for the C2
+product parabola instead of reconstructing Insel's undocumented point-source
+mesh. With `w_n = K_n cos(theta_n)` and `p = w_n L/2`, the longitudinal factor
+is
+
+```text
+X_n = integral[-L/2,L/2] f_x sin(w_n x) dx
+    = 2 B (p cos(p) - sin(p)) / p^2.
+```
+
+A series is used near `p = 0` to avoid cancellation. The finite-depth vertical
+factor is retained exactly as printed in equation (4.29), page 48 (PDF 58):
+
+```text
+Z_n = integral[-T,0] (1 - z^2/T^2)
+      exp(-K_n H) cosh(K_n(H+z)) dz.
+```
+
+Writing `M_j(s) = integral[0,1] t^j exp(-s t) dt`, its closed form used by the
+harness is
+
+```text
+Z_n = T/2 [(M_0-M_2)
+           + exp(-K_n(2H-T))(2M_1-M_2)],   s = K_n T.
+```
+
+The `M_j` recurrence switches to its convergent power series for `|s| < 0.1`.
+No deep-water exponential is substituted into the finite-depth amplitude.
+
+There is one material internal inconsistency in the printed derivation.
+Equation (4.25), printed page 47 (PDF 57), includes the factor
+`K_0 + K_n cos^2(theta_n)` in the wave-elevation coefficient. The abbreviated
+definition of `tau_n` in equation (4.29), printed page 48 (PDF 58), omits that
+factor. The omission is dimensionally inconsistent and, when implemented
+literally, fails gate G1 by exactly the asymptotic factor `4 K_0^2`. The
+reference therefore retains the factor from the preceding governing equation
+(4.25). This is a documented resolution using the thesis itself and the
+preregistered deep-water limit, not an undocumented alternate kernel.
+
+Resistance uses Insel's centered-symmetric modal sum, equation (4.41), printed
+page 51 (PDF 61). For a centered catamaran, equations (4.42)--(4.48), printed
+pages 52--53 (PDF 62--63), multiply each demihull amplitude by
+`2 cos(n pi S/W)`; equation (4.50), printed page 54 (PDF 64), applies the
+square of that factor to each modal resistance contribution. The reported
+interference is consequently `R_pair/(2 R_mono)` on the same convention as
+the unbounded harness.
+
+Mode truncation is explicit. Starting at 32 retained modes, the harness doubles
+the count until the monohull resistance changes by at most `5e-6` relatively
+and interference changes by at most `2e-6` absolutely, with a hard limit of
+1,048,576 modes. This makes Insel's qualitative high-angle truncation statement
+(printed page 51, PDF 61) reproducible. Gate G1 passes at `Fn = 0.25, 0.35,
+0.50` for every `S/L = 0.2, 0.3, 0.4, 0.5`: the 80-times-wide/deep endpoint is
+within 0.5% in monohull resistance and 0.02 in interference of both an
+independent analytic-Wigley quadrature and the library. Gate G2 independently
+checks at the physical tank dimensions that 128 versus 256 modes changes both
+observables by less than 0.002, one tenth of the comparison tolerance. These
+gate tests were committed before computing any physical-tank comparison.

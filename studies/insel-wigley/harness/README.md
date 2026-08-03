@@ -31,3 +31,14 @@ cargo run --release --manifest-path studies/insel-wigley/harness/Cargo.toml -- -
 That mode writes `data/predictions/theory_predictions.csv` and retains the
 same geometry, fluid properties, solver options, convergence assertions, and
 standalone-path normalization.
+
+The independent finite-width, finite-depth canal reference and its
+wide/deep-limit and mode-doubling gates are exercised with:
+
+```sh
+cargo test --manifest-path studies/insel-wigley/harness/Cargo.toml
+```
+
+Its transcription, the resolved equation (4.25)/(4.29) inconsistency, and the
+explicit modal truncation rule are recorded in `../METHOD.md`. The tests do not
+write prediction data or expose the physical-tank comparison.
