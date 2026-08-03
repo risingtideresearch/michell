@@ -26,16 +26,16 @@ fn wigley_j(length: f64, beam: f64, draft: f64, nu: f64, lambda: f64) -> f64 {
 
 /// Independent positive-real-axis reference: analytic Wigley inner amplitude,
 /// 16-point Gauss panels whose boundaries advance the bow/stern phase by at
-/// most pi/2, and lambda_max=500 (leading-tail fraction below 2e-11).
+/// most pi/2, Kahan-compensated accumulation, and lambda_max=4000.
 fn resolved_wigley_reference(
     length: f64,
     beam: f64,
     draft: f64,
     conditions: &Conditions,
+    lambda_max: f64,
 ) -> (f64, usize) {
     let nu = conditions.gravity / conditions.speed.powi(2);
     let half_length = length / 2.0;
-    let lambda_max = 500.0;
     let du = std::f64::consts::FRAC_PI_2 / (nu * half_length);
     let panels = ((lambda_max - 1.0) / du).ceil() as usize;
     const NODES: [f64; 8] = [
@@ -59,6 +59,7 @@ fn resolved_wigley_reference(
         0.027_152_459_411_754_095,
     ];
     let mut integral = 0.0;
+    let mut correction = 0.0;
     for panel in 0..panels {
         let u0 = panel as f64 * du;
         let u1 = ((panel + 1) as f64 * du).min(lambda_max - 1.0);
@@ -71,7 +72,12 @@ fn resolved_wigley_reference(
                 let t = mid + sign * half * node;
                 let lambda = 1.0 + t * t;
                 let j = wigley_j(length, beam, draft, nu, lambda);
-                integral += weight * half * j * j * 2.0 * lambda.powi(2) / (2.0 + t * t).sqrt();
+                let term =
+                    weight * half * j * j * 2.0 * lambda.powi(2) / (2.0 + t * t).sqrt();
+                let corrected_term = term - correction;
+                let next = integral + corrected_term;
+                correction = (next - integral) - corrected_term;
+                integral = next;
             }
         }
     }
@@ -93,7 +99,15 @@ fn endpoint_reduction_converges_as_froude_number_falls() {
         let conditions = Conditions::freshwater(speed);
         let direct = marching_wave_resistance(&hull, &conditions, &reference_options);
         let (reference, reference_evaluations) =
-            resolved_wigley_reference(length, beam, draft, &conditions);
+            resolved_wigley_reference(length, beam, draft, &conditions, 4_000.0);
+        if fn_ == 0.02 {
+            let (doubled_reference, _) =
+                resolved_wigley_reference(length, beam, draft, &conditions, 8_000.0);
+            eprintln!(
+                "Fn=0.02 cutoff check: lambda_max 4000 -> 8000 relative change={:.3e}",
+                (reference - doubled_reference).abs() / doubled_reference
+            );
+        }
         let reduced = low_froude_wave_resistance(&hull, &conditions).unwrap();
         let actual_relative_error = (reduced.resistance - reference).abs() / reference;
         let direct_relative_error = (direct.resistance - reference).abs() / reference;
@@ -110,7 +124,7 @@ fn endpoint_reduction_converges_as_froude_number_falls() {
         assert!(actual_relative_error <= 1.05 * reduced.est_rel_error.max(2e-10));
         if fn_ <= 0.05 {
             assert!(reduced.kernel_evaluations * 100 < direct.inner_evaluations);
-            assert!(actual_relative_error < 2e-10);
+            assert!(actual_relative_error < 2e-12);
             assert!(actual_relative_error * 100.0 < direct_relative_error);
         }
     }
@@ -124,7 +138,8 @@ fn low_froude_reported_error_covers_actual_error() {
     let speed = fn_ * (STANDARD_GRAVITY * length).sqrt();
     let conditions = Conditions::freshwater(speed);
     let result = wave_resistance_with(&hull, &conditions, &WaveOptions::default()).unwrap();
-    let (reference, _) = resolved_wigley_reference(length, beam, draft, &conditions);
+    let (reference, _) =
+        resolved_wigley_reference(length, beam, draft, &conditions, 4_000.0);
     let actual_relative_error = (result.resistance - reference).abs() / reference;
     assert!(
         actual_relative_error <= 10.0 * result.est_rel_error.max(1e-12),

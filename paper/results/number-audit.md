@@ -23,6 +23,11 @@ output is in `frozen-kernel-2026-08-02.txt`. Timings used the optimized profile,
 | Fn 0.02 median speedup | 971.79x | 879.17x measured; approximately 880-fold reported | same |
 | 21-speed checksum | 2.553250998079e5 | 2.553251156101e5 | same |
 | Rust test count | 196 | 215 | `cargo test --workspace` |
+| Independent reference cutoff | 500 | 4,000 (8,000 cutoff check at Fn 0.02) | `cargo test -p michell --test low_froude endpoint_reduction_converges_as_froude_number_falls -- --nocapture` |
+| Reduced rel. diff., Fn 0.05 | 1.058e-11 | 2.070e-13 | same |
+| Reduced rel. diff., Fn 0.03 | 2.328e-11 | 1.034e-12 | same |
+| Reduced rel. diff., Fn 0.02 | 3.558e-11 | 1.526e-13 | same |
+| Fn 0.02 reference cutoff check | not measured | 1.227e-15 relative (4,000 to 8,000) | same |
 
 The checksum change is intentional: the corrected marcher retains a positive
 tail that the old stopping rule truncated. Timing changes are host-state

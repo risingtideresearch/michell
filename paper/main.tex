@@ -65,7 +65,7 @@ omission bound and a coarse/fine contour estimate meet the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
 \SI{39.233}{ms} to \SI{0.045}{ms} (approximately 880-fold), and differs from an
-independent real-axis reference by \(3.56\times10^{-11}\) relatively.  The
+independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
 method is presently restricted to upright symmetric monohulls and the contour
 discretization estimate is not a formal interval certificate.
 \end{abstract}
@@ -371,10 +371,11 @@ with \(L=\SI{10}{m}\), \(B=\SI{1}{m}\), and
 \(T=\SI{0.625}{m}\).  The independent reference does not call the production
 moment or outer-integral code.  It evaluates the analytic Wigley inner
 transform and applies 16-point Gauss--Legendre panels on the positive real
-\(\lambda\) axis.  Panel boundaries advance the bow phase by at most
-\(\pi/2\), and the integration is continued to \(\lambda=500\).  The remaining
-reference tail sets an estimated relative floor of approximately
-\(2\times10^{-11}\).
+\(\lambda\) axis with Kahan-compensated accumulation.  Panel boundaries
+advance the bow phase by at most \(\pi/2\), and the integration is continued to
+\(\lambda=4000\).  At \(\Fn=0.02\), doubling the cutoff to 8000 changes the
+reference by \(1.23\times10^{-15}\) relatively; floating-point effects remain,
+so this cutoff check is a resolution diagnostic rather than an interval bound.
 
 \begin{table}[t]
 \centering
@@ -387,10 +388,10 @@ submerged-pair bound and empirical contour difference.}
 \toprule
 \(\Fn\) & Reference \(\Rw\) (N) & Reduced rel. diff. & Reduced estimate & Marcher rel. diff.\\
 \midrule
-0.08 & \num{1.945940872497e-1} & \num{1.172e-5}  & \num{3.814e-5} & \num{6.917e-8}\\
-0.05 & \num{1.057847519834e-2} & \num{1.058e-11} & \num{3.728e-12}& \num{1.493e-7}\\
-0.03 & \num{5.113923599287e-4} & \num{2.328e-11} & \num{3.462e-12}& \num{3.322e-7}\\
-0.02 & \num{4.417234459536e-5} & \num{3.558e-11} & \num{7.620e-13}& \num{6.333e-7}\\
+0.08 & \num{1.945940872510e-1} & \num{1.172e-5}  & \num{3.814e-5} & \num{6.918e-8}\\
+0.05 & \num{1.057847519846e-2} & \num{2.070e-13}& \num{3.728e-12}& \num{1.493e-7}\\
+0.03 & \num{5.113923599401e-4} & \num{1.034e-12}& \num{3.462e-12}& \num{3.322e-7}\\
+0.02 & \num{4.417234459694e-5} & \num{1.526e-13}& \num{7.620e-13}& \num{6.334e-7}\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -398,7 +399,8 @@ submerged-pair bound and empirical contour difference.}
 \Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), omitted submerged
 terms are still material and the estimate correctly rejects the reduction at
 default tolerance.  At \(\Fn\leq0.05\), the reduced/reference differences are
-at the \(10^{-11}\) level and are dominated by the finite reference.  The
+between \(1.53\times10^{-13}\) and \(1.03\times10^{-12}\), within the reduced
+solver's empirical estimates.  The
 general marcher's error grows as Froude number falls.  At \(\Fn=0.05\), its
 corrected reported relative error is \(5.774\times10^{-7}\), compared with the
 measured \(1.493\times10^{-7}\), so the estimate covers rather than understates
@@ -426,10 +428,10 @@ passing tests.
   tick label style={font=\footnotesize},label style={font=\small}
 ]
 \addplot+[mark=*,thick] coordinates {
-  (0.08,1.172e-5) (0.05,1.058e-11) (0.03,2.328e-11) (0.02,3.558e-11)};
+  (0.08,1.172e-5) (0.05,2.070e-13) (0.03,1.034e-12) (0.02,1.526e-13)};
 \addlegendentry{endpoint/NSD}
 \addplot+[mark=square*,thick] coordinates {
-  (0.08,6.917e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.333e-7)};
+  (0.08,6.918e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.334e-7)};
 \addlegendentry{real-axis marcher}
 \end{axis}
 \end{tikzpicture}
@@ -455,8 +457,9 @@ passing tests.
 \end{tikzpicture}
 \end{minipage}
 \caption{Observed accuracy (left) and work (right) as Froude number decreases.
-The endpoint/NSD accuracy below \(\Fn=0.05\) is limited by the independent
-reference, while its quadrature work is fixed by geometry.}
+The deepened independent reference resolves endpoint/NSD differences down to
+the \(10^{-13}\)--\(10^{-12}\) level, while its quadrature work is fixed by
+geometry.}
 \label{fig:scaling}
 \end{figure}
 
@@ -543,9 +546,11 @@ model, not a universal low-speed ship-wave solution.
   \item \textbf{Error certification.}  The submerged-pair omission bound and
         Gaussian tail bound are analytic.  The 24/48 quadrature difference and
         floating-point roundoff are not interval-certified.
-  \item \textbf{Reference floor.}  The independent real-axis reference ends at
-        \(\lambda=500\).  Differences near \(10^{-11}\) should not be read as
-        evidence of more digits than that reference resolves.
+  \item \textbf{Reference floor.}  The independent real-axis reference uses
+        compensated summation through \(\lambda=4000\); at \(\Fn=0.02\), a
+        cutoff-doubling check changes it by \(1.23\times10^{-15}\).  Differences
+        near the observed \(10^{-13}\) scale should still not be read as
+        interval-certified digits.
   \item \textbf{Physical model.}  Michell theory is linear, inviscid, slender,
         deep-water, and fixed-attitude.  At very low speed, viscous effects may
         dominate the already small wave resistance.  Nonlinear low-Froude waves
