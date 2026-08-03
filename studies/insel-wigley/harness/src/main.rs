@@ -1,4 +1,7 @@
-use insel_wigley_harness::canal::{converged_resistance, Canal, Flow, ModalOptions, WigleyHull};
+use insel_wigley_harness::canal::{
+    converged_resistance, converged_resistance_variant, Canal, Flow, HistoricalVariant,
+    ModalOptions, WigleyHull,
+};
 use michell::{
     hulls, multihull_wave_resistance_with, Conditions, Fluid, Hull, Placement, WaveOptions,
     WaveResistance,
@@ -349,6 +352,85 @@ fn run_separation_grid() {
     );
 }
 
+fn run_historical_variants() {
+    let output = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../data/predictions/historical_variant_predictions.csv");
+    fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let hull = WigleyHull {
+        length: LENGTH,
+        beam: BEAM,
+        draft: DRAFT,
+    };
+    let canal = Canal {
+        width: 3.7,
+        depth: 1.85,
+    };
+    let options = ModalOptions::default();
+    let variants = [
+        HistoricalVariant::Baseline,
+        HistoricalVariant::LiteralEquation429,
+        HistoricalVariant::DoubledCrossTerm,
+        HistoricalVariant::HalfNonzeroModeMultiplicity,
+        HistoricalVariant::DoubleNonzeroModeMultiplicity,
+        HistoricalVariant::CosineInsteadOfCosineSquared,
+    ];
+    let mut writer = BufWriter::new(File::create(&output).unwrap());
+    writeln!(writer, "# criteria: time-boxed historical-variant probe requested after CRITERIA-SEPARATION.md was refuted").unwrap();
+    writeln!(writer, "# geometry: exact C2 Wigley L=1.8m B=0.18m T=0.1125m; canal W=3.7m H=1.85m; face-value centreline separations").unwrap();
+    writeln!(writer, "# grid: S/L=0.2,0.3,0.4,0.5; Fn=0.20:0.005:0.95; every variant must pass unchanged CRITERIA-THEORY.md gates on all four panels").unwrap();
+    writeln!(writer, "variant,configuration,fn,speed_m_s,separation_over_length,separation_m,interference,catamaran_rw_n,monohull_rw_n,modes,resistance_rel_change,interference_abs_change,outcome").unwrap();
+
+    let mut rows = 0usize;
+    for variant in variants {
+        for configuration in &CONFIGURATIONS[1..] {
+            let separation_over_length = configuration.separation_over_length.unwrap();
+            let separation = separation_over_length * LENGTH;
+            for fn_index in 0..=150 {
+                let fn_ = 0.20 + 0.005 * fn_index as f64;
+                let speed = fn_ * (GRAVITY * LENGTH).sqrt();
+                let result = converged_resistance_variant(
+                    hull,
+                    Flow {
+                        speed,
+                        density: DENSITY,
+                        gravity: GRAVITY,
+                    },
+                    canal,
+                    separation,
+                    options,
+                    variant,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} {} Fn={fn_:.3}: {error}",
+                        variant.as_str(),
+                        configuration.name
+                    )
+                });
+                writeln!(
+                    writer,
+                    "{},{},{fn_:.7},{speed:.12},{separation_over_length:.1},{separation:.12},{:.12e},{:.12e},{:.12e},{},{:.12e},{:.12e},converged",
+                    variant.as_str(),
+                    configuration.name,
+                    result.interference,
+                    result.catamaran_resistance,
+                    result.monohull_resistance,
+                    result.modes,
+                    result.resistance_rel_change,
+                    result.interference_abs_change,
+                )
+                .unwrap();
+                rows += 1;
+            }
+        }
+    }
+    writer.flush().unwrap();
+    eprintln!(
+        "wrote {rows} converged historical-variant rows to {}",
+        output.display()
+    );
+}
+
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if arguments.as_slice() == ["--canal"] {
@@ -359,10 +441,14 @@ fn main() {
         run_separation_grid();
         return;
     }
+    if arguments.as_slice() == ["--historical-variants"] {
+        run_historical_variants();
+        return;
+    }
     let theory = match arguments.as_slice() {
         [] => false,
         [flag] if flag == "--theory" => true,
-        _ => panic!("usage: insel-wigley-harness [--theory | --canal | --separation-grid]"),
+        _ => panic!("usage: insel-wigley-harness [--theory | --canal | --separation-grid | --historical-variants]"),
     };
     let study = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let digitized = study.join("data/digitized");

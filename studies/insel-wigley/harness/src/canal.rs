@@ -60,6 +60,29 @@ pub struct ModalResult {
     pub interference_abs_change: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoricalVariant {
+    Baseline,
+    LiteralEquation429,
+    DoubledCrossTerm,
+    HalfNonzeroModeMultiplicity,
+    DoubleNonzeroModeMultiplicity,
+    CosineInsteadOfCosineSquared,
+}
+
+impl HistoricalVariant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Baseline => "baseline_resolved_equations",
+            Self::LiteralEquation429 => "literal_equation_4_29",
+            Self::DoubledCrossTerm => "doubled_interference_cross_term",
+            Self::HalfNonzeroModeMultiplicity => "half_nonzero_mode_multiplicity",
+            Self::DoubleNonzeroModeMultiplicity => "double_nonzero_mode_multiplicity",
+            Self::CosineInsteadOfCosineSquared => "cosine_instead_of_cosine_squared",
+        }
+    }
+}
+
 fn validate(hull: WigleyHull, flow: Flow, canal: Canal, separation: f64) -> Result<(), String> {
     let values = [
         hull.length,
@@ -190,6 +213,7 @@ fn mode_contribution(
     canal: Canal,
     separation: f64,
     index: usize,
+    variant: HistoricalVariant,
 ) -> (f64, f64) {
     let k0 = flow.gravity / flow.speed.powi(2);
     let wave_number = mode_wavenumber(index, k0, canal.width, canal.depth);
@@ -203,9 +227,14 @@ fn mode_contribution(
     // factor K0 + K cos^2(theta). It is absent from the printed definition of
     // tau_m in equation (4.29), but omitting it is dimensionally inconsistent
     // and fails the independently required wide/deep limit by 4 K0^2.
+    let dimensional_factor = if variant == HistoricalVariant::LiteralEquation429 {
+        1.0
+    } else {
+        k0 + wave_number * cos_squared
+    };
     let source_factor = if index == 0 { -4.0 } else { -8.0 } * flow.speed.powi(2)
         / (canal.width * flow.gravity)
-        * (k0 + wave_number * cos_squared);
+        * dimensional_factor;
     let eta = source_factor
         * longitudinal_amplitude(wavenumber_x, hull.length, hull.beam)
         * vertical_amplitude(wave_number, canal.depth, hull.draft)
@@ -217,9 +246,19 @@ fn mode_contribution(
         1.0 - 0.5 * cos_squared * (1.0 + depth_ratio)
     };
     let prefactor = canal.width * flow.density * flow.gravity / 4.0;
-    let monohull = prefactor * eta.powi(2) * resistance_weight;
-    let catamaran_amplitude = 2.0 * (PI * index as f64 * separation / canal.width).cos();
-    (monohull, monohull * catamaran_amplitude.powi(2))
+    let multiplicity = match (variant, index) {
+        (HistoricalVariant::HalfNonzeroModeMultiplicity, 1..) => 0.5,
+        (HistoricalVariant::DoubleNonzeroModeMultiplicity, 1..) => 2.0,
+        _ => 1.0,
+    };
+    let monohull = multiplicity * prefactor * eta.powi(2) * resistance_weight;
+    let phase = PI * index as f64 * separation / canal.width;
+    let catamaran_factor = match variant {
+        HistoricalVariant::DoubledCrossTerm => 2.0 + 4.0 * (2.0 * phase).cos(),
+        HistoricalVariant::CosineInsteadOfCosineSquared => 4.0 * phase.cos(),
+        _ => 4.0 * phase.cos().powi(2),
+    };
+    (monohull, monohull * catamaran_factor)
 }
 
 pub fn fixed_mode_resistance(
@@ -229,6 +268,24 @@ pub fn fixed_mode_resistance(
     separation: f64,
     modes: usize,
 ) -> Result<ModalResult, String> {
+    fixed_mode_resistance_variant(
+        hull,
+        flow,
+        canal,
+        separation,
+        modes,
+        HistoricalVariant::Baseline,
+    )
+}
+
+pub fn fixed_mode_resistance_variant(
+    hull: WigleyHull,
+    flow: Flow,
+    canal: Canal,
+    separation: f64,
+    modes: usize,
+    variant: HistoricalVariant,
+) -> Result<ModalResult, String> {
     validate(hull, flow, canal, separation)?;
     if modes == 0 {
         return Err("at least one mode is required".into());
@@ -236,7 +293,8 @@ pub fn fixed_mode_resistance(
     let mut monohull = 0.0;
     let mut catamaran = 0.0;
     for index in 0..modes {
-        let (mono_mode, cat_mode) = mode_contribution(hull, flow, canal, separation, index);
+        let (mono_mode, cat_mode) =
+            mode_contribution(hull, flow, canal, separation, index, variant);
         monohull += mono_mode;
         catamaran += cat_mode;
     }
@@ -265,6 +323,24 @@ pub fn converged_resistance(
     separation: f64,
     options: ModalOptions,
 ) -> Result<ModalResult, String> {
+    converged_resistance_variant(
+        hull,
+        flow,
+        canal,
+        separation,
+        options,
+        HistoricalVariant::Baseline,
+    )
+}
+
+pub fn converged_resistance_variant(
+    hull: WigleyHull,
+    flow: Flow,
+    canal: Canal,
+    separation: f64,
+    options: ModalOptions,
+    variant: HistoricalVariant,
+) -> Result<ModalResult, String> {
     if options.min_modes == 0
         || options.max_modes < options.min_modes
         || !options.min_modes.is_power_of_two()
@@ -275,10 +351,12 @@ pub fn converged_resistance(
         return Err("invalid modal convergence options".into());
     }
     let mut modes = options.min_modes;
-    let mut previous = fixed_mode_resistance(hull, flow, canal, separation, modes)?;
+    let mut previous =
+        fixed_mode_resistance_variant(hull, flow, canal, separation, modes, variant)?;
     while modes < options.max_modes {
         modes *= 2;
-        let mut current = fixed_mode_resistance(hull, flow, canal, separation, modes)?;
+        let mut current =
+            fixed_mode_resistance_variant(hull, flow, canal, separation, modes, variant)?;
         current.resistance_rel_change =
             (current.monohull_resistance - previous.monohull_resistance).abs()
                 / current.monohull_resistance;

@@ -598,3 +598,46 @@ centreline or half-spacing transcription hidden in the labels. Insel defines
 | printed `S/L` is twice the implemented half-spacing | E | rejected; zero panels fit the half-spacing mapping |
 | one shared separation transformation explains all C2 curves | E | rejected; best fits are mutually inconsistent |
 | free per-panel separation restores theory agreement | E | rejected for Figures 359--361; Figure 362 agrees |
+
+## Time-boxed historical-variant probe
+
+Because the separation hypothesis was refuted, the final registered probe
+tested five literal or historically plausible transcription variants against
+the same attributed C2 traces. The geometry, face-value centreline separations,
+canal dimensions, scoring range, and every `CRITERIA-THEORY.md` threshold were
+held fixed. A hit required pointwise, hump-position, and hump-amplitude
+agreement in all four panels.
+
+| variant | `S/L = 0.2` | 0.3 | 0.4 | 0.5 | four-panel result |
+|---|---|---|---|---|---|
+| resolved equations (baseline) | disagreement | partial | partial | agreement | miss |
+| literal printed equation 4.29 | disagreement | partial | partial | agreement | miss |
+| doubled interference cross term | disagreement | disagreement | disagreement | disagreement | miss |
+| half nonzero-mode multiplicity | disagreement | partial | disagreement | disagreement | miss |
+| doubled nonzero-mode multiplicity | disagreement | disagreement | disagreement | disagreement | miss |
+| `cos` rather than `cos^2` pair coupling | disagreement | disagreement | disagreement | disagreement | miss |
+
+The baseline Figure 359 errors are median `0.1038`, 90th percentile `0.2958`,
+hump-position error `0.005`, and hump-amplitude ratio `0.845`. Literal equation
+4.29 gives the same displayed Figure 359 metrics and only a negligible change
+in the Figure 360 median (`0.0505` versus `0.0496`); it does not recover the
+printed close-spacing amplitude. Doubling the cross term raises every hump too
+far (`A = 1.185--1.253`). Halving the nonzero modes improves the Figure 360
+amplitude but fails the other panels. Doubling those modes and replacing
+`cos^2` by `cos` fail all four.
+
+No variant is a plausible match to the published four-curve family under the
+registered rule. Consequently there is no apparent hit whose historical use
+needs to be labelled plausible-but-unverifiable. These misses do not establish
+which unpublished implementation produced the thesis curves; they only remove
+the five specified transcription mechanisms from the live explanations.
+
+### Historical-variant claim classification
+
+| claim | class | status |
+|---|---|---|
+| literal equation 4.29 reproduces the printed C2 family | E | rejected; Figure 359 still disagrees |
+| an interference cross-term factor-of-two explains the family | E | rejected on all four panels |
+| off-axis modal multiplicity explains the family | E | rejected for both half and double variants |
+| `cos`/`cos^2` pair coupling explains the family | E | rejected on all four panels |
+| one of these misses identifies an Insel implementation error | E | not claimable; unpublished implementation remains unknown |

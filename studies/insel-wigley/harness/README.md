@@ -71,3 +71,16 @@ and `Fn = 0.150:0.005:1.000` to
 `../CRITERIA-SEPARATION.md`, writes both score tables, and creates four
 `separation-fit-*.png` overlays. This mode allows ten refinements because one
 `Fn = 1.0` pair hit the eight-refinement cap; the tolerance remains `1e-6`.
+
+The bounded historical-transcription probe is regenerated with:
+
+```sh
+cargo run --release --manifest-path studies/insel-wigley/harness/Cargo.toml -- --historical-variants
+python/.venv/bin/python studies/insel-wigley/plots/analyze_historical_variants.py
+```
+
+It writes 3,624 converged rows for the resolved baseline and five variants at
+the four face-value separations. The analysis applies the unchanged
+`../CRITERIA-THEORY.md` gates and writes
+`data/analysis/historical_variant_scores.csv`; a hit requires agreement on all
+components of all four panels.
