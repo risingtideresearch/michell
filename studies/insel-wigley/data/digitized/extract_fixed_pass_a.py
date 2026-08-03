@@ -235,6 +235,7 @@ def write_pass(page: int, ct_markers: list[tuple[float, float]],
                 "coefficient_digitization_uncertainty",
                 "source_figure",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         for observable, figure, axes, minimum, maximum, markers in (

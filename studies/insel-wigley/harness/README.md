@@ -18,4 +18,3 @@ multihull path and options.
 
 Every solve requests `rel_tol = 1e-6` and the binary aborts on a non-converged
 outcome. Both pair and standalone diagnostics are retained in every row.
-

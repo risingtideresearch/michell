@@ -319,7 +319,7 @@ def write_outputs(matches: list[tuple[Point | None, Point]], unmatched_a: list[P
             handle.write("# source: Mustafa Insel, 1990 PhD thesis\n")
             handle.write(f"# source_location: printed pages {','.join(pages)}; Figures {','.join(figures)}\n")
             handle.write("# method: blinded pixel passes, conservative glyph reconciliation; unsnapped Fn\n")
-            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
             writer.writeheader()
             writer.writerows(rows)
 
@@ -328,7 +328,7 @@ def write_outputs(matches: list[tuple[Point | None, Point]], unmatched_a: list[P
         "resolution", "x_px", "y_px",
     ]
     with (PASSES / "mismatches.csv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=mismatch_fields)
+        writer = csv.DictWriter(handle, fieldnames=mismatch_fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(
             sorted(
@@ -373,7 +373,7 @@ def write_free_audit(method_b: list[Point], pass_c: list[Point]) -> None:
         "matched", "pass_b_only", "pass_c_only",
     ]
     with (PASSES / "free_pass_b_c_audit.csv").open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
 

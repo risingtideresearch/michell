@@ -354,6 +354,7 @@ def write_pass(page: int, ct: list[tuple[float, float]],
                 "value_digitization_uncertainty",
                 "source_figure",
             ],
+            lineterminator="\n",
         )
         writer.writeheader()
         series = (

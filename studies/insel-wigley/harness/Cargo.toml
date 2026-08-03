@@ -8,4 +8,3 @@ publish = false
 michell = { path = "../../../crates/michell" }
 
 [workspace]
-
