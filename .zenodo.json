@@ -1,0 +1,31 @@
+{
+  "title": "Conservative Endpoint-Bickley Reduction for Low-Froude Michell Resistance",
+  "description": "Reproducible software, manuscript sources, validation tests, benchmark harness, and generated numerical evidence for an endpoint-pair reduction and frequency-scaled contour evaluation of low-Froude Michell wave resistance.",
+  "upload_type": "software",
+  "creators": [
+    {
+      "name": "Story, Rob",
+      "affiliation": "Rising Tide Research Foundation"
+    },
+    {
+      "name": "Bryant, Avi",
+      "affiliation": "Rising Tide Research Foundation"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "Michell wave resistance",
+    "thin-ship theory",
+    "low Froude number",
+    "oscillatory quadrature",
+    "Bickley-Naylor functions",
+    "B-splines"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/risingtideresearch/michell",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}
