@@ -215,6 +215,14 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
 
     let (coarse_x, coarse_w) = gauss_legendre(24);
     let (fine_x, fine_w) = gauss_legendre(48);
+    let needs_stiff_rule = waterline.iter().enumerate().any(|(i, left)| {
+        waterline[i..].iter().any(|right| {
+            let s = left.lambda_power + right.lambda_power - 2;
+            let omega = nu * (left.x - right.x);
+            contour_requires_high_order(s, omega)
+        })
+    });
+    let stiff_rule = needs_stiff_rule.then(|| gauss_legendre(96));
     let physical_coeff =
         4.0 * cond.fluid.density * cond.gravity * cond.gravity / (PI * cond.speed.powi(2));
     let (x0, x1) = hull.surface().x_domain();
@@ -227,8 +235,21 @@ pub fn low_froude_wave_resistance(hull: &Hull, cond: &Conditions) -> Result<LowF
             let product = left.coeff * conjugate(right.coeff);
             let s = left.lambda_power + right.lambda_power - 2;
             let omega = nu * (left.x - right.x);
-            let (kernel, kernel_error, evaluations) =
-                oscillatory_kernel(s, omega, &coarse_x, &coarse_w, &fine_x, &fine_w);
+            let (pair_coarse_x, pair_coarse_w, pair_fine_x, pair_fine_w) =
+                if contour_requires_high_order(s, omega) {
+                    let (stiff_x, stiff_w) = stiff_rule.as_ref().expect("precomputed stiff rule");
+                    (&fine_x, &fine_w, stiff_x, stiff_w)
+                } else {
+                    (&coarse_x, &coarse_w, &fine_x, &fine_w)
+                };
+            let (kernel, kernel_error, evaluations) = oscillatory_kernel(
+                s,
+                omega,
+                pair_coarse_x,
+                pair_coarse_w,
+                pair_fine_x,
+                pair_fine_w,
+            );
             let multiplicity = if std::ptr::eq(left, right) { 1.0 } else { 2.0 };
             let pair_integral = multiplicity * real_product(product, kernel);
             let pair_error = multiplicity * product.abs() * kernel_error;
@@ -456,6 +477,13 @@ fn oscillatory_kernel(
     (value, (fine - coarse).abs(), coarse_x.len() + fine_x.len())
 }
 
+/// Large `s/omega` makes `(1 + i y^2/omega)^-s` narrow and phase-active near
+/// the contour origin. The 48/96 pair resolves that regime while ordinary
+/// low-order hull kernels retain the cheaper 24/48 pair.
+fn contour_requires_high_order(s: usize, omega: f64) -> bool {
+    omega != 0.0 && s as f64 / omega.abs() >= 2.0
+}
+
 /// Complex Bickley kernel on the exact steepest-descent contour.
 fn steepest_descent_kernel(s: usize, omega: f64, gx: &[f64], gw: &[f64]) -> C64 {
     const Y_MAX: f64 = 8.0;
@@ -582,14 +610,13 @@ mod tests {
 
     #[test]
     fn steepest_descent_kernel_matches_resolved_real_axis_reference() {
-        let (gx, gw) = gauss_legendre(64);
+        let (gx, gw) = gauss_legendre(96);
         let (reference_x, reference_w) = gauss_legendre(16);
         // n <= p + 2q + 2 = 50 for the supported p,q <= 16 envelope, so
         // pair expansion reaches s <= 50 + 50 - 2 = 98. Include s=128 as
         // margin beyond every kernel order constructible by the public API.
         for s in [4, 7, 10, 50, 98, 128] {
             for omega in [25.0, 100.0, 400.0] {
-                let got = steepest_descent_kernel(s, omega, &gx, &gw);
                 // Independent real-axis quadrature. Panel boundaries are
                 // uniform in t^2, so the phase advances by at most pi on each
                 // panel. lambda_max=1000 leaves an absolute tail below
@@ -613,6 +640,7 @@ mod tests {
                             reference + C64::cis(omega * lambda).scale(weight * half * envelope);
                     }
                 }
+                let got = steepest_descent_kernel(s, omega, &gx, &gw);
                 let error = (got - reference).abs();
                 assert!(
                     error <= 1e-9 * got.abs().max(1e-14),
@@ -620,5 +648,14 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn high_order_rule_covers_the_public_kernel_envelope() {
+        assert!(!contour_requires_high_order(10, 25.0));
+        assert!(contour_requires_high_order(50, 25.0));
+        assert!(contour_requires_high_order(98, 25.0));
+        assert!(contour_requires_high_order(128, 25.0));
+        assert!(!contour_requires_high_order(128, 400.0));
     }
 }
