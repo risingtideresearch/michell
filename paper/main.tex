@@ -87,7 +87,7 @@ estimate is not a formal interval certificate.
 \end{abstract}
 
 \noindent\textbf{KEY WORDS:} Wave resistance; Michell integral; low Froude
-number; oscillatory quadrature; B-splines; Bickley--Naylor function.
+number; oscillatory quadrature; B-splines; Bickley function.
 \vspace{1em}
 \end{@twocolumnfalse}
 ]
@@ -155,7 +155,7 @@ combine these ideas in four steps:
   \item bound every resistance pair that contains an omitted submerged
         endpoint;
   \item identify the retained pair kernels as analytically continued
-        Bickley--Naylor functions and evaluate them on a frequency-scaled
+        Bickley functions and evaluate them on a frequency-scaled
         Gaussian contour; and
   \item accept the reduced result only when its error estimate meets the
         requested tolerance; otherwise use the general real-axis method.
@@ -426,7 +426,7 @@ reproducible.  If endpoint coefficient \(c_i\) combines \(a_i\) raw complex
 contributions \(q_{ik}\) by compensated accumulation, the implementation
 charges
 \begin{equation}
- \delta_i=\gamma_{2a_i+2}\sum_k|q_{ik}|,qquad
+ \delta_i=\gamma_{2a_i+2}\sum_k|q_{ik}|,\qquad
  \gamma_n=\frac{n\,u}{1-n\,u},
  \label{eq:coeffround}
 \end{equation}
