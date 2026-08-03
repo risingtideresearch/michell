@@ -21,7 +21,7 @@
   linkcolor=blue!45!black,
   citecolor=blue!45!black,
   urlcolor=blue!55!black,
-  pdftitle={Endpoint--Bickley Reduction for Low-Froude Michell Wave Resistance}
+  pdftitle={Conservative Endpoint--Bickley Reduction for Low-Froude Michell Resistance}
 }
 
 \newtheorem{proposition}{Proposition}
@@ -32,34 +32,32 @@
 \newcommand{\e}{\mathrm{e}}
 \newcommand{\Rw}{R_{\mathrm{w}}}
 
-\title{Endpoint--Bickley Reduction for Frequency-Independent\\
-Low-Froude Evaluation of Michell Wave Resistance}
+\title{Conservative Endpoint--Bickley Reduction for\\
+Low-Froude Michell Resistance}
 \author{Rob Story \qquad Avi Bryant\\[0.5ex]
 \small Rising Tide Research Foundation}
-\date{Draft of \today}
+\date{}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Michell's thin-ship formula remains attractive for rapid, geometry-sensitive
-wave-resistance prediction, but its outer integral becomes increasingly
-oscillatory as the length Froude number decreases.  Conventional real-axis
-marching must resolve a growing number of bow--stern oscillations and its tail
-termination can become unreliable.  For hulls represented by polynomial
-tensor-product B-splines, we show that the exact inner transform can be written
-as a finite sum of waves attached to spline-span endpoints.  At low Froude
-number, terms attached below the waterline may be omitted with an explicit
-absolute bound.  Expanding the squared transform before integration reduces
-the remaining resistance to pairwise kernels
+Reliable low-Froude wave-resistance prediction requires both resolving an
+increasingly oscillatory Michell integral and knowing when its algebraic tail
+has become negligible.  In a conventional real-axis marcher, we found a
+113-fold understatement of actual error by a quiet-window estimate; a
+structural correction now makes that estimate conservative on the tested
+range.  For hulls represented by polynomial tensor-product B-splines, we then
+show that the exact inner transform is a finite sum of waves attached to
+spline-span endpoints.  Terms attached below the waterline may be omitted at
+low Froude number with an explicit absolute bound.  Expanding the squared
+transform before integration reduces the remaining resistance to pairwise
+kernels
 \(
 K_s(\omega)=\int_1^\infty
 \e^{\iu\omega\lambda}\lambda^{-s}(\lambda^2-1)^{-1/2}\,d\lambda,
 \)
-which are analytic continuations of Bickley--Naylor functions.\footnote{The
-1935 paper is by W.~G. Bickley and J.~Nayler; later literature and DLMF use the
-conventional function name ``Bickley--Naylor.''  We retain each spelling in its
-historical context.}  The substitution
+which are analytically continued Bickley kernels.  The substitution
 \(\lambda=1+t^2\), followed by the exact rotation
 \(t=\e^{\iu\pi/4}y/\sqrt{|\omega|}\), converts each nonzero-frequency kernel
 to a Gaussian-decaying integral whose quadrature cost is independent of
@@ -68,9 +66,11 @@ omission bound and a coarse/fine contour estimate meet the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
 \SI{39.233}{ms} to \SI{0.045}{ms} (approximately 880-fold), and differs from an
-independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
-method is presently restricted to upright symmetric monohulls and the contour
-discretization estimate is not a formal interval certificate.
+independent real-axis reference by \(1.53\times10^{-13}\) relatively.  This is
+an engineering improvement to the present solver; only the combination of
+known endpoint and contour ideas is possibly new.  The method is restricted to
+upright symmetric monohulls and its contour-discretization estimate is not a
+formal interval certificate.
 \end{abstract}
 
 \section{Introduction}
@@ -82,6 +82,8 @@ free-surface computation and retains the bow--stern interference that makes
 resistance strongly dependent on speed and hull shape.  These properties have
 sustained its use in preliminary design, multihull studies, and mathematical
 shape optimization \citep{Lazauskas2009,DambrinePierreRousseaux2016}.
+For design use, however, a fast resistance value is insufficient unless its
+reported numerical error remains trustworthy as speed falls.
 
 The apparent simplicity conceals a difficult numerical limit.  Let
 \(\nu=g/U^2\), where \(U\) is speed and \(g\) gravitational acceleration.
@@ -276,8 +278,11 @@ With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
  \label{eq:bickley}
 \end{equation}
 where the final equality is understood by analytic continuation of the
-Bickley--Naylor function \citep{BickleyNayler1935,DLMF1043}.  This
-identification supplies recurrences and possible special-function
+Bickley--Naylor function \citep{BickleyNayler1935,DLMF1043}.\footnote{The 1935
+paper is by W.~G. Bickley and
+J.~Nayler; later literature and DLMF use the conventional function name
+``Bickley--Naylor.''  We retain each spelling in its historical context.}
+This identification supplies recurrences and possible special-function
 implementations, although the present solver evaluates the contour directly.
 
 The square-root endpoint in \cref{eq:kernel} is first removed by
