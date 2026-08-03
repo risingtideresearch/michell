@@ -79,8 +79,8 @@ submerged pairs, and coarse/fine contour quadrature; the dispatcher falls back
 to a real-axis marcher when the estimate exceeds the requested tolerance.
 For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
 instead of 511,504 inner-transform evaluations, reduces median runtime from
-\SI{21.506}{ms} to \SI{0.031}{ms} (about 700-fold), and differs from an
-independent real-axis reference by \(1.53\times10^{-13}\) relatively.  The
+\SI{20.319}{ms} to \SI{0.029}{ms} (about 700-fold), and differs from an
+independent real-axis reference by \(1.83\times10^{-13}\) relatively.  The
 implementation is an engineering improvement for upright symmetric monohulls
 with coarse, well-separated active endpoints.  Its contour-discretization
 estimate is not a formal interval certificate.
@@ -130,18 +130,17 @@ algebraic tail.  At the pre-fix revision \texttt{64925d4}, one quiet-window
 criterion reported \(5.123\times10^{-9}\) relative error at \(\Fn=0.05\), but
 the measured error was \(5.781\times10^{-7}\), about 113 times larger.  The
 frozen kernel advances quiet windows by oscillatory phase alone and adds the
-refinement and tail estimates.  Across \(0.02\leq\Fn\leq1\), the corrected
-estimate covers measured error by about fourfold.  In the four low-Froude cases
-reported below, measured error falls by factors of 3.2--4.5, and evaluations
-fall by 42--51\%.
+refinement and tail estimates.  The four low-Froude calculations reported
+below all stop at the refinement cap: they are measured comparators, not
+claims that the requested \(10^{-8}\) tolerance was achieved.
 
 Earlier work also supplies the endpoint and contour ingredients.
 \citet{Wehausen1973} surveys
 classical thin-ship theory and its limits.  Keller and Ahluwalia show that bow
 and stern waterline data control the small-Froude wave field and resistance
-\citep{KellerAhluwalia1976}.  Gotman separates polynomial-hull contributions
-into endpoint derivatives and bow--stern interference terms
-\citep{Gotman2002}.  Huybrechs and Vandewalle develop numerical steepest descent
+\citep{KellerAhluwalia1976}.  Gotman gives finite endpoint-derivative sums and
+products that separate bow, stern, and bow--stern interaction terms
+\citep[pp.~83--85]{Gotman2002}.  Huybrechs and Vandewalle develop numerical steepest descent
 \citep{HuybrechsVandewalle2006}, and Motygin applies it to the Kelvin
 Green-function integral in linear ship-wave theory \citep{Motygin2017}.  We
 combine these ideas in four steps:
@@ -180,6 +179,17 @@ normalization used by the implementation,
   \qquad \nu=\frac{g}{U^2}.
   \label{eq:inner}
 \end{align}
+All calculations below use \(g=\SI{9.80665}{m.s^{-2}}\), freshwater density
+\(\rho=\SI{999.1}{kg.m^{-3}}\), and the length Froude number
+\(\Fn=U/\sqrt{gL}\).  We report
+\begin{equation}
+ C_w=\frac{\Rw}{\tfrac12\rho U^2 S_w},\qquad
+ S_w=2\iint_\Omega\sqrt{1+f_x^2+f_z^2}\,dx\,dz,
+ \label{eq:cw}
+\end{equation}
+where \(S_w\) is the two-sided wetted area of the B-spline hull.  Lengths,
+speeds, and forces are in metres, metres per second, and newtons; \(\lambda\),
+\(\Fn\), and \(C_w\) are dimensionless.
 The hull is a clamped, non-rational tensor-product B-spline surface.  On a knot
 rectangle \(S=[x_0,x_1]\times[z_0,z_1]\), its longitudinal derivative is an
 exact bivariate polynomial,
@@ -311,11 +321,11 @@ With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
  =\Ki_s(-\iu\omega),
  \label{eq:bickley}
 \end{equation}
-where the final equality denotes analytic continuation of the Bickley--Naylor
-function \citep{BickleyNayler1935,DLMF1043}.\footnote{The 1935
-paper is by W.~G. Bickley and
-J.~Nayler; later literature and DLMF use the conventional function name
-``Bickley--Naylor.''  We retain each spelling in its historical context.}
+where the final equality denotes analytic continuation of the Bickley
+function \citep{BickleyNayler1935,DLMF1043}.\footnote{DLMF calls
+\(\Ki_s\) the ``Bickley function'' and cites the 1935 paper by W.~G. Bickley
+and J.~Nayler.  The compound spelling ``Bickley--Naylor'' occurs in later
+literature, including \citet{RuffaToni2026}; it is not DLMF terminology.}
 This identity supplies recurrences and other possible implementations.  The
 present solver instead evaluates the contour directly.
 
@@ -329,11 +339,11 @@ The substitution \(\lambda=1+t^2\) removes the square-root endpoint in
 \end{equation}
 For \(\omega>0\), analyticity in the intervening sector permits the exact
 rotation
-\(t=\e^{\iu\pi/4}y/\sqrt\omega\), giving
+\(t=\e^{\iu\pi/4}r/\sqrt\omega\), giving
 \begin{equation}
  K_s(\omega)=\frac{2\e^{\iu(\omega+\pi/4)}}{\sqrt\omega}
- \int_0^\infty \frac{\e^{-y^2}\,dy}{
- (1+\iu y^2/\omega)^s\sqrt{2+\iu y^2/\omega}}.
+ \int_0^\infty \frac{\e^{-r^2}\,dr}{
+ (1+\iu r^2/\omega)^s\sqrt{2+\iu r^2/\omega}}.
  \label{eq:gaussian}
 \end{equation}
 Conjugation gives the negative-frequency kernels.  The rotation replaces
@@ -354,7 +364,7 @@ vanishes as \(R\to\infty\); thus the rotation is valid for every kernel order
 used here, \(s\geq4\).
 
 The implementation normally applies 24- and 48-point Gauss--Legendre rules on
-\(0\leq y\leq8\).  When \(s/|\omega|\geq2\), the continued algebraic factor is
+\(0\leq r\leq8\).  When \(s/|\omega|\geq2\), the continued algebraic factor is
 narrow near the origin, so the code uses 48- and 96-point rules.  The neglected
 Gaussian tail obeys
 \begin{equation}
@@ -363,22 +373,30 @@ Gaussian tail obeys
  \qquad \omega>0,
  \label{eq:gausstail}
 \end{equation}
-using \(|1+\iu y^2/\omega|\geq1\),
-\(|\sqrt{2+\iu y^2/\omega}|\geq\sqrt2\), and the standard Gaussian-tail
+using \(|1+\iu r^2/\omega|\geq1\),
+\(|\sqrt{2+\iu r^2/\omega}|\geq\sqrt2\), and the standard Gaussian-tail
 bound.  At the minimum supported nonzero frequency \(\omega=25\), this is
 below \(4\times10^{-30}\).  The selected coarse/fine difference estimates
 discretization error.  This difference remains empirical.  Thus the submerged-term bound and
 analytic contour-tail bound are rigorous, but the total floating-point error
-is not certified.
+is not certified.  A committed fixed-rule scan over \(4\leq s\leq400\) and
+\(|\omega|\in\{25,100,400\}\), using a 192-node same-contour reference and a
+\(10^{-10}\) comparison floor, found a maximum relative 48-node discrepancy
+of \(1.84\times10^{-11}\) through \(s=50\), but \(3.16\times10^{-1}\) above
+that range.  The 24/48 difference covered every meaningful 48/192 discrepancy
+by at least 2.22 in this scan.  This measured degree dependence motivates the
+adaptive 48/96 rule within the validated \(s\leq98\) envelope; it is evidence,
+not a quadrature theorem.
 
 For fixed geometry, a nonzero endpoint pair costs either 72 or 144 scalar
 nodes; increasing frequency never increases that cost.  Self pairs use
 \cref{eq:kzero} without quadrature.  The biquadratic Wigley representation has
 one longitudinal span and one vertical span.  Its 16 endpoint terms include
-eight at the waterline, which form 16 distinct nonzero-frequency bow--stern
-pairs.  Each uses the 24/48 rule, for \(16\times72=1{,}152\) scalar nodes in
-all; equal-position pairs use \cref{eq:kzero}.  The committed harness checks
-each count.
+eight at the waterline.  Their full ordered-pair expansion contains 32
+nonzero-frequency entries; conjugacy and upper-triangular accumulation reduce
+these to 16 kernel evaluations.  Each uses the 24/48 rule, for
+\(16\times72=1{,}152\) scalar nodes in all; equal-position pairs use
+\cref{eq:kzero}.  The committed harness checks each count.
 
 \section{Hybrid algorithm and scope}
 \label{sec:algorithm}
@@ -399,6 +417,56 @@ between them:
   \item use the reduced result if their combined relative estimate meets the
         requested tolerance; otherwise run the general real-axis marcher.
 \end{enumerate}
+
+The acceptance calculation is published here to make that last gate
+reproducible.  If endpoint coefficient \(c_i\) combines \(a_i\) raw complex
+contributions \(q_{ik}\) by compensated accumulation, the implementation
+charges
+\begin{equation}
+ \delta_i=\gamma_{2a_i+2}\sum_k|q_{ik}|,qquad
+ \gamma_n=\frac{n\,u}{1-n\,u},
+ \label{eq:coeffround}
+\end{equation}
+where \(u\) is binary64 machine epsilon.  For an upper-triangular retained
+pair \((i,j)\), let \(m_{ij}=1\) on the diagonal and 2 otherwise, and let
+\(K^{c}_{ij}\) and \(K^{f}_{ij}\) be the coarse and fine contour values.  The
+three absolute resistance-level components are
+\begin{align}
+ B_o &= C\!\sum_{(i,j)\in\mathcal P_S}
+ |c_i c_j|\e^{-\nu(z_i+z_j)}K_{s_{ij}}(0),
+ \label{eq:bo}\\
+ B_q &= C\!\sum_{i\leq j}m_{ij}|c_i c_j|
+ |K^{f}_{ij}-K^{c}_{ij}|,
+ \label{eq:bq}\\
+ B_r &= C\!\sum_{i,j}
+ (\delta_i|c_j|+|c_i|\delta_j+\delta_i\delta_j)
+ \e^{-\nu(z_i+z_j)}K_{s_{ij}}(0).
+ \label{eq:br}
+\end{align}
+Here \(B_o\) is the omission bound in \cref{eq:omitbound}, \(B_q\) is the
+weighted contour-difference estimate, and \(B_r\) accounts for cancellation
+while constructing the endpoint map.  A separate coefficient-construction
+floor is
+\begin{equation}
+ \epsilon_c=\max(2\times10^{-8},\,4r_{\rm span}),
+ \label{eq:floor}
+\end{equation}
+where \(r_{\rm span}\) is the independently sampled relative residual when
+the local power basis reconstructs \(f_x\).  Set \(B=B_o+B_q+B_r\).  If
+\(B\geq|\widetilde R_{\rm w}|\), or any quantity is nonfinite, the reduced
+route refuses dispatch.  Otherwise the printed and gated estimate is
+\begin{equation}
+ \widehat\epsilon=\epsilon_c+
+ \frac{B}{|\widetilde R_{\rm w}|-B}.
+ \label{eq:dispatcherror}
+\end{equation}
+The denominator follows from the reverse triangle inequality; using
+\(B/|\widetilde R_{\rm w}|\) would understate an error relative to the unknown
+exact resistance.  \(B_o\), the separate Gaussian-tail inequality, and
+\(B_r\) under the standard floating-point model are analytic bounds.
+\(B_q\) and the validated floor \(\epsilon_c\) are empirical estimates.
+Consequently \(\widehat\epsilon\) is an error-gating diagnostic, not a formal
+interval certificate.
 
 The frequency gate reserves the fixed contour for sufficiently rapid
 oscillation.  For the Wigley bow--stern pair,
@@ -441,37 +509,101 @@ The standard Wigley half-breadth is
  \label{eq:wigley}
 \end{equation}
 with \(L=\SI{10}{m}\), \(B=\SI{1}{m}\), and
-\(T=\SI{0.625}{m}\).  The independent reference shares neither the production
-moment code nor its outer integrator.  Instead, it evaluates the analytic
-Wigley transform on the positive real \(\lambda\) axis with 16-point
-Gauss--Legendre panels and Kahan-compensated accumulation.  Panel boundaries
-advance the bow phase by at most \(\pi/2\), and integration continues to
-\(\lambda=4000\).  At \(\Fn=0.02\), doubling this cutoff to 8000 changes the
-reference by \(1.23\times10^{-15}\) relatively.  Because floating-point effects
-remain, this check measures resolution but does not provide an interval bound.
+\(T=\SI{0.625}{m}\).  The primary reference shares neither the production
+moment code nor its outer integrator.  It evaluates the analytic Wigley
+transform on the positive real axis after \(\lambda=1+t^2\), which converts
+the outer weight to
+\(2\lambda^2|F(\lambda)|^2/\sqrt{2+t^2}\).  This explicitly removes the
+square-root singularity at \(\lambda=1\); \citet[p.~371]{Tuck1989} identifies
+that singularity and recommends its removal before quadrature.
 
-As a published-value anchor, \citet[Table~1]{DoctorsBeck1987} report the
-classical thin-ship value \(10^3 C_w=1.2486\) for this Wigley hull at
-\(\Fn=0.35\).  The committed harness gives \(10^3 C_w=1.247922\), a relative
-difference of \(5.43\times10^{-4}\) (\(0.0543\%\)).  We classify this agreement
-as a known result reproduced (class 1).
+Panels are first constructed in \(\lambda\):
+\(\Delta\lambda=\pi/(\nu L)\), so either endpoint phase
+\(\nu\lambda L/2\) advances by at most \(\pi/2\).  Their endpoints are then
+mapped to \(t\); each panel uses a locally generated 16-point Gauss--Legendre
+rule, the cutoff is \(\lambda_{\max}=4000\), and every nodal contribution is
+combined by Kahan accumulation.  This requires 3,182,304 nodes at
+\(\Fn=0.08\), rising to 50,916,864 at \(\Fn=0.02\).
+
+A second reference is independently transformed with
+\(\lambda=\sec\theta\), Tuck's stated regularization, for which the outer
+weight is \(\sec^3\theta\,|F(\sec\theta)|^2\).  It maps the same
+phase-resolved \(\lambda\) endpoints into \(\theta\), constructs its own
+Gauss rule, and accumulates separately.  \Cref{tab:refconv} separates endpoint
+map, panel-order, and cutoff convergence.  The 8/16 trend and 16/24 agreement
+support the digits quoted below; floating-point agreement is still not an
+interval bound.
 
 \begin{table*}[t]
 \centering
-\caption{Resistance validation against the independent analytic-Wigley,
-resolved-real-axis reference.  ``Reduced estimate'' combines the rigorous
-submerged-pair bound and empirical contour difference.  The marcher uses
-requested \(\mathrm{rel\_tol}=10^{-8}\) and at most six refinements.}
-\label{tab:accuracy}
-\small
-\begin{tabular}{@{}ccccc@{}}
+\caption{Independent-reference convergence.  Entries are relative changes;
+``map'' compares the 16-node \(1+t^2\) and \(\sec\theta\) constructions.
+The final two columns compare panel orders within each construction.}
+\label{tab:refconv}
+\scriptsize
+\begin{tabular}{@{}crrrrrr@{}}
 \toprule
-\(\Fn\) & Reference \(\Rw\) (N) & Reduced rel. diff. & Reduced estimate & Marcher rel. diff.\\
+\(\Fn\) & Nodes/map & Map 16/16 & \(t^2\) 8/16 & \(t^2\) 16/24 & \(\sec\theta\) 8/16 & \(\sec\theta\) 16/24\\
 \midrule
-0.08 & \num{1.945940872510e-1} & \num{1.172e-5}  & \num{3.814e-5} & \num{6.918e-8}\\
-0.05 & \num{1.057847519846e-2} & \num{2.070e-13}& \num{3.728e-12}& \num{1.493e-7}\\
-0.03 & \num{5.113923599401e-4} & \num{1.034e-12}& \num{3.462e-12}& \num{3.322e-7}\\
-0.02 & \num{4.417234459694e-5} & \num{1.526e-13}& \num{7.620e-13}& \num{6.334e-7}\\
+0.08 & 3,182,304  & \num{1.284e-15} & \num{2.399e-10} & \num{1.426e-16} & \num{3.641e-10} & \num{0.000e0}\\
+0.05 & 8,146,704  & \num{3.280e-16} & \num{1.849e-10} & \num{9.839e-16} & \num{1.564e-10} & \num{1.640e-16}\\
+0.03 & 22,629,712 & \num{4.664e-15} & \num{1.364e-10} & \num{2.120e-15} & \num{1.420e-10} & \num{1.484e-15}\\
+0.02 & 50,916,864 & \num{1.534e-15} & \num{8.035e-11} & \num{6.136e-15} & \num{8.284e-11} & \num{5.523e-15}\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+At \(\Fn=0.02\), increasing \(\lambda_{\max}\) from 4000 to 8000 changes
+the \(1+t^2\) and \(\sec\theta\) references by \(1.38\times10^{-15}\) and
+\(1.23\times10^{-15}\), respectively.
+
+As a published-value anchor, \citet[Table~1]{DoctorsBeck1987} report the
+classical thin-ship value \(10^3 C_w=1.2486\) for \(B/L=0.1\),
+\(T/L=0.0625\), and \(\Fn=0.35\).  Our dimensional realization is the
+\SI{10}{m} hull above, with \(U=\Fn\sqrt{gL}\), \(\rho\) and \(g\) as stated
+above, and \(C_w\) and \(S_w\) defined by \cref{eq:cw}.  The committed harness
+gives \(10^3 C_w=1.247922\), a relative difference of
+\(5.43\times10^{-4}\) (\(0.0543\%\)).  We classify this agreement as a known
+result reproduced (class 1).
+
+\begin{table*}[t]
+\centering
+\caption{Resistance validation against the primary analytic-Wigley reference.
+The marcher requested \(\mathrm{rel\_tol}=10^{-8}\) with six refinements, but
+every row reached RefinementCap (RC); no row is presented as tolerance
+converged.  For \(\Fn\leq0.03\), the physical omission correction is
+\(6.2\times10^{-32}\) or smaller, so the reduced/reference difference measures
+quadrature agreement rather than omission physics.}
+\label{tab:accuracy}
+\scriptsize
+\begin{tabular}{@{}ccccccrl@{}}
+\toprule
+\(\Fn\) & Reference \(\Rw\) (N) & Reduced diff. & Reduced est. & Marcher diff. & Marcher est. & Marcher work & Status\\
+\midrule
+0.08 & \num{1.945940872510e-1} & \num{1.172e-5} & \num{3.817e-5} & \num{6.918e-8} & \num{2.896e-7} & 56,032 & RC\\
+0.05 & \num{1.057847519846e-2} & \num{1.963e-13}& \num{2.000e-8} & \num{1.493e-7} & \num{5.974e-7} & 119,936 & RC\\
+0.03 & \num{5.113923599401e-4} & \num{1.045e-12}& \num{2.000e-8} & \num{3.322e-7} & \num{1.320e-6} & 267,856 & RC\\
+0.02 & \num{4.417234459694e-5} & \num{1.829e-13}& \num{2.000e-8} & \num{6.334e-7} & \num{2.517e-6} & 511,504 & RC\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table*}[t]
+\centering
+\caption{Decomposition of the reduced estimate in \cref{eq:dispatcherror}.
+The first three columns use the guarded denominator
+\(|\widetilde R_{\rm w}|-B\); their sum plus the construction/safety floor is
+the printed estimate.}
+\label{tab:estimateparts}
+\small
+\begin{tabular}{@{}crrrrr@{}}
+\toprule
+\(\Fn\) & Omission \(B_o/D\) & Contour \(B_q/D\) & Rounding \(B_r/D\) & Floor \(\epsilon_c\) & Total\\
+\midrule
+0.08 & \num{3.815e-5} & \num{1.355e-12} & \num{9.153e-15} & \num{2.000e-8} & \num{3.817e-5}\\
+0.05 & \num{3.656e-12}& \num{7.222e-14} & \num{9.702e-15} & \num{2.000e-8} & \num{2.000e-8}\\
+0.03 & \num{6.153e-32}& \num{3.462e-12} & \num{9.292e-15} & \num{2.000e-8} & \num{2.000e-8}\\
+0.02 & \num{5.508e-70}& \num{7.620e-13} & \num{9.428e-15} & \num{2.000e-8} & \num{2.000e-8}\\
 \bottomrule
 \end{tabular}
 \end{table*}
@@ -479,12 +611,12 @@ requested \(\mathrm{rel\_tol}=10^{-8}\) and at most six refinements.}
 \Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), submerged terms remain
 material, and the estimate rejects the reduction at default tolerance.  At
 \(\Fn\leq0.05\), reduced/reference differences range from
-\(1.53\times10^{-13}\) to \(1.03\times10^{-12}\) and remain within the reduced
+\(1.83\times10^{-13}\) to \(1.05\times10^{-12}\) and remain within the reduced
 solver's empirical estimates.  The general marcher's error, by contrast,
-grows as Froude number falls.  At \(\Fn=0.05\), its corrected estimate is
-\(5.774\times10^{-7}\), versus \(1.493\times10^{-7}\) measured.  The estimate
-therefore covers the observed error.  This independently checked marcher
-provides every comparison in \cref{tab:accuracy}.
+grows as Froude number falls.  Its estimate covers the observed error in all
+four rows, but each calculation exhausted the configured refinement budget.
+The independent endpoint-aware references, not the capped marcher, provide
+the comparison standard in \cref{tab:accuracy}.
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
 integration for \(s\in\{4,7,10,50,98,128\}\) and
@@ -498,7 +630,7 @@ provides margin.  The full Rust and Python-interface suites pass.
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=\linewidth,height=5.2cm,
+  width=\linewidth,height=6.2cm,
   xlabel={Froude number $\Fn$},ylabel={relative difference},
   ymode=log,x dir=reverse,
   grid=major,major grid style={black!20,densely dotted},
@@ -507,7 +639,7 @@ provides margin.  The full Rust and Python-interface suites pass.
   tick label style={font=\footnotesize},label style={font=\small}
 ]
 \addplot+[black,solid,mark=*,mark options={fill=black},thick] coordinates {
-  (0.08,1.172e-5) (0.05,2.070e-13) (0.03,1.034e-12) (0.02,1.526e-13)};
+  (0.08,1.172e-5) (0.05,1.963e-13) (0.03,1.045e-12) (0.02,1.829e-13)};
 \addlegendentry{endpoint/NSD}
 \addplot+[black,dashed,mark=square,mark options={solid},thick] coordinates {
   (0.08,6.918e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.334e-7)};
@@ -523,7 +655,7 @@ provides margin.  The full Rust and Python-interface suites pass.
 \centering
 \begin{tikzpicture}
 \begin{axis}[
-  width=\linewidth,height=5.2cm,
+  width=\linewidth,height=6.2cm,
   xlabel={Froude number $\Fn$},ylabel={kernel/inner evaluations},
   ymode=log,x dir=reverse,
   grid=major,major grid style={black!20,densely dotted},
@@ -541,21 +673,26 @@ provides margin.  The full Rust and Python-interface suites pass.
 \end{tikzpicture}
 \end{minipage}
 \caption{Observed accuracy (left) and work (right) as Froude number decreases.
-The independent reference resolves endpoint/NSD differences at the
-\(10^{-13}\)--\(10^{-12}\) level, while geometry fixes its quadrature work.  At
-default tolerance, the hybrid rejects the reduced result at
-\(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
+The two endpoint-aware references agree in the low \(10^{-15}\) range; the
+plotted endpoint/NSD differences are therefore resolved quadrature
+comparisons.  Every real-axis marcher point has status
+\texttt{RefinementCap}.  At default tolerance, the hybrid rejects the reduced
+result at \(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
 \label{fig:scaling}
 \end{figure*}
 
 \subsection{Runtime}
 
-Timing used an optimized build, 30 samples per case, and the default relative
-tolerance \(10^{-5}\).  Each case received its own unmeasured warm call.  The
-two method comparisons alternated execution order on every sample; other cases
-were sampled separately in the printed order.  Absolute timings are
-host-dependent; the work counts and checksums are deterministic.  The host was
-an Apple M5 MacBook Air running Darwin 25.5.0, with Rust/Cargo 1.96.0.
+Timing used \texttt{cargo bench -p michell --bench wigley}, 30 samples per
+case, the optimized Cargo bench profile, no custom \texttt{RUSTFLAGS}, and the
+default requested relative tolerance \(10^{-5}\).  Each case received an
+unmeasured warm call.  Calls below \SI{0.1}{ms} were timed in batches of 256
+and divided by 256; checksums use separate untimed calls, so timer and checksum
+work do not overlap.  The two method comparisons alternated execution order on
+every sample; other cases were sampled separately in printed order.  The host
+was a 10-core Apple M5 MacBook Air with 24 GB RAM, arm64 Darwin 25.5.0,
+Rust/Cargo 1.96.0, and LLVM 22.1.2.  Absolute timings are host-dependent; work
+counts and checksums are deterministic.
 
 \begin{table*}[t]
 \centering
@@ -565,23 +702,27 @@ an Apple M5 MacBook Air running Darwin 25.5.0, with Rust/Cargo 1.96.0.
 \toprule
 Case & Median (ms) & IQR (ms) & Diagnostic\\
 \midrule
-21 speeds, \(\Fn=0.10\ldots0.50\) & 13.035 & 12.996--13.064 & corrected checksum\\
-Default API, \(\Fn=0.05\) & 0.030 & 0.030--0.030 & 1,152 nodes\\
-Real-axis marcher, \(\Fn=0.02\) & 21.506 & 21.464--21.557 & 511,504 evaluations\\
-Endpoint/NSD, \(\Fn=0.02\) & 0.031 & 0.030--0.031 & 1,152 nodes\\
+21 speeds, \(\Fn=0.10\ldots0.50\) & 12.514 & 12.307--12.584 & checksum \(2.553251156101\times10^5\)\\
+Default API, \(\Fn=0.05\) & 0.029 & 0.029--0.029 & 1,152 nodes; batch 256\\
+Real-axis marcher, \(\Fn=0.02\) & 20.319 & 20.080--20.434 & 511,504 evaluations; batch 1\\
+Endpoint/NSD, \(\Fn=0.02\) & 0.029 & 0.029--0.029 & 1,152 nodes; batch 256\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-At \(\Fn=0.02\), the frozen paired run gives about a 700-fold median speedup.
-Two immediately repeated paired runs gave 702--707-fold; an earlier cold-host
-run gave 608-fold, while the former fixed-order reviewer protocol gave
-approximately 750--865-fold.  We therefore do not treat any point ratio as
-portable.  Cost changes little between \(\Fn=0.05\) and 0.02, as
-\cref{eq:gaussian} predicts.  During the 21-speed design sweep, the hybrid
-selects the path that satisfies the error gate.  The checksum is
-\(2.553251156101\times10^5\); it differs from the pre-fix value because the
-corrected marcher retains a positive tail that the earlier rule truncated.
+At \(\Fn=0.02\), the frozen paired run gives a 702-fold median speedup; repeated
+protocols on this host have spanned roughly 608--865-fold, so the ratio is not
+portable.  The comparison uses equal \emph{requested} tolerance, not matched
+observed accuracy: the endpoint/reference difference is
+\(1.83\times10^{-13}\), whereas the capped marcher's is
+\(6.33\times10^{-7}\).  Cost changes little between \(\Fn=0.05\) and 0.02, as
+\cref{eq:gaussian} predicts.  The sweep grid is the 21 speeds
+\(\Fn=0.10,0.12,\ldots,0.50\); its checksum is the sum of the 21 returned
+resistances from one untimed pass.  The scalar low-speed checksums are likewise
+sums of one result per sample, outside the timed batches.  During the sweep,
+the hybrid selects the path that satisfies the error gate.  The checksum
+differs from the pre-fix value because the corrected marcher retains a
+positive tail that the earlier rule truncated.
 
 \section{Analytic lineage and implementation scope}
 \label{sec:prior}
