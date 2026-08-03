@@ -377,6 +377,12 @@ advance the bow phase by at most \(\pi/2\), and the integration is continued to
 reference by \(1.23\times10^{-15}\) relatively; floating-point effects remain,
 so this cutoff check is a resolution diagnostic rather than an interval bound.
 
+As a published-value anchor, \citet[Table~1]{DoctorsBeck1987} report the
+classical thin-ship value \(10^3 C_w=1.2486\) for this Wigley hull at
+\(\Fn=0.35\).  The committed harness gives \(10^3 C_w=1.247922\), a relative
+difference of \(5.43\times10^{-4}\) (\(0.0543\%\)).  This is a known result
+reproduced, not a new accuracy claim.
+
 \begin{table}[t]
 \centering
 \caption{Resistance validation against the independent analytic-Wigley,
@@ -505,8 +511,13 @@ B-spline decomposition should be viewed as a general, implementation-ready
 form of that known mechanism, not a new physical asymptotic principle.
 
 Similarly, exact or Filon-like integration of piecewise-polynomial inner data
-is established practice \citep{Tuck1989,Lazauskas2009}.  The special feature
-here is that exact endpoint reduction continues through the nonlinear-looking
+is established practice \citep{Tuck1989,Lazauskas2009}.  Michlet, as described
+by \citet{Lazauskas2009}, combines exact piecewise-quadratic longitudinal
+formulas with a fixed angular rule.  The present solver retains the same
+thin-ship physics but makes low-Froude outer work independent of frequency for
+its supported B-spline geometry.  That is an engineering improvement in this
+codebase, not a head-to-head performance claim against the Michlet executable.
+The special feature here is that exact endpoint reduction continues through the nonlinear-looking
 outer modulus square: analytic pair expansion converts the outer problem into
 a small set of reusable special-function kernels.  The relation
 \(K_s=\Ki_s(-\iu\omega)\) appears not to have been exploited in the inspected

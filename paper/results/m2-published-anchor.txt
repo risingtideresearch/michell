@@ -1,0 +1,6 @@
+Command: cargo test -p michell --test phase0_validation wigley_matches_published_thin_ship_value -- --nocapture
+Source: Doctors and Beck (1987), Journal of Ship Research 31(1), Table 1
+
+Wigley Fn=0.35: Cw=1.2479219624e-3, published=1.2486000000e-3, relative_difference=5.430383e-4
+
+Result: 1 passed; 0 failed; 0 ignored; 5 filtered out.

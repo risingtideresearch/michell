@@ -51,6 +51,10 @@ fn wigley_matches_published_thin_ship_value() {
     .unwrap();
     let cw = wave.resistance / (0.5 * cond.fluid.density * speed * speed * hull.wetted_surface());
     let published_cw = 1.2486e-3;
+    eprintln!(
+        "Wigley Fn=0.35: Cw={cw:.10e}, published={published_cw:.10e}, relative_difference={:.6e}",
+        rel_err(cw, published_cw)
+    );
 
     // The source prints five significant digits and uses its own physical
     // constants/geometric integration convention, so do not overfit it.

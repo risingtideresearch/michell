@@ -28,6 +28,7 @@ output is in `frozen-kernel-2026-08-02.txt`. Timings used the optimized profile,
 | Reduced rel. diff., Fn 0.03 | 2.328e-11 | 1.034e-12 | same |
 | Reduced rel. diff., Fn 0.02 | 3.558e-11 | 1.526e-13 | same |
 | Fn 0.02 reference cutoff check | not measured | 1.227e-15 relative (4,000 to 8,000) | same |
+| Published Wigley anchor, Fn 0.35 | 1.2486e-3 published | 1.2479219624e-3 reproduced; 5.430383e-4 relative difference | `cargo test -p michell --test phase0_validation wigley_matches_published_thin_ship_value -- --nocapture` |
 
 The checksum change is intentional: the corrected marcher retains a positive
 tail that the old stopping rule truncated. Timing changes are host-state
