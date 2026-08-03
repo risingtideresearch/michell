@@ -214,3 +214,36 @@ uv run --project python --extra plot python \
   studies/insel-wigley/data/digitized/extract_family_359_pass_b.py
 python3 studies/insel-wigley/data/digitized/reconcile_family_359.py
 ```
+
+## Experimental cross-model family audit
+
+Figures 347--350 (printed 352--353, PDF 362--363) were rendered at 480 dpi
+after `CRITERIA-FAMILY-EXPERIMENT.md` and the independent legend audit were
+committed. The audit traces C2--C5 on `0.35 <= Fn <= 0.55`; the distinct
+C2-FIXED curve is identified but is not an input to the registered free-model
+cross-form test.
+
+Both passes record model identity, line style, and relative position. Pass A
+uses compact local ink centring. Pass B uses separate plot-border readings,
+source checkpoints, and a wider horizontal response for broken styles. The
+unchanged `0.015 Fn` and `0.08 tau` bounds admit 652 of 656 anchors and omit
+four. The final curve, mismatches, peak metrics, and registered result are:
+
+- `experimental_family_347_350.csv`;
+- `passes/final_experimental_family_mismatches.csv`;
+- `final_experimental_family_metrics.csv`; and
+- `final_experimental_family_checks.csv`.
+
+Reproduce the extraction and reconciliation with:
+
+```sh
+mkdir -p tmp/pdfs/insel-final/experimental-figures
+pdftoppm -jpeg -r 480 -f 362 -l 363 \
+  studies/insel-wigley/data/raw/insel-1990-thesis.pdf \
+  tmp/pdfs/insel-final/experimental-figures/page
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_experimental_family_pass_a.py
+uv run --project python --extra plot python \
+  studies/insel-wigley/data/digitized/extract_experimental_family_pass_b.py
+python3 studies/insel-wigley/data/digitized/reconcile_experimental_family.py
+```

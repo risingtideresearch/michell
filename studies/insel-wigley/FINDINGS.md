@@ -494,3 +494,67 @@ unchanged, and no `CLOSEOUT.md` is created.
 | Wigley C2 has the lowest broad-hump `Fn` in Figure 359 | K | reproduced within archived digitization uncertainty |
 | a different plotted family member explains the library discrepancy | E | not tested; overlays prohibited after the source-anomaly stop |
 | a specific historical implementation deviation explains the curves | E | not tested; H2 was not entered |
+
+## Experimental re-adjudication of the family expectation
+
+The earlier family rule overreached. Insel states that smaller `L/B` moves
+humps and hollows to higher Froude number and that higher `L/B` reduces the
+interference amplitude at `S/L = 0.2` and `0.3` (printed 124, PDF 134). His
+three round-bilge NPL forms establish that trend within one hull-form family.
+The text does not extend the amplitude ordering across the deep, parabolic,
+transom-free Wigley C2 and the shallow, round-bilge, transom NPL forms. The
+registered `C3 >= C4 >= C2 >= C5` order therefore included an untested
+cross-form extrapolation.
+
+`CRITERIA-FAMILY-EXPERIMENT.md` replaced that extrapolation with a direct
+test before Figures 347--350 were opened. The independent legend audit maps
+solid to C2, dashed to C3, dash-dot to C4, and dotted to C5 in all four panels;
+the separate dash-dot-dot curve is C2-FIXED (Figures 347--348: printed 352,
+PDF 362; Figures 349--350: printed 353, PDF 363). Two source-only passes of the
+principal-hump window admitted 652 of 656 anchors.
+
+The close-spacing experimental amplitudes are:
+
+| `S/L` | C2 `A` | NPL envelope | NPL `A` | C2 minus NPL | result |
+|---:|---:|---|---:|---:|---|
+| 0.2 | 0.775 | C3 | 0.883 | -0.109 | NPL resolved above C2 |
+| 0.3 | 0.560 | C3 | 0.697 | -0.137 | NPL resolved above C2 |
+
+Each peak ordinate carries `0.020` digitization uncertainty. The intervals do
+not overlap. Neither close separation has a material C2 excess; both place C3
+above C2. The preregistered result is therefore
+**ANOMALOUS-VS-OWN-EXPERIMENT**. Figure 359's theoretical C2 amplitude does
+not merely violate an extrapolated NPL trend: it reverses the cross-model
+ordering in Insel's paired experimental comparison. Chapter 8 says that
+Figures 347--350 show pronounced `L/B` dependence at small separation and
+that amplitude depends on both hull form and separation (printed 124, PDF
+134); it does not explain this reversal.
+
+### What centred differences do and do not exclude
+
+Insel computes element source density from centred station differences of
+corner offsets, then replaces each continuous element with a point source
+(equation 4.53, printed 56, PDF 66). For a quadratic waterline
+`q(s) = a s^2 + b s + c`, the longitudinal difference is exact:
+
+```text
+[q(s+h/2) - q(s-h/2)] / h = 2as + b = q'(s).
+```
+
+Because each Wigley waterline is quadratic in `x`, station spacing cannot bias
+that longitudinal derivative. The stronger claim that this makes every C2
+source or resistance exact at any mesh is false. Equation 4.53 also averages
+vertical corner offsets, which is trapezoidal rather than exact for the
+Wigley's quadratic depth factor, and it applies the continuous element at one
+point, which is not exact for the oscillatory wave phase. The deduction
+excludes longitudinal source-gradient resolution as the cause; it does not
+exclude vertical averaging or point-source quadrature without a mesh study.
+
+### Family-experiment claim classification
+
+| claim | class | status |
+|---|---|---|
+| Insel claimed one amplitude order across Wigley and NPL forms | K | rejected; the text states an NPL `L/B` trend and separate hull-form dependence |
+| Figure 359 agrees with the measured close-spacing cross-model ordering | E | rejected at both close separations |
+| centred station differences recover the Wigley longitudinal derivative | K | exact by the quadratic identity above |
+| every mesh-resolution mechanism is thereby excluded | E | rejected; vertical averaging and point-source phase quadrature remain |
