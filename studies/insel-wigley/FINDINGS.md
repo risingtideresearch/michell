@@ -198,3 +198,68 @@ uv run --project python --extra plot python \
 
 The last command regenerates all score CSVs and 14 comparison plots from the
 committed digitized and prediction CSVs. It reads no PDF and no solver state.
+
+## Interpretation against the primary source
+
+The preregistered scores above remain unchanged, but their physical
+interpretation closes differently when read against Insel's own conclusions.
+Insel states that both theoretical calculations and predictions reconstructed
+from the monohull wave pattern can carry a Froude-number phase shift. His
+recommended procedure is empirical: locate the experimental principal hump in
+Figures 375--377 and shift the theoretical wave-resistance curve to it
+(printed 125, PDF 135). The measured theoretical lead in this study,
+`delta Fn = -0.016` to `-0.074`, therefore quantifies a known `phase shift` on
+the exact C2 comparison rather than exposing an undocumented solver behavior.
+
+The separation dependence is equally explicit in the primary source. Insel
+warns that predictions using theoretical `tau` at lower speeds, especially at
+small separation, should be `treated with caution` (printed 128, PDF 138).
+The disagreement at `S/L = 0.2` is thus inside the regime he singles out. His
+mechanistic interpretation is that neighbour-induced asymmetric flow changes
+the wave phase but is absent from the symmetric thin-ship approximation; he
+says that effect must be `corrected by empirical methods` (printed 130,
+PDF 140). He also reports inter-hull bow/stern wave breaking and says it is
+likely to make wave-pattern analysis underpredict wave resistance over some
+speed ranges (printed 130, PDF 140). That measurement bias acts in the same
+direction as part of the present 29--61% theory-over-`C_WP` hump-amplitude gap
+and should be strongest where inter-hull interaction is strongest. The
+available record does not calibrate the bias, so this study does not assign a
+numerical fraction of the gap to it.
+
+Insel's preferred design observable also matches the score hierarchy here: he
+concludes that using interference factors instead of direct wave-resistance
+prediction gives `much better accuracy` (printed 131, PDF 141). This is the
+published counterpart of the present progression from weak absolute-`C_W`
+scores to agreement for `tau_WP` at `S/L = 0.5`. The same pattern predates the
+thesis. Insel's review reports that Yokoo and Tasaki observed a Froude-number
+phase shift between calculated and measured interaction humps and hollows
+(printed 17, PDF 27), while Eggers obtained satisfactory theory/experiment
+agreement only for `S/L > 0.4` (printed 16--17, PDF 26--27). The improvement
+with separation in this study therefore reproduces the historical shape of
+linear-theory validation rather than creating a new failure mode.
+
+There is also an implementation-level anchor independent of the experimental
+wave-pattern transfer. At `Fn = 0.35`, the committed monohull row in
+`predictions.csv` gives `C_W = 1.248133344362e-3`; Doctors and Beck's published
+classical thin-ship value for the same `B/L = 0.1`, `T/L = 0.0625` Wigley
+geometry is `1.2486e-3`. The relative difference is 0.037%, or 0.04% rounded.
+That agreement, together with converged study rows, is direct evidence that
+the implementation reproduces the classical C2 calculation.
+
+The classification consequently separates the phenomenon from its
+measurement. The close-spacing absolute-`C_W` limitation and hump phase shift
+are class K/P: known behavior reproduced and published practice matched. The
+class-E contribution is the preregistered numerical score and explicit trust
+envelope, including its rejection of any continuous interval. No result in
+this study indicts the frozen numerical kernel.
+
+### Claim-classification addendum
+
+| claim | class | status |
+|---|---|---|
+| Froude-number phase shift in linear catamaran theory | K | known result reproduced and quantified on C2 |
+| degraded close-spacing agreement and improvement beyond `S/L = 0.4` | K/P | historical result reproduced; published caution matched |
+| interference factors outperform direct wave-resistance prediction | P | Insel's stated design practice matched |
+| Doctors--Beck C2 thin-ship value at `Fn = 0.35` | K | reproduced within 0.04% |
+| preregistered cell-by-cell trust envelope | E | quantitative codebase contribution; no continuous interval admitted |
+| frozen numerical kernel is defective | E | rejected by the evidence in this study |
