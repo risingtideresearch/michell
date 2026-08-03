@@ -1,7 +1,8 @@
 # Michell wave-resistance deep dive
 
 Date: 2026-08-02
-Branch: `story-design-tool-grade-kernel`
+Branch: `story-kernel-hardening`
+Kernel-hardening starting revision: `30d8f53`
 Design-tool upgrade starting revision: `64925d4`
 Original deep-dive starting revision: `abe2b1f`
 Remote operations: none
@@ -45,16 +46,74 @@ independent of the oscillation frequency in the tested low-Froude range.
 The constituent mathematics is not new: endpoint low-speed asymptotics,
 Bickley--Naylor functions, and numerical steepest descent all have substantial
 literatures. The implementation is class 2. The *combination* of an exact
-arbitrary-degree B-spline endpoint reduction, analytically continued Bickley
-kernels, frequency-independent contour quadrature, and a computable omitted-
-endpoint bound in Michell resistance is classified only as **possibly novel**
-(class 4), after the documented searches below found no prior instance. This is
-not a proof of priority and is not called a breakthrough.
+polynomial B-spline endpoint reduction within the validated degree envelope,
+analytically continued Bickley kernels, frequency-independent contour
+quadrature, and a computable omitted-endpoint bound in Michell resistance is
+classified only as **possibly novel** (class 4), after the documented searches
+below found no prior instance. This is not a proof of priority and is not called
+a breakthrough.
 
 The first Phase-4 advance, the exact gradient, remains useful: it is 17.59 times
 faster than centered finite differences for the nine-control benchmark. Its
 quadratic structure is known; the matrix-free B-spline reverse pass is an
 engineering implementation, not a novelty claim.
+
+## Kernel hardening after coordinated adversarial review
+
+Classification: the failure reproduction and degree-elevation identities are
+class 1; the refusal gate, finite-value checks, compensated endpoint
+accumulation, and revised diagnostics are class 2. No novelty claim is made for
+this work.
+
+Three independent reviews showed that the former “arbitrary-degree” contract
+was false. `Hull::fx_coeff` converted corner derivatives to local Taylor
+coefficients with factorial scaling. At high degree that map is ill-conditioned,
+and both the endpoint reducer and general marcher consumed the same corrupted
+array. Their agreement was therefore correlated, not independent validation.
+The original reviewer programs and hashes are preserved in
+`probes/adversarial/`; commit `b2cb256` ports all required cases as red tests.
+
+| Red case on `30d8f53` | Accepted result | Independent evidence |
+|---|---:|---:|
+| R1 degree `(48,2)`, `Fn=0.05` | `2.240158007412e11 N`, reported `1.271e-11` | closed-form amplitude plus independent GL: `9.840371404040e-3 N` |
+| R1 degree sweep | first requested-`1e-5` violation at degree 24: `1.459e-5` actual, `2.917e-12` reported | analytic Bernstein scaling |
+| R2 degree `(48,2)`, `Fn=0.10` | `5.624385122311e13 N` | rigorous variation/envelope upper bound `4.9899908e3 N` |
+| R2 degree `(192,2)` | `Ok(NaN)`, `EvalCap` | finiteness contract |
+| R3 degree `(24,16)`, `Fn=0.05` | `1.305597e-5` actual, `7.417e-14` reported, `Converged` | independent high-precision reference `6.3825284969346485e-3 N` |
+
+The fix deliberately chooses the explicit validated-envelope option. Replacing
+only the derivative extraction would leave high-order cancellation in the
+downstream local power basis and endpoint expansion. `Hull` now supports degrees
+up to 16 in each direction, subject to the reconstruction gate, and returns
+`Error::Unsupported` above that cap.
+Within the cap, construction independently reconstructs `fx` from the local
+coefficients at a tensor Gauss grid and refuses a normalized residual above
+`1e-8`. Every public resistance route rejects non-finite outputs rather than
+returning `Ok(NaN)`.
+
+Error reporting now charges both solvers a `2e-8` resistance-level coefficient
+floor. That empirical floor is about 18 times the independent R3 degree
+`(16,12)` discrepancy (`1.113940e-9`); it is not a formal floating-point proof.
+The endpoint combined map uses compensated complex accumulation and propagates
+a standard gamma-style roundoff bound through every endpoint pair. Public
+rustdoc states explicitly that marcher/reducer agreement is not independent
+evidence because both share `fx_coeff`.
+
+Exact Bézier degree elevation of one Wigley geometry validates degrees 2–16 in
+x alone, z alone, and along the tensor diagonal. Degree 1 remains covered by
+the existing analytic linear/wedge tests; a quadratic Wigley cannot be
+represented at degree 1. At the worst supported tensor corner `(16,16)`, the
+relative discrepancy was `2.514206e-10` for the endpoint route at `Fn=0.05`
+and `4.896228e-10` for the general marcher at `Fn=0.35`; reported estimates
+were `2.000378e-8` and `6.100313e-8`. Degree 17 in either direction refuses.
+The unchanged exact knot-insertion ranking gate also passes.
+
+The low-degree resistance values did not change. The 30-sample release sweep
+checksum remains exactly `2.553251156101e5`. Current medians were 12.726 ms for
+the 21-speed sweep, 0.029 ms for the `Fn=0.05` endpoint case, 20.852 ms for the
+direct `Fn=0.02` marcher, and 0.030 ms for its endpoint reduction. The new
+diagnostic floor changes printed error estimates, as intended, but not those
+resistance checksums.
 
 ## Claim classification
 
@@ -73,6 +132,7 @@ The required honesty classes are used throughout this report:
 | Standard Wigley `10^3 Cw` at `Fn=0.35` | 1 | 1.250831 computed versus 1.2486 published; 0.179% difference |
 | Froude similarity, zero camber for symmetric sides, and classical catamaran `4 cos²` interference | 1 | Phase-0 property tests |
 | Stable high-degree moment switchover | 2 | Failing regressions at degrees 19–20, followed by the endpoint-series fix |
+| Validated spline-degree envelope and loud refusal above degree 16 | 2 | Five adversarial red cases, independent high-precision references, exact degree-elevation sweep, and finite-result guards |
 | Per-side asymmetric half-breadth validation | 2 | Failing negative-port regression, followed by constructor validation |
 | Adaptive outer-loop trigonometric reuse | 2 | Interleaved before/after benchmark at unchanged validation accuracy |
 | Exact polynomial-times-kernel span integration | 3 | This code and Dambrine–Pierre–Rousseaux both evaluate polynomial basis integrals exactly |
@@ -704,8 +764,9 @@ whereas the work in Phases 0–2 addresses numerical error.
 
 ### What this code already does well
 
-- Exact inner integrals for every span of an arbitrary-degree polynomial
-  tensor B-spline; no station/waterline sampling error in Michell amplitude.
+- Exact inner integrals for every span of a polynomial tensor B-spline through
+  the validated degree-16-per-direction envelope; no station/waterline sampling
+  error in Michell amplitude inside that envelope.
 - Stable origin, recurrence, and endpoint regimes for real, oscillatory, and
   complex-decay moments.
 - Adaptive endpoint-regularized outer integration with diagnostics.
@@ -885,7 +946,7 @@ functions ([fetched record](https://trid.trb.org/View/397494)); Motygin's
 steepest-descent Kelvin Green function; Keller--Ahluwalia low-speed endpoints;
 and the Bickley literature. The full de Sendagorta--Grases article was not
 available for inspection, so it is a material uncertainty, explicitly not
-silence that proves novelty. No source found all four elements: arbitrary-degree
+silence that proves novelty. No source found all four elements: validated-degree
 B-spline span endpoints, Bickley analytic continuation of the pair kernel,
 fixed-cost contour evaluation, and a submerged-endpoint omission bound with
 automatic tolerance routing.
@@ -929,6 +990,10 @@ would require a professional database and patent search plus expert review.
 | `cc25d18` | Failing high-Froude error-estimate coverage regressions |
 | `a2aa894` | Separate quiet-window phase from decay and sum error sources |
 | `b79d46b` | Cap vanished depth-envelope panel rates with measured speedups |
+| `b2cb256` | Failing adversarial high-degree regression suite and preserved reviewer probes |
+| `0ddda93` | Degree-16 support cap and non-finite-result refusal |
+| `84e2885` | Shared coefficient validation and endpoint-cancellation error accounting |
+| `7b824f5` | Exact degree-elevation validation of the supported envelope |
 
 ## Ranked backlog
 
@@ -972,14 +1037,16 @@ would require a professional database and patent search plus expert review.
 
 | Command | Result |
 |---|---|
-| `cargo build --workspace` | pass |
-| `cargo build --workspace --release` | pass |
-| `cargo test --workspace` | pass: 215 test cases including one doctest; 0 failed |
+| `cargo build --workspace --all-targets` | pass |
+| `cargo test --workspace` | pass: 226 test cases including one doctest; 0 failed |
 | `uv run --with pytest --with numpy pytest -q` in `python/` | pass: 11 passed in 0.10 s |
-| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; corrected sweep checksum exactly `2.553251156101e5` |
+| `cargo test --release -p michell --test high_degree_hardening -- --nocapture` before K2 | expected red: all five independent regressions failed |
+| `cargo test --release -p michell --test degree_envelope -- --nocapture` | pass: degree 2–16 endpoint/marcher sweeps covered; degree 17 refused |
+| `cargo test -p michell --test ranking_stability ordering_is_invariant_under_exact_knot_insertion -- --exact` | pass: unchanged knot-insertion gate |
+| `MICHELL_BENCH_SAMPLES=30 cargo bench -p michell --bench wigley` | pass; sweep checksum exactly `2.553251156101e5`; exact-gradient/FD checksums agree to `8.1e-12` relative |
 | `cargo doc -p michell --no-deps` | generated successfully; pre-existing broken-link/unit-bracket warnings remain |
 | allowed-lint Clippy command reproduced below | pass |
-| `cargo fmt --all --check` | pass after isolated formatter commit `282f0f0` |
+| `cargo fmt --all --check` | pass |
 | `git diff --check` | pass |
 
 The structural stopping fix deliberately changes resistance values at the old
@@ -999,5 +1066,5 @@ cargo clippy -p michell --all-targets -- -D warnings \
 ```
 
 No database-backed tests exist in this repository. No test was skipped. The
-pre-existing untracked `python/uv.lock` was deliberately preserved and excluded
-from every commit. No remote push was made.
+pre-existing untracked `python/uv.lock` was preserved outside this worktree and
+excluded from every commit. No remote push was made.

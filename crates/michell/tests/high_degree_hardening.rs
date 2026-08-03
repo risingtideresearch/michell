@@ -13,7 +13,7 @@ use std::f64::consts::PI;
 const DEFAULT_REL_TOL: f64 = 1.0e-5;
 const R1_P2_INDEPENDENT_REFERENCE: f64 = 2.565_891_321_290e-3;
 const R2_RIGOROUS_UPPER_BOUND_N: f64 = 4_989.990_8;
-const R3_INDEPENDENT_REFERENCE_N: f64 = 6.382_528_496_934_648_5e-3;
+const R3_INDEPENDENT_REFERENCE_N: f64 = 6.382_528_496_934_648e-3;
 
 fn clamped_knots(degree: usize, lower: f64, upper: f64) -> Vec<f64> {
     std::iter::repeat_n(lower, degree + 1)
