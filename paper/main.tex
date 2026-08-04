@@ -58,33 +58,48 @@ for Low-Froude B-Spline Hulls}
 
 \begin{abstract}
 \itshape
-Reliable low-Froude wave-resistance prediction requires both resolving an
-increasingly oscillatory Michell integral and estimating its algebraic tail.
-Michelsen's 1960 dissertation and 1972 sequel developed analytic reductions
-of Michell resistance for polynomial and orthogonal-basis hull descriptions.
-We revive that lineage as a validated implementation for tensor-product
-B-spline hulls of degree at most 16 in each direction.  Repeated integration
-by parts expresses the exact inner transform as endpoint waves.  At low Froude
-number, an absolute bound permits the omission of terms below the waterline.
-Pair expansion then reduces resistance to kernels
+At low Froude number, Michell's outer integral grows oscillatory and
+complicates algebraic-tail estimation.  Michelsen's 1960 dissertation and
+1972 sequel reduced it for polynomial and orthogonal-basis hulls.  For
+tensor-product B-spline hulls of degree at most 16 per direction,
+repeated integration by parts gives exact endpoint waves.  Pair expansion
+gives analytically continued Bickley kernels
 \(
 K_s(\omega)=\int_1^\infty
 \e^{\iu\omega\lambda}\lambda^{-s}(\lambda^2-1)^{-1/2}\,d\lambda,
-\)
-analytically continued Bickley functions.  An exact contour rotation converts
-each sufficiently separated nonzero-frequency pair to a Gaussian-decaying
-integral whose quadrature cost does not grow with frequency.  The reported
-error includes coefficient construction, endpoint accumulation, omitted
-submerged pairs, and coarse/fine contour quadrature; the dispatcher falls back
-to a real-axis marcher when the estimate exceeds the requested tolerance.
-For the standard Wigley hull at \(\Fn=0.02\), the method uses 1,152 kernel nodes
-instead of 511,504 inner-transform evaluations, reduces median runtime from
+\).
+An absolute bound controls submerged terms; contour rotation makes work
+frequency-independent.  The method accepts results only when the total error
+estimate meets the requested tolerance; otherwise it
+reverts to direct real-axis integration.  For the standard Wigley hull at
+\(\Fn=0.02\), it uses 1,152 kernel nodes rather than 511,504 inner-transform
+evaluations, reduces median runtime from
 \SI{21.541}{ms} to \SI{0.030}{ms} (about 700-fold), and differs from an
 independent real-axis reference by \(1.83\times10^{-13}\) relatively.  The
-implementation is an engineering improvement for upright symmetric monohulls
-with coarse, well-separated active endpoints.  Its contour-discretization
-estimate is not a formal interval certificate.
+reduction applies only to upright symmetric monohulls with coarse,
+well-separated endpoints; the contour estimate is empirical, not a
+formal interval certificate.
 \end{abstract}
+
+% STYLE-APPARATUS-BEGIN
+\vspace{0.6em}
+\noindent\textbf{NOMENCLATURE}\par
+\begingroup
+\footnotesize
+\setlength{\tabcolsep}{0.45em}
+\begin{tabular}{@{}ll@{\qquad}ll@{\qquad}ll@{}}
+\(B\) & maximum beam, \si{m} & \(F\) & inner hull transform & \(R_{\mathrm w}\) & wave resistance, \si{N}\\
+\(B_o\) & omission bound, \si{N} & \(f\) & hull half-breadth, \si{m} & \(s\) & kernel order\\
+\(B_q\) & contour estimate, \si{N} & \(\Fn\) & length Froude number & \(S_w\) & wetted area, \si{m^2}\\
+\(B_r\) & rounding bound, \si{N} & \(g\) & gravitational acceleration, \si{m.s^{-2}} & \(T\) & draft, \si{m}\\
+\(C_w\) & wave-resistance coefficient & \(K_s\) & Bickley pair kernel & \(U\) & ship speed, \si{m.s^{-1}}\\
+\(c_j\) & endpoint coefficient & \(L\) & hull length, \si{m} & \(u\) & binary64 machine epsilon\\
+\(\epsilon_c\) & construction-error floor & \(\lambda\) & outer integration coordinate & \(x,y,z\) & hull coordinates, \si{m}\\
+\(\widehat\epsilon\) & reported relative error & \(\nu\) & \(g/U^2\), \si{m^{-1}} & \(\rho\) & water density, \si{kg.m^{-3}}\\
+& & \(\omega\) & endpoint-pair frequency & &
+\end{tabular}
+\endgroup
+% STYLE-APPARATUS-END
 
 \noindent\textbf{KEY WORDS:} Wave resistance; Michell integral; low Froude
 number; oscillatory quadrature; B-splines; Bickley function.
