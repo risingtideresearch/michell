@@ -757,26 +757,28 @@ the selection rule chooses the path that satisfies the acceptance condition.
 The checksum differs from the pre-fix value because the corrected direct
 integration retains a positive tail that the earlier rule truncated.
 
-\section{Analytic lineage and implementation scope}
+\section{Relation to earlier work}
 \label{sec:prior}
 
-The present solver revives a substantial analytic lineage.  The
-equation-level comparison in \cref{tab:lineage} separates the historical
-reductions from the implementation work reported here.  For the 1972 and 1988
-papers, the table states only what their verified publisher or index records
-establish; both full texts remain due-diligence items rather than dependencies
-of our classification.
+The endpoint method belongs to a substantial analytic lineage.  Its history
+runs from separation of hull data and reusable kernels, through polynomial and
+orthogonal-basis reductions, to table-driven design calculations.  We compare
+that history with the present implementation at equation level in
+\cref{tab:lineage}.  For the 1972 and 1988 papers, the table states only what
+their verified publisher or index records establish.  Both full texts remain
+due-diligence items, but the present attribution does not depend on them.
 
 \begin{table*}[t]
 \centering
-\caption{Equation-level comparison of polynomial and basis reductions of
-Michell resistance.  ``Record'' denotes a verified publisher or bibliographic
-record where the full text was unavailable.}
+\caption{The analytic lineage separates hull representation from reusable
+speed-dependent functions.  This equation-level comparison uses ``record''
+for a verified publisher or bibliographic record whose full text was
+unavailable.}
 \label{tab:lineage}
 \scriptsize
 \begin{tabular}{@{}p{0.15\textwidth}p{0.20\textwidth}p{0.20\textwidth}p{0.17\textwidth}p{0.17\textwidth}@{}}
 \toprule
-Source & Basis and reduction & Kernel or speed dependence & Error control and dispatch & Relation to this implementation\\
+Source & Basis and reduction & Kernel or speed dependence & Error control and selection & Relation to this implementation\\
 \midrule
 Birkhoff--Kotik via \citet[eqs.~39--45]{Wehausen1973}
 & Hull autocorrelation \(M(u,v)\), with equivalent \((P,Q)\) transforms and separable elementary ships
@@ -806,7 +808,7 @@ Birkhoff--Kotik via \citet[eqs.~39--45]{Wehausen1973}
 & High- and low-speed asymptotic approximations to Michell's integral
 & Speed-limit formulas rather than a general finite-speed kernel
 & The verified journal record establishes scope; detailed remainder control awaits source access
-& Extends the lineage explicitly into both speed limits\\
+& Extends the lineage into both speed limits\\
 \addlinespace
 \citet{Michelsen1972}, verified record
 & Gegenbauer expansion of the centerplane Havelock-source distribution
@@ -823,66 +825,59 @@ Birkhoff--Kotik via \citet[eqs.~39--45]{Wehausen1973}
 Present implementation
 & Degree-\(\leq16\) tensor-product B-spline span polynomials reduced to active endpoint waves
 & Continued Bickley pair kernels on a frequency-scaled Gaussian contour
-& Coefficient, accumulation, omission, and quadrature estimates; explicit acceptance gate and real-axis fallback
+& Coefficient, accumulation, omission, and quadrature estimates; acceptance condition and direct real-axis integration
 & Modern error-accounted realization for coarse, well-separated endpoints\\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-The implementation differs from that lineage in five engineering details:
+Against that lineage, we make five engineering changes.  We operate span by
+span on tensor-product B-splines, including full-multiplicity chine knots, and
+restrict both spline degrees to the independently validated range 1--16 while
+charging coefficient construction and endpoint cancellation.  We bound every
+omitted submerged endpoint pair, evaluate retained \(K_s\) pairs on a
+frequency-scaled contour with a bounded, order-aware node count, and accept the
+reduction only when the combined estimate meets the requested tolerance.
+Otherwise, the method returns to direct integration.
 
-\begin{enumerate}
-  \item it operates span by span on tensor-product B-splines, including
-        full-multiplicity chine knots;
-  \item it restricts both spline degrees to the independently validated range
-        1--16 and charges coefficient construction and endpoint cancellation;
-  \item it bounds the resistance contribution of every omitted submerged
-        endpoint pair;
-  \item it evaluates retained \(K_s\) pairs on a frequency-scaled contour with
-        a bounded, order-aware node count; and
-  \item it accepts the reduction only when the combined estimate meets the
-        requested tolerance, otherwise returning to the general marcher.
-\end{enumerate}
-
-These deltas are engineering improvements, not priority claims.  A full
+These changes improve the implementation but make no claim of priority.  A full
 method-by-method benchmark against the Michelsen and Sendagorta--Grases
-representations lies outside this paper and remains future work.
+representations lies outside our scope and remains future work.
 
-The endpoint structure is also established independently.
+The endpoint structure has an independent history.
 \citet{KellerAhluwalia1976} express leading small-Froude resistance and waves
 through bow and stern waterline slopes.  \citet[pp.~83--85]{Gotman2002}
 derives finite endpoint-derivative sums, forms their products in resistance,
-and separates bow, stern, and bow--stern contributions; this is closer to the
-present pair structure than a generic integration-by-parts citation.  Our
-finite B-spline decomposition puts that mechanism into implementation form; it
-does not introduce a new physical asymptotic principle.
+and separates bow, stern, and bow--stern contributions.  Gotman's construction
+is closer to the present pair structure than a generic integration-by-parts
+citation.  We put that mechanism into finite B-spline form without introducing
+a new physical asymptotic principle.
 
 Tuck and Lazauskas also establish exact or Filon-like integration of
-piecewise-polynomial inner data.  In particular,
+piecewise-polynomial inner data.
 \citet[sec.~6.5, pp.~6-10--6-12]{Lazauskas2009} gives exact
 piecewise-quadratic hull integrals, compares equally spaced Simpson and
 cosine-spaced trapezoidal angular rules, and reports that very low Froude
 number remains exceptional.  The accessible thesis supports those numerical
 practices but does not, by itself, document the internals of every Michlet
-release.  Our
-solver retains the same thin-ship physics but, for accepted B-spline hulls,
-keeps low-Froude outer work from growing with frequency.  We classify that result
-as an engineering improvement and make no head-to-head performance claim
-against the Michlet executable.  Exact endpoint reduction also survives the
-outer modulus square: pair expansion converts it into a small set of reusable
-special-function kernels.  Ruffa and Toni give finite Bessel--Struve module
-representations for integer-order Bickley functions \citep{RuffaToni2026};
-their stability on the imaginary axis remains to be tested as a possible
-kernel backend.
+release.  For accepted B-spline hulls, our solver retains the same thin-ship
+physics while keeping low-Froude outer work from growing with frequency.  This
+is an implementation improvement, not a head-to-head performance claim against
+the Michlet executable.
 
-Contour deformation is well established for oscillatory quadrature
-\citep{HuybrechsVandewalle2006}.  \citet{Motygin2017} applies steepest descent
-and Clenshaw--Curtis quadrature in ship-wave theory, but to the oscillatory part
-of the Kelvin Green function rather than Michell's resistance integral.
-Automated methods now handle general phases and coalescing saddles
-\citep{GibbsHewettHuybrechs2024}.  Such methods could treat multihull transverse
-phases; the present quadratic phase needs only the closed contour in
-\cref{eq:gaussian}.
+Exact endpoint reduction also survives the outer modulus square: pair
+expansion converts it into a small set of reusable special-function kernels.
+\citet{RuffaToni2026} gives finite Bessel--Struve module representations for
+integer-order Bickley functions.  Their stability on the imaginary axis
+remains to be tested as a possible kernel backend.
+
+\citet{HuybrechsVandewalle2006} establishes contour deformation for
+oscillatory quadrature.  \citet{Motygin2017} applies steepest descent and
+Clenshaw--Curtis quadrature in ship-wave theory, but to the oscillatory part of
+the Kelvin Green function rather than Michell's resistance integral.
+\citet{GibbsHewettHuybrechs2024} automates more general phases and coalescing
+saddles.  Such methods could treat multihull transverse phases; the present
+quadratic phase needs only the closed contour in \cref{eq:gaussian}.
 
 \section{Limitations and open extensions}
 \label{sec:limits}
