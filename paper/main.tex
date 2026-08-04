@@ -221,11 +221,13 @@ corners.  Repeated knots create zero-length intervals, which we discard.  An
 interior knot whose multiplicity equals the degree represents a continuous
 chine exactly.
 
-\section{Exact endpoint decomposition}
+\section{The endpoint reduction}
 \label{sec:endpoint}
 
-The finite polynomial degree makes repeated integration by parts terminate.
-For a polynomial \(p\) of degree \(m\),
+The spline representation concentrates the inner transform into waves attached
+to span endpoints.  Finite polynomial degree makes this reduction exact:
+repeated integration by parts terminates.  For a polynomial \(p\) of degree
+\(m\),
 \begin{align}
  \int_{x_a}^{x_b} p(x)\e^{\iu kx}\,dx
  &=\sum_{r=0}^{m}\frac{(-1)^r}{(\iu k)^{r+1}}
@@ -236,9 +238,9 @@ For a polynomial \(p\) of degree \(m\),
    \left[p^{(u)}(z)\e^{-\kappa z}\right]_{z_a}^{z_b}.
  \label{eq:zparts}
 \end{align}
-Apply \cref{eq:xparts,eq:zparts} to every monomial in
-\cref{eq:spanpoly}, with \(k=\nu\lambda\) and
-\(\kappa=\nu\lambda^2\).  The result is an exact endpoint representation.
+We apply \cref{eq:xparts,eq:zparts} to every monomial in
+\cref{eq:spanpoly}, taking \(k=\nu\lambda\) and
+\(\kappa=\nu\lambda^2\).  This gives an exact endpoint representation.
 
 \begin{proposition}[Finite endpoint representation]
 For a polynomial tensor-product B-spline hull with longitudinal degree at least
@@ -249,26 +251,26 @@ one, the transform in \cref{eq:inner} can be written
  \qquad n_j\geq3,
  \label{eq:endpointsum}
 \end{equation}
-where \((x_j,z_j)\) are endpoints of nonzero knot spans and the complex
+where \((x_j,z_j)\) are endpoints of nonzero knot spans.  The complex
 coefficients \(c_j\) are finite combinations of span-polynomial endpoint
-derivatives.  Equal endpoint/power triples may be combined exactly.
+derivatives, and equal endpoint/power triples combine exactly.
 \end{proposition}
 
 \begin{proof}
-\Cref{eq:xparts,eq:zparts} replace a monomial of derivative orders
-\((r,u)\) by endpoint factors proportional to
+Applying \cref{eq:xparts,eq:zparts} replaces a monomial of derivative orders
+\((r,u)\) with endpoint factors proportional to
 \[
 (\nu\lambda)^{-(r+1)}(\nu\lambda^2)^{-(u+1)}.
 \]
 The resulting power of \(\lambda\) is \(n=r+2u+3\).  Both sums terminate at
-the polynomial degrees, and summing the finite contributions from all nonzero
-knot rectangles gives \cref{eq:endpointsum}.
+the polynomial degrees.  Summing the finite contributions from every nonzero
+knot rectangle gives \cref{eq:endpointsum}.
 \end{proof}
 
-Tests compare \cref{eq:endpointsum} directly with independent exact-moment
-calculations for both the Wigley hull and a multi-span hull with a
-full-multiplicity chine.  Across \(1\leq\lambda\leq20\), every discrepancy
-falls below the scaled \(5\times10^{-10}\) threshold.
+We compare \cref{eq:endpointsum} directly with independent exact-moment
+calculations for the Wigley hull and for a multi-span hull with a
+full-multiplicity chine.  Across \(1\leq\lambda\leq20\), every discrepancy is
+below the scaled \(5\times10^{-10}\) threshold.
 
 \section{Waterline reduction and omission bound}
 \label{sec:bound}
