@@ -933,16 +933,15 @@ Finite integration by parts converts the B-spline inner transform into endpoint
 waves.  Pair expansion then turns the outer modulus square into continued
 Bickley kernels, and contour rotation replaces real-axis oscillation with
 Gaussian decay.  Geometry, rather than Froude number, sets the reduced
-quadrature work.  The submerged-pair bound lets the hybrid reject the reduction
-whenever it exceeds the requested tolerance.
+quadrature work.  The submerged-pair bound lets the selection rule reject the
+reduction whenever its estimated error exceeds the requested tolerance.
 
 For the standard Wigley hull at \(\Fn=0.02\), the reduced solver is more
-accurate than the general marcher and about 700 times faster in the frozen
-paired run.  This
-result is an engineering improvement for the supported geometry, built from
-the analytic reduction lineage summarized in \cref{tab:lineage}.  Claims
-beyond the current scope require broader geometry and certified total error
-control.
+accurate than direct outer integration and about 700 times faster in the
+frozen paired run.  This advantage is confined to the supported geometry and
+rests on the analytic reduction lineage summarized in \cref{tab:lineage}.
+Claims beyond the current scope require broader geometry and certified total
+error control.
 
 \section*{Reproducibility statement}
 
