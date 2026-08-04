@@ -879,46 +879,48 @@ the Kelvin Green function rather than Michell's resistance integral.
 saddles.  Such methods could treat multihull transverse phases; the present
 quadratic phase needs only the closed contour in \cref{eq:gaussian}.
 
-\section{Limitations and open extensions}
+\section{Discussion}
 \label{sec:limits}
 
-The evidence covers a narrow model: upright symmetric monohulls in linear,
-deep-water thin-ship theory.
+Several limitations should be borne in mind.  The evidence covers upright
+symmetric monohulls in linear, deep-water thin-ship theory.  Within that model,
+the reduction removes a numerical obstacle; it does not extend the physical
+theory.
 
-\begin{itemize}
-  \item \textbf{Geometry.}  The reduced solver supports upright symmetric
-        single hulls of degree 1--16 in each spline direction.  Its active
-        endpoints must satisfy \(\nu|x_i-x_j|\geq25\), so it targets coarse,
-        well-separated endpoint maps.  Asymmetric, heeled, multihull, and
-        closely spaced cases fall back to the general method.
-  \item \textbf{Contour degree.}  The fixed 48-node rule was accurate through
-        \(s\simeq50\) and degraded beyond it in scans to \(s=400\); its
-        24/48 difference nevertheless remained conservative against the
-        192-node same-contour comparator throughout that scan.  Production
-        therefore switches to 48/96 when \(s/|\omega|\geq2\), and the claimed
-        envelope ends at the independently tested public maximum \(s=98\).
-  \item \textbf{Error certification.}  The submerged-pair omission bound and
-        Gaussian tail bound are analytic.  The selected coarse/fine quadrature
-        difference and floating-point roundoff are not interval-certified.
-  \item \textbf{Reference floor.}  The independent \(1+t^2\) and
-        \(\sec\theta\) references use compensated summation through
-        \(\lambda=4000\).  At \(\Fn=0.02\), their cutoff-doubling changes are
-        \(1.38\times10^{-15}\) and \(1.23\times10^{-15}\), respectively.
-        Differences near the observed \(10^{-13}\) scale are resolution
-        measurements, not interval-certified digits.
-  \item \textbf{Physical model.}  Michell theory is linear, inviscid, slender,
-        deep-water, and fixed-attitude.  At very low speed, viscous effects may
-        dominate the already small wave resistance.  For free-surface flow
-        past singular obstacles, low-Froude waves can be exponentially small,
-        beyond all algebraic orders, and controlled by Stokes phenomena; that
-        different problem is not resolved by better quadrature
-        \citep{TrinhChapman2015}.
-\end{itemize}
+The geometry range is narrow.  The reduced solver supports upright symmetric
+single hulls of degree 1--16 in each spline direction.  Active endpoints must
+satisfy \(\nu|x_i-x_j|\geq25\), so the method applies to coarse,
+well-separated endpoint maps.  Asymmetric, heeled, multihull, and closely
+spaced cases revert to direct integration.
 
-The highest-leverage numerical extension is multihull support.  A transverse
-placement introduces phase
-\(\nu y\lambda\sqrt{\lambda^2-1}\) and moving saddles that
-\cref{eq:gaussian} does not contain.  A uniform or automated contour must
+The contour rule also has a measured degree limit.  The fixed 48-node rule was
+accurate through \(s\simeq50\) and degraded beyond it in scans to \(s=400\);
+its 24/48 difference nevertheless remained conservative against the 192-node
+same-contour comparator throughout that scan.  The implementation therefore
+uses 48/96 when \(s/|\omega|\geq2\).  The range over which the contour method
+has been validated ends at the independently tested maximum \(s=98\).
+
+The error components do not all have the same status.  The submerged-pair
+omission bound and Gaussian tail bound are analytic.  The selected coarse/fine
+quadrature difference and floating-point roundoff are not interval-certified.
+
+The independent references have their own resolution floor.  The \(1+t^2\)
+and \(\sec\theta\) calculations use compensated summation through
+\(\lambda=4000\).  At \(\Fn=0.02\), their cutoff-doubling changes are
+\(1.38\times10^{-15}\) and \(1.23\times10^{-15}\), respectively.
+Differences near the observed \(10^{-13}\) scale measure resolution, not
+interval-certified digits.
+
+Michell theory remains linear, inviscid, slender, deep-water, and
+fixed-attitude.  At very low speed, viscous effects may dominate the already
+small wave resistance.  \citet{TrinhChapman2015} shows that low-Froude waves
+past singular free-surface obstacles can be exponentially small, beyond all
+algebraic orders, and controlled by Stokes phenomena.  Better quadrature does
+not resolve that different problem.
+
+Multihull support offers the clearest numerical extension.  A transverse
+placement introduces the phase \(\nu y\lambda\sqrt{\lambda^2-1}\) and moving
+saddles absent from \cref{eq:gaussian}; a uniform or automated contour must
 account for them.  Retaining shallow submerged endpoints likewise produces
 mixed linear and quadratic complex phases.  Further work should certify the
 contour error, test imaginary-argument Bickley recurrences, derive finite-depth
