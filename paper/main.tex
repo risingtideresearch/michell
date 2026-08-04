@@ -110,76 +110,73 @@ number; oscillatory quadrature; B-splines; Bickley function.
 
 \section{Introduction}
 
-Michell's 1898 thin-ship theory expresses wave resistance as a one-dimensional
-integral of the squared Fourier--Laplace transform of the longitudinal hull
-slope \citep{Michell1898,Tuck1989}.  Compared with nonlinear free-surface
-methods, Michell's formula costs little and retains the bow--stern interference
-that couples resistance to speed and hull shape.  Designers therefore use it
-for preliminary design, multihull studies, and mathematical shape optimization
-\citep{Lazauskas2009,DambrinePierreRousseaux2016}.  At low speed, however, a
-fast result is useful only if its error estimate remains trustworthy.
+In 1898, \citet{Michell1898} expressed the wave resistance of a thin ship as a
+one-dimensional integral of the squared Fourier--Laplace transform of its
+longitudinal slope.  \citet{Tuck1989} later placed that formula in the wider
+practice of thin-ship calculation.  Michell's formula remains inexpensive
+beside nonlinear free-surface methods, yet retains the bow--stern interference
+that couples resistance to speed and hull shape.  \citet{Lazauskas2009} uses
+it for preliminary design and multihull studies, while
+\citet{DambrinePierreRousseaux2016} uses it for mathematical shape
+optimization.  At low speed, however, a fast result is useful only when its
+error estimate can be trusted.
 
-An analytic reduction lineage addresses the same computational goal.
-\citet{Michelsen1960}, building on Birkhoff and Kotik's transformation, splits
-the calculation into a hull function and a speed-dependent Michell function,
-derives a convergent special-function series for polynomial hull functions,
-and proposes tabulation for systematic design.  Michelsen next treated
-polynomial centerline singularity distributions \citep{Michelsen1963} and
-high- and low-speed asymptotic approximations \citep{Michelsen1966}.
-\citet{Michelsen1972} later
-uses Gegenbauer source distributions and orthogonality to reduce the integral
-to a finite double sum.  The verified abstract of
-\citet{SendagortaGrases1988} likewise describes rapidly convergent series,
-products of shape functions, and shape-independent velocity functions for
-tabulation and computer-aided design.  We treat this history as the method's
-foundation and contribute an implementation-grade B-spline realization with
-measured error accounting and automatic fallback.
+The analytic response to this numerical problem has a long history.
+\citet{Michelsen1960}, building on Birkhoff and Kotik's transformation,
+separated the calculation into a hull function and a speed-dependent Michell
+function.  He derived a convergent special-function series for polynomial
+hull functions and proposed tabulation for systematic design.
+\citet{Michelsen1963} next treated polynomial centerline singularity
+distributions, and \citet{Michelsen1966} developed high- and low-speed
+asymptotic approximations.  \citet{Michelsen1972} then used Gegenbauer source
+distributions and orthogonality to reduce the integral to a finite double sum.
+The verified abstract of \citet{SendagortaGrases1988} describes the same broad
+program: rapidly convergent series, products of shape functions, and
+shape-independent velocity functions for tabulation and computer-aided
+design.  The present B-spline realization extends this lineage with measured
+error accounting and a selection rule that can revert to direct integration.
 
-The apparent simplicity conceals a difficult numerical limit.  Let
-\(\nu=g/U^2\), where \(U\) is speed and \(g\) gravitational acceleration.
-As \(U\) and therefore \(\Fn=U/\sqrt{gL}\) decrease, the phase
-\(\nu\lambda x\) oscillates increasingly rapidly over the unbounded outer
-coordinate \(\lambda\).  Tuck used Filon-like longitudinal integration, while
-Lazauskas used exact piecewise-quadratic formulas and a fixed angular rule;
-Lazauskas reports that very low Froude number remains exceptional
-\citep{Tuck1989,Lazauskas2009}.  A real-axis adaptive marcher must spend more
-effort as frequency rises and must decide where to truncate the oscillatory
-algebraic tail.  At the pre-fix revision \texttt{64925d4}, one quiet-window
-criterion reported \(5.123\times10^{-9}\) relative error at \(\Fn=0.05\), but
-the measured error was \(5.781\times10^{-7}\), about 113 times larger.  The
-frozen kernel advances quiet windows by oscillatory phase alone and adds the
-refinement and tail estimates.  The four low-Froude calculations reported
-below all stop at the refinement cap: they are measured comparators, not
-claims that the requested \(10^{-8}\) tolerance was achieved.
+Its numerical difficulty is equally old.  Let \(\nu=g/U^2\), where \(U\) is
+speed and \(g\) gravitational acceleration.  As \(U\), and therefore
+\(\Fn=U/\sqrt{gL}\), decrease, the phase \(\nu\lambda x\) oscillates ever more
+rapidly over the unbounded coordinate \(\lambda\).  \citet{Tuck1989} used
+Filon-like longitudinal integration.  \citet{Lazauskas2009} used exact
+piecewise-quadratic formulas with a fixed angular rule and reported that very
+low Froude number remains exceptional.  Direct adaptive integration of the
+outer integral must do more work as frequency rises, then decide where to
+truncate an oscillatory algebraic tail.
 
-Earlier work also supplies the endpoint and contour ingredients.
-\citet{Wehausen1973} surveys
-classical thin-ship theory and its limits.  Keller and Ahluwalia show that bow
-and stern waterline data control the small-Froude wave field and resistance
-\citep{KellerAhluwalia1976}.  Gotman gives finite endpoint-derivative sums and
-products that separate bow, stern, and bow--stern interaction terms
-\citep[pp.~83--85]{Gotman2002}.  Huybrechs and Vandewalle develop numerical steepest descent
-\citep{HuybrechsVandewalle2006}, and Motygin applies it to the Kelvin
-Green-function integral in linear ship-wave theory \citep{Motygin2017}.  We
-combine these ideas in four steps:
+The error estimate matters as much as the work.  At the pre-fix revision
+\texttt{64925d4}, one quiet-window criterion reported
+\(5.123\times10^{-9}\) relative error at \(\Fn=0.05\); the measured error was
+\(5.781\times10^{-7}\), about 113 times larger.  The frozen kernel advances
+quiet windows by oscillatory phase alone and adds refinement and tail
+estimates.  All four low-Froude calculations reported below stop at the
+refinement cap.  They are measured comparators, not claims that the requested
+\(10^{-8}\) tolerance was achieved.
 
-\begin{enumerate}
-  \item decompose every polynomial B-spline span exactly into finitely many
-        endpoint terms, including terms at interior and full-multiplicity
-        chine knots;
-  \item bound every resistance pair that contains an omitted submerged
-        endpoint;
-  \item identify the retained pair kernels as analytically continued
-        Bickley functions and evaluate them on a frequency-scaled
-        Gaussian contour; and
-  \item accept the reduced result only when its error estimate meets the
-        requested tolerance; otherwise use the general real-axis method.
-\end{enumerate}
+The endpoint and contour ingredients also come from earlier work.
+\citet{Wehausen1973} surveys classical thin-ship theory and its limits.
+\citet{KellerAhluwalia1976} shows that bow and stern waterline data control the
+small-Froude wave field and resistance.  \citet[pp.~83--85]{Gotman2002} gives
+finite endpoint-derivative sums and products that separate bow, stern, and
+bow--stern interactions.  \citet{HuybrechsVandewalle2006} develops numerical
+steepest descent, and \citet{Motygin2017} applies it to the Kelvin
+Green-function integral in linear ship-wave theory.
 
-These are implementation deltas within established analytic and numerical
-traditions, not claims of method priority.  The accessible publisher and index
-records establish the statements above for \citet{Michelsen1972} and
-\citet{SendagortaGrases1988}; their full texts remain due-diligence items.
+We use these ingredients to decompose every polynomial B-spline span into
+finite endpoint terms, including interior and full-multiplicity chine knots,
+and to bound every resistance pair containing an omitted submerged endpoint.
+We then evaluate the retained, analytically continued Bickley kernels on a
+frequency-scaled Gaussian contour.  The method accepts the reduced result only
+when its error estimate meets the requested tolerance; otherwise it reverts to
+direct real-axis integration.  This is the meaning of ``error-gated'' in the
+title.
+
+These changes implement established analytic and numerical ideas; they do not
+claim method priority.  The accessible publisher and index records establish
+only the statements made here for \citet{Michelsen1972} and
+\citet{SendagortaGrases1988}.  Their full texts remain due-diligence items.
 
 \section{Michell resistance and spline geometry}
 \label{sec:michell}
