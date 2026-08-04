@@ -178,12 +178,13 @@ claim method priority.  The accessible publisher and index records establish
 only the statements made here for \citet{Michelsen1972} and
 \citet{SendagortaGrases1988}.  Their full texts remain due-diligence items.
 
-\section{Michell resistance and spline geometry}
+\section{Michell resistance for B-spline hulls}
 \label{sec:michell}
 
-Let \(y=f(x,z)\geq0\) denote the half-breadth of an upright symmetric hull,
-with \(z\geq0\) measured downward from the undisturbed waterline.  In the
-normalization used by the implementation,
+Michell's formula maps the longitudinal hull slope to a free-wave spectrum.
+Its squared magnitude determines the resistance.  Let \(y=f(x,z)\geq0\) be the
+half-breadth of an upright symmetric hull, with \(z\geq0\) measured downward
+from the undisturbed waterline.  We use the normalization
 \begin{align}
   \Rw &=\frac{4\rho g^2}{\pi U^2}
   \int_1^\infty \frac{\lambda^2}{\sqrt{\lambda^2-1}}
@@ -194,7 +195,7 @@ normalization used by the implementation,
   \qquad \nu=\frac{g}{U^2}.
   \label{eq:inner}
 \end{align}
-All calculations below use \(g=\SI{9.80665}{m.s^{-2}}\), freshwater density
+We take \(g=\SI{9.80665}{m.s^{-2}}\), freshwater density
 \(\rho=\SI{999.1}{kg.m^{-3}}\), and the length Froude number
 \(\Fn=U/\sqrt{gL}\).  We report
 \begin{equation}
@@ -205,18 +206,20 @@ All calculations below use \(g=\SI{9.80665}{m.s^{-2}}\), freshwater density
 where \(S_w\) is the two-sided wetted area of the B-spline hull.  Lengths,
 speeds, and forces are in metres, metres per second, and newtons; \(\lambda\),
 \(\Fn\), and \(C_w\) are dimensionless.
-The hull is a clamped, non-rational tensor-product B-spline surface.  On a knot
-rectangle \(S=[x_0,x_1]\times[z_0,z_1]\), its longitudinal derivative is an
-exact bivariate polynomial,
+
+To evaluate the inner transform without station or waterline sampling, we
+represent the hull as a clamped, non-rational tensor-product B-spline surface.
+On each knot rectangle \(S=[x_0,x_1]\times[z_0,z_1]\), its longitudinal
+derivative is an exact bivariate polynomial,
 \begin{equation}
   f_x|_S=\sum_{a=0}^{p-1}\sum_{b=0}^{q}
   c^{S}_{ab}(x-x_0)^a(z-z_0)^b.
   \label{eq:spanpoly}
 \end{equation}
-The method extracts these coefficients once from exact spline derivatives at
-span corners; it does not sample stations or waterlines.  The implementation
-discards the zero-length intervals created by repeated knots.  An interior knot
-whose multiplicity equals the degree represents a continuous chine exactly.
+We obtain these coefficients once from exact spline derivatives at the span
+corners.  Repeated knots create zero-length intervals, which we discard.  An
+interior knot whose multiplicity equals the degree represents a continuous
+chine exactly.
 
 \section{Exact endpoint decomposition}
 \label{sec:endpoint}
