@@ -272,20 +272,22 @@ calculations for the Wigley hull and for a multi-span hull with a
 full-multiplicity chine.  Across \(1\leq\lambda\leq20\), every discrepancy is
 below the scaled \(5\times10^{-10}\) threshold.
 
-\section{Waterline reduction and omission bound}
+\section{The error bound and method selection}
 \label{sec:bound}
 
-Partition \cref{eq:endpointsum} into waterline terms \(W\), for which
-\(z_j=0\), and submerged terms \(S\), for which \(z_j>0\).  At low Froude
-number, every submerged term contains at least \(\e^{-\nu z_j}\) because
-\(\lambda\geq1\).  Retaining only \(W\) gives
+At low speed, every wave source below the waterline is exponentially
+suppressed.  The decomposition makes that suppression visible and bounds the
+cost of discarding those sources.  We partition \cref{eq:endpointsum} into
+waterline terms \(W\), for which \(z_j=0\), and submerged terms \(S\), for
+which \(z_j>0\).  Because \(\lambda\geq1\), every submerged term contains at
+least \(\e^{-\nu z_j}\).  Retaining only \(W\) gives
 \begin{equation}
  \widetilde F(\lambda)=\sum_{j\in W}c_j\lambda^{-n_j}
  \e^{\iu\nu\lambda x_j}.
  \label{eq:waterline}
 \end{equation}
 
-Expanding \(|\widetilde F|^2\) before outer integration removes the
+Before outer integration, we expand \(|\widetilde F|^2\).  This removes the
 nonanalytic complex conjugation from the integrand:
 \begin{equation}
  \widetilde R_{\mathrm w}=C
@@ -316,8 +318,8 @@ discarded by replacing \(F\) with \(\widetilde F\) satisfies
 \end{proposition}
 
 \begin{proof}
-Expand \(|F|^2-|\widetilde F|^2\) into precisely the ordered pairs in
-\(\mathcal P_S\).  Apply the triangle inequality, use
+We expand \(|F|^2-|\widetilde F|^2\) into precisely the ordered pairs in
+\(\mathcal P_S\), apply the triangle inequality, use
 \(|\e^{\iu\omega\lambda}|=1\), and bound
 \(\e^{-\nu\lambda^2(z_i+z_j)}\leq\e^{-\nu(z_i+z_j)}\) for
 \(\lambda\geq1\).  The remaining positive integral is \(K_{s_{ij}}(0)\).
@@ -329,12 +331,14 @@ The zero-frequency kernel is analytic:
  = \frac{\sqrt\pi\,\Gamma(s/2)}{2\Gamma((s+1)/2)},
  \label{eq:kzero}
 \end{equation}
-A stable even/odd recurrence evaluates this kernel.
+and we evaluate this kernel with a stable even/odd recurrence.
 
-\section{Bickley kernels and contour quadrature}
+\subsection{Bickley kernels and contour quadrature}
 \label{sec:contour}
 
-With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
+Each retained endpoint pair is a familiar special function, and its contour
+form removes the low-speed oscillation.  With \(\lambda=\cosh t\),
+\cref{eq:kernel} becomes
 \begin{equation}
  K_s(\omega)=\int_0^\infty
  \e^{\iu\omega\cosh t}\cosh^{-s}t\,dt
@@ -342,7 +346,8 @@ With \(\lambda=\cosh t\), \cref{eq:kernel} becomes
  \label{eq:bickley}
 \end{equation}
 where the final equality denotes analytic continuation of the Bickley
-function \citep{BickleyNayler1935,DLMF1043}.\footnote{DLMF calls
+function described by \citet{BickleyNayler1935} and
+\citet{DLMF1043}.\footnote{DLMF calls
 \(\Ki_s\) the ``Bickley function'' and cites the 1935 paper by W.~G. Bickley
 and J.~Nayler.  The compound spelling ``Bickley--Naylor'' occurs in later
 literature, including \citet{RuffaToni2026}; it is not DLMF terminology.}
@@ -367,13 +372,12 @@ rotation
  \label{eq:gaussian}
 \end{equation}
 Conjugation gives the negative-frequency kernels.  The rotation replaces
-oscillation with Gaussian decay and leaves slowly varying frequency dependence
-in the amplitude.  The same numerical-asymptotic principle yields
-frequency-independent work in high-frequency scattering
-\citep{GibbsEtAl2020}; here, the quadratic phase gives the contour in closed
-form.
+oscillation with Gaussian decay and leaves only slowly varying frequency
+dependence in the amplitude.  \citet{GibbsEtAl2020} obtains the same
+frequency-independent principle in high-frequency scattering; here, the
+quadratic phase gives the contour in closed form.
 
-For completeness, take the principal square root in \cref{eq:tform}.  The
+We take the principal square root in \cref{eq:tform}.  The
 integrand's poles \(t=\pm\iu\) and branch points
 \(t=\pm\iu\sqrt2\) lie outside the closed sector
 \(0\leq\arg t\leq\pi/4\).  It is therefore analytic throughout the deformation.
@@ -397,16 +401,16 @@ using \(|1+\iu r^2/\omega|\geq1\),
 \(|\sqrt{2+\iu r^2/\omega}|\geq\sqrt2\), and the standard Gaussian-tail
 bound.  At the minimum supported nonzero frequency \(\omega=25\), this is
 below \(4\times10^{-30}\).  The selected coarse/fine difference estimates
-discretization error.  This difference remains empirical.  Thus the submerged-term bound and
-analytic contour-tail bound are rigorous, but the total floating-point error
-is not certified.  A committed fixed-rule scan over \(4\leq s\leq400\) and
+discretization error, but remains empirical.  The submerged-term and analytic
+contour-tail bounds are rigorous; the total floating-point error is not
+certified.  A committed fixed-rule scan over \(4\leq s\leq400\) and
 \(|\omega|\in\{25,100,400\}\), using a 192-node same-contour reference and a
 \(10^{-10}\) comparison floor, found a maximum relative 48-node discrepancy
 of \(1.84\times10^{-11}\) through \(s=50\), but \(3.16\times10^{-1}\) above
 that range.  The 24/48 difference covered every meaningful 48/192 discrepancy
 by at least 2.22 in this scan.  This measured degree dependence motivates the
-adaptive 48/96 rule within the validated \(s\leq98\) envelope; it is evidence,
-not a quadrature theorem.
+adaptive 48/96 rule within the range validated through \(s\leq98\); it is
+evidence, not a quadrature theorem.
 
 For fixed geometry, a nonzero endpoint pair costs either 72 or 144 scalar
 nodes; increasing frequency never increases that cost.  Self pairs use
@@ -416,32 +420,34 @@ eight at the waterline.  Their full ordered-pair expansion contains 32
 nonzero-frequency entries; conjugacy and upper-triangular accumulation reduce
 these to 16 kernel evaluations.  Each uses the 24/48 rule, for
 \(16\times72=1{,}152\) scalar nodes in all; equal-position pairs use
-\cref{eq:kzero}.  The committed harness checks each count.
+\cref{eq:kzero}.  A committed test checks each count.
 
-\section{Hybrid algorithm and scope}
+\subsection{Selection rule and scope}
 \label{sec:algorithm}
 
-The reduced method supplements the general solver.  The following gates choose
-between them:
+The endpoint reduction is useful only when the hull geometry and error estimate
+support it.  The following rule selects either the reduced method or direct
+adaptive integration of the outer integral:
 
 \begin{enumerate}
-  \item validate the physical conditions and exact spline geometry;
-  \item form and combine the exact endpoint terms in \cref{eq:endpointsum};
-  \item reject the specialization unless the hull is upright, symmetric, has
-        its spline domain beginning exactly at \(z=0\), and has
-        longitudinal degree at least one;
-  \item reject it if any distinct retained endpoint pair has
-        \(0<|\omega_{ij}|<25\);
-  \item evaluate \cref{eq:pairresistance}, the bound \cref{eq:omitbound}, and
-        the weighted coarse/fine contour difference; and
-  \item use the reduced result if their combined relative estimate meets the
-        requested tolerance; otherwise run the general real-axis marcher.
+  \item We verify the physical conditions and exact spline geometry.
+  \item We form and combine the exact endpoint terms in
+        \cref{eq:endpointsum}.
+  \item The method rejects the reduction unless the hull is upright and
+        symmetric, its spline domain begins exactly at \(z=0\), and its
+        longitudinal degree is at least one.
+  \item It also rejects the reduction if any distinct retained endpoint pair
+        has \(0<|\omega_{ij}|<25\).
+  \item We evaluate \cref{eq:pairresistance}, the bound
+        \cref{eq:omitbound}, and the weighted coarse/fine contour difference.
+  \item The method accepts the reduced result if their combined relative
+        estimate meets the requested tolerance; otherwise it reverts to direct
+        real-axis integration.
 \end{enumerate}
 
-The acceptance calculation is published here to make that last gate
-reproducible.  If endpoint coefficient \(c_i\) combines \(a_i\) raw complex
-contributions \(q_{ik}\) by compensated accumulation, the implementation
-charges
+We give the acceptance calculation so that the final step can be reproduced.
+If endpoint coefficient \(c_i\) combines \(a_i\) raw complex contributions
+\(q_{ik}\) by compensated accumulation, we charge
 \begin{equation}
  \delta_i=\gamma_{2a_i+2}\sum_k|q_{ik}|,\qquad
  \gamma_n=\frac{n\,u}{1-n\,u},
@@ -473,8 +479,9 @@ floor is
 \end{equation}
 where \(r_{\rm span}\) is the independently sampled relative residual when
 the local power basis reconstructs \(f_x\).  Set \(B=B_o+B_q+B_r\).  If
-\(B\geq|\widetilde R_{\rm w}|\), or any quantity is nonfinite, the reduced
-route refuses dispatch.  Otherwise the printed and gated estimate is
+\(B\geq|\widetilde R_{\rm w}|\), or any quantity is nonfinite, the method
+rejects the reduced result.  Otherwise the reported estimate used for
+selection is
 \begin{equation}
  \widehat\epsilon=\epsilon_c+
  \frac{B}{|\widetilde R_{\rm w}|-B}.
@@ -484,17 +491,17 @@ The denominator follows from the reverse triangle inequality; using
 \(B/|\widetilde R_{\rm w}|\) would understate an error relative to the unknown
 exact resistance.  \(B_o\), the separate Gaussian-tail inequality, and
 \(B_r\) under the standard floating-point model are analytic bounds.
-\(B_q\) and the validated floor \(\epsilon_c\) are empirical estimates.
-Consequently \(\widehat\epsilon\) is an error-gating diagnostic, not a formal
+\(B_q\) and the calibrated floor \(\epsilon_c\) are empirical estimates.
+Consequently \(\widehat\epsilon\) is a selection diagnostic, not a formal
 interval certificate.
 
-The frequency gate reserves the fixed contour for sufficiently rapid
+The frequency condition reserves the fixed contour for sufficiently rapid
 oscillation.  For the Wigley bow--stern pair,
 \(\omega=\nu L=gL/U^2=1/\Fn^2\), which equals the implementation's
 \(\nu|x_i-x_j|\).  Thus \(\omega\geq25\) corresponds to \(\Fn\leq0.2\).  The
-same condition makes the geometry restriction explicit.  For \(m\) equal
+same condition quantifies the geometry restriction.  For \(m\) equal
 longitudinal spans whose adjacent endpoints remain active,
-\(\omega_{\rm adj}=1/(m\Fn^2)\), so the separation gate requires
+\(\omega_{\rm adj}=1/(m\Fn^2)\), so the spacing condition requires
 \begin{equation}
  m\leq\frac{1}{25\Fn^2}.
  \label{eq:spangate}
@@ -504,7 +511,7 @@ multi-span endpoint map with 360 distinct nonzero-frequency pairs would use
 \(360\times72=25{,}920\) ordinary-rule nodes, compared with 1,152 for the
 16-pair Wigley map; this is node-count arithmetic, not a runtime benchmark.
 One closer endpoint invalidates the specialized path for the whole hull.  The
-error gate then bases the final choice on the actual hull, speed, and
+selection rule then bases the final choice on the actual hull, speed, and
 resistance cancellation rather than on nominal Froude number alone.  At the
 default relative tolerance \(10^{-5}\), it rejects the Wigley reduction at
 \(\Fn=0.08\) and accepts it at \(\Fn=0.05\).
@@ -512,7 +519,7 @@ default relative tolerance \(10^{-5}\), it rejects the Wigley reduction at
 The implementation uses safe Rust and no external numerical library.  Tests
 check the reduced solver at three independent levels: exact inner
 decomposition, isolated Bickley kernels, and total resistance.  The broader
-validation harness checks Froude similarity, zero camber for symmetric sides,
+validation suite checks Froude similarity, zero camber for symmetric sides,
 classical catamaran \(4\cos^2\) interference, tolerance self-convergence, and
 reported against observed error.
 
