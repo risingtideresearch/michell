@@ -523,12 +523,16 @@ validation suite checks Froude similarity, zero camber for symmetric sides,
 classical catamaran \(4\cos^2\) interference, tolerance self-convergence, and
 reported against observed error.
 
-\section{Numerical experiments}
+\section{Numerical results}
 \label{sec:results}
+
+We test the reduction against independently constructed endpoint-aware
+references, a published resistance value, and direct outer integration.
 
 \subsection{Independent reference}
 
-The standard Wigley half-breadth is
+The standard Wigley hull provides an analytic inner transform and a demanding
+low-speed outer integral.  Its half-breadth is
 \begin{equation}
  f(x,z)=\frac{B}{2}\left(1-\frac{4x^2}{L^2}\right)
  \left(1-\frac{z^2}{T^2}\right),
@@ -536,36 +540,37 @@ The standard Wigley half-breadth is
  \label{eq:wigley}
 \end{equation}
 with \(L=\SI{10}{m}\), \(B=\SI{1}{m}\), and
-\(T=\SI{0.625}{m}\).  The primary reference shares neither the production
-moment code nor its outer integrator.  It evaluates the analytic Wigley
-transform on the positive real axis after \(\lambda=1+t^2\), which converts
-the outer weight to
-\(2\lambda^2|F(\lambda)|^2/\sqrt{2+t^2}\).  This explicitly removes the
-square-root singularity at \(\lambda=1\); \citet[p.~371]{Tuck1989} identifies
-that singularity and recommends its removal before quadrature.
+\(T=\SI{0.625}{m}\).  We constructed the primary reference independently of
+the production moment code and outer integrator.  It evaluates the analytic
+Wigley transform on the positive real axis after \(\lambda=1+t^2\), which
+converts the outer weight to
+\(2\lambda^2|F(\lambda)|^2/\sqrt{2+t^2}\).  At \(\lambda=1\),
+\citet[p.~371]{Tuck1989} identifies the square-root singularity and recommends
+removing it before quadrature; this transformation does so.
 
-Panels are first constructed in \(\lambda\):
+We first construct panels in \(\lambda\):
 \(\Delta\lambda=\pi/(\nu L)\), so either endpoint phase
-\(\nu\lambda L/2\) advances by at most \(\pi/2\).  Their endpoints are then
-mapped to \(t\); each panel uses a locally generated 16-point Gauss--Legendre
-rule, the cutoff is \(\lambda_{\max}=4000\), and every nodal contribution is
-combined by Kahan accumulation.  This requires 3,182,304 nodes at
+\(\nu\lambda L/2\) advances by at most \(\pi/2\).  We then map the endpoints
+to \(t\).  Each panel uses a locally generated 16-point Gauss--Legendre rule,
+the cutoff is \(\lambda_{\max}=4000\), and Kahan accumulation combines every
+nodal contribution.  This construction requires 3,182,304 nodes at
 \(\Fn=0.08\), rising to 50,916,864 at \(\Fn=0.02\).
 
-A second reference is independently transformed with
+A second, independent reference uses
 \(\lambda=\sec\theta\), Tuck's stated regularization, for which the outer
-weight is \(\sec^3\theta\,|F(\sec\theta)|^2\).  It maps the same
-phase-resolved \(\lambda\) endpoints into \(\theta\), constructs its own
-Gauss rule, and accumulates separately.  \Cref{tab:refconv} separates endpoint
-map, panel-order, and cutoff convergence.  The 8/16 trend and 16/24 agreement
-support the digits quoted below; floating-point agreement is still not an
-interval bound.
+weight is \(\sec^3\theta\,|F(\sec\theta)|^2\).  We map the same phase-resolved
+\(\lambda\) endpoints into \(\theta\), construct a separate Gauss rule, and
+accumulate independently.  \Cref{tab:refconv} separates endpoint map,
+panel-order, and cutoff convergence.  The 8/16 trend and 16/24 agreement
+support the digits quoted below; floating-point agreement is not an interval
+bound.
 
 \begin{table*}[t]
 \centering
-\caption{Independent-reference convergence.  Entries are relative changes;
-``map'' compares the 16-node \(1+t^2\) and \(\sec\theta\) constructions.
-The final two columns compare panel orders within each construction.}
+\caption{The two independent references converge to the same values.  Entries
+are relative changes; ``map'' compares the 16-node \(1+t^2\) and
+\(\sec\theta\) constructions, and the final two columns compare panel orders
+within each construction.}
 \label{tab:refconv}
 \scriptsize
 \begin{tabular}{@{}crrrrrr@{}}
@@ -588,24 +593,24 @@ As a published-value anchor, \citet[Table~1]{DoctorsBeck1987} report the
 classical thin-ship value \(10^3 C_w=1.2486\) for \(B/L=0.1\),
 \(T/L=0.0625\), and \(\Fn=0.35\).  Our dimensional realization is the
 \SI{10}{m} hull above, with \(U=\Fn\sqrt{gL}\), \(\rho\) and \(g\) as stated
-above, and \(C_w\) and \(S_w\) defined by \cref{eq:cw}.  The committed harness
+above, and \(C_w\) and \(S_w\) defined by \cref{eq:cw}.  The committed test
 gives \(10^3 C_w=1.247922\), a relative difference of
-\(5.43\times10^{-4}\) (\(0.0543\%\)).  We classify this agreement as a known
-result reproduced (class 1).
+\(5.43\times10^{-4}\) (\(0.0543\%\)).  We thereby reproduce the known result
+in reference comparison~1.
 
 \begin{table*}[t]
 \centering
-\caption{Resistance validation against the primary analytic-Wigley reference.
-The marcher requested \(\mathrm{rel\_tol}=10^{-8}\) with six refinements, but
-every row reached RefinementCap (RC); no row is presented as tolerance
-converged.  For \(\Fn\leq0.03\), the physical omission correction is
+\caption{Computed resistance is compared with the primary analytic-Wigley
+reference.  Direct integration requested \(\mathrm{rel\_tol}=10^{-8}\) with
+six refinements, but every row reached RefinementCap (RC); no row is presented
+as tolerance converged.  For \(\Fn\leq0.03\), the physical omission correction is
 \(6.2\times10^{-32}\) or smaller, so the reduced/reference difference measures
 quadrature agreement rather than omission physics.}
 \label{tab:accuracy}
 \scriptsize
 \begin{tabular}{@{}ccccccrl@{}}
 \toprule
-\(\Fn\) & Reference \(\Rw\) (N) & Reduced diff. & Reduced est. & Marcher diff. & Marcher est. & Marcher work & Status\\
+\(\Fn\) & Reference \(\Rw\) (N) & Reduced diff. & Reduced est. & Direct diff. & Direct est. & Direct work & Status\\
 \midrule
 0.08 & \num{1.945940872510e-1} & \num{1.172e-5} & \num{3.817e-5} & \num{6.918e-8} & \num{2.896e-7} & 56,032 & RC\\
 0.05 & \num{1.057847519846e-2} & \num{1.963e-13}& \num{2.000e-8} & \num{1.493e-7} & \num{5.974e-7} & 119,936 & RC\\
@@ -617,10 +622,10 @@ quadrature agreement rather than omission physics.}
 
 \begin{table*}[t]
 \centering
-\caption{Decomposition of the reduced estimate in \cref{eq:dispatcherror}.
-The first three columns use the guarded denominator
+\caption{The reduced error estimate is decomposed as in
+\cref{eq:dispatcherror}.  The first three columns use the guarded denominator
 \(|\widetilde R_{\rm w}|-B\); their sum plus the construction/safety floor is
-the printed estimate.}
+the reported estimate.}
 \label{tab:estimateparts}
 \small
 \begin{tabular}{@{}crrrrr@{}}
@@ -635,20 +640,20 @@ the printed estimate.}
 \end{tabular}
 \end{table*}
 
-\Cref{tab:accuracy} shows two regimes.  At \(\Fn=0.08\), submerged terms remain
+The results separate two regimes.  At \(\Fn=0.08\), submerged terms remain
 material, and the estimate rejects the reduction at default tolerance.  At
 \(\Fn\leq0.05\), reduced/reference differences range from
 \(1.83\times10^{-13}\) to \(1.05\times10^{-12}\) and remain within the reduced
-solver's empirical estimates.  The general marcher's error, by contrast,
+method's empirical estimates.  The error in direct integration, by contrast,
 grows as Froude number falls.  Its estimate covers the observed error in all
-four rows, but each calculation exhausted the configured refinement budget.
-The independent endpoint-aware references, not the capped marcher, provide
-the comparison standard in \cref{tab:accuracy}.
+four rows, although each calculation exhausted the configured refinement
+budget.  The independent endpoint-aware references, not the capped direct
+calculation, provide the comparison standard in \cref{tab:accuracy}.
 
 The isolated kernel tests compare \cref{eq:gaussian} against dense real-axis
 integration for \(s\in\{4,7,10,50,98,128\}\) and
 \(|\omega|\in\{25,100,400\}\), with scaled discrepancy below
-\(10^{-9}\).  The public degree envelope reaches at most \(s=98\); order 128
+\(10^{-9}\).  The stated degree range reaches at most \(s=98\); order 128
 provides margin.  The full Rust and Python-interface suites pass.
 
 \begin{figure*}[t]
@@ -670,7 +675,7 @@ provides margin.  The full Rust and Python-interface suites pass.
 \addlegendentry{endpoint/NSD}
 \addplot+[black,dashed,mark=square,mark options={solid},thick] coordinates {
   (0.08,6.918e-8) (0.05,1.493e-7) (0.03,3.322e-7) (0.02,6.334e-7)};
-\addlegendentry{real-axis marcher}
+\addlegendentry{direct outer integration}
 \node[font=\scriptsize,text=black,anchor=north west]
   at (axis cs:0.08,1.172e-5) {rejected};
 \node[font=\scriptsize,text=black,anchor=north]
@@ -695,43 +700,44 @@ provides margin.  The full Rust and Python-interface suites pass.
 \addlegendentry{endpoint/NSD}
 \addplot+[black,dashed,mark=square,mark options={solid},thick] coordinates {
   (0.08,56032) (0.05,119936) (0.03,267856) (0.02,511504)};
-\addlegendentry{real-axis marcher}
+\addlegendentry{direct outer integration}
 \end{axis}
 \end{tikzpicture}
 \end{minipage}
-\caption{Observed accuracy (left) and work (right) as Froude number decreases.
-The two endpoint-aware references agree in the low \(10^{-15}\) range; the
-plotted endpoint/NSD differences are therefore resolved quadrature
-comparisons.  Every real-axis marcher point has status
-\texttt{RefinementCap}.  At default tolerance, the hybrid rejects the reduced
-result at \(\Fn=0.08\) and accepts it at \(\Fn=0.05,0.03,0.02\).}
+\caption{Accuracy (left) and work (right) diverge as Froude number decreases.
+The two endpoint-aware references agree in the low \(10^{-15}\) range, so the
+plotted endpoint/NSD differences are resolved quadrature comparisons.  Every
+direct-integration point has status \texttt{RefinementCap}.  At default
+tolerance, the selection rule rejects the reduced result at \(\Fn=0.08\) and
+accepts it at \(\Fn=0.05,0.03,0.02\).}
 \label{fig:scaling}
 \end{figure*}
 
 \subsection{Runtime}
 
-Timing used \texttt{cargo bench -p michell --bench wigley}, 30 samples per
+We timed \texttt{cargo bench -p michell --bench wigley} with 30 samples per
 case, the optimized Cargo bench profile, no custom \texttt{RUSTFLAGS}, and the
 default requested relative tolerance \(10^{-5}\).  Each case received an
-unmeasured warm call.  Calls below \SI{0.1}{ms} were timed in batches of 256
-and divided by 256; checksums use separate untimed calls, so timer and checksum
-work do not overlap.  The two method comparisons alternated execution order on
-every sample; other cases were sampled separately in printed order.  The host
-was a 10-core Apple M5 MacBook Air with 24 GB RAM, arm64 Darwin 25.5.0,
-Rust/Cargo 1.96.0, and LLVM 22.1.2.  Absolute timings are host-dependent; work
-counts and checksums are deterministic.
+unmeasured warm call.  We timed calls below \SI{0.1}{ms} in batches of 256 and
+divided by 256; separate untimed calls produced the checksums, so timer and
+checksum work do not overlap.  The two method comparisons alternated execution
+order on every sample.  We sampled the other cases separately in printed
+order.  The host was a 10-core Apple M5 MacBook Air with 24 GB RAM, arm64
+Darwin 25.5.0, Rust/Cargo 1.96.0, and LLVM 22.1.2.  Absolute timings depend on
+the host; work counts and checksums are deterministic.
 
 \begin{table*}[t]
 \centering
-\caption{Final release benchmark on the development host.}
+\caption{The final release benchmark reports paired timing and work on the
+development host.}
 \label{tab:timing}
 \begin{tabular}{@{}lrrl@{}}
 \toprule
 Case & Median (ms) & IQR (ms) & Diagnostic\\
 \midrule
 21 speeds, \(\Fn=0.10\ldots0.50\) & 13.059 & 12.952--13.126 & checksum \(2.553251156101\times10^5\)\\
-Default API, \(\Fn=0.05\) & 0.030 & 0.030--0.030 & 1,152 nodes; batch 256\\
-Real-axis marcher, \(\Fn=0.02\) & 21.541 & 21.311--21.666 & 511,504 evaluations; batch 1\\
+Default method, \(\Fn=0.05\) & 0.030 & 0.030--0.030 & 1,152 nodes; batch 256\\
+Direct outer integration, \(\Fn=0.02\) & 21.541 & 21.311--21.666 & 511,504 evaluations; batch 1\\
 Endpoint/NSD, \(\Fn=0.02\) & 0.030 & 0.030--0.030 & 1,152 nodes; batch 256\\
 \bottomrule
 \end{tabular}
@@ -741,15 +747,15 @@ At \(\Fn=0.02\), the frozen paired run gives a 718-fold median speedup; repeated
 protocols on this host have spanned roughly 608--865-fold, so the ratio is not
 portable.  The comparison uses equal \emph{requested} tolerance, not matched
 observed accuracy: the endpoint/reference difference is
-\(1.83\times10^{-13}\), whereas the capped marcher's is
+\(1.83\times10^{-13}\), whereas the capped direct calculation's is
 \(6.33\times10^{-7}\).  Cost changes little between \(\Fn=0.05\) and 0.02, as
 \cref{eq:gaussian} predicts.  The sweep grid is the 21 speeds
 \(\Fn=0.10,0.12,\ldots,0.50\); its checksum is the sum of the 21 returned
 resistances from one untimed pass.  The scalar low-speed checksums are likewise
 sums of one result per sample, outside the timed batches.  During the sweep,
-the hybrid selects the path that satisfies the error gate.  The checksum
-differs from the pre-fix value because the corrected marcher retains a
-positive tail that the earlier rule truncated.
+the selection rule chooses the path that satisfies the acceptance condition.
+The checksum differs from the pre-fix value because the corrected direct
+integration retains a positive tail that the earlier rule truncated.
 
 \section{Analytic lineage and implementation scope}
 \label{sec:prior}
