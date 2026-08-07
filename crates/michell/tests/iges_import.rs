@@ -35,7 +35,13 @@ fn pack_params(params: &str, de_ptr: usize, seq_start: usize) -> (String, usize)
     (out, seq - seq_start)
 }
 
-fn dir_entry(etype: i32, pd_ptr: usize, pd_count: usize, transform_de: usize, seq: usize) -> String {
+fn dir_entry(
+    etype: i32,
+    pd_ptr: usize,
+    pd_count: usize,
+    transform_de: usize,
+    seq: usize,
+) -> String {
     let l1 = format!(
         "{etype:>8}{pd_ptr:>8}{z:>8}{z:>8}{z:>8}{z:>8}{transform_de:>8}{z:>8}{z:>8}",
         z = 0
@@ -141,7 +147,11 @@ fn imports_wigley_and_reproduces_resistance() {
     assert_eq!(report.patches, 1);
     assert!(!report.two_sided);
     assert_eq!(report.centerplane, 0.0);
-    assert!((report.draft - 0.625).abs() < 1e-9, "draft {}", report.draft);
+    assert!(
+        (report.draft - 0.625).abs() < 1e-9,
+        "draft {}",
+        report.draft
+    );
     assert!((report.x_range.0 - 0.0).abs() < 1e-9);
     assert!((report.x_range.1 - 10.0).abs() < 1e-9);
     assert_eq!(report.failed_inversions, 0);
@@ -366,7 +376,11 @@ fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
         report.centerplane
     );
     assert!((report.draft - 0.625).abs() < 1e-9);
-    assert!(report.max_asymmetry < 1e-8, "asymmetry {}", report.max_asymmetry);
+    assert!(
+        report.max_asymmetry < 1e-8,
+        "asymmetry {}",
+        report.max_asymmetry
+    );
     assert_eq!(report.failed_inversions, 0);
     assert!(
         report.fit.max_residual < 1e-8,
@@ -381,11 +395,10 @@ fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
     );
     let cond = Conditions::seawater(3.0);
     let rw = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-    let rw_ref = michell::wave_resistance(&reference, &cond).unwrap().resistance;
-    assert!(
-        (rw - rw_ref).abs() < 1e-5 * rw_ref,
-        "Rw {rw} vs {rw_ref}"
-    );
+    let rw_ref = michell::wave_resistance(&reference, &cond)
+        .unwrap()
+        .resistance;
+    assert!((rw - rw_ref).abs() < 1e-5 * rw_ref, "Rw {rw} vs {rw_ref}");
 
     // Explicit centerplane gives the same answer.
     opts.centerplane = Some(7.0);
@@ -421,10 +434,8 @@ fn trimaran_file_imports_as_fleet_with_detected_placements() {
     // Resistance of the imported fleet matches a manually placed fleet of
     // reference Wigley hulls at the same transverse positions.
     let cond = Conditions::seawater(3.0);
-    let members: Vec<(&michell::Hull, michell::Placement)> = fleet
-        .iter()
-        .map(|m| (&m.hull, m.placement))
-        .collect();
+    let members: Vec<(&michell::Hull, michell::Placement)> =
+        fleet.iter().map(|m| (&m.hull, m.placement)).collect();
     let got = michell::multihull_wave_resistance(&members, &cond)
         .unwrap()
         .resistance;
@@ -481,25 +492,39 @@ fn bounded_base_plane_does_not_bridge_hulls() {
     let pcurve_de = 2 * ents.len() + 1;
     ents.push((
         126,
-        "126,1,1,0,0,1,0,0.0,0.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,1.0,0.1,0.0,0.0,1.0;"
-            .into(),
+        "126,1,1,0,0,1,0,0.0,0.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,1.0,0.1,0.0,0.0,1.0;".into(),
     ));
     let boundary_de = 2 * ents.len() + 1;
-    ents.push((141, format!("141,1,1,{plane_de},1,{pcurve_de},1,1,{pcurve_de};")));
+    ents.push((
+        141,
+        format!("141,1,1,{plane_de},1,{pcurve_de},1,1,{pcurve_de};"),
+    ));
     ents.push((143, format!("143,1,{plane_de},1,{boundary_de};")));
 
     let text = iges_file_meters_entities(&ents);
     let src = iges::source_fleet(&text, 0.7).unwrap();
-    assert_eq!(src.len(), 2, "expected 2 hulls, plane restricted to a plank");
+    assert_eq!(
+        src.len(),
+        2,
+        "expected 2 hulls, plane restricted to a plank"
+    );
 
     let mut opts = import_opts();
     opts.waterline_z = 0.7;
     let fleet = iges::import_fleet(&text, &opts).unwrap();
     assert_eq!(fleet.len(), 2);
     // The plank joins the first hull; the second imports untouched.
-    assert!(fleet[0].placement.y.abs() < 0.1, "y {}", fleet[0].placement.y);
+    assert!(
+        fleet[0].placement.y.abs() < 0.1,
+        "y {}",
+        fleet[0].placement.y
+    );
     assert_eq!(fleet[0].report.patches, 5);
-    assert!((fleet[1].placement.y - 7.0).abs() < 1e-6, "y {}", fleet[1].placement.y);
+    assert!(
+        (fleet[1].placement.y - 7.0).abs() < 1e-6,
+        "y {}",
+        fleet[1].placement.y
+    );
     assert_eq!(fleet[1].report.patches, 4);
     assert!(fleet[1].report.fit.max_residual < 1e-8);
 
@@ -531,11 +556,10 @@ fn offset_one_sided_hull_is_rejected_without_centerplane() {
     let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
     let cond = Conditions::seawater(3.0);
     let rw = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-    let rw_ref = michell::wave_resistance(&reference, &cond).unwrap().resistance;
-    assert!(
-        (rw - rw_ref).abs() < 1e-5 * rw_ref,
-        "Rw {rw} vs {rw_ref}"
-    );
+    let rw_ref = michell::wave_resistance(&reference, &cond)
+        .unwrap()
+        .resistance;
+    assert!((rw - rw_ref).abs() < 1e-5 * rw_ref, "Rw {rw} vs {rw_ref}");
 }
 
 /// Single starboard-side Wigley patch offset to y ~ 7 (never reaches y = 0).
@@ -729,7 +753,11 @@ fn equilibrium_matches_analytic_wigley() {
         "sinkage {} (want -0.125)",
         eq.sinkage
     );
-    assert!(eq.volume_residual < 5e-4, "vol residual {}", eq.volume_residual);
+    assert!(
+        eq.volume_residual < 5e-4,
+        "vol residual {}",
+        eq.volume_residual
+    );
     assert_eq!(eq.trim, 0.0);
     assert_eq!(eq.fleet.dry, 0);
 
@@ -766,7 +794,11 @@ fn equilibrium_matches_analytic_wigley() {
     assert!(eq.volume_residual < 5e-4);
     assert!(eq.lcb_residual < 1.5e-3, "lcb residual {}", eq.lcb_residual);
     assert!((eq.lcb - 5.3).abs() < 1.5e-3, "lcb {}", eq.lcb);
-    assert!(eq.trim.abs() > 1e-3, "expected nonzero trim, got {}", eq.trim);
+    assert!(
+        eq.trim.abs() > 1e-3,
+        "expected nonzero trim, got {}",
+        eq.trim
+    );
 
     // An impossible CG (at the bow tip) must fail with a diagnosis, not hang.
     let err = solve_equilibrium(
@@ -874,8 +906,12 @@ fn body_situate_matches_iges_situate() {
     );
     assert!((vb - vi).abs() < 1e-6 * vi, "dz: vol {vb} vs {vi}");
     let cond = Conditions::seawater(3.0);
-    let rwb = michell::wave_resistance(&via_body.hull, &cond).unwrap().resistance;
-    let rwi = michell::wave_resistance(&via_iges.hull, &cond).unwrap().resistance;
+    let rwb = michell::wave_resistance(&via_body.hull, &cond)
+        .unwrap()
+        .resistance;
+    let rwi = michell::wave_resistance(&via_iges.hull, &cond)
+        .unwrap()
+        .resistance;
     assert!((rwb - rwi).abs() < 1e-4 * rwi, "dz: Rw {rwb} vs {rwi}");
     assert_eq!(via_body.band_exceeded, 0);
 
@@ -962,10 +998,7 @@ fn stl_import_matches_reference_wigley() {
     let rw_ref = michell::wave_resistance(&reference, &cond)
         .unwrap()
         .resistance;
-    assert!(
-        (rw - rw_ref).abs() < 1e-2 * rw_ref,
-        "Rw {rw} vs {rw_ref}"
-    );
+    assert!((rw - rw_ref).abs() < 1e-2 * rw_ref, "Rw {rw} vs {rw_ref}");
 }
 
 #[test]
@@ -1000,6 +1033,10 @@ fn parse_reports_inventory() {
     // Units + transform applied: x in metres, z shifted by 2 m.
     let xs: Vec<f64> = s.ctrl.iter().map(|p| p[0]).collect();
     assert!(xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - 10.0 < 1e-12);
-    let zmax = s.ctrl.iter().map(|p| p[2]).fold(f64::NEG_INFINITY, f64::max);
+    let zmax = s
+        .ctrl
+        .iter()
+        .map(|p| p[2])
+        .fold(f64::NEG_INFINITY, f64::max);
     assert!((zmax - 2.625).abs() < 1e-12, "zmax {zmax}");
 }

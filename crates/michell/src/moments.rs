@@ -307,9 +307,16 @@ mod tests {
             exp_moments_complex(kappa, h, 5, &mut out);
             #[allow(clippy::needless_range_loop)]
             for b in 0..=5usize {
-                let re = simpson(|t| t.powi(b as i32) * (-kr * t).exp() * (ki * t).cos(), h, 40000);
-                let im =
-                    simpson(|t| t.powi(b as i32) * (-kr * t).exp() * -(ki * t).sin(), h, 40000);
+                let re = simpson(
+                    |t| t.powi(b as i32) * (-kr * t).exp() * (ki * t).cos(),
+                    h,
+                    40000,
+                );
+                let im = simpson(
+                    |t| t.powi(b as i32) * (-kr * t).exp() * -(ki * t).sin(),
+                    h,
+                    40000,
+                );
                 let scale = h.powi(b as i32 + 1) / (b as f64 + 1.0);
                 assert!(
                     (out[b].re - re).abs() < 1e-9 * scale && (out[b].im - im).abs() < 1e-9 * scale,

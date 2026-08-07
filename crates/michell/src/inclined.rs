@@ -269,12 +269,7 @@ pub fn body_inclined_hydro(
 
         // Immersed part: clip by D(x_b, z_b, y_b) ≥ 0, i.e.
         // dy·y_b + dz·z_b + (dx·x_b + base) ≥ 0.
-        let clipped = clip_halfplane(
-            &section,
-            aff.dy[2],
-            aff.dz[2],
-            aff.dx[2] * xb + aff.base[2],
-        );
+        let clipped = clip_halfplane(&section, aff.dy[2], aff.dz[2], aff.dx[2] * xb + aff.base[2]);
         let Some((area, ybar, zbar)) = polygon_area_centroid(&clipped) else {
             continue;
         };

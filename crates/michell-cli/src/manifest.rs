@@ -610,9 +610,11 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             .into());
     }
     if has_cg_axis && !float_mode {
-        return Err("an lcg/vcg axis needs the fleet to carry mass; give a hull a \
+        return Err(
+            "an lcg/vcg axis needs the fleet to carry mass; give a hull a \
                     \"load\": { \"mass\": ... } or sweep a mass axis"
-            .into());
+                .into(),
+        );
     }
 
     // Base situate: reference length for Froude numbers.

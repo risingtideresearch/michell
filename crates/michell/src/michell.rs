@@ -665,7 +665,10 @@ fn validate_fleet(
             "at least one hull is required".into(),
         ));
     }
-    if members.iter().any(|(_, p)| !(p.x.is_finite() && p.y.is_finite())) {
+    if members
+        .iter()
+        .any(|(_, p)| !(p.x.is_finite() && p.y.is_finite()))
+    {
         return Err(Error::InvalidConditions(
             "hull placements must be finite".into(),
         ));
