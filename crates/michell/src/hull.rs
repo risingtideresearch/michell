@@ -71,15 +71,7 @@ impl Hull {
                 "z-domain must start at the waterline z = 0 (z measured downward); got z0 = {z0}"
             )));
         }
-        let scale = surface
-            .control()
-            .iter()
-            .fold(0.0f64, |m, &v| m.max(v.abs()));
-        if surface
-            .control()
-            .iter()
-            .any(|&v| v < -1e-12 * scale.max(1.0))
-        {
+        if surface.control().iter().any(|&v| v < 0.0) {
             return Err(Error::InvalidGeometry(
                 "control net contains negative half-beam values; the half-breadth \
                  surface must satisfy f(x, z) >= 0"
@@ -242,6 +234,13 @@ impl Hull {
             return Err(Error::InvalidGeometry(
                 "asymmetric hull: control nets differ in length".into(),
             ));
+        }
+        for (side, surface) in [("port", &port), ("starboard", &starboard)] {
+            if surface.control().iter().any(|&value| value < 0.0) {
+                return Err(Error::InvalidGeometry(format!(
+                    "asymmetric hull: {side} control net contains negative half-beam values"
+                )));
+            }
         }
 
         // Symmetric and antisymmetric control nets on the shared parametrisation.

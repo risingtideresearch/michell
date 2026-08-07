@@ -100,6 +100,54 @@ impl Mul for C64 {
 /// closed-form recurrence (large argument, exact).
 const SERIES_THRESHOLD: f64 = 4.0;
 
+/// Dimensionless endpoint expansion
+/// `∫₀¹ uᵃeⁱˣᵘdu = eⁱˣ Σₘ (-ix)ᵐ a!/(a+m+1)!`.
+///
+/// Unlike the origin expansion, successive terms contract when `a >= |x|`.
+/// It therefore provides a stable handoff when the upward recurrence starts
+/// amplifying roundoff at degrees large compared with the phase.
+fn osc_endpoint_series(x: f64, a: usize) -> C64 {
+    exp_endpoint_series_complex(C64::new(0.0, -x), a)
+}
+
+/// Real endpoint expansion
+/// `∫₀¹ uᵇe⁻ˣᵘdu = e⁻ˣ Σₘ xᵐ b!/(b+m+1)!`.
+///
+/// For `b >= |x|`, term magnitudes decrease and their ratios decrease with
+/// `m`. After each term, `next_term / (1 - next_ratio)` therefore bounds the
+/// entire uncomputed absolute tail. Summation continues until that bound is
+/// below floating-point resolution instead of relying on a fixed term cap.
+fn exp_endpoint_series(x: f64, b: usize) -> f64 {
+    let mut term = 1.0 / (b as f64 + 1.0);
+    let mut sum = term;
+    for m in 0.. {
+        term *= x / (b as f64 + m as f64 + 2.0);
+        sum += term;
+        let next_ratio = x / (b as f64 + m as f64 + 3.0);
+        let tail_bound = term.abs() * next_ratio / (1.0 - next_ratio);
+        if tail_bound <= 8.0 * f64::EPSILON * sum.abs() {
+            break;
+        }
+    }
+    (-x).exp() * sum
+}
+
+/// Complex form of [`exp_endpoint_series`], with the same absolute tail bound.
+fn exp_endpoint_series_complex(x: C64, b: usize) -> C64 {
+    let mut term = C64::new(1.0 / (b as f64 + 1.0), 0.0);
+    let mut sum = term;
+    for m in 0.. {
+        term = term * x.scale(1.0 / (b as f64 + m as f64 + 2.0));
+        sum = sum + term;
+        let next_ratio = x.abs() / (b as f64 + m as f64 + 3.0);
+        let tail_bound = term.abs() * next_ratio / (1.0 - next_ratio);
+        if tail_bound <= 8.0 * f64::EPSILON * sum.abs() {
+            break;
+        }
+    }
+    x.scale(-1.0).exp() * sum
+}
+
 /// Oscillatory moments `M_a = ∫_0^h t^a e^{i k t} dt` for `a = 0..=a_max`.
 ///
 /// For |kh| below [`SERIES_THRESHOLD`] uses the entire series
@@ -133,7 +181,11 @@ pub fn osc_moments(k: f64, h: f64, a_max: usize, out: &mut Vec<C64>) {
         out.push(prev);
         let mut h_pow = h;
         for a in 1..=a_max {
-            let cur = (e.scale(h_pow) - prev.scale(a as f64)) * inv_ik;
+            let cur = if a as f64 >= kh.abs() {
+                osc_endpoint_series(kh, a).scale(h_pow * h)
+            } else {
+                (e.scale(h_pow) - prev.scale(a as f64)) * inv_ik
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -172,7 +224,11 @@ pub fn exp_moments(kappa: f64, h: f64, b_max: usize, out: &mut Vec<f64>) {
         out.push(prev);
         let mut h_pow = h;
         for b in 1..=b_max {
-            let cur = (b as f64 * prev - h_pow * e) / kappa;
+            let cur = if b as f64 >= x {
+                exp_endpoint_series(x, b) * h_pow * h
+            } else {
+                (b as f64 * prev - h_pow * e) / kappa
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -213,7 +269,11 @@ pub fn exp_moments_complex(kappa: C64, h: f64, b_max: usize, out: &mut Vec<C64>)
         out.push(prev);
         let mut h_pow = h;
         for b in 1..=b_max {
-            let cur = (prev.scale(b as f64) - e.scale(h_pow)) * inv_k;
+            let cur = if b as f64 >= x.abs() {
+                exp_endpoint_series_complex(x, b).scale(h_pow * h)
+            } else {
+                (prev.scale(b as f64) - e.scale(h_pow)) * inv_k
+            };
             out.push(cur);
             prev = cur;
             h_pow *= h;
@@ -235,6 +295,27 @@ mod tests {
             s += w * f(i as f64 * dt);
         }
         s * dt / 3.0
+    }
+
+    /// Independent high-degree oracle. With `q = a + 1` and
+    /// `u = exp(-s/q)`,
+    ///
+    /// `∫₀¹ uᵃ exp(ixu) du = q⁻¹ ∫₀∞ exp(-s) exp(ix exp(-s/q)) ds`.
+    ///
+    /// Truncating at `s = 40` has absolute error at most `exp(-40) / q`.
+    fn high_degree_osc_oracle(x: f64, a: usize) -> C64 {
+        let q = a as f64 + 1.0;
+        let re = simpson(
+            |s| (-s).exp() * (x * (-s / q).exp()).cos() / q,
+            40.0,
+            100_000,
+        );
+        let im = simpson(
+            |s| (-s).exp() * (x * (-s / q).exp()).sin() / q,
+            40.0,
+            100_000,
+        );
+        C64::new(re, im)
     }
 
     #[test]
@@ -336,6 +417,50 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_moments_preserve_non_unit_span_scaling() {
+        let (h, degree) = (2.0, 8usize);
+        let mut oscillatory = Vec::new();
+        osc_moments(3.0, h, degree, &mut oscillatory);
+        let osc_re = simpson(|t| t.powi(degree as i32) * (3.0 * t).cos(), h, 40_000);
+        let osc_im = simpson(|t| t.powi(degree as i32) * (3.0 * t).sin(), h, 40_000);
+        let osc_scale = C64::new(osc_re, osc_im).abs();
+        assert!((oscillatory[degree].re - osc_re).abs() < 2e-10 * osc_scale);
+        assert!((oscillatory[degree].im - osc_im).abs() < 2e-10 * osc_scale);
+
+        let mut exponential = Vec::new();
+        exp_moments(3.0, h, degree, &mut exponential);
+        let exp_want = simpson(|t| t.powi(degree as i32) * (-3.0 * t).exp(), h, 40_000);
+        assert!((exponential[degree] - exp_want).abs() < 2e-10 * exp_want);
+
+        let kappa = C64::new(0.5, 3.0);
+        let mut complex = Vec::new();
+        exp_moments_complex(kappa, h, degree, &mut complex);
+        let complex_re = simpson(
+            |t| t.powi(degree as i32) * (-0.5 * t).exp() * (3.0 * t).cos(),
+            h,
+            40_000,
+        );
+        let complex_im = simpson(
+            |t| -t.powi(degree as i32) * (-0.5 * t).exp() * (3.0 * t).sin(),
+            h,
+            40_000,
+        );
+        let complex_scale = C64::new(complex_re, complex_im).abs();
+        assert!((complex[degree].re - complex_re).abs() < 2e-10 * complex_scale);
+        assert!((complex[degree].im - complex_im).abs() < 2e-10 * complex_scale);
+    }
+
+    #[test]
+    fn high_degree_endpoint_series_matches_transformed_quadrature() {
+        let (x, degree) = (10_000.0, 10_000usize);
+        let want = high_degree_osc_oracle(x, degree);
+        let mut got = Vec::new();
+        osc_moments(x, 1.0, degree, &mut got);
+        let rel = (got[degree] - want).abs() / want.abs();
+        assert!(rel < 2e-10, "relative error {rel:.3e}");
+    }
+
+    #[test]
     fn extreme_decay_underflows_gracefully() {
         let mut out = Vec::new();
         exp_moments(1e6, 1.0, 3, &mut out);
@@ -343,5 +468,63 @@ mod tests {
         assert!((out[0] - 1e-6).abs() < 1e-18);
         assert!((out[1] - 1e-12).abs() < 1e-24);
         assert!(out.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn high_degree_oscillatory_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+
+        let mut oscillatory_below = Vec::new();
+        let mut oscillatory_above = Vec::new();
+        osc_moments(below, 1.0, 32, &mut oscillatory_below);
+        osc_moments(above, 1.0, 32, &mut oscillatory_above);
+        for degree in 0..=32 {
+            let scale = oscillatory_below[degree].abs().max(1e-300);
+            let jump = (oscillatory_above[degree] - oscillatory_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "oscillatory degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_degree_exponential_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+
+        let mut exponential_below = Vec::new();
+        let mut exponential_above = Vec::new();
+        exp_moments(below, 1.0, 32, &mut exponential_below);
+        exp_moments(above, 1.0, 32, &mut exponential_above);
+        for degree in 0..=32 {
+            let scale = exponential_below[degree].abs().max(1e-300);
+            let jump = (exponential_above[degree] - exponential_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "exponential degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn high_degree_complex_moments_are_continuous_at_series_switch() {
+        let below = SERIES_THRESHOLD * (1.0 - 1e-12);
+        let above = SERIES_THRESHOLD * (1.0 + 1e-12);
+        let direction = C64::new(0.8, 0.6);
+
+        let mut complex_below = Vec::new();
+        let mut complex_above = Vec::new();
+        exp_moments_complex(direction.scale(below), 1.0, 32, &mut complex_below);
+        exp_moments_complex(direction.scale(above), 1.0, 32, &mut complex_above);
+        for degree in 0..=32 {
+            let scale = complex_below[degree].abs().max(1e-300);
+            let jump = (complex_above[degree] - complex_below[degree]).abs() / scale;
+            assert!(
+                jump < 1e-9,
+                "complex degree {degree}: relative switch jump {jump:.3e}"
+            );
+        }
     }
 }

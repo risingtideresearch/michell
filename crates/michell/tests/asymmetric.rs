@@ -29,6 +29,20 @@ fn clone_surface(surface: &BSplineSurface) -> BSplineSurface {
     scaled(surface, 1.0)
 }
 
+fn with_tiny_negative(surface: &BSplineSurface) -> BSplineSurface {
+    let mut control = surface.control().to_vec();
+    let middle = control.len() / 2;
+    control[middle] = -1e-300;
+    BSplineSurface::new(
+        surface.degree_x(),
+        surface.degree_z(),
+        surface.knots_x().to_vec(),
+        surface.knots_z().to_vec(),
+        control,
+    )
+    .unwrap()
+}
+
 /// Identical port and starboard sides ⇒ bit-for-bit the symmetric hull, in
 /// both resistance and hydrostatics (the dipole net is all zeros).
 #[test]
@@ -111,4 +125,27 @@ fn mismatched_parametrisations_are_rejected() {
     let a = hulls::wigley(10.0, 1.0, 0.625).unwrap();
     let b = hulls::wigley(12.0, 1.0, 0.625).unwrap(); // different x-knots
     assert!(Hull::new_asymmetric(clone_surface(a.surface()), clone_surface(b.surface())).is_err());
+}
+
+#[test]
+fn tiny_negative_half_breadths_are_rejected_on_both_sides_at_every_scale() {
+    for scale in [1e-9, 1.0, 1e9] {
+        let base = hulls::wigley(10.0 * scale, scale, 0.625 * scale).unwrap();
+        assert!(
+            Hull::new_asymmetric(
+                with_tiny_negative(base.surface()),
+                clone_surface(base.surface()),
+            )
+            .is_err(),
+            "port negative accepted at scale {scale}"
+        );
+        assert!(
+            Hull::new_asymmetric(
+                clone_surface(base.surface()),
+                with_tiny_negative(base.surface()),
+            )
+            .is_err(),
+            "starboard negative accepted at scale {scale}"
+        );
+    }
 }

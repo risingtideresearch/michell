@@ -6,3 +6,7 @@ description = "Thin-ship wave resistance (Michell's integral) and ITTC-57 viscou
 license = "MIT"
 
 [dependencies]
+
+[[bench]]
+name = "wigley"
+harness = false
