@@ -107,41 +107,41 @@ const SERIES_THRESHOLD: f64 = 4.0;
 /// It therefore provides a stable handoff when the upward recurrence starts
 /// amplifying roundoff at degrees large compared with the phase.
 fn osc_endpoint_series(x: f64, a: usize) -> C64 {
-    let mut term = C64::new(1.0 / (a as f64 + 1.0), 0.0);
-    let mut sum = term;
-    for m in 0..256 {
-        term = term * C64::new(0.0, -x).scale(1.0 / (a as f64 + m as f64 + 2.0));
-        sum = sum + term;
-        if term.abs() <= 1e-18 * sum.abs() {
-            break;
-        }
-    }
-    C64::cis(x) * sum
+    exp_endpoint_series_complex(C64::new(0.0, -x), a)
 }
 
 /// Real endpoint expansion
 /// `∫₀¹ uᵇe⁻ˣᵘdu = e⁻ˣ Σₘ xᵐ b!/(b+m+1)!`.
+///
+/// For `b >= |x|`, term magnitudes decrease and their ratios decrease with
+/// `m`. After each term, `next_term / (1 - next_ratio)` therefore bounds the
+/// entire uncomputed absolute tail. Summation continues until that bound is
+/// below floating-point resolution instead of relying on a fixed term cap.
 fn exp_endpoint_series(x: f64, b: usize) -> f64 {
     let mut term = 1.0 / (b as f64 + 1.0);
     let mut sum = term;
-    for m in 0..256 {
+    for m in 0.. {
         term *= x / (b as f64 + m as f64 + 2.0);
         sum += term;
-        if term.abs() <= 1e-18 * sum.abs() {
+        let next_ratio = x / (b as f64 + m as f64 + 3.0);
+        let tail_bound = term.abs() * next_ratio / (1.0 - next_ratio);
+        if tail_bound <= 8.0 * f64::EPSILON * sum.abs() {
             break;
         }
     }
     (-x).exp() * sum
 }
 
-/// Complex form of [`exp_endpoint_series`].
+/// Complex form of [`exp_endpoint_series`], with the same absolute tail bound.
 fn exp_endpoint_series_complex(x: C64, b: usize) -> C64 {
     let mut term = C64::new(1.0 / (b as f64 + 1.0), 0.0);
     let mut sum = term;
-    for m in 0..256 {
+    for m in 0.. {
         term = term * x.scale(1.0 / (b as f64 + m as f64 + 2.0));
         sum = sum + term;
-        if term.abs() <= 1e-18 * sum.abs() {
+        let next_ratio = x.abs() / (b as f64 + m as f64 + 3.0);
+        let tail_bound = term.abs() * next_ratio / (1.0 - next_ratio);
+        if tail_bound <= 8.0 * f64::EPSILON * sum.abs() {
             break;
         }
     }
@@ -297,6 +297,27 @@ mod tests {
         s * dt / 3.0
     }
 
+    /// Independent high-degree oracle. With `q = a + 1` and
+    /// `u = exp(-s/q)`,
+    ///
+    /// `∫₀¹ uᵃ exp(ixu) du = q⁻¹ ∫₀∞ exp(-s) exp(ix exp(-s/q)) ds`.
+    ///
+    /// Truncating at `s = 40` has absolute error at most `exp(-40) / q`.
+    fn high_degree_osc_oracle(x: f64, a: usize) -> C64 {
+        let q = a as f64 + 1.0;
+        let re = simpson(
+            |s| (-s).exp() * (x * (-s / q).exp()).cos() / q,
+            40.0,
+            100_000,
+        );
+        let im = simpson(
+            |s| (-s).exp() * (x * (-s / q).exp()).sin() / q,
+            40.0,
+            100_000,
+        );
+        C64::new(re, im)
+    }
+
     #[test]
     fn osc_moments_match_quadrature() {
         let mut out = Vec::new();
@@ -393,6 +414,50 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn endpoint_moments_preserve_non_unit_span_scaling() {
+        let (h, degree) = (2.0, 8usize);
+        let mut oscillatory = Vec::new();
+        osc_moments(3.0, h, degree, &mut oscillatory);
+        let osc_re = simpson(|t| t.powi(degree as i32) * (3.0 * t).cos(), h, 40_000);
+        let osc_im = simpson(|t| t.powi(degree as i32) * (3.0 * t).sin(), h, 40_000);
+        let osc_scale = C64::new(osc_re, osc_im).abs();
+        assert!((oscillatory[degree].re - osc_re).abs() < 2e-10 * osc_scale);
+        assert!((oscillatory[degree].im - osc_im).abs() < 2e-10 * osc_scale);
+
+        let mut exponential = Vec::new();
+        exp_moments(3.0, h, degree, &mut exponential);
+        let exp_want = simpson(|t| t.powi(degree as i32) * (-3.0 * t).exp(), h, 40_000);
+        assert!((exponential[degree] - exp_want).abs() < 2e-10 * exp_want);
+
+        let kappa = C64::new(0.5, 3.0);
+        let mut complex = Vec::new();
+        exp_moments_complex(kappa, h, degree, &mut complex);
+        let complex_re = simpson(
+            |t| t.powi(degree as i32) * (-0.5 * t).exp() * (3.0 * t).cos(),
+            h,
+            40_000,
+        );
+        let complex_im = simpson(
+            |t| -t.powi(degree as i32) * (-0.5 * t).exp() * (3.0 * t).sin(),
+            h,
+            40_000,
+        );
+        let complex_scale = C64::new(complex_re, complex_im).abs();
+        assert!((complex[degree].re - complex_re).abs() < 2e-10 * complex_scale);
+        assert!((complex[degree].im - complex_im).abs() < 2e-10 * complex_scale);
+    }
+
+    #[test]
+    fn high_degree_endpoint_series_matches_transformed_quadrature() {
+        let (x, degree) = (10_000.0, 10_000usize);
+        let want = high_degree_osc_oracle(x, degree);
+        let mut got = Vec::new();
+        osc_moments(x, 1.0, degree, &mut got);
+        let rel = (got[degree] - want).abs() / want.abs();
+        assert!(rel < 2e-10, "relative error {rel:.3e}");
     }
 
     #[test]

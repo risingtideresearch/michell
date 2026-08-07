@@ -5,6 +5,10 @@ use michell::{hulls, BSplineSurface, Conditions, Hull, Placement, WaveOptions};
 
 const G: f64 = michell::STANDARD_GRAVITY;
 
+fn rel_err(got: f64, want: f64) -> f64 {
+    (got - want).abs() / want.abs().max(f64::MIN_POSITIVE)
+}
+
 /// Analytic Michell inner integrals for the Wigley hull
 /// f = (B/2)(1-(2x/L)²)(1-(z/T)²), x ∈ [-L/2, L/2], z ∈ [0, T]:
 /// I = 0 (fore-aft symmetry about the midpoint), and
@@ -78,6 +82,142 @@ fn reference_wave_resistance_factored(
 
 fn reference_wave_resistance(l: f64, b: f64, t: f64, u: f64, rho: f64) -> f64 {
     reference_wave_resistance_factored(l, b, t, u, rho, 200.0, 2_000_000, |_| 1.0)
+}
+
+/// Doctors & Beck, "Numerical Aspects of the Neumann-Kelvin Problem",
+/// Journal of Ship Research 31(1), 1987, Table 1, reports `10^3 Cw = 1.2486`
+/// for a Wigley hull at Fn=0.35 with B/L=0.1 and T/L=0.0625.
+/// DOI: https://doi.org/10.5957/jsr.1987.31.1.1
+///
+/// The value and proportions are primary-source verified. This reproduction
+/// uses the library's existing wetted-area coefficient convention; it does
+/// not claim that the source text independently establishes an identical
+/// normalization convention.
+#[test]
+fn wigley_matches_published_thin_ship_value() {
+    let (length, beam, draft) = (10.0, 1.0, 0.625);
+    let hull = hulls::wigley(length, beam, draft).unwrap();
+    let speed = 0.35 * (G * length).sqrt();
+    let cond = Conditions::freshwater(speed);
+    let wave = michell::wave_resistance_with(
+        &hull,
+        &cond,
+        &WaveOptions {
+            rel_tol: 1e-8,
+            max_refinements: 7,
+        },
+    )
+    .unwrap();
+    let cw = wave.resistance / (0.5 * cond.fluid.density * speed * speed * hull.wetted_surface());
+    let published_cw = 1.2486e-3;
+
+    // This 0.5% reproduction tolerance covers convention and physical-
+    // constant differences; it is not presented as the paper's uncertainty.
+    assert!(
+        rel_err(cw, published_cw) < 5e-3,
+        "Cw={cw:.10e}, published={published_cw:.10e}"
+    );
+}
+
+/// Geometrically similar hulls at equal length Froude number have invariant
+/// wave-resistance coefficient and wave resistance proportional to L^3.
+#[test]
+fn froude_similarity_scales_wave_resistance_cubically() {
+    let base = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let fn_ = 0.32;
+    let base_speed = fn_ * (G * base.length()).sqrt();
+    let base_cond = Conditions::freshwater(base_speed);
+    let base_wave = michell::wave_resistance(&base, &base_cond)
+        .unwrap()
+        .resistance;
+
+    for scale in [0.25_f64, 0.5, 2.0, 4.0] {
+        let hull = hulls::wigley(10.0 * scale, scale, 0.625 * scale).unwrap();
+        let speed = fn_ * (G * hull.length()).sqrt();
+        let cond = Conditions::freshwater(speed);
+        let wave = michell::wave_resistance(&hull, &cond).unwrap().resistance;
+        assert!(
+            rel_err(wave, base_wave * scale.powi(3)) < 2e-8,
+            "scale={scale}: Rw={wave}, expected {}",
+            base_wave * scale.powi(3)
+        );
+    }
+}
+
+/// Requested accuracy is checked against an analytic Wigley inner amplitude
+/// integrated by a separate dense Simpson outer quadrature. This checks the
+/// achieved bound for these cases; it does not claim every tolerance setting
+/// forces an additional refinement.
+#[test]
+fn requested_accuracy_matches_analytic_reference() {
+    let (l, b, t) = (10.0, 1.0, 0.625);
+    let hull = hulls::wigley(l, b, t).unwrap();
+    for fn_ in [0.20, 0.35, 0.50] {
+        let u = fn_ * (G * l).sqrt();
+        let cond = Conditions::freshwater(u);
+        let reference = reference_wave_resistance(l, b, t, u, cond.fluid.density);
+        let mut previous_actual = f64::INFINITY;
+        for rel_tol in [1e-3, 1e-5] {
+            let result = michell::wave_resistance_with(
+                &hull,
+                &cond,
+                &WaveOptions {
+                    rel_tol,
+                    max_refinements: 7,
+                },
+            )
+            .unwrap();
+            let actual = rel_err(result.resistance, reference);
+            assert!(
+                actual <= previous_actual * 1.05,
+                "Fn={fn_} tol={rel_tol}: actual error grew to {actual:.3e}"
+            );
+            assert!(
+                actual < 5.0 * rel_tol,
+                "Fn={fn_} tol={rel_tol}: actual error {actual:.3e}"
+            );
+            previous_actual = actual;
+        }
+    }
+}
+
+/// Internal consistency check for the production outer-quadrature error
+/// estimator. Both calculations share the same moments and quadrature code,
+/// so this does not serve as an independent physics oracle.
+#[test]
+fn reported_outer_error_is_internally_consistent() {
+    let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    for fn_ in [0.08, 0.20, 0.35, 0.50] {
+        let speed = fn_ * (G * hull.length()).sqrt();
+        let cond = Conditions::freshwater(speed);
+        let reference = michell::wave_resistance_with(
+            &hull,
+            &cond,
+            &WaveOptions {
+                // Six forced refinements remain below the per-pass safety cap
+                // at Fn=0.08; finer passes can truncate the reference earlier.
+                rel_tol: 1e-14,
+                max_refinements: 6,
+            },
+        )
+        .unwrap();
+        let result = michell::wave_resistance_with(
+            &hull,
+            &cond,
+            &WaveOptions {
+                rel_tol: 1e-5,
+                max_refinements: 7,
+            },
+        )
+        .unwrap();
+        assert!(reference.max_lambda >= 0.95 * result.max_lambda);
+        let actual = rel_err(result.resistance, reference.resistance);
+        assert!(
+            actual <= 10.0 * result.est_rel_error.max(1e-10),
+            "Fn={fn_}: estimated {:.3e}, internal difference {actual:.3e}",
+            result.est_rel_error
+        );
+    }
 }
 
 #[test]

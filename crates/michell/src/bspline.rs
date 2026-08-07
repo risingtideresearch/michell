@@ -543,25 +543,41 @@ mod tests {
     }
 
     #[test]
-    fn chine_via_repeated_interior_knot() {
-        // Degree-2 with an interior knot of multiplicity 2: C0 crease allowed.
+    fn full_multiplicity_chine_has_continuous_value_and_one_sided_slopes() {
+        // A quadratic interior knot of multiplicity two is C0. Each side is
+        // a quadratic Bezier segment sharing control point P2, with endpoint
+        // slopes 4(P2-P1) and 4(P3-P2) because each span has length 1/2.
+        let control = vec![
+            0.2, 0.7, 1.4, 0.4, 1.1, // x control 0
+            0.5, 1.6, 0.9, 2.0, 0.3, // x control 1
+            1.1, 0.2, 1.8, 0.6, 1.5, // x control 2
+        ];
         let s = BSplineSurface::new(
             2,
             2,
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
-            (0..3 * 5).map(|index| 0.2 + index as f64 / 10.0).collect(),
+            control,
         )
         .unwrap();
 
         assert_eq!(s.z_span_indices(), vec![2, 4]);
-        for &span_z in &s.z_span_indices() {
-            let partials = s.corner_partials(2, span_z);
-            assert!(partials.iter().flatten().all(|value| value.is_finite()));
-        }
-        for z in [0.5 - 1e-12, 0.5, 0.5 + 1e-12] {
-            assert!(s.eval(0.4, z).is_finite());
-            assert!(s.eval_deriv(0.4, z, 0, 1).is_finite());
-        }
+        let left = s.corner_partials(2, 2);
+        let right = s.corner_partials(2, 4);
+        let left_value = left[0][0] + 0.5 * left[0][1] + 0.125 * left[0][2];
+        let left_slope = left[0][1] + 0.5 * left[0][2];
+        assert!((left_value - 1.4).abs() < 1e-12);
+        assert!((right[0][0] - 1.4).abs() < 1e-12);
+        assert!((left_slope - 2.8).abs() < 1e-12);
+        assert!((right[0][1] + 4.0).abs() < 1e-12);
+
+        // At x=0.4, quadratic Bernstein weights are (0.36, 0.48, 0.16),
+        // giving effective z controls P1=1.052, P2=1.224, P3=1.2.
+        let x = 0.4;
+        let z_left = f64::from_bits(0.5f64.to_bits() - 1);
+        assert!((s.eval(x, z_left) - 1.224).abs() < 1e-12);
+        assert!((s.eval(x, 0.5) - 1.224).abs() < 1e-12);
+        assert!((s.eval_deriv(x, z_left, 0, 1) - 0.688).abs() < 1e-12);
+        assert!((s.eval_deriv(x, 0.5, 0, 1) + 0.096).abs() < 1e-12);
     }
 }
