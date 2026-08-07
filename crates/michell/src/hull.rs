@@ -186,8 +186,16 @@ impl Hull {
             x_center: 0.5 * (x0 + x1),
             wetted_surface: wetted,
             displaced_volume: volume,
-            lcb_x: if volume > 0.0 { volume_mx / volume } else { 0.0 },
-            vcb_z: if volume > 0.0 { volume_mz / volume } else { 0.0 },
+            lcb_x: if volume > 0.0 {
+                volume_mx / volume
+            } else {
+                0.0
+            },
+            vcb_z: if volume > 0.0 {
+                volume_mz / volume
+            } else {
+                0.0
+            },
             waterplane_area: wp_area,
             waterplane_moment: wp_mx,
             waterplane_second_moment: wp_ixx,
@@ -217,7 +225,9 @@ impl Hull {
         }
         let knots_match = |a: &[f64], b: &[f64]| {
             a.len() == b.len()
-                && a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1e-12 * (1.0 + x.abs()))
+                && a.iter()
+                    .zip(b)
+                    .all(|(x, y)| (x - y).abs() <= 1e-12 * (1.0 + x.abs()))
         };
         if !knots_match(starboard.knots_x(), port.knots_x())
             || !knots_match(starboard.knots_z(), port.knots_z())

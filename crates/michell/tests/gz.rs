@@ -17,24 +17,24 @@ fn wigley_transverse_properties_are_exact() {
     // Waterline beam 2f = B·4ξ(1−ξ): I_T = ∫ (2/3) f³ dx = (4/105) B³ L.
     let want_it = 4.0 / 105.0 * b * b * b * l;
     let it = hull.waterplane_transverse_moment();
-    assert!((it - want_it).abs() < 1e-12 * want_it, "I_T {it} vs {want_it}");
+    assert!(
+        (it - want_it).abs() < 1e-12 * want_it,
+        "I_T {it} vs {want_it}"
+    );
     // Parabolic sections 1 − (z/T)²: KB = 3T/8 below the waterline.
     let want_kb = 3.0 * t / 8.0;
     let kb = hull.vcb_z();
-    assert!((kb - want_kb).abs() < 1e-12 * want_kb, "KB {kb} vs {want_kb}");
+    assert!(
+        (kb - want_kb).abs() < 1e-12 * want_kb,
+        "KB {kb} vs {want_kb}"
+    );
 }
 
 /// A rectangular barge as a full-band body: constant half-beam `b` over
 /// length `l` and band depth `d`, design waterline `w` below the band top.
 fn barge(l: f64, b: f64, d: f64, w: f64, centerplane: f64) -> Body {
-    let surface = BSplineSurface::new(
-        1,
-        1,
-        vec![0.0, 0.0, l, l],
-        vec![0.0, 0.0, d, d],
-        vec![b; 4],
-    )
-    .unwrap();
+    let surface =
+        BSplineSurface::new(1, 1, vec![0.0, 0.0, l, l], vec![0.0, 0.0, d, d], vec![b; 4]).unwrap();
     Body::new(surface, w, centerplane).unwrap()
 }
 
@@ -55,13 +55,21 @@ fn fleet_cg_is_mass_weighted_and_tracks_pose() {
     };
 
     // Symmetric equal masses: transverse cancels, vertical/longitudinal shared.
-    let cg = fleet_cg(&bodies, &[load(1000.0), load(1000.0)], &[HullPose::default(); 2]);
+    let cg = fleet_cg(
+        &bodies,
+        &[load(1000.0), load(1000.0)],
+        &[HullPose::default(); 2],
+    );
     assert!((cg.mass - 2000.0).abs() < 1e-9);
     assert!(cg.tcg.abs() < 1e-9, "tcg {}", cg.tcg);
     assert!((cg.lcg - 5.0).abs() < 1e-9 && (cg.vcg - 0.3).abs() < 1e-9);
 
     // Heavier port hull pulls the CG to port (−y): (3000·−1.5 + 1000·1.5)/4000.
-    let cg = fleet_cg(&bodies, &[load(3000.0), load(1000.0)], &[HullPose::default(); 2]);
+    let cg = fleet_cg(
+        &bodies,
+        &[load(3000.0), load(1000.0)],
+        &[HullPose::default(); 2],
+    );
     assert!((cg.tcg - (-0.75)).abs() < 1e-9, "tcg {}", cg.tcg);
 
     // Pose translation: +dx raises lcg, +dy shifts tcg, +dz lowers vcg.
@@ -88,11 +96,19 @@ fn fleet_cg_is_mass_weighted_and_tracks_pose() {
             ..HullPose::default()
         }],
     );
-    assert!((cg.lcg - (5.0 - 0.3 * tau.sin())).abs() < 1e-9, "lcg {}", cg.lcg);
+    assert!(
+        (cg.lcg - (5.0 - 0.3 * tau.sin())).abs() < 1e-9,
+        "lcg {}",
+        cg.lcg
+    );
     assert!((cg.vcg - 0.3 * tau.cos()).abs() < 1e-9, "vcg {}", cg.vcg);
 
     // Massless hulls drop out entirely.
-    let cg = fleet_cg(&bodies, &[load(0.0), load(1000.0)], &[HullPose::default(); 2]);
+    let cg = fleet_cg(
+        &bodies,
+        &[load(0.0), load(1000.0)],
+        &[HullPose::default(); 2],
+    );
     assert!((cg.tcg - 1.5).abs() < 1e-9 && (cg.mass - 1000.0).abs() < 1e-9);
 
     // A point load adds a mass at an offset from the hull centerpoint (midship
@@ -100,9 +116,9 @@ fn fleet_cg_is_mass_weighted_and_tracks_pose() {
     let mut hl = load(1000.0); // structural: 1000 kg at (5, 0, +0.3)
     hl.points.push(PointLoad {
         mass: 1000.0,
-        dx: 1.0,  // → local x = 5 + 1 = 6
-        dy: 0.4,  // → transverse offset +0.4
-        dz: 0.8,  // +down → vcg = −0.8
+        dx: 1.0, // → local x = 5 + 1 = 6
+        dy: 0.4, // → transverse offset +0.4
+        dz: 0.8, // +down → vcg = −0.8
     });
     let cg = fleet_cg(&[&center], &[hl.clone()], &[HullPose::default()]);
     assert!((cg.mass - 2000.0).abs() < 1e-9, "mass {}", cg.mass);
@@ -181,8 +197,17 @@ fn heeled_equilibrium_zero_heel_matches_upright() {
     let he = solve_equilibrium_heeled(&bodies, 0.0, &poses, &load, rho, 0.0, 0.3, 0.0, &opts, grid)
         .unwrap();
 
-    assert!((he.volume - mass / rho).abs() < 1e-3 * mass / rho, "V {}", he.volume);
-    assert!((he.sinkage - up.sinkage).abs() < 2e-3, "sinkage {} vs {}", he.sinkage, up.sinkage);
+    assert!(
+        (he.volume - mass / rho).abs() < 1e-3 * mass / rho,
+        "V {}",
+        he.volume
+    );
+    assert!(
+        (he.sinkage - up.sinkage).abs() < 2e-3,
+        "sinkage {} vs {}",
+        he.sinkage,
+        up.sinkage
+    );
     assert!(he.gz.abs() < 1e-6, "GZ(0) = {}", he.gz);
 }
 
@@ -208,7 +233,16 @@ fn heeled_equilibrium_holds_displacement_and_beats_metacentric() {
 
     let gz_at = |deg: f64| {
         let he = solve_equilibrium_heeled(
-            &bodies, 0.0, &poses, &load, rho, (deg as f64).to_radians(), vcg, 0.0, &opts, grid,
+            &bodies,
+            0.0,
+            &poses,
+            &load,
+            rho,
+            (deg as f64).to_radians(),
+            vcg,
+            0.0,
+            &opts,
+            grid,
         )
         .unwrap();
         assert!(
@@ -234,7 +268,10 @@ fn heeled_equilibrium_holds_displacement_and_beats_metacentric() {
     // Beats the metacentric line by a margin that grows with heel.
     let e5 = gz_at(5.0) - metacentric(5.0);
     let e8 = gz_at(8.0) - metacentric(8.0);
-    assert!(e5 > 0.0 && e8 > e5, "form-stability excess should grow: e5={e5} e8={e8}");
+    assert!(
+        e5 > 0.0 && e8 > e5,
+        "form-stability excess should grow: e5={e5} e8={e8}"
+    );
 }
 
 /// The lcg path exercises the 2-D finite-difference Jacobian (sinkage + pitch).
@@ -259,7 +296,10 @@ fn heeled_equilibrium_solves_trim() {
             &bodies,
             0.0,
             &poses,
-            &LoadCase { mass, lcg: Some(lcg) },
+            &LoadCase {
+                mass,
+                lcg: Some(lcg),
+            },
             rho,
             0.0,
             0.1,
@@ -272,13 +312,29 @@ fn heeled_equilibrium_solves_trim() {
 
     // Midship LCG → ~zero trim.
     let mid = solve(l / 2.0);
-    assert!(mid.volume_residual < 5e-3, "volume residual {}", mid.volume_residual);
+    assert!(
+        mid.volume_residual < 5e-3,
+        "volume residual {}",
+        mid.volume_residual
+    );
     assert!(mid.lcb_residual < 1e-2, "lcb residual {}", mid.lcb_residual);
-    assert!(mid.trim.abs() < 2e-3, "midship LCG should give ~zero trim, got {}", mid.trim);
+    assert!(
+        mid.trim.abs() < 2e-3,
+        "midship LCG should give ~zero trim, got {}",
+        mid.trim
+    );
 
     // LCG shifted forward → a definite trim that lands the LCB on the LCG.
     let fwd = solve(l / 2.0 + 0.5);
-    assert!(fwd.volume_residual < 5e-3, "volume residual {}", fwd.volume_residual);
+    assert!(
+        fwd.volume_residual < 5e-3,
+        "volume residual {}",
+        fwd.volume_residual
+    );
     assert!(fwd.lcb_residual < 1e-2, "lcb residual {}", fwd.lcb_residual);
-    assert!(fwd.trim.abs() > 1e-3, "offset LCG should trim the hull, got {}", fwd.trim);
+    assert!(
+        fwd.trim.abs() > 1e-3,
+        "offset LCG should trim the hull, got {}",
+        fwd.trim
+    );
 }

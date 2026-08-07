@@ -91,7 +91,10 @@ impl Body {
         if !centerplane.is_finite() {
             return Err(Error::InvalidGeometry("centerplane must be finite".into()));
         }
-        let scale = surface.control().iter().fold(0.0f64, |m, &v| m.max(v.abs()));
+        let scale = surface
+            .control()
+            .iter()
+            .fold(0.0f64, |m, &v| m.max(v.abs()));
         if surface
             .control()
             .iter()
@@ -214,7 +217,9 @@ impl Body {
                 wx_lo + (wx_hi - wx_lo) * (1.0 - c) / 2.0
             })
             .collect();
-        let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
+        let waterlines: Vec<f64> = (0..nw)
+            .map(|j| draft * j as f64 / (nw - 1) as f64)
+            .collect();
 
         // The water → body map is affine, so its Jacobian is constant and
         // exactly recovered from three evaluations; the sampled slopes are
@@ -432,12 +437,10 @@ mod tests {
                     continue;
                 }
                 let (h0, h1) = (st[i] - st[i - 1], st[i + 1] - st[i]);
-                let dfdx = (h0 * h0 * f[s + mz] + (h1 * h1 - h0 * h0) * f[s]
-                    - h1 * h1 * f[s - mz])
+                let dfdx = (h0 * h0 * f[s + mz] + (h1 * h1 - h0 * h0) * f[s] - h1 * h1 * f[s - mz])
                     / (h0 * h1 * (h0 + h1));
                 let (k0, k1) = (wl[j] - wl[j - 1], wl[j + 1] - wl[j]);
-                let dfdz = (k0 * k0 * f[s + 1] + (k1 * k1 - k0 * k0) * f[s]
-                    - k1 * k1 * f[s - 1])
+                let dfdz = (k0 * k0 * f[s + 1] + (k1 * k1 - k0 * k0) * f[s] - k1 * k1 * f[s - 1])
                     / (k0 * k1 * (k0 + k1));
                 assert!(
                     (fx[s] - dfdx).abs() < 1e-4,

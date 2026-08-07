@@ -335,8 +335,7 @@ pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize)
                 p - r
             };
             for j in j1..=j2 {
-                a[s2][j] =
-                    (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][(rk + j as isize) as usize];
+                a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][(rk + j as isize) as usize];
                 d += a[s2][j] * ndu[(rk + j as isize) as usize][pk];
             }
             if r <= pk {
@@ -425,8 +424,7 @@ mod tests {
         let mut control = vec![0.0; nx * nz];
         for i in 0..nx {
             for j in 0..nz {
-                control[i * nz + j] =
-                    (1.0 + (i as f64 * 0.9).sin().abs()) * (1.5 - 0.3 * j as f64);
+                control[i * nz + j] = (1.0 + (i as f64 * 0.9).sin().abs()) * (1.5 - 0.3 * j as f64);
             }
         }
         let s = BSplineSurface::new(3, 2, knots_x, knots_z, control).unwrap();

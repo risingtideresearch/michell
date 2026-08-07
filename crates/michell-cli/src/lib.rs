@@ -665,7 +665,11 @@ pub fn info(args: &[String]) -> Result<String, String> {
         let _ = writeln!(out, "length          {:>10.4} m", m.hull.length());
         let _ = writeln!(out, "draft           {:>10.4} m", m.hull.draft());
         let _ = writeln!(out, "wetted surface  {:>10.4} m^2", m.hull.wetted_surface());
-        let _ = writeln!(out, "displaced vol   {:>10.4} m^3", m.hull.displaced_volume());
+        let _ = writeln!(
+            out,
+            "displaced vol   {:>10.4} m^3",
+            m.hull.displaced_volume()
+        );
         let s = m.hull.surface();
         let _ = writeln!(
             out,
@@ -1713,13 +1717,10 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
 fn cmd_render(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
-        return Err(
-            "usage: michell render <hull>... --speed U [-o render.png] [options]".into(),
-        );
+        return Err("usage: michell render <hull>... --speed U [-o render.png] [options]".into());
     }
     let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> =
-        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
     let l_ref = members
         .iter()
         .map(|(h, _)| h.length())
@@ -1765,8 +1766,7 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
         return Err("--size: image must be at least 16x16 pixels".into());
     }
 
-    let mut spec =
-        michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, gx, gy)
         .map_err(|e| format!("{e}"))?;
@@ -1824,7 +1824,11 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
                     .parse::<f64>()
                     .map_err(|_| format!("--camera: cannot parse number {v:?}"))?;
             }
-            let dist = if parts.len() == 3 { Some(nums[2]) } else { None };
+            let dist = if parts.len() == 3 {
+                Some(nums[2])
+            } else {
+                None
+            };
             (nums[0], nums[1], dist)
         }
         None => (35.0, 18.0, None),

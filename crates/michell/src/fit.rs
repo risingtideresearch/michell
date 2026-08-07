@@ -85,11 +85,7 @@ pub fn fit_offsets(
     half_beams: &[f64],
     opts: &FitOptions,
 ) -> Result<(Hull, FitReport)> {
-    let grid = SampleGrid::new(
-        stations.to_vec(),
-        waterlines.to_vec(),
-        half_beams.to_vec(),
-    )?;
+    let grid = SampleGrid::new(stations.to_vec(), waterlines.to_vec(), half_beams.to_vec())?;
     fit_grid(&grid, opts)
 }
 
@@ -372,8 +368,7 @@ fn approx_knots(t: &[f64], degree: usize, n_ctrl: usize) -> Result<Vec<f64>> {
     let mut knots = vec![t[0]; degree + 1];
     let mut prev_idx = 0usize;
     for k in 1..=n_interior {
-        let mut idx =
-            (k as f64 * (m - 1) as f64 / (n_ctrl - degree) as f64).round() as usize;
+        let mut idx = (k as f64 * (m - 1) as f64 / (n_ctrl - degree) as f64).round() as usize;
         if idx <= prev_idx {
             idx = prev_idx + 1;
         }
@@ -483,7 +478,9 @@ mod tests {
         let reference = crate::hulls::wigley(l, b, t).unwrap();
         let cond = crate::Conditions::freshwater(3.0);
         let rw_fit = crate::wave_resistance(&hull, &cond).unwrap().resistance;
-        let rw_ref = crate::wave_resistance(&reference, &cond).unwrap().resistance;
+        let rw_ref = crate::wave_resistance(&reference, &cond)
+            .unwrap()
+            .resistance;
         assert!(
             (rw_fit - rw_ref).abs() < 1e-6 * rw_ref,
             "Rw {rw_fit} vs {rw_ref}"
