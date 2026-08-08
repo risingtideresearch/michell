@@ -161,8 +161,11 @@ output.</p>
 benchmark shape — 10&nbsp;m long, 1&nbsp;m beam, 0.625&nbsp;m draft. The solver stores
 it as a smooth surface controlled by nine numbers arranged in a 3×3 grid: three
 positions along the length (bow, midship, stern) × three depths (waterline, mid-depth,
-keel). Each number is a <em>half-breadth</em> — how far the hull surface sits out from
-the centerline at that region, in meters.</p>
+keel). Each number is a <em>control ordinate</em> in meters — a knob that pulls the
+smooth surface outward from the centerline near its region. The surface does not pass
+through the control values themselves: the classic Wigley's midship-waterline control
+is 1.0&nbsp;m, but the surface's actual half-breadth there is 0.5&nbsp;m, because the
+B-spline blends neighboring controls.</p>
 <p>Think of the nine numbers as handles. Drag one below and watch the hull's width
 change nearby — and only nearby.</p>
 
@@ -201,10 +204,13 @@ resistance</em>, and for slender fast ships it is a large share of the total.</p
     <label>Speed (Froude number) <input type="range" id="wake-fn" min="0.20" max="0.50" step="0.01" value="0.35"></label>
     <span class="readout" id="wake-readout"></span>
   </div>
-  <figcaption>The wave pattern our actual Wigley hull makes, reconstructed from the
-  same wave amplitudes the solver computes (brightness is qualitative). The pattern
-  stays inside a wedge of about 19.5° — Kelvin's famous result — no matter the speed.
-  Slide the speed and watch the wavelength stretch.</figcaption>
+  <figcaption>The wave pattern the Wigley hull makes, computed with the solver's
+  free-wave formula — amplitude −(2ν/π)&nbsp;sec³θ&nbsp;·&nbsp;conj&nbsp;F(secθ) on
+  rate-adapted Gauss–Legendre panels, tapered at this display grid's resolution
+  limit (color scale qualitative). The free-wave sum omits the local near-field
+  disturbance, so nothing is drawn ahead of the bow, where that term dominates. The
+  pattern stays inside a wedge of about 19.5° — Kelvin's famous result — no matter
+  the speed. Slide the speed and watch the wavelength stretch.</figcaption>
 </figure>
 
 <p>So question 1 becomes: <em>given the hull shape, how big are the waves it
@@ -227,10 +233,12 @@ where it narrows. The hull acts like a sheet of little sources (bow half) and si
 
 <figure class="fig" id="fig-sources">
   <canvas id="cv-sources" style="height:280px"></canvas>
-  <figcaption>The hull's side profile, colored by ∂f/∂x. Red: the hull is widening —
-  water is pushed outward (a source). Blue: narrowing — water flows back in (a sink).
-  For the Wigley hull the strength fades with depth and vanishes at midship, where the
-  width momentarily stops changing.</figcaption>
+  <figcaption>The hull's side profile, colored by source strength. The ship advances
+  toward +x (bow at right), so along the flow the bow half is where the hull widens:
+  the source strength plotted is −∂f/∂x. Red: widening along the flow — water pushed
+  outward (a source). Blue: narrowing — water flows back in (a sink). For the Wigley
+  hull the strength fades with depth and vanishes at midship, where the width
+  momentarily stops changing.</figcaption>
 </figure>
 
 <p>Two symbols, both of which you have already met as pictures:</p>
@@ -243,7 +251,9 @@ where it narrows. The hull acts like a sheet of little sources (bow half) and si
 <p>Keep that last sentence; it is load-bearing later. One consequence you can check
 right now: making the whole hull uniformly wider (adding the same amount to all nine
 handles) does not change ∂f/∂x anywhere — and indeed the solver returns exactly the
-same wave resistance for it. Only <em>change</em> in width makes waves.</p>
+same wave resistance for it. Only <em>change</em> in width makes waves. (This move is
+available because the nine-handle design space doesn't force the ends closed; a
+closed hull couldn't widen uniformly without opening its bow and stern.)</p>
 
 <!-- ================================================================ 4 -->
 <h2 id="s4"><span class="secnum">04</span>One wave direction at a time</h2>
@@ -361,9 +371,10 @@ each of the nine handles (§8–§11).</div>
 <h2 id="s7"><span class="secnum">07</span>Computing R: exact inside, careful outside</h2>
 <p>The surface f is built from polynomial pieces (that's what a B-spline is). And the
 inner integral — the arrow-summing of §5 — is a polynomial times exponentials, which
-has a <em>closed form</em>. So the solver evaluates F(λ) exactly, by formula, with no
-numerical error at all. The only numerical work in the whole solver is the outer
-sum over directions.</p>
+has a <em>closed form</em>. So the solver evaluates F(λ) by formula: no quadrature
+error, no geometry discretization — the only error left in the inner integral is
+ordinary floating-point roundoff in evaluating that formula. The only numerical
+<em>approximation</em> in the whole solver is the outer sum over directions.</p>
 <p>That outer integral gets awkward near λ&nbsp;=&nbsp;1 (the √(λ²−1) below the line
 blows up), so the code substitutes λ&nbsp;=&nbsp;sec&nbsp;θ — the same θ from §4 —
 which soaks up the singularity and leaves a smooth integrand on θ from 0 to 90°:</p>
@@ -555,10 +566,13 @@ through.</p>
 <p>— The transpose step is not a new approximation. The forward map from handles to
 span coefficients is linear; running a linear map backward is exact by
 construction.</p>
-<p>— The cost is one solve plus one cheap pass, <em>independent of the number of
-handles</em>. 22,896&nbsp;+&nbsp;15,392&nbsp;=&nbsp;38,288 evaluations against
-412,128 for finite differences — 10.8× fewer here, and the ratio grows with every
-handle a finer design surface adds.</p>
+<p>— The number of <em>solves</em> no longer grows with the handle count: one solve
+plus one reverse sweep, versus 2N solves for finite differences. (The sweep and the
+control-map transpose still loop over the spline's spans and basis functions, so
+their cost grows mildly with a finer control net — the PR is explicit about this.)
+22,896&nbsp;+&nbsp;15,392&nbsp;=&nbsp;38,288 evaluations against 412,128 for finite
+differences — 10.8× fewer here, and the ratio grows with every handle a finer
+design surface adds.</p>
 
 <div class="checkpoint"><b>Where we are.</b> Resistance is a weighted sum of |F(λ)|²;
 F is linear in the handles; the square's derivative is 2Re(F̄·B); so one backward
@@ -585,12 +599,17 @@ with the same formula as the Rust code, live, as you drag.</p>
   <figcaption>Green arrows: the downhill direction −∂R/∂P for each handle. At the
   start, midship handles push inward (+131.1, +91.8, +66.2 N/m — widening midship
   costs drag) while bow and stern handles pull outward (−65.5, −45.9, −33.1 N/m) —
-  at this speed the optimizer trades midship beam for fuller ends. Descending
-  follows the arrows and R falls (about 111 → 27 N over the 22 steps); displacement
-  volume stays fixed automatically, because the nine derivatives sum to exactly zero
-  (§13's null-direction invariant — uniform widening makes no waves, so the gradient
-  has no uniform component). Push much further and a handle bottoms out at zero
-  half-breadth — from there, constraints take over from calculus (§15).</figcaption>
+  at this speed the optimizer trades midship beam for fuller ends. One honesty note:
+  the start shape is the PR's derivative-test fixture — the classic Wigley controls
+  plus 0.2&nbsp;m on every handle — so bow, stern, and keel already carry nonzero
+  breadth, and unconstrained descent widens the ends further. Treat this as the
+  gradient at work in an open design space, not a finished closed-hull optimization.
+  Descending follows the arrows and R falls (about 111 → 27 N over the 22 steps);
+  displacement volume stays fixed automatically, because the nine derivatives sum to
+  exactly zero (§13's null-direction invariant: uniform widening changes no slopes,
+  so in this parameterization it makes no waves — on a real closed hull the same move
+  would also open the bow and stern). Push much further and a handle bottoms out at
+  zero — from there, constraints take over from calculus (§15).</figcaption>
 </figure>
 
 <p>The starting values above are the solver's actual output, to four figures:</p>
@@ -625,7 +644,9 @@ signature, which is itself diagnostic:</p>
   <canvas id="cv-vcurve" style="height:340px"></canvas>
   <figcaption>Measured disagreement between the exact gradient and finite differences,
   versus step size h (log–log; PR data, two different spline surfaces). The V shape is
-  the fingerprint of a correct analytic gradient: to the right, finite differences
+  the fingerprint of an analytic gradient consistent with the implemented resistance —
+  it validates the derivative against the solver's own discrete function, not the
+  physical model: to the right, finite differences
   suffer truncation error (∝h²); to the left, subtractive cancellation. In the middle
   they agree to ~10⁻¹⁰ — the finite-difference method's own noise floor, not the
   analytic gradient's.</figcaption>
@@ -675,9 +696,10 @@ precision shown — see the console.)</p>
 </figure>
 
 <p>The deeper point is not 16× — it is the scaling. Finite differences cost 2N solves
-for N handles; the reverse pass costs one solve plus one sweep regardless of N. At
-nine handles the ratio is 14–16×; a fifty-handle design surface would push it toward
-two orders of magnitude.</p>
+for N handles; the reverse pass costs one solve plus one sweep whose own cost grows
+only mildly with N (it walks the spline's spans and basis functions, not the handles
+one at a time). At nine handles the ratio is 14–16×; a fifty-handle design surface
+would push it toward two orders of magnitude.</p>
 
 <!-- ================================================================ 15 -->
 <h2 id="s15"><span class="secnum">15</span>What “exact” does not mean</h2>
@@ -696,8 +718,9 @@ refinement diagnostic, not a delivered-accuracy guarantee.</p>
 and fluid stay fixed.</p>
 <p>— Symmetric hulls only, for now: an asymmetric hull has two control nets, and the
 API rejects it rather than return an ambiguous half-answer.</p>
-<p>— A proposed handle update must still satisfy geometry (half-breadths can't go
-negative). The gradient tells you the direction; constraints stay your job.</p>
+<p>— A proposed handle update must still satisfy geometry (control values can't go
+negative, and a real hull needs closed ends — neither is enforced by the gradient).
+The gradient tells you the direction; constraints stay your job.</p>
 
 <footer>
 <p><strong>Read the real thing:</strong> the
@@ -707,12 +730,13 @@ carries the full validation report. The reverse pass lives in
 <code>accumulate_coeff_adjoint</code>), the control-map transpose in
 <code>crates/michell/src/hull.rs</code> (<code>fx_control_adjoint</code>), and the
 tests in <code>crates/michell/tests/gradient.rs</code>.</p>
-<p>Every interactive figure on this page reimplements the solver's actual method —
+<p>Every interactive figure on this page reimplements the solver's method —
 closed-form span moments inside, rate-adapted 16-point Gauss–Legendre panels outside —
 in JavaScript, and cross-checks itself at load time against the Rust solver's output
-(R&nbsp;=&nbsp;111.42911&nbsp;N and the nine gradients at Fn&nbsp;0.35). Figures are
-qualitative only where labeled (the wake's brightness). No libraries, no network;
-this file is self-contained.</p>
+(R&nbsp;=&nbsp;111.42911&nbsp;N and the nine gradients at Fn&nbsp;0.35). The wake
+figure runs the solver's free-wave formula at the display grid's resolution, without
+its amplitude-based early truncation; its brightness is qualitative. No libraries,
+no network; this file is self-contained.</p>
 </footer>
 </main>
 
@@ -1207,43 +1231,78 @@ function buildHullFig(cvId, P0, optsF={}){
   const slider = document.getElementById('wake-fn');
   const out = document.getElementById('wake-readout');
   let field = null, fieldKey = '';
-  const NTH = 72;
+  // Mirrors the solver's elevation_grid(): amplitude A(th) = -(2nu/pi) sec^3(th)
+  // conj(F(sec th)), summed as Re[A(e^{i(kx x + ky y)} + e^{i(kx x - ky y)})] over
+  // rate-adapted 16-point Gauss-Legendre panels in theta, with the solver's
+  // spectral cap (sec = 15) and its cosine taper at the display grid's resolution
+  // limit. Omitted vs the solver: the amplitude quiet-window early exit (we just
+  // integrate to the cap) and multi-hull phase offsets (one hull at the origin).
   function computeField(fn, w, h){
     const nu = nuOf(fn);
-    // free-wave components: theta grid, amplitude F(sec th) with Hann taper
-    const comps = [];
-    for(let i=0;i<NTH;i++){
-      const th = (i+.5)/NTH * (85*Math.PI/180);
-      const lam = 1/Math.cos(th);
-      const {F} = amp(P_CLASSIC, lam, nu, false);
-      const s3 = lam*lam*lam;
-      const hann = .5*(1-Math.cos(Math.PI*(1 - i/NTH)*2*.5+Math.PI*.0)) ; // taper high theta
-      const taper = 1 - i/NTH;
-      comps.push({th, k: nu*lam*lam, re: F[0]*s3*taper, im: F[1]*s3*taper});
-    }
-    // world window: x in [-2.2L, 0.6L], y in +-0.95L ; ship bow at x=0.35L
+    // world window: x in [-2.2L, 0.7L], y in +-0.95L ; hull center at x=0
     const X0=-2.2*HULL.L, X1=0.7*HULL.L, Y=0.95*HULL.L;
     const ow = 130, oh = Math.round(ow*h/w);
+    const hx=(X1-X0)/(ow-1), hy=2*Y/(oh-1);
+    // largest theta the pixel grid can render (kx*hx and ky*hy under pi)
+    const resolvable = th => { const s=1/Math.cos(th);
+      return nu*s*hx < Math.PI && nu*s*Math.tan(th)*hy < Math.PI; };
+    const thHi = Math.PI/2 - 1e-9;
+    let thPix = thHi;
+    if(!resolvable(thHi)){
+      let lo=0, hi=thHi;
+      for(let i=0;i<60;i++){ const m=.5*(lo+hi); if(resolvable(m)) lo=m; else hi=m; }
+      thPix = lo;
+    }
+    const MAX_SEC = 15;
+    const thEnd = Math.min(thPix, Math.acos(1/MAX_SEC));
+    const secEnd = 1/Math.cos(thEnd);
+    const s0 = Math.max(1, .7*secEnd*secEnd);
+    const taper = sec => { const s=sec*sec;
+      return s<=s0 ? 1 : .5*(1+Math.cos(Math.PI*(s-s0)/(secEnd*secEnd-s0))); };
+    // panel sizing from the phase-rate bound over the window (as in the solver)
+    const xTot = HULL.a + Math.max(Math.abs(X0), Math.abs(X1));
+    const rate = th => { const s=1/Math.cos(th), t=Math.tan(th);
+      return nu*s*t*(xTot + 2*HULL.T*s) + nu*Y*s*(s*s+t*t) + 2; };
+    const cap = Math.min(2*Math.PI/Math.max(Math.sqrt(2*nu*xTot),1), 0.12);
+    const comps = [];
+    let th = 0;
+    while(th < thEnd - 1e-12){
+      const dt = Math.max(Math.min(.6*2*Math.PI/rate(th), .6*cap, thEnd-th), 1e-15);
+      const half=dt/2, mid=th+half;
+      for(let i=0;i<16;i++){
+        const t2 = mid + half*GX[i];
+        const sec = 1/Math.cos(t2);
+        const {F} = amp(P_CLASSIC, sec, nu, false);
+        const wgt = GW[i]*half*taper(sec)*(2*nu/Math.PI)*sec*sec*sec;
+        // A = -(2nu/pi) sec^3 conj(F): re = -wgt*F_re, im = +wgt*F_im
+        comps.push({re:-wgt*F[0], im:wgt*F[1], kx:nu*sec, ky:nu*sec*Math.tan(t2)});
+      }
+      th += dt;
+    }
+    // A(-th) = A(+th) for this centered symmetric hull, so
+    // e^{i(kx x + ky y)} + e^{i(kx x - ky y)} = 2 cos(ky y) e^{i kx x}:
+    // accumulate separably per component.
     const vals = new Float32Array(ow*oh);
-    let sumsq = 0;
+    const cx = new Float32Array(ow), cy = new Float32Array(oh);
+    for(const c of comps){
+      for(let ii=0;ii<ow;ii++){ const x=X0+(X1-X0)*ii/(ow-1);
+        cx[ii] = c.re*Math.cos(c.kx*x) - c.im*Math.sin(c.kx*x); }
+      for(let jj=0;jj<oh;jj++){ const y=(jj/(oh-1)-.5)*2*Y;
+        cy[jj] = 2*Math.cos(c.ky*y); }
+      for(let jj=0;jj<oh;jj++){ const f=cy[jj];
+        for(let ii=0;ii<ow;ii++) vals[jj*ow+ii] += f*cx[ii]; }
+    }
+    // The free-wave sum omits the local (non-radiating) disturbance, which is
+    // what cancels it ahead of the ship - so don't draw ahead of the bow.
+    let sumsq = 0, n = 0;
     for(let jj=0;jj<oh;jj++){
-      const y = (jj/(oh-1)-.5)*2*Y;
       for(let ii=0;ii<ow;ii++){
-        const x = X0 + (X1-X0)*ii/(ow-1);
-        let z=0;
-        for(const c of comps){
-          const cx = Math.cos(c.th), sy = Math.sin(c.th);
-          const p1 = c.k*(x*cx + y*sy), p2 = c.k*(x*cx - y*sy);
-          z += c.re*(Math.cos(p1)+Math.cos(p2)) - c.im*(Math.sin(p1)+Math.sin(p2));
-        }
-        // radiation taper ahead of the hull
-        const fade = x > 0 ? Math.exp(-(x*x)/(2.2*2.2)) : 1;
-        z *= fade;
-        vals[jj*ow+ii] = z;
-        sumsq += z*z;
+        const x = X0+(X1-X0)*ii/(ow-1);
+        if(x > HULL.a){ vals[jj*ow+ii] = NaN; continue; }
+        const z = vals[jj*ow+ii]; sumsq += z*z; n++;
       }
     }
-    const vmax = Math.max(3.0*Math.sqrt(sumsq/(ow*oh)), 1e-12);
+    const vmax = Math.max(3.0*Math.sqrt(sumsq/n), 1e-12);
     return {vals, ow, oh, vmax, X0, X1, Y};
   }
   Motion.scene(cv, (t, intro) => {
@@ -1257,6 +1316,7 @@ function buildHullFig(cvId, P0, optsF={}){
       const ii = Math.min(ow-1, Math.floor(px/w*ow));
       const jj = Math.min(oh-1, Math.floor(py/h*oh));
       const v = vals[jj*ow+ii]/vmax;
+      if(!isFinite(v)) return null;
       const s = Math.max(-1, Math.min(1, v));
       const tt = Math.sign(s)*Math.sqrt(Math.abs(s));
       const col = tt>=0 ? mix(Pal.divmid, Pal.blue, tt) : mix(Pal.divmid, Pal.red, -tt);
