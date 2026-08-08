@@ -1,4 +1,4 @@
 FROM caddy:alpine
-COPY Caddyfile /etc/caddy/Caddyfile
-COPY . /site
+COPY explainers/Caddyfile /etc/caddy/Caddyfile
+COPY explainers/ /site
 RUN rm /site/Caddyfile /site/Dockerfile
