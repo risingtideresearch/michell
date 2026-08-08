@@ -1,0 +1,4 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "explainers/Dockerfile"
+watchPatterns = ["explainers/**"]
