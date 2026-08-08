@@ -1,0 +1,1886 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nine handles, one pass — exact hull gradients in michell</title>
+<style>
+/* ---------- theme ------------------------------------------------------- */
+:root {
+  color-scheme: light;
+  --bg:        #f9f9f7;
+  --surface:   #fcfcfb;
+  --ink:       #0b0b0b;
+  --ink-2:     #52514e;
+  --muted:     #898781;
+  --grid:      #e1e0d9;
+  --axis:      #c3c2b7;
+  --border:    rgba(11,11,11,.10);
+  --blue:      #2a78d6;
+  --orange:    #eb6834;
+  --aqua:      #1baf7a;
+  --red:       #e34948;
+  --violet:    #4a3aa7;
+  --good:      #006300;
+  --div-mid:   #f0efec;
+  --chip-bg:   rgba(42,120,214,.09);
+  --glow: 0;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg:        #0d0d0d;
+    --surface:   #1a1a19;
+    --ink:       #ffffff;
+    --ink-2:     #c3c2b7;
+    --muted:     #898781;
+    --grid:      #2c2c2a;
+    --axis:      #383835;
+    --border:    rgba(255,255,255,.10);
+    --blue:      #3987e5;
+    --orange:    #d95926;
+    --aqua:      #199e70;
+    --red:       #e66767;
+    --violet:    #9085e9;
+    --good:      #0ca30c;
+    --div-mid:   #383835;
+    --chip-bg:   rgba(57,135,229,.14);
+    --glow: 1;
+  }
+}
+/* ---------- base -------------------------------------------------------- */
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+main { max-width: 760px; margin: 0 auto; padding: 0 20px 90px; }
+h1 { font-size: 2.1rem; line-height: 1.15; letter-spacing: -.02em; margin: .2em 0 .3em; }
+h2 { font-size: 1.45rem; line-height: 1.25; letter-spacing: -.01em; margin: 2.6em 0 .5em; }
+p  { margin: .9em 0; }
+a  { color: var(--blue); }
+strong { font-weight: 650; }
+.kicker {
+  display: inline-block; margin-top: 48px; padding: 3px 10px; border-radius: 99px;
+  background: var(--chip-bg); color: var(--blue); font-size: .8rem; font-weight: 600;
+}
+.lede { font-size: 1.12rem; color: var(--ink-2); }
+.secnum { color: var(--blue); font-weight: 700; margin-right: .45em; font-size: .95em; }
+code, .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+  padding: .08em .35em;
+}
+/* ---------- figures ----------------------------------------------------- */
+figure.fig {
+  margin: 1.6em -8px; padding: 14px 14px 10px; position: relative;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+}
+figure.fig canvas { display: block; width: 100%; touch-action: none; }
+figcaption { color: var(--ink-2); font-size: .86rem; line-height: 1.5; margin-top: 10px; }
+.controls {
+  display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+  margin-top: 10px; font-size: .85rem; color: var(--ink-2);
+}
+.controls label { display: flex; align-items: center; gap: 8px; }
+.controls input[type=range] { width: 150px; accent-color: var(--blue); }
+.controls button {
+  font: 600 .85rem/1 system-ui, sans-serif; color: var(--ink);
+  background: var(--chip-bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 12px; cursor: pointer;
+}
+.controls button:hover { border-color: var(--blue); }
+.readout { font-family: ui-monospace, Menlo, monospace; font-size: .82rem; color: var(--ink); }
+.readout b { color: var(--blue); font-weight: 700; }
+/* ---------- math -------------------------------------------------------- */
+.eq {
+  margin: 1.2em 0; padding: 14px 18px; overflow-x: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  font-family: Georgia, "Times New Roman", serif; font-size: 1.12rem; text-align: center;
+  white-space: nowrap;
+}
+.eq .v { font-style: italic; }
+.eq .frac { display: inline-block; vertical-align: -0.9em; text-align: center; margin: 0 .12em; }
+.eq .frac > span { display: block; padding: 0 .25em; }
+.eq .frac > span:first-child { border-bottom: 1px solid currentColor; }
+.eq .int { font-size: 1.5em; vertical-align: -.15em; }
+.eq sub, .eq sup { font-size: .68em; }
+.sym {
+  margin: -0.4em 0 1.2em; font-size: .86rem; color: var(--ink-2);
+  display: grid; grid-template-columns: auto 1fr; gap: 3px 14px;
+}
+.sym dt { font-family: Georgia, serif; font-style: italic; color: var(--ink); text-align: right; }
+.sym dd { margin: 0; }
+/* ---------- callouts ---------------------------------------------------- */
+.checkpoint {
+  margin: 2.2em 0; padding: 14px 18px; border-left: 3px solid var(--aqua);
+  background: var(--surface); border-radius: 0 10px 10px 0; font-size: .95rem;
+}
+.checkpoint b:first-child { color: var(--aqua); }
+.note {
+  margin: 1.2em 0; padding: 12px 16px; border-left: 3px solid var(--orange);
+  background: var(--surface); border-radius: 0 10px 10px 0; font-size: .92rem; color: var(--ink-2);
+}
+/* ---------- tables ------------------------------------------------------ */
+.tbl { overflow-x: auto; margin: 1.2em 0; }
+table { border-collapse: collapse; font-size: .88rem; min-width: 420px; }
+th, td { padding: 6px 12px; border-bottom: 1px solid var(--grid); text-align: left; }
+th { color: var(--ink-2); font-weight: 600; }
+td.num, th.num { text-align: right; font-family: ui-monospace, Menlo, monospace; font-size: .84rem; }
+/* ---------- pipeline svg ------------------------------------------------ */
+.pipe { width: 100%; height: auto; }
+.pipe text { font: 600 12.5px system-ui, sans-serif; fill: var(--ink); }
+.pipe .sub { font-weight: 400; font-size: 11px; fill: var(--ink-2); }
+.pipe rect { fill: var(--surface); stroke: var(--border); rx: 8; }
+.pipe .fwd { stroke: var(--blue); }
+.pipe .rev { stroke: var(--orange); }
+#pauseBtn {
+  position: fixed; right: 14px; bottom: 14px; z-index: 5;
+  font: 600 12px system-ui, sans-serif; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 99px;
+  padding: 7px 12px; cursor: pointer; opacity: .85;
+}
+footer { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--grid);
+  font-size: .86rem; color: var(--ink-2); }
+</style>
+
+<main>
+<span class="kicker">michell · PR #29 · exact control gradients</span>
+<h1>Nine handles, one pass</h1>
+<p class="lede">
+The <code>michell</code> solver already told you how much wave drag a hull has.
+<a href="https://github.com/risingtideresearch/michell/pull/29">PR&nbsp;#29</a> makes it
+tell you something better: for <em>every</em> shape control at once, exactly, from a
+single solve — which way to move it to make the drag go down. This page rebuilds the
+whole idea from a picture of a hull, one small step at a time. Every figure below runs
+the same mathematics as the Rust code, live, and is checked against the solver's own
+output.</p>
+
+<!-- ================================================================ 1 -->
+<h2 id="s1"><span class="secnum">01</span>A hull with nine handles</h2>
+<p>Here is the hull this PR ships its tests on: the <em>Wigley hull</em>, a classic
+benchmark shape — 10&nbsp;m long, 1&nbsp;m beam, 0.625&nbsp;m draft. The solver stores
+it as a smooth surface controlled by nine numbers arranged in a 3×3 grid: three
+positions along the length (bow, midship, stern) × three depths (waterline, mid-depth,
+keel). Each number is a <em>half-breadth</em> — how far the hull surface sits out from
+the centerline at that region, in meters.</p>
+<p>Think of the nine numbers as handles. Drag one below and watch the hull's width
+change nearby — and only nearby.</p>
+
+<figure class="fig" id="fig-handles">
+  <canvas id="cv-handles" style="height:480px"></canvas>
+  <div class="controls">
+    <button id="handles-reset">Reset hull</button>
+    <span class="readout" id="handles-readout"></span>
+  </div>
+  <figcaption>The hull seen from above, sliced at three depths. Dots are the nine
+  control handles (drag them vertically). The dashed line is the control polygon; the
+  solid curve is the smooth B-spline surface it generates. A waterline handle shapes
+  the waterline slice, a keel handle the keel slice, and the mid-depth slice blends
+  all three rows — the surface is smooth in depth too.</figcaption>
+</figure>
+
+<p>Two questions matter for design:</p>
+<p><strong>1. How much wave drag does this shape have?</strong> The solver answered
+that before this PR.</p>
+<p><strong>2. Which handles should move, and which way, to reduce it?</strong> That is
+the derivative of drag with respect to each handle — nine numbers. Before this PR,
+getting them meant running the whole solver eighteen times. After it, they come out of
+one solve, exactly. That trick, and why you can trust it, is the story of this
+page.</p>
+
+<!-- ================================================================ 2 -->
+<h2 id="s2"><span class="secnum">02</span>The drag you can see from the shore</h2>
+<p>A moving ship leaves a wake — the familiar V-shaped pattern of waves spreading out
+behind it. Those waves carry energy away, and that energy has to come from somewhere:
+the engine. The drag force the ship feels from making waves is <em>wave
+resistance</em>, and for slender fast ships it is a large share of the total.</p>
+
+<figure class="fig" id="fig-wake">
+  <canvas id="cv-wake" style="height:380px"></canvas>
+  <div class="controls">
+    <label>Speed (Froude number) <input type="range" id="wake-fn" min="0.20" max="0.50" step="0.01" value="0.35"></label>
+    <span class="readout" id="wake-readout"></span>
+  </div>
+  <figcaption>The wave pattern our actual Wigley hull makes, reconstructed from the
+  same wave amplitudes the solver computes (brightness is qualitative). The pattern
+  stays inside a wedge of about 19.5° — Kelvin's famous result — no matter the speed.
+  Slide the speed and watch the wavelength stretch.</figcaption>
+</figure>
+
+<p>So question 1 becomes: <em>given the hull shape, how big are the waves it
+makes?</em> Answer that and you can add up the energy they carry. The rest of the
+first half of this page builds that answer.</p>
+
+<p>A note on the speed axis: naval architects measure speed with the
+<em>Froude number</em> <span class="eq" style="display:inline;padding:2px 8px;margin:0;font-size:1em">Fn = <span class="v">U</span>/√(<span class="v">g L</span>)</span> — speed
+scaled by boat length. Fn&nbsp;0.35 for our 10&nbsp;m hull is about 3.5&nbsp;m/s
+(6.7&nbsp;knots). The same Fn means the same wave pattern at any scale.</p>
+
+<!-- ================================================================ 3 -->
+<h2 id="s3"><span class="secnum">03</span>Michell's move: only the slope matters</h2>
+<p>In 1898 J.&nbsp;H.&nbsp;Michell noticed something that still powers this solver: if
+the hull is <em>thin</em> — long compared to its beam — then what makes waves is not
+the hull's width itself but <strong>how fast the width changes as you move from bow to
+stern</strong>. Water gets pushed apart where the hull widens and closes back in
+where it narrows. The hull acts like a sheet of little sources (bow half) and sinks
+(stern half) whose strength is the longitudinal slope <span class="eq" style="display:inline;padding:2px 8px;margin:0;font-size:1em">∂<span class="v">f</span>/∂<span class="v">x</span></span>.</p>
+
+<figure class="fig" id="fig-sources">
+  <canvas id="cv-sources" style="height:280px"></canvas>
+  <figcaption>The hull's side profile, colored by ∂f/∂x. Red: the hull is widening —
+  water is pushed outward (a source). Blue: narrowing — water flows back in (a sink).
+  For the Wigley hull the strength fades with depth and vanishes at midship, where the
+  width momentarily stops changing.</figcaption>
+</figure>
+
+<p>Two symbols, both of which you have already met as pictures:</p>
+<dl class="sym">
+  <dt>f(x,&nbsp;z)</dt><dd>the half-breadth surface from §1 — hull width at position
+  x along the length, depth z below the waterline. The nine handles define it.</dd>
+  <dt>∂f/∂x</dt><dd>its slope along the length — the source strength above. This is
+  the only way the hull shape enters the whole calculation.</dd>
+</dl>
+<p>Keep that last sentence; it is load-bearing later. One consequence you can check
+right now: making the whole hull uniformly wider (adding the same amount to all nine
+handles) does not change ∂f/∂x anywhere — and indeed the solver returns exactly the
+same wave resistance for it. Only <em>change</em> in width makes waves.</p>
+
+<!-- ================================================================ 4 -->
+<h2 id="s4"><span class="secnum">04</span>One wave direction at a time</h2>
+<p>The wake in §2 looks complicated, but it is a sum of simple ingredients: flat
+plane waves, each traveling at some angle θ off the ship's track. Deep-water physics
+pins down everything about the wave once you pick its angle: a wave riding steadily
+with the ship must match the ship's speed along its own direction, and that fixes its
+wavelength. Straight-behind waves (θ&nbsp;=&nbsp;0) are the longest; waves angled
+outward are shorter.</p>
+
+<figure class="fig" id="fig-direction">
+  <canvas id="cv-direction" style="height:320px"></canvas>
+  <div class="controls">
+    <label>Wave angle θ <input type="range" id="dir-theta" min="0" max="75" step="1" value="0"></label>
+    <span class="readout" id="dir-readout"></span>
+  </div>
+  <figcaption>One plane-wave component of the wake at Fn 0.35. The arrow points along
+  the wave's travel direction; stripes are crests. As θ grows the wavelength shrinks
+  like 1/λ², where λ&nbsp;=&nbsp;sec&nbsp;θ.</figcaption>
+</figure>
+
+<p>The solver labels each direction not by θ but by</p>
+<div class="eq"><span class="v">λ</span> = sec <span class="v">θ</span> = 1/cos <span class="v">θ</span></div>
+<dl class="sym">
+  <dt>λ</dt><dd>the direction label. λ&nbsp;=&nbsp;1 is straight behind; λ&nbsp;→&nbsp;∞
+  approaches sideways. Nothing deep — just a change of variable that makes the
+  formulas cleaner.</dd>
+</dl>
+<p>Plan for the next two sections: for each direction λ, ask <em>how much of that
+wave does the hull make?</em> (§5), then add up the energy over all directions
+(§6).</p>
+
+<!-- ================================================================ 5 -->
+<h2 id="s5"><span class="secnum">05</span>Adding wavelets: the amplitude F(λ)</h2>
+<p>Fix one direction λ. Every little patch of hull surface, with its source strength
+∂f/∂x, emits a wavelet in that direction. The wavelets don't simply add: each arrives
+with a <em>phase</em> — a timing offset set by where along the hull it was born. Bow
+wavelets and stern wavelets can reinforce or cancel.</p>
+<p>The natural bookkeeping for "amplitude plus timing" is an arrow in the plane (a
+complex number): length = strength, angle = phase. To total up the hull's output, walk
+along the hull adding each patch's little arrow tip-to-tail. Watch it happen:</p>
+
+<figure class="fig" id="fig-phasor">
+  <canvas id="cv-phasor" style="height:400px"></canvas>
+  <div class="controls">
+    <label>Direction λ <input type="range" id="ph-lambda" min="1.0" max="2.5" step="0.01" value="1.22"></label>
+    <span class="readout" id="ph-readout"></span>
+  </div>
+  <figcaption>Top: the hull, with the marcher sweeping along its length. Bottom: the
+  running total of wavelet arrows in the complex plane. The final arrow — from start
+  to the spiral's end — is F(λ), the hull's total wave output in direction λ. Depth is
+  already folded in: deeper hull contributes less because wave motion dies out
+  exponentially below the surface (faster for the shorter oblique waves). Try
+  λ&nbsp;≈&nbsp;1.05: the bow and stern arrows nearly cancel — interference you will
+  meet again as "hollows" in the next section.</figcaption>
+</figure>
+
+<p>The end-to-end arrow is the <strong>complex wave amplitude</strong>:</p>
+<div class="eq"><span class="v">F</span>(<span class="v">λ</span>) = <span class="v">I</span>(<span class="v">λ</span>) + i <span class="v">J</span>(<span class="v">λ</span>) = <span class="int">∬</span> <span class="frac"><span>∂<span class="v">f</span></span><span>∂<span class="v">x</span></span></span> e<sup>−νλ²z</sup> e<sup>iνλx</sup> d<span class="v">x</span> d<span class="v">z</span></div>
+<dl class="sym">
+  <dt>F(λ)</dt><dd>the total arrow you just watched being drawn — one complex number
+  per direction.</dd>
+  <dt>I, J</dt><dd>its two components. Two numbers because a wave needs an amplitude
+  <em>and</em> a phase.</dd>
+  <dt>ν</dt><dd>"nu" = g/U², a wavenumber set by speed alone. It is the only place
+  speed enters. (For Fn 0.35: ν ≈ 0.816 m⁻¹.)</dd>
+  <dt>e<sup>−νλ²z</sup></dt><dd>the depth fade — deep hull barely makes surface
+  waves.</dd>
+  <dt>e<sup>iνλx</sup></dt><dd>the phase turn as the marcher moves along the hull —
+  what makes the trace curl.</dd>
+</dl>
+<p>The integral sign is doing exactly what the animation does: summing arrows over
+the hull surface. Nothing more.</p>
+
+<!-- ================================================================ 6 -->
+<h2 id="s6"><span class="secnum">06</span>From amplitude to drag</h2>
+<p>Energy in a wave goes as amplitude <em>squared</em>. So direction λ contributes
+|F(λ)|²&nbsp;=&nbsp;I²&nbsp;+&nbsp;J², and the total wave resistance adds that over
+all directions with a known geometric weight:</p>
+
+<div class="eq"><span class="v">R</span> = <span class="v">C</span> <span class="int">∫</span><sub>1</sub><sup>∞</sup> |<span class="v">F</span>(<span class="v">λ</span>)|² <span class="frac"><span><span class="v">λ</span>²</span><span>√(<span class="v">λ</span>²−1)</span></span> d<span class="v">λ</span>,&emsp;<span class="v">C</span> = <span class="frac"><span>4<span class="v">ρg</span>²</span><span>π<span class="v">U</span>²</span></span></div>
+<dl class="sym">
+  <dt>R</dt><dd>wave resistance, in newtons. The answer to question 1.</dd>
+  <dt>|F(λ)|²</dt><dd>the squared length of §5's arrow — energy per direction.</dd>
+  <dt>λ²/√(λ²−1)</dt><dd>a fixed geometric weight over the wave fan; not
+  shape-dependent.</dd>
+  <dt>C</dt><dd>physics prefactor: water density ρ, gravity g, speed U. Constant for
+  a given run.</dd>
+</dl>
+<p>This is Michell's 1898 integral, exactly as the solver's documentation states it.
+Here it is for our hull — the energy spectrum across the fan, and the resulting drag
+curve over speed:</p>
+
+<figure class="fig" id="fig-spectrum">
+  <canvas id="cv-spectrum" style="height:340px"></canvas>
+  <div class="controls">
+    <label>Froude number <input type="range" id="sp-fn" min="0.15" max="0.55" step="0.005" value="0.35"></label>
+    <span class="readout" id="sp-readout"></span>
+  </div>
+  <figcaption>Left: the integrand — which wave directions carry the energy — at the
+  chosen speed. Right: the resulting resistance curve R(Fn), computed live by this
+  page with the same formula. The wiggles are real physics: bow and stern wave systems
+  interfere, so some speeds are unlucky (humps) and some lucky (hollows). At Fn 0.35
+  the Wigley sits in a hollow: R&nbsp;≈&nbsp;111.4&nbsp;N, <em>less</em> than at the
+  slower Fn 0.30 (≈140.5 N). Both values match the Rust solver's output.</figcaption>
+</figure>
+
+<div class="checkpoint"><b>Where we are.</b> Hull shape → source strength ∂f/∂x →
+one complex arrow F(λ) per wave direction → energy |F|² → weighted sum over
+directions = drag R. That is the entire forward calculation. Still missing: how the
+code evaluates it fast (§7), and the real prize — the derivative of R with respect to
+each of the nine handles (§8–§11).</div>
+
+<!-- ================================================================ 7 -->
+<h2 id="s7"><span class="secnum">07</span>Computing R: exact inside, careful outside</h2>
+<p>The surface f is built from polynomial pieces (that's what a B-spline is). And the
+inner integral — the arrow-summing of §5 — is a polynomial times exponentials, which
+has a <em>closed form</em>. So the solver evaluates F(λ) exactly, by formula, with no
+numerical error at all. The only numerical work in the whole solver is the outer
+sum over directions.</p>
+<p>That outer integral gets awkward near λ&nbsp;=&nbsp;1 (the √(λ²−1) below the line
+blows up), so the code substitutes λ&nbsp;=&nbsp;sec&nbsp;θ — the same θ from §4 —
+which soaks up the singularity and leaves a smooth integrand on θ from 0 to 90°:</p>
+<div class="eq"><span class="v">R</span> = <span class="v">C</span> <span class="int">∫</span><sub>0</sub><sup>π/2</sup> |<span class="v">F</span>(sec <span class="v">θ</span>)|² sec³<span class="v">θ</span> d<span class="v">θ</span></div>
+<p>The integrand oscillates faster and faster as θ grows (short waves rack up phase
+quickly), so the code slices θ into panels sized to the local oscillation rate — wide
+panels where the integrand is lazy, narrow where it wiggles — and integrates each
+panel with a fixed 16-point Gauss–Legendre rule. Then it halves all the panels and
+does it again, until two passes agree to tolerance:</p>
+
+<figure class="fig" id="fig-quadrature">
+  <canvas id="cv-quadrature" style="height:320px"></canvas>
+  <div class="controls">
+    <label>Refinement pass <input type="range" id="qd-pass" min="0" max="3" step="1" value="0"></label>
+    <span class="readout" id="qd-readout"></span>
+  </div>
+  <figcaption>The outer integrand at Fn 0.35 with the actual adaptive panels (tick
+  marks). Panels narrow toward the right where oscillation speeds up, and the
+  integration stops once past-λ=2 panels stop contributing. Each pass halves every
+  panel; the difference between passes is the error estimate.</figcaption>
+</figure>
+
+<p><strong>The first change in this PR lives right here</strong>, and it is
+deliberately boring. Each panel needs sin&nbsp;θ, cos&nbsp;θ, sec&nbsp;θ, tan&nbsp;θ;
+the old code computed them separately, and regenerated the 16 Gauss–Legendre nodes and
+weights on every refinement pass. The new code computes sine and cosine together,
+derives the rest (tan&nbsp;θ&nbsp;=&nbsp;sin&nbsp;θ&nbsp;·&nbsp;sec&nbsp;θ), and
+creates the 16-point rule once per solve. Algebraically identical — but not bitwise:
+a last-ulp difference in tan&nbsp;θ can shift panel edges slightly. Measured effect in
+the low-Froude benchmark: 235,584&nbsp;→&nbsp;235,808 inner evaluations, resistance
+checksums agreeing to all 12 printed digits. Same mathematics, same answer, a bit
+less arithmetic (the 21-speed sweep ran 7–11% faster).</p>
+
+<!-- ================================================================ 8 -->
+<h2 id="s8"><span class="secnum">08</span>Now do it eighteen times</h2>
+<p>On to question 2. The classical way to get the derivative of R with respect to
+handle P<sub>k</sub> is <em>centered finite differences</em>: nudge the handle out by
+a small h, solve; nudge it in, solve; subtract:</p>
+<div class="eq"><span class="frac"><span>∂<span class="v">R</span></span><span>∂<span class="v">P</span><sub>k</sub></span></span> ≈ <span class="frac"><span><span class="v">R</span>(<span class="v">P</span><sub>k</sub>+<span class="v">h</span>) − <span class="v">R</span>(<span class="v">P</span><sub>k</sub>−<span class="v">h</span>)</span><span>2<span class="v">h</span></span></span></div>
+<p>Two full solves per handle. Nine handles: eighteen solves for one gradient. A real
+design surface has far more handles than nine, and an optimizer wants a fresh gradient
+at every step. Watch the cost pile up — these are the real evaluation counts from the
+solver at Fn 0.35:</p>
+
+<figure class="fig" id="fig-fd">
+  <canvas id="cv-fd" style="height:260px"></canvas>
+  <div class="controls">
+    <button id="fd-replay">Replay</button>
+    <span class="readout" id="fd-readout"></span>
+  </div>
+  <figcaption>Inner-integral evaluations to get one gradient of the nine-control
+  Wigley. Finite differences: 18 solves × 22,896 evaluations. This PR: one solve plus
+  one reverse pass. The finite-difference bill also grows with every handle you add;
+  the one-pass bill does not.</figcaption>
+</figure>
+
+<p>Finite differences have a second problem besides cost: you must pick h. Too large
+and the answer is polluted by curvature; too small and you subtract two nearly equal
+numbers and the digits cancel. We will see that dilemma measured, in §13 — where it
+becomes a virtue, as an independent check on the exact gradient.</p>
+
+<!-- ================================================================ 9 -->
+<h2 id="s9"><span class="secnum">09</span>The load-bearing fact: F is linear in the handles</h2>
+<p>Look back at the chain: handles → f → ∂f/∂x → F(λ). Every arrow in that chain is
+plain scaling-and-adding. The surface f is a weighted sum of the handles (that is what
+"B-spline" means). Taking ∂/∂x keeps it a weighted sum. Integrating wavelets keeps it
+a weighted sum. So for each direction λ,</p>
+<div class="eq"><span class="v">F</span>(<span class="v">λ</span>) = <span style="font-size:1.3em">Σ</span><sub>k</sub> <span class="v">P</span><sub>k</sub> <span class="v">B</span><sub>k</sub>(<span class="v">λ</span>)</div>
+<dl class="sym">
+  <dt>P<sub>k</sub></dt><dd>handle k's value — one of the nine numbers.</dd>
+  <dt>B<sub>k</sub>(λ)</dt><dd>a fixed basis arrow: the wave amplitude the hull would
+  have if handle k were 1 and all others 0. Depends on geometry and speed, not on the
+  handle values.</dd>
+</dl>
+<p>So the hull's total arrow is just nine fixed arrows, each scaled by its handle,
+laid tip-to-tail. Drag the slider: one arrow stretches, the rest hold still, and F
+slides along a straight line.</p>
+
+<figure class="fig" id="fig-linear">
+  <canvas id="cv-linear" style="height:380px"></canvas>
+  <div class="controls">
+    <label>Handle <select id="ln-ctrl"></select></label>
+    <label>Value <input type="range" id="ln-val" min="0" max="1.6" step="0.01" value="1.2"></label>
+    <span class="readout" id="ln-readout"></span>
+  </div>
+  <figcaption>The nine basis arrows P<sub>k</sub>B<sub>k</sub> at λ = 1.22, Fn 0.35,
+  summing tip-to-tail to F (bold). Scaling one handle slides F along the dotted line —
+  linearly. This is the fact everything below stands on.</figcaption>
+</figure>
+
+<p>Linear things have easy derivatives: ∂F/∂P<sub>k</sub> is simply the fixed arrow
+B<sub>k</sub>(λ). No approximation, no step size h. If the whole pipeline were linear
+we would be done — but there is exactly one nonlinear step left.</p>
+
+<!-- ================================================================ 10 -->
+<h2 id="s10"><span class="secnum">10</span>The only nonlinear step is the square</h2>
+<p>Energy is |F|², and squaring is not linear. But its derivative is the one you
+learned first: y&nbsp;=&nbsp;x² gives dy&nbsp;=&nbsp;2x·dx. The complex version has
+one twist worth seeing rather than reading. Nudge F by a small arrow ε·B. Only the
+part of the nudge <em>along</em> F changes F's length; the crosswise part just rotates
+it. So:</p>
+<div class="eq">∂|<span class="v">F</span>|²/∂<span class="v">P</span><sub>k</sub> = 2 Re( <span style="text-decoration:overline"><span class="v">F</span></span> · <span class="v">B</span><sub>k</sub> )</div>
+<dl class="sym">
+  <dt><span style="text-decoration:overline">F</span>&nbsp;·&nbsp;B<sub>k</sub></dt>
+  <dd>complex product of F's conjugate with the basis arrow; its real part is exactly
+  "the component of B<sub>k</sub> along F, times |F|" — the dot product of the two
+  arrows.</dd>
+  <dt>2</dt><dd>the same 2 as in 2x·dx.</dd>
+</dl>
+
+<figure class="fig" id="fig-square">
+  <canvas id="cv-square" style="height:380px"></canvas>
+  <div class="controls">
+    <label>Nudge ε <input type="range" id="sq-eps" min="-0.4" max="0.4" step="0.01" value="0.22"></label>
+    <span class="readout" id="sq-readout"></span>
+  </div>
+  <figcaption>Nudging F by ε·B (orange). The green component along F changes the
+  length; the gray crosswise component only swings the arrow along the circle. Compare
+  the exact change of |F|² with the linear prediction 2Re(F̄·B)ε in the readout — they
+  agree to first order, and the gap shrinks as ε² when you slide toward zero.</figcaption>
+</figure>
+
+<p>Put §9 and §10 together and the derivative of the whole pipeline is in hand, in
+closed form:</p>
+<div class="eq"><span class="frac"><span>∂<span class="v">R</span></span><span>∂<span class="v">P</span><sub>k</sub></span></span> = <span class="v">C</span> <span class="int">∫</span> 2 Re( <span style="text-decoration:overline"><span class="v">F</span>(<span class="v">λ</span>)</span> · <span class="v">B</span><sub>k</sub>(<span class="v">λ</span>) ) <span class="v">w</span>(<span class="v">λ</span>) d<span class="v">λ</span></div>
+<p>— the same outer integral as R itself, with |F|² replaced by 2Re(F̄·B<sub>k</sub>).
+No step size h anywhere. This is what "exact gradient" means in the PR title:
+the analytic derivative of the very number the solver returns.</p>
+
+<!-- ================================================================ 11 -->
+<h2 id="s11"><span class="secnum">11</span>One pass backward</h2>
+<p>Computing that integral naively for each k would still mean nine more outer
+integrals. The implementation is smarter, and if you have met neural-network
+backpropagation this will feel familiar. Run the normal resistance solve once —
+adaptive refinement and all. Then revisit <em>only the final pass's</em> quadrature
+nodes one more time. At each node the amplitude F is already determined, so the factor
+2Re(F̄&nbsp;·&nbsp;—) is a fixed linear functional: evaluate it against every local
+polynomial coefficient at once, accumulate with the same panel weights, and finally
+push the result backward through the (linear!) map from handles to polynomial
+coefficients — its transpose, applied once.</p>
+
+<svg class="pipe" viewBox="0 0 740 240" role="img" aria-label="Forward and reverse data flow">
+  <defs>
+    <marker id="mf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--blue)"/></marker>
+    <marker id="mr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="var(--orange)"/></marker>
+  </defs>
+  <rect x="10"  y="60" width="120" height="52"/>
+  <text x="70"  y="82" text-anchor="middle">9 handles</text>
+  <text x="70"  y="99" text-anchor="middle" class="sub">P (control net)</text>
+  <rect x="170" y="60" width="130" height="52"/>
+  <text x="235" y="82" text-anchor="middle">span polys</text>
+  <text x="235" y="99" text-anchor="middle" class="sub">∂f/∂x coefficients</text>
+  <rect x="340" y="60" width="120" height="52"/>
+  <text x="400" y="82" text-anchor="middle">F(λᵢ)</text>
+  <text x="400" y="99" text-anchor="middle" class="sub">closed-form moments</text>
+  <rect x="500" y="60" width="110" height="52"/>
+  <text x="555" y="82" text-anchor="middle">|F|² · wᵢ</text>
+  <text x="555" y="99" text-anchor="middle" class="sub">panel weights</text>
+  <rect x="650" y="60" width="80" height="52"/>
+  <text x="690" y="88" text-anchor="middle">R</text>
+  <line x1="130" y1="78" x2="168" y2="78" class="fwd" stroke-width="2.5" marker-end="url(#mf)"/>
+  <line x1="300" y1="78" x2="338" y2="78" class="fwd" stroke-width="2.5" marker-end="url(#mf)"/>
+  <line x1="460" y1="78" x2="498" y2="78" class="fwd" stroke-width="2.5" marker-end="url(#mf)"/>
+  <line x1="610" y1="78" x2="648" y2="78" class="fwd" stroke-width="2.5" marker-end="url(#mf)"/>
+  <text x="70" y="45" class="sub">linear</text>
+  <text x="235" y="45" class="sub">linear</text>
+  <text x="400" y="45" class="sub">linear</text>
+  <text x="555" y="45" class="sub">the one nonlinear step</text>
+  <line x1="648" y1="150" x2="610" y2="150" class="rev" stroke-width="2.5" marker-end="url(#mr)"/>
+  <line x1="498" y1="150" x2="460" y2="150" class="rev" stroke-width="2.5" marker-end="url(#mr)"/>
+  <line x1="338" y1="150" x2="300" y2="150" class="rev" stroke-width="2.5" marker-end="url(#mr)"/>
+  <line x1="168" y1="150" x2="130" y2="150" class="rev" stroke-width="2.5" marker-end="url(#mr)"/>
+  <text x="690" y="145" text-anchor="middle" class="sub">seed 1</text>
+  <text x="555" y="140" text-anchor="middle" class="sub">2Re(F̄ · —) at each node</text>
+  <text x="400" y="140" text-anchor="middle" class="sub">same nodes, same weights</text>
+  <text x="235" y="140" text-anchor="middle" class="sub">transpose of the span map</text>
+  <text x="70" y="140" text-anchor="middle" class="sub">all 9 ∂R/∂Pₖ</text>
+  <text x="70" y="165" text-anchor="middle" class="sub">at once</text>
+  <text x="20" y="215" class="sub">Forward (blue): one adaptive solve — 22,896 inner evaluations at Fn 0.35.</text>
+  <text x="20" y="232" class="sub">Reverse (orange): one extra sweep of the final pass — 15,392 evaluations — yields every handle's derivative.</text>
+</svg>
+
+<p>Three things make this trustworthy rather than merely clever:</p>
+<p>— The reverse pass uses the <em>same</em> nodes, weights, panel sizes, truncation
+point, and prefactor as the resistance it differentiates. It is the derivative of the
+discrete number the solver actually returns, not of an idealized cousin. Debug
+assertions even require the reverse pass to reproduce the primal resistance on its way
+through.</p>
+<p>— The transpose step is not a new approximation. The forward map from handles to
+span coefficients is linear; running a linear map backward is exact by
+construction.</p>
+<p>— The cost is one solve plus one cheap pass, <em>independent of the number of
+handles</em>. 22,896&nbsp;+&nbsp;15,392&nbsp;=&nbsp;38,288 evaluations against
+412,128 for finite differences — 10.8× fewer here, and the ratio grows with every
+handle a finer design surface adds.</p>
+
+<div class="checkpoint"><b>Where we are.</b> Resistance is a weighted sum of |F(λ)|²;
+F is linear in the handles; the square's derivative is 2Re(F̄·B); so one backward
+sweep of the final quadrature delivers all nine ∂R/∂P<sub>k</sub> exactly. Left to do:
+watch it work (§12), audit the evidence that the code implements it correctly (§13),
+time it (§14), and draw its boundaries honestly (§15).</div>
+
+<!-- ================================================================ 12 -->
+<h2 id="s12"><span class="secnum">12</span>The payoff, live</h2>
+<p>Here is the gradient in action on the PR's own test hull — the Wigley with all
+nine handles raised by 0.2&nbsp;m (so every handle has room to move both ways), at
+Fn&nbsp;0.35. Arrows show which way each handle wants to move to <em>reduce</em>
+drag; their lengths show how much it matters. This figure computes the exact gradient
+with the same formula as the Rust code, live, as you drag.</p>
+
+<figure class="fig" id="fig-gradient">
+  <canvas id="cv-gradient" style="height:480px"></canvas>
+  <div class="controls">
+    <button id="gr-step">Descend one step</button>
+    <button id="gr-run">Descend ×22</button>
+    <button id="gr-reset">Reset</button>
+    <span class="readout" id="gr-readout"></span>
+  </div>
+  <figcaption>Green arrows: the downhill direction −∂R/∂P for each handle. At the
+  start, midship handles push inward (+131.1, +91.8, +66.2 N/m — widening midship
+  costs drag) while bow and stern handles pull outward (−65.5, −45.9, −33.1 N/m) —
+  at this speed the optimizer trades midship beam for fuller ends. Descending
+  follows the arrows and R falls (about 111 → 27 N over the 22 steps); displacement
+  volume stays fixed automatically, because the nine derivatives sum to exactly zero
+  (§13's null-direction invariant — uniform widening makes no waves, so the gradient
+  has no uniform component). Push much further and a handle bottoms out at zero
+  half-breadth — from there, constraints take over from calculus (§15).</figcaption>
+</figure>
+
+<p>The starting values above are the solver's actual output, to four figures:</p>
+<div class="tbl"><table>
+<tr><th></th><th class="num">waterline</th><th class="num">mid-depth</th><th class="num">keel</th></tr>
+<tr><td>bow row</td><td class="num">−65.54</td><td class="num">−45.89</td><td class="num">−33.11</td></tr>
+<tr><td>midship row</td><td class="num">+131.08</td><td class="num">+91.78</td><td class="num">+66.21</td></tr>
+<tr><td>stern row</td><td class="num">−65.54</td><td class="num">−45.89</td><td class="num">−33.11</td></tr>
+</table></div>
+<p>Read the structure: fore-aft symmetric (the hull is), fading with depth (deep
+shape barely makes waves — the e<sup>−νλ²z</sup> fade from §5), and each midship
+value exactly −2× its bow value (so each depth-row sums to zero — the null direction
+again). None of that symmetry was programmed in; it fell out of the mathematics, which
+is itself a check.</p>
+<p>New public API, if you want to call it: <code>wave_resistance_gradient(hull,
+conditions)</code> returns the resistance with its diagnostics, all nine
+<code>∂R/∂P</code> in control order, and the reverse-pass evaluation count.</p>
+
+<!-- ================================================================ 13 -->
+<h2 id="s13"><span class="secnum">13</span>How we know it's right</h2>
+<p>"The derivation looks correct" is not evidence. The PR's case rests on independent
+checks with different failure modes — if the code were wrong, several unrelated
+alarms would have to fail together to hide it.</p>
+
+<p><strong>Finite differences as referee.</strong> The committed test compares every
+analytic derivative against centered finite differences at h&nbsp;=&nbsp;10⁻⁵ and
+requires agreement within 2×10⁻⁶ — through perturbed full solves that never touch the
+reverse-pass code. And the step-size sweep shows the textbook finite-difference
+signature, which is itself diagnostic:</p>
+
+<figure class="fig" id="fig-vcurve">
+  <canvas id="cv-vcurve" style="height:340px"></canvas>
+  <figcaption>Measured disagreement between the exact gradient and finite differences,
+  versus step size h (log–log; PR data, two different spline surfaces). The V shape is
+  the fingerprint of a correct analytic gradient: to the right, finite differences
+  suffer truncation error (∝h²); to the left, subtractive cancellation. In the middle
+  they agree to ~10⁻¹⁰ — the finite-difference method's own noise floor, not the
+  analytic gradient's.</figcaption>
+</figure>
+
+<p><strong>An oracle that shares no code.</strong> An independent Wigley
+implementation — analytic basis integrals, dense Simpson outer rule, none of the
+production span/moment/adjoint code — agreed with the resistance to 1.8×10⁻⁷ and with
+all nine derivatives to 3.1×10⁻⁷. A second disposable surface with a corner in it
+(a repeated C⁰ knot, which the smooth Wigley never exercises) passed all 15 of its
+derivative checks too.</p>
+
+<p><strong>Invariants.</strong> Uniform widening makes no waves (§3), so the nine
+derivatives must sum to zero. The test demands &lt;10⁻¹¹ relative; this page's run of
+the solver measured the sum at 7×10⁻¹⁵ against gradient magnitudes of order 10².
+A broken control-map transpose or basis normalization would break this instantly.</p>
+
+<p><strong>Sabotage.</strong> Mutation testing: deliberately break the implementation
+in realistic ways and confirm the tests catch it.</p>
+<div class="tbl"><table>
+<tr><th>Planted defect</th><th>Caught?</th></tr>
+<tr><td>Flip the gradient's sign</td><td>✓ scaled error 2 (analytic +65.5 vs FD −65.5)</td></tr>
+<tr><td>Drop the outer quadrature weight</td><td>✓ −11559 vs −65.5</td></tr>
+<tr><td>Use value basis instead of derivative basis</td><td>✓ scaled error 11</td></tr>
+<tr><td>Wrong factorial (a+1)! for a!</td><td>✓ scaled error 0.5</td></tr>
+<tr><td>sec²θ in place of sec³θ</td><td>✓ resistance off by 21%</td></tr>
+<tr><td>Split sin/cos calls (performance-only rewrite)</td><td>✓ correctly stays green — same math</td></tr>
+</table></div>
+
+<p><strong>Stability.</strong> Reversing accumulation order moved the result by
+~2×10⁻¹⁶; native-CPU codegen by ~1.5×10⁻¹⁶. The full workspace suite: 190 passed,
+0 failed, in debug and release. (This page adds one more informal check: its
+JavaScript reimplementation reproduces the solver's R and all nine gradients to the
+precision shown — see the console.)</p>
+
+<!-- ================================================================ 14 -->
+<h2 id="s14"><span class="secnum">14</span>How much faster</h2>
+
+<figure class="fig" id="fig-perf">
+  <canvas id="cv-perf" style="height:300px"></canvas>
+  <figcaption>Median wall-clock time for one full nine-control gradient (release
+  benchmark, Apple silicon; 100- and 150-sample runs). 48.3&nbsp;ms → 2.9&nbsp;ms and
+  41.9&nbsp;ms → 3.0&nbsp;ms: 14–16× faster, with checksum agreement to ~2×10⁻¹¹.
+  The plain resistance sweep also picked up 7–11% from the §7 trig reuse. One honest
+  wrinkle: the low-Froude single-solve timing flipped sign between runs (−4.6%, +5.0%)
+  and is inconclusive.</figcaption>
+</figure>
+
+<p>The deeper point is not 16× — it is the scaling. Finite differences cost 2N solves
+for N handles; the reverse pass costs one solve plus one sweep regardless of N. At
+nine handles the ratio is 14–16×; a fifty-handle design surface would push it toward
+two orders of magnitude.</p>
+
+<!-- ================================================================ 15 -->
+<h2 id="s15"><span class="secnum">15</span>What “exact” does not mean</h2>
+<p>“Exact” here has a precise, narrow meaning: <em>the analytic derivative of the
+discrete number the solver returns</em>. Worth stating what that does not cover — the
+PR itself is explicit about all of these:</p>
+<p>— Michell's thin-ship model is an approximation of physics. The gradient is exact
+for the model, not for the ocean.</p>
+<p>— The returned gradient inherits the resistance's quadrature discretization and
+tail truncation. In one adversarial low-Froude case the outer integrator stopped at
+its evaluation cap and the reported <code>est_rel_error</code> (~10⁻¹⁰) badly
+understated a true 2.8% error — a pre-existing limitation this PR neither introduced
+nor fixed, but which its audit quantified. Treat <code>est_rel_error</code> as a
+refinement diagnostic, not a delivered-accuracy guarantee.</p>
+<p>— The derivative moves handle values only. Knots, spline degrees, speed, gravity,
+and fluid stay fixed.</p>
+<p>— Symmetric hulls only, for now: an asymmetric hull has two control nets, and the
+API rejects it rather than return an ambiguous half-answer.</p>
+<p>— A proposed handle update must still satisfy geometry (half-breadths can't go
+negative). The gradient tells you the direction; constraints stay your job.</p>
+
+<footer>
+<p><strong>Read the real thing:</strong> the
+<a href="https://github.com/risingtideresearch/michell/pull/29">PR description</a>
+carries the full validation report. The reverse pass lives in
+<code>crates/michell/src/michell.rs</code> (<code>wave_resistance_gradient_with</code>,
+<code>accumulate_coeff_adjoint</code>), the control-map transpose in
+<code>crates/michell/src/hull.rs</code> (<code>fx_control_adjoint</code>), and the
+tests in <code>crates/michell/tests/gradient.rs</code>.</p>
+<p>Every interactive figure on this page reimplements the solver's actual method —
+closed-form span moments inside, rate-adapted 16-point Gauss–Legendre panels outside —
+in JavaScript, and cross-checks itself at load time against the Rust solver's output
+(R&nbsp;=&nbsp;111.42911&nbsp;N and the nine gradients at Fn&nbsp;0.35). Figures are
+qualitative only where labeled (the wake's brightness). No libraries, no network;
+this file is self-contained.</p>
+</footer>
+</main>
+
+<script>
+'use strict';
+/* ================= motion kernel (adapted) ============================== */
+const Motion = (() => {
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const ease = {
+    smooth: t => t*t*(3-2*t),
+    smoother: t => t*t*t*(t*(6*t-15)+10),
+    outCubic: t => 1-(1-t)**3,
+  };
+  class Motor {
+    constructor(v, rate=8){ this.value=v; this.target=v; this.rate=rate; }
+    step(dt){
+      if(reduced){ this.value = this.target; return this.value; }
+      this.value += (this.target-this.value)*(1-Math.exp(-this.rate*dt));
+      return this.value;
+    }
+  }
+  const motors = [];
+  function motor(v, rate){ const m = new Motor(v, rate); motors.push(m); return m; }
+  const tweens = [];
+  function tween(dur, onUpdate, opts={}) {
+    const curve = opts.curve || ease.smoother;
+    if(reduced){ onUpdate(1); opts.onDone && opts.onDone(); return; }
+    tweens.push({t:0, dur, onUpdate, curve, onDone: opts.onDone});
+  }
+  const scenes = [];
+  function scene(cv, draw){
+    const s = {cv, draw, visible:false, t:11.3, intro: motor(0, 2.2), seen:false};
+    scenes.push(s);
+    new IntersectionObserver(es => {
+      for(const e of es){
+        s.visible = e.isIntersecting;
+        if(s.visible && !s.seen){ s.seen = true; s.intro.target = 1; }
+      }
+    }, {threshold:.05}).observe(cv);
+    return s;
+  }
+  let paused = false;
+  function pauseButton(){
+    if(reduced) return;
+    const btn = document.createElement('button');
+    btn.id='pauseBtn'; btn.textContent='⏸ pause'; btn.setAttribute('aria-pressed','false');
+    btn.addEventListener('click', () => { paused = !paused;
+      btn.textContent = paused ? '▶ play' : '⏸ pause';
+      btn.setAttribute('aria-pressed', String(paused)); });
+    document.body.appendChild(btn);
+  }
+  let last;
+  function loop(now){
+    const dt = Math.min((now-(last??now))/1000, .05); last = now;
+    for(const m of motors) m.step(dt);
+    for(let i=tweens.length-1; i>=0; i--){ const tw = tweens[i];
+      tw.t += dt; const k = Math.min(1, tw.t/tw.dur);
+      tw.onUpdate(tw.curve(k));
+      if(k>=1){ tweens.splice(i,1); tw.onDone && tw.onDone(); } }
+    for(const s of scenes){
+      if(!s.visible) continue;
+      if(!paused && !reduced) s.t += dt;
+      s.draw(s.t, s.intro.value);
+    }
+    requestAnimationFrame(loop);
+  }
+  function start(){ pauseButton(); requestAnimationFrame(loop); }
+  const fitCache = new Map();
+  function fit(cv){
+    const dpr = Math.min(devicePixelRatio||1, 2);
+    const w = cv.clientWidth, h = cv.clientHeight;
+    const c = fitCache.get(cv);
+    if(!c || c.w!==w || c.h!==h || c.dpr!==dpr){
+      cv.width = Math.round(w*dpr); cv.height = Math.round(h*dpr);
+      fitCache.set(cv, {w,h,dpr});
+    }
+    const g = cv.getContext('2d');
+    g.setTransform(dpr,0,0,dpr,0,0);
+    g.clearRect(0,0,w,h);
+    return [g, w, h];
+  }
+  function strokeGlow(g, color, w=3, glow=.22){
+    g.lineCap = g.lineJoin = 'round';
+    g.strokeStyle = color;
+    if(glow>0){ g.globalAlpha = glow; g.lineWidth = w*3; g.stroke(); }
+    g.globalAlpha = 1; g.lineWidth = w; g.stroke();
+  }
+  function haloDot(g, x, y, r, color){
+    g.fillStyle = color;
+    g.globalAlpha = .25; g.beginPath(); g.arc(x,y,r*2.4,0,Math.PI*2); g.fill();
+    g.globalAlpha = 1;   g.beginPath(); g.arc(x,y,r,0,Math.PI*2); g.fill();
+  }
+  function arrow(g, x1,y1, x2,y2, color, o={}){
+    const w=o.w??2.5, head=o.head??7, k=o.k??1, glow=o.glow??.22;
+    if(k<=0) return;
+    const dx=(x2-x1)*k, dy=(y2-y1)*k, len=Math.hypot(dx,dy);
+    if(len<1) return;
+    const ux=dx/len, uy=dy/len, hx=x1+dx, hy=y1+dy;
+    g.beginPath(); g.moveTo(x1,y1); g.lineTo(hx-ux*head*.6, hy-uy*head*.6);
+    strokeGlow(g, color, w, glow);
+    g.beginPath();
+    g.moveTo(hx, hy);
+    g.lineTo(hx-ux*head-uy*head*.5, hy-uy*head+ux*head*.5);
+    g.lineTo(hx-ux*head+uy*head*.5, hy-uy*head-ux*head*.5);
+    g.closePath(); g.fillStyle = color; g.fill();
+  }
+  function partialPath(g, pt, n, k=1){
+    const m = Math.max(2, Math.round(n*Math.min(1,k)));
+    for(let i=0;i<m;i++){ const [x,y]=pt(i/(n-1)); i?g.lineTo(x,y):g.moveTo(x,y); }
+  }
+  function drawField(g, w, h, cell, sample){
+    const ow = Math.max(2, Math.ceil(w/cell)), oh = Math.max(2, Math.ceil(h/cell));
+    const off = drawField._c || (drawField._c = document.createElement('canvas'));
+    off.width = ow; off.height = oh;
+    const og = off.getContext('2d');
+    for(let j=0;j<oh;j++) for(let i=0;i<ow;i++){
+      const s = sample((i+.5)*cell, (j+.5)*cell);
+      if(!s || s.alpha<=0) continue;
+      og.globalAlpha = Math.min(1, s.alpha); og.fillStyle = s.color;
+      og.fillRect(i,j,1,1);
+    }
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(off, 0, 0, w, h);
+  }
+  return {ease, motor, tween, scene, start, fit, strokeGlow, haloDot, arrow,
+          partialPath, drawField, reduced, scenes, motors,
+          get paused(){ return paused; }};
+})();
+
+/* ================= palette ============================================= */
+const Pal = { dark:false };
+function refreshPal(){
+  const cs = getComputedStyle(document.documentElement);
+  for(const k of ['bg','surface','ink','ink-2','muted','grid','axis','blue','orange','aqua','red','violet','good','div-mid'])
+    Pal[k.replace('-','')] = cs.getPropertyValue('--'+k).trim();
+  Pal.dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  Pal.glow = Pal.dark ? .22 : 0;
+}
+refreshPal();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshPal);
+setInterval(refreshPal, 500); // belt-and-suspenders: emulated/theme flips that skip the listener
+function hexRgb(h){ h=h.replace('#',''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+function mix(hexA, hexB, t){
+  const a=hexRgb(hexA), b=hexRgb(hexB);
+  return `rgb(${Math.round(a[0]+(b[0]-a[0])*t)},${Math.round(a[1]+(b[1]-a[1])*t)},${Math.round(a[2]+(b[2]-a[2])*t)})`;
+}
+
+/* ================= michell math core ===================================
+ * Mirrors crates/michell/src/{michell,hull,moments}.rs for the single-span
+ * biquadratic Wigley surface: closed-form span moments inside, rate-adapted
+ * 16-point Gauss-Legendre panels outside, same truncation rules.
+ */
+const HULL = { L:10, B:1, T:0.625, a:5 };
+const GRAV = 9.80665, RHO = 999.1;
+const P_CLASSIC  = [0,0,0, 1,1,0, 0,0,0];
+const P_POSITIVE = P_CLASSIC.map(v => v+0.2);
+// 16-point Gauss-Legendre nodes/weights on [-1,1]
+const GX = [-0.9894009349916499,-0.9445750230732326,-0.8656312023878318,-0.755404408355003,
+            -0.6178762444026438,-0.45801677765722737,-0.2816035507792589,-0.09501250983763744,
+             0.09501250983763744,0.2816035507792589,0.45801677765722737,0.6178762444026438,
+             0.755404408355003,0.8656312023878318,0.9445750230732326,0.9894009349916499];
+const GW = [0.027152459411754095,0.06225352393864789,0.09515851168249278,0.12462897125553387,
+            0.14959598881657673,0.16915651939500254,0.18260341504492358,0.18945061045506850,
+            0.18945061045506850,0.18260341504492358,0.16915651939500254,0.14959598881657673,
+            0.12462897125553387,0.09515851168249278,0.06225352393864789,0.027152459411754095];
+// Bernstein bases in power form. DX[i][m]: d(Bx_i)/du = sum_m DX[i][m] u^m.
+// BZ[j][n]: Bz_j(w) = sum_n BZ[j][n] w^n.
+const DX = [[-2,2],[2,-4],[0,2]];
+const BZ = [[1,-2,1],[0,2,-2],[0,0,1]];
+// Oscillatory moments M_m(k) = ∫0^L t^m e^{ikt} dt for m=0,1  (complex [re,im]).
+function oscMoments(k){
+  const L = HULL.L;
+  const cL = Math.cos(k*L), sL = Math.sin(k*L);
+  // 1/(ik) = -i/k ; M0 = (e^{ikL}-1)/(ik)
+  const m0re = sL/k, m0im = -(cL-1)/k;
+  // M1 = (L e^{ikL} - M0)/(ik) = -i/k (L e^{ikL} - M0)
+  const are = L*cL - m0re, aim = L*sL - m0im;
+  return [[m0re,m0im],[aim/k, -are/k]];
+}
+// Exponential moments E_n(kap) = ∫0^T z^n e^{-kap z} dz, n = 0..2.
+function expMoments(kap){
+  const T = HULL.T, e = Math.exp(-kap*T);
+  const E0 = (1-e)/kap;
+  const E1 = (E0 - T*e)/kap;
+  const E2 = (2*E1 - T*T*e)/kap;
+  return [E0,E1,E2];
+}
+// Per-lambda basis amplitudes B_k and total F for control net P.
+// Returns {F:[re,im], basis: 9×[re,im]}  (basis only if wantBasis).
+function amp(P, lambda, nu, wantBasis){
+  const k = nu*lambda, kap = nu*lambda*lambda;
+  const M = oscMoments(k), E = expMoments(kap);
+  const L = HULL.L, T = HULL.T, a = HULL.a;
+  // xpart_i = e^{-ika} * (1/L) Σ_m DX[i][m] M_m / L^m   (complex)
+  const pc = Math.cos(k*a), ps = -Math.sin(k*a); // e^{-ika}
+  const xp = [];
+  for(let i=0;i<3;i++){
+    let re=0, im=0, Lm=1;
+    for(let m=0;m<2;m++){ re += DX[i][m]*M[m][0]/Lm; im += DX[i][m]*M[m][1]/Lm; Lm*=L; }
+    re/=L; im/=L;
+    xp.push([re*pc - im*ps, re*ps + im*pc]);
+  }
+  // zpart_j = Σ_n BZ[j][n] E_n / T^n   (real)
+  const zp = [];
+  for(let j=0;j<3;j++){
+    let v=0, Tn=1;
+    for(let n=0;n<3;n++){ v += BZ[j][n]*E[n]/Tn; Tn*=T; }
+    zp.push(v);
+  }
+  let Fre=0, Fim=0;
+  const basis = wantBasis ? [] : null;
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++){
+    const bre = xp[i][0]*zp[j], bim = xp[i][1]*zp[j];
+    if(basis) basis.push([bre,bim]);
+    const p = P[i*3+j];
+    Fre += p*bre; Fim += p*bim;
+  }
+  return {F:[Fre,Fim], basis};
+}
+// Outer integral in theta, mirroring integrate_outer(). onNode(lambda, wNode)
+// is called with the complete node weight  half*gw*sec^3  (as in the Rust
+// reverse pass); collectPanels gathers panel edges for the quadrature figure.
+function integrateOuter(P, nu, frac, opts={}){
+  const {a, T} = HULL;
+  const rate = (sec,tan) => 2*nu*sec*tan*(a + T*sec) + 4;
+  const cap = Math.min(2*Math.PI/Math.max(Math.sqrt(2*nu*a),1), 0.12);
+  const STOP_REL=1e-9, STOP_WINDOW=8*Math.PI, HARD=1e4, MAXE=4e6;
+  let theta=0, total=0, wsum=0, wphase=0, evals=0, lambda=1;
+  const panels = opts.collectPanels ? [] : null;
+  while(theta < Math.PI/2 - 1e-12){
+    const sin=Math.sin(theta), cos=Math.cos(theta), sec=1/cos;
+    const lr = rate(sec, sin*sec);
+    const dt = Math.max(Math.min(frac*2*Math.PI/lr, frac*cap, Math.PI/2-theta), 1e-15);
+    const half=dt/2, mid=theta+half;
+    let panel=0;
+    for(let i=0;i<16;i++){
+      const th = mid + half*GX[i];
+      const s = 1/Math.cos(th);
+      const s3 = s*s*s;
+      let asq;
+      if(opts.onNode){
+        asq = opts.onNode(s, half*GW[i]*s3);
+      } else {
+        const {F} = amp(P, s, nu, false);
+        asq = F[0]*F[0]+F[1]*F[1];
+      }
+      panel += GW[i]*asq*s3;
+    }
+    panel*=half; total+=panel; evals+=16;
+    if(panels) panels.push([theta, theta+dt, panel]);
+    theta+=dt; lambda=1/Math.cos(theta);
+    if(lambda>2){
+      wsum+=panel; wphase+=lr*dt;
+      if(wphase>=STOP_WINDOW){
+        if(Math.abs(wsum) <= STOP_REL*Math.abs(total) + Number.MIN_VALUE) break;
+        wsum=0; wphase=0;
+      }
+    }
+    if(lambda>HARD || evals>MAXE) break;
+  }
+  return {integral: total, evals, maxLambda: lambda, panels};
+}
+// Adaptive refinement, mirroring run_outer(): frac 1, then halve, stop at relTol.
+function runOuter(P, nu, opts={}){
+  const relTol = opts.relTol ?? 1e-5, maxRef = opts.maxRef ?? 4;
+  let frac = 1;
+  let r = integrateOuter(P, nu, frac);
+  let evalsTotal = r.evals, estRel = Infinity;
+  const passes = [{frac, ...r}];
+  for(let i=0;i<maxRef;i++){
+    frac *= 0.5;
+    const r2 = integrateOuter(P, nu, frac);
+    evalsTotal += r2.evals;
+    const scale = Math.max(Math.abs(r2.integral), Number.MIN_VALUE);
+    estRel = Math.abs(r2.integral - r.integral)/scale;
+    r = r2; passes.push({frac, ...r2});
+    if(estRel <= relTol) break;
+  }
+  return {integral: r.integral, frac, estRel, evalsTotal, maxLambda: r.maxLambda, passes};
+}
+function speedOf(fn){ return fn*Math.sqrt(GRAV*HULL.L); }
+function nuOf(fn){ return 1/(fn*fn*HULL.L); }
+function coeffOf(fn){ const U = speedOf(fn); return 4*RHO*GRAV*GRAV/(Math.PI*U*U); }
+function resistance(P, fn, opts){
+  const r = runOuter(P, nuOf(fn), opts);
+  return {R: coeffOf(fn)*r.integral, ...r};
+}
+// Exact gradient: rerun the final pass, accumulating 2Re(conj F · B_k) with the
+// complete node weight — the page-scale version of the Rust reverse pass (the
+// real code accumulates per span coefficient, then applies the control-map
+// transpose; with one span the two are the same linear map).
+function gradient(P, fn, opts){
+  const nu = nuOf(fn), C = coeffOf(fn);
+  const r = runOuter(P, nu, opts);
+  const g = [0,0,0,0,0,0,0,0,0];
+  let gradEvals = 0;
+  integrateOuter(P, nu, r.frac, { onNode: (lambda, w) => {
+    const {F, basis} = amp(P, lambda, nu, true);
+    for(let k=0;k<9;k++){
+      g[k] += w * 2 * (F[0]*basis[k][0] + F[1]*basis[k][1]);
+    }
+    gradEvals += 1;
+    return F[0]*F[0]+F[1]*F[1];
+  }});
+  return {R: C*r.integral, grad: g.map(v => C*v), primalEvals: r.evalsTotal,
+          gradEvals, estRel: r.estRel};
+}
+// Half-breadth f(x,z) for control net P.
+function fSurf(P, x, z){
+  const u = (x+HULL.a)/HULL.L, w = z/HULL.T;
+  const bx = [(1-u)*(1-u), 2*u*(1-u), u*u];
+  const bz = [(1-w)*(1-w), 2*w*(1-w), w*w];
+  let v=0;
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++) v += P[i*3+j]*bx[i]*bz[j];
+  return v;
+}
+function dfdx(P, x, z){
+  const u = (x+HULL.a)/HULL.L, w = z/HULL.T;
+  const dbx = [-2*(1-u), 2-4*u, 2*u];
+  const bz = [(1-w)*(1-w), 2*w*(1-w), w*w];
+  let v=0;
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++) v += P[i*3+j]*dbx[i]*bz[j];
+  return v/HULL.L;
+}
+function volume(P){ // displacement volume, both sides: 2·L·T·ΣP/9
+  return 2*HULL.L*HULL.T*P.reduce((s,v)=>s+v,0)/9;
+}
+
+/* ---- load-time cross-check against the Rust solver's printed output ---- */
+(function crossCheck(){
+  const refR = [[0.30,140.497825],[0.35,111.429111],[0.50,823.169359]];
+  for(const [fn, want] of refR){
+    const got = resistance(P_CLASSIC, fn).R;
+    const rel = Math.abs(got-want)/want;
+    if(rel > 2e-3) console.warn(`cross-check FAIL R(Fn=${fn}): js=${got} rust=${want}`);
+    else console.log(`cross-check ok  R(Fn=${fn}) js=${got.toFixed(4)} N  rust=${want} (rel ${rel.toExponential(1)})`);
+  }
+  const rustG = [-65.5382,-45.8909,-33.1070,131.0764,91.7818,66.2140,-65.5382,-45.8909,-33.1070];
+  const g = gradient(P_POSITIVE, 0.35);
+  let worst = 0;
+  for(let k=0;k<9;k++) worst = Math.max(worst, Math.abs(g.grad[k]-rustG[k])/Math.abs(rustG[k]));
+  if(worst > 2e-3) console.warn(`cross-check FAIL gradient: worst rel ${worst}`);
+  else console.log(`cross-check ok  gradient worst rel diff vs rust: ${worst.toExponential(1)}`);
+})();
+
+/* ================= shared drawing helpers ============================== */
+function axisText(g, txt, x, y, align='left', color){
+  g.font = '11px system-ui, sans-serif';
+  g.textAlign = align; g.textBaseline = 'middle';
+  g.fillStyle = color || Pal.muted;
+  g.fillText(txt, x, y);
+}
+function hline(g, x1, x2, y, color){
+  g.beginPath(); g.moveTo(x1,y); g.lineTo(x2,y);
+  g.strokeStyle = color || Pal.axis; g.lineWidth = 1; g.globalAlpha=1; g.stroke();
+}
+
+/* ================= fig 1 & 12: hull with handles ======================== */
+// Shared builder. optsF.gradient: draw descent arrows + readouts.
+function buildHullFig(cvId, P0, optsF={}){
+  const cv = document.getElementById(cvId);
+  const P = P0.slice();
+  const motors = P.map(v => Motion.motor(v, 10));
+  const rows = [ // [z of slice, label, which control row owns handles here]
+    [0,        'waterline slice (z = 0)',        0],
+    [HULL.T/2, 'mid-depth slice (z = T/2)',      1],
+    [HULL.T,   'keel slice (z = T)',             2],
+  ];
+  const state = { P, motors, drag:-1, gradArrows:null, onChange:null, hover:-1 };
+  const XS = [-5,0,5]; // Greville abscissae of the three x-controls
+  function layout(w,h){
+    const padL=46, padR=18, padT=8;
+    const panelH = (h - padT - 20)/3;
+    const xmap = x => padL + (x+5)/10*(w-padL-padR);
+    const yScale = (panelH-52)/1.7; // meters -> px, value range 0..1.7
+    return {padL,padR,padT,panelH,xmap,yScale};
+  }
+  function handlePos(k, w, h){
+    const L = layout(w,h);
+    const i = Math.floor(k/3), j = k%3;
+    const cy0 = L.padT + j*L.panelH + L.panelH - 14;
+    return [L.xmap(XS[i]), cy0 - state.motors[k].value*L.yScale];
+  }
+  const scene = Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const L = layout(w,h);
+    for(let j=0;j<3;j++){
+      const cy0 = L.padT + j*L.panelH + L.panelH - 14; // baseline (centerline)
+      const z = rows[j][0];
+      axisText(g, rows[j][1], L.padL, L.padT + j*L.panelH + 12, 'left', Pal.ink2);
+      // centerline
+      hline(g, L.padL, w-L.padR, cy0, Pal.grid);
+      // mirrored hull outline (fill + stroke), display P via motors
+      const Pm = state.motors.map(m => m.value);
+      const n = 90;
+      g.beginPath();
+      Motion.partialPath(g, s => {
+        const x = -5 + 10*s;
+        return [L.xmap(x), cy0 - fSurf(Pm, x, z)*L.yScale];
+      }, n, intro);
+      g.strokeStyle = Pal.blue;
+      Motion.strokeGlow(g, Pal.blue, 2.8, Pal.glow);
+      if(intro > .95){
+        g.beginPath();
+        for(let i=0;i<=n;i++){ const x=-5+10*i/n; const y=cy0 - fSurf(Pm,x,z)*L.yScale; i?g.lineTo(L.xmap(x),y):g.moveTo(L.xmap(x),y); }
+        for(let i=n;i>=0;i--){ const x=-5+10*i/n; const y=cy0 + fSurf(Pm,x,z)*L.yScale*0.35; g.lineTo(L.xmap(x),y); }
+        g.closePath(); g.globalAlpha=.07; g.fillStyle=Pal.blue; g.fill(); g.globalAlpha=1;
+        g.beginPath();
+        for(let i=0;i<=n;i++){ const x=-5+10*i/n; const y=cy0 + fSurf(Pm,x,z)*L.yScale*0.35; i?g.lineTo(L.xmap(x),y):g.moveTo(L.xmap(x),y); }
+        g.strokeStyle = Pal.blue; g.globalAlpha=.35; g.lineWidth=1.4; g.stroke(); g.globalAlpha=1;
+      }
+      // control polygon + handles for the row owning this panel
+      const rowIdx = rows[j][2];
+      g.setLineDash([4,4]);
+      g.beginPath();
+      for(let i=0;i<3;i++){
+        const k = i*3+rowIdx;
+        const [hx,hy] = handlePos(k,w,h);
+        i?g.lineTo(hx,hy):g.moveTo(hx,hy);
+      }
+      g.strokeStyle = Pal.muted; g.lineWidth=1; g.globalAlpha=.7*intro; g.stroke();
+      g.setLineDash([]); g.globalAlpha=1;
+      for(let i=0;i<3;i++){
+        const k = i*3+rowIdx;
+        const [hx,hy] = handlePos(k,w,h);
+        const active = state.drag===k || state.hover===k;
+        Motion.haloDot(g, hx, hy, active?7:5.5, active?Pal.orange:Pal.ink);
+        if(state.gradArrows){
+          const gk = state.gradArrows[k];
+          const len = -gk * optsF.arrowScale; // downhill = -grad; px per (N/m)
+          Motion.arrow(g, hx+14, hy, hx+14, hy - Math.max(-46,Math.min(46,len)),
+            Pal.aqua, {w:2.5, head:6, k:intro, glow:Pal.glow});
+        }
+      }
+    }
+    axisText(g, 'stern', L.xmap(-5), h-6, 'left');
+    axisText(g, 'bow', L.xmap(5), h-6, 'right');
+  });
+  // dragging
+  function pick(ev){
+    const r = cv.getBoundingClientRect();
+    const mx = ev.clientX-r.left, my = ev.clientY-r.top;
+    let best=-1, bd=20;
+    for(let k=0;k<9;k++){
+      const [hx,hy] = handlePos(k, r.width, r.height);
+      const d = Math.hypot(mx-hx, my-hy);
+      if(d<bd){ bd=d; best=k; }
+    }
+    return best;
+  }
+  cv.addEventListener('pointerdown', ev => {
+    const k = pick(ev);
+    if(k<0) return;
+    state.drag = k; cv.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  cv.addEventListener('pointermove', ev => {
+    const r = cv.getBoundingClientRect();
+    if(state.drag<0){ state.hover = pick(ev); return; }
+    const L = layout(r.width, r.height);
+    const j = state.drag%3;
+    const cy0 = L.padT + j*L.panelH + L.panelH - 10;
+    const v = Math.max(0.02, Math.min(1.6, (cy0-(ev.clientY-r.top))/L.yScale));
+    state.P[state.drag] = v;
+    state.motors[state.drag].target = v;
+    state.onChange && state.onChange();
+  });
+  const endDrag = () => { state.drag = -1; state.onChange && state.onChange(); };
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
+  state.set = (Pn, snap) => {
+    for(let k=0;k<9;k++){ state.P[k]=Pn[k]; state.motors[k].target=Pn[k]; if(snap) state.motors[k].value=Pn[k]; }
+    state.onChange && state.onChange();
+  };
+  return state;
+}
+
+/* fig 1 */
+(function(){
+  const st = buildHullFig('cv-handles', P_CLASSIC);
+  const out = document.getElementById('handles-readout');
+  const show = () => {
+    out.innerHTML = `beam at midship waterline: <b>${(2*fSurf(st.P,0,0)).toFixed(2)} m</b>`;
+  };
+  st.onChange = show; show();
+  document.getElementById('handles-reset').onclick = () => st.set(P_CLASSIC);
+})();
+
+/* ================= fig 2: kelvin wake =================================== */
+(function(){
+  const cv = document.getElementById('cv-wake');
+  const slider = document.getElementById('wake-fn');
+  const out = document.getElementById('wake-readout');
+  let field = null, fieldKey = '';
+  const NTH = 72;
+  function computeField(fn, w, h){
+    const nu = nuOf(fn);
+    // free-wave components: theta grid, amplitude F(sec th) with Hann taper
+    const comps = [];
+    for(let i=0;i<NTH;i++){
+      const th = (i+.5)/NTH * (85*Math.PI/180);
+      const lam = 1/Math.cos(th);
+      const {F} = amp(P_CLASSIC, lam, nu, false);
+      const s3 = lam*lam*lam;
+      const hann = .5*(1-Math.cos(Math.PI*(1 - i/NTH)*2*.5+Math.PI*.0)) ; // taper high theta
+      const taper = 1 - i/NTH;
+      comps.push({th, k: nu*lam*lam, re: F[0]*s3*taper, im: F[1]*s3*taper});
+    }
+    // world window: x in [-2.2L, 0.6L], y in +-0.95L ; ship bow at x=0.35L
+    const X0=-2.2*HULL.L, X1=0.7*HULL.L, Y=0.95*HULL.L;
+    const ow = 130, oh = Math.round(ow*h/w);
+    const vals = new Float32Array(ow*oh);
+    let sumsq = 0;
+    for(let jj=0;jj<oh;jj++){
+      const y = (jj/(oh-1)-.5)*2*Y;
+      for(let ii=0;ii<ow;ii++){
+        const x = X0 + (X1-X0)*ii/(ow-1);
+        let z=0;
+        for(const c of comps){
+          const cx = Math.cos(c.th), sy = Math.sin(c.th);
+          const p1 = c.k*(x*cx + y*sy), p2 = c.k*(x*cx - y*sy);
+          z += c.re*(Math.cos(p1)+Math.cos(p2)) - c.im*(Math.sin(p1)+Math.sin(p2));
+        }
+        // radiation taper ahead of the hull
+        const fade = x > 0 ? Math.exp(-(x*x)/(2.2*2.2)) : 1;
+        z *= fade;
+        vals[jj*ow+ii] = z;
+        sumsq += z*z;
+      }
+    }
+    const vmax = Math.max(3.0*Math.sqrt(sumsq/(ow*oh)), 1e-12);
+    return {vals, ow, oh, vmax, X0, X1, Y};
+  }
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const fn = parseFloat(slider.value);
+    const key = fn.toFixed(2)+'|'+w;
+    if(key !== fieldKey){ field = computeField(fn, w, h); fieldKey = key; }
+    const {vals, ow, oh, vmax, X0, X1, Y} = field;
+    const cell = w/ow;
+    Motion.drawField(g, w, h, cell, (px, py) => {
+      const ii = Math.min(ow-1, Math.floor(px/w*ow));
+      const jj = Math.min(oh-1, Math.floor(py/h*oh));
+      const v = vals[jj*ow+ii]/vmax;
+      const s = Math.max(-1, Math.min(1, v));
+      const tt = Math.sign(s)*Math.sqrt(Math.abs(s));
+      const col = tt>=0 ? mix(Pal.divmid, Pal.blue, tt) : mix(Pal.divmid, Pal.red, -tt);
+      return {color: col, alpha: intro*(.08+.72*Math.abs(tt))};
+    });
+    // ship outline at origin (bow at +L/2 toward the right)
+    const xm = x => (x-X0)/(X1-X0)*w;
+    const ym = y => (y/Y*.5+.5)*h;
+    g.beginPath();
+    const n=60;
+    for(let i=0;i<=n;i++){ const x=-5+10*i/n; const y= fSurf(P_CLASSIC,x,0)*3.2; i?g.lineTo(xm(x),ym(y)):g.moveTo(xm(x),ym(y)); }
+    for(let i=n;i>=0;i--){ const x=-5+10*i/n; const y=-fSurf(P_CLASSIC,x,0)*3.2; g.lineTo(xm(x),ym(y)); }
+    g.closePath();
+    g.fillStyle = Pal.surface; g.globalAlpha=.9; g.fill(); g.globalAlpha=1;
+    g.strokeStyle = Pal.ink; g.lineWidth=1.6; g.stroke();
+    // Kelvin wedge guides
+    const kelvin = Math.atan(1/(2*Math.SQRT2));
+    g.setLineDash([5,6]);
+    for(const s of [-1,1]){
+      g.beginPath();
+      g.moveTo(xm(5), ym(0));
+      g.lineTo(xm(X0), ym(s*Math.tan(kelvin)*(5-X0)));
+      g.strokeStyle = Pal.ink; g.globalAlpha=.4*intro; g.lineWidth=1; g.stroke();
+    }
+    g.setLineDash([]); g.globalAlpha=1;
+    axisText(g, '19.47°', xm(-13), ym(-Math.tan(kelvin)*(5-(-13)))-10, 'center', Pal.ink2);
+    const U = speedOf(fn);
+    out.innerHTML = `Fn <b>${fn.toFixed(2)}</b> · U = <b>${U.toFixed(2)} m/s</b> · transverse wavelength 2πU²/g = <b>${(2*Math.PI*U*U/GRAV).toFixed(1)} m</b>`;
+  });
+})();
+
+/* ================= fig 3: source strength =============================== */
+(function(){
+  const cv = document.getElementById('cv-sources');
+  let smax = 0;
+  for(let i=0;i<=40;i++) smax = Math.max(smax, Math.abs(dfdx(P_CLASSIC, -5+10*i/40, 0)));
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const padL=20, padR=20, padT=30, padB=34;
+    const xm = x => padL + (x+5)/10*(w-padL-padR);
+    const zm = z => padT + z/HULL.T*(h-padT-padB);
+    g.save();
+    g.beginPath(); g.rect(xm(-5), zm(0), xm(5)-xm(-5), zm(HULL.T)-zm(0)); g.clip();
+    Motion.drawField(g, w, h, 7, (px, py) => {
+      const x = (px-padL)/(w-padL-padR)*10-5;
+      const z = (py-padT)/(h-padT-padB)*HULL.T;
+      if(x<-5||x>5||z<0||z>HULL.T) return null;
+      // source strength: with the bow leading at x=+5, water is pushed out
+      // where the hull widens along the flow (bow half) — that is −∂f/∂x here.
+      const s = -dfdx(P_CLASSIC, x, z)/smax;
+      const tt = Math.sign(s)*Math.sqrt(Math.min(1, Math.abs(s)*1.3));
+      const col = tt>=0 ? mix(Pal.divmid, Pal.red, tt) : mix(Pal.divmid, Pal.blue, -tt);
+      return {color: col, alpha: intro*(.15+.72*Math.abs(tt))};
+    });
+    g.restore();
+    // outline of profile
+    g.beginPath();
+    g.rect(xm(-5), zm(0), xm(5)-xm(-5), zm(HULL.T)-zm(0));
+    g.strokeStyle = Pal.axis; g.lineWidth=1; g.stroke();
+    hline(g, padL-6, w-padR+6, zm(0), Pal.ink);
+    axisText(g, 'waterline', w-padR, zm(0)-9, 'right');
+    axisText(g, 'keel  (z = T)', w-padR, zm(HULL.T)+10, 'right');
+    axisText(g, 'stern', xm(-5), h-8, 'left');
+    axisText(g, 'bow', xm(5), h-8, 'right');
+    // flow arrows: out at bow (right half), in at stern
+    const aY = zm(HULL.T*0.30);
+    Motion.arrow(g, xm(2.6), aY, xm(2.6), aY-34, Pal.red, {w:3, k:intro, glow:Pal.glow});
+    Motion.arrow(g, xm(-2.6), aY-34, xm(-2.6), aY, Pal.blue, {w:3, k:intro, glow:Pal.glow});
+    axisText(g, 'water pushed out (source)', xm(2.6)+12, aY-18, 'left', Pal.ink2);
+    axisText(g, 'water closes in (sink)', xm(-2.6)-12, aY-18, 'right', Pal.ink2);
+  });
+})();
+
+/* ================= fig 4: one direction ================================= */
+(function(){
+  const cv = document.getElementById('cv-direction');
+  const slider = document.getElementById('dir-theta');
+  const out = document.getElementById('dir-readout');
+  const thM = Motion.motor(0, 7);
+  slider.addEventListener('input', () => thM.target = parseFloat(slider.value)*Math.PI/180);
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const th = thM.value;
+    const fn = 0.35, nu = nuOf(fn);
+    const lam = 1/Math.cos(th);
+    const k = nu*lam*lam; // wavenumber
+    const phase = Motion.reduced ? 0 : t*0.55; // slow ambient drift
+    const SC = 14; // px per meter
+    Motion.drawField(g, w, h, 6, (px, py) => {
+      const x = (px-w*0.5)/SC, y = (py-h*0.5)/SC;
+      const v = Math.cos(k*(x*Math.cos(th)+y*Math.sin(th)) - phase);
+      const tt = v*.5+.5;
+      return {color: mix(Pal.surface, Pal.blue, .10+.62*tt), alpha: intro*.95};
+    });
+    // hull outline for scale
+    const xm = x => w*0.5 + x*SC, ym = y => h*0.5 + y*SC;
+    g.beginPath();
+    const n=60;
+    for(let i=0;i<=n;i++){ const x=-5+10*i/n; i?g.lineTo(xm(x),ym(-fSurf(P_CLASSIC,x,0)*2.5)):g.moveTo(xm(x),ym(-fSurf(P_CLASSIC,x,0)*2.5)); }
+    for(let i=n;i>=0;i--){ const x=-5+10*i/n; g.lineTo(xm(x),ym(fSurf(P_CLASSIC,x,0)*2.5)); }
+    g.closePath(); g.fillStyle=Pal.surface; g.globalAlpha=.92; g.fill(); g.globalAlpha=1;
+    g.strokeStyle=Pal.ink; g.lineWidth=1.5; g.stroke();
+    Motion.arrow(g, xm(0), ym(0), xm(0)+84*Math.cos(th), ym(0)+84*Math.sin(th), Pal.orange, {w:3, k:intro, glow:Pal.glow});
+    axisText(g, 'ship travels →', xm(0), ym(0)-16- fSurf(P_CLASSIC,0,0)*2.5*SC, 'center', Pal.ink);
+    const wl = 2*Math.PI/k;
+    out.innerHTML = `θ = <b>${(th*180/Math.PI).toFixed(0)}°</b> · λ = sec θ = <b>${lam.toFixed(2)}</b> · wavelength = <b>${wl.toFixed(1)} m</b>`;
+  });
+})();
+
+/* ================= fig 5: phasor accumulation =========================== */
+(function(){
+  const cv = document.getElementById('cv-phasor');
+  const slider = document.getElementById('ph-lambda');
+  const out = document.getElementById('ph-readout');
+  const lamM = Motion.motor(1.22, 6);
+  slider.addEventListener('input', () => lamM.target = parseFloat(slider.value));
+  const fn = 0.35, nu = nuOf(fn);
+  // cumulative integral C(x) = ∫_-5^x S(x') e^{ikx'} dx', S = z-integrated source
+  function trace(lam, N){
+    const k = nu*lam, kap = nu*lam*lam;
+    const E = expMoments(kap);
+    const pts = [[0,0]];
+    let re=0, im=0;
+    const dx = 10/N;
+    for(let i=0;i<N;i++){
+      const x = -5 + dx*(i+.5);
+      // S(x) = ∫ dfdx e^{-kap z} dz  — z-quadratic closed form via E moments
+      const u = (x+HULL.a)/HULL.L;
+      const dbx = [-2*(1-u), 2-4*u, 2*u];
+      let S=0;
+      for(let ii=0;ii<3;ii++) for(let j=0;j<3;j++){
+        let zint=0, Tn=1;
+        for(let nn=0;nn<3;nn++){ zint += BZ[j][nn]*E[nn]/Tn; Tn*=HULL.T; }
+        S += P_CLASSIC[ii*3+j]*dbx[ii]*zint;
+      }
+      S/=HULL.L;
+      re += S*Math.cos(k*x)*dx; im += S*Math.sin(k*x)*dx;
+      pts.push([re,im]);
+    }
+    return pts;
+  }
+  let cache = {lam:0, pts:null};
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const lam = lamM.value;
+    if(Math.abs(lam-cache.lam)>1e-4){ cache = {lam, pts: trace(lam, 240)}; }
+    const pts = cache.pts;
+    // sweep position 0..1 cycles with ambient time
+    const sweep = Motion.reduced ? 1 : Math.min(1, (t%7)/5) * intro;
+    // top: hull profile with marcher
+    const hy0 = 16, hy1 = 96;
+    const xm = x => 40 + (x+5)/10*(w-80);
+    g.beginPath();
+    const n=60;
+    for(let i=0;i<=n;i++){ const x=-5+10*i/n; const y=(hy0+hy1)/2 - fSurf(P_CLASSIC,x,0)*38; i?g.lineTo(xm(x),y):g.moveTo(xm(x),y); }
+    for(let i=n;i>=0;i--){ const x=-5+10*i/n; const y=(hy0+hy1)/2 + fSurf(P_CLASSIC,x,0)*38; g.lineTo(xm(x),y); }
+    g.closePath(); g.strokeStyle=Pal.ink; g.globalAlpha=.55; g.lineWidth=1.3; g.stroke(); g.globalAlpha=1;
+    const mx = -5 + 10*sweep;
+    Motion.haloDot(g, xm(mx), (hy0+hy1)/2, 5, Pal.orange);
+    axisText(g, 'stern', xm(-5), hy1+8, 'left'); axisText(g, 'bow', xm(5), hy1+8, 'right');
+    // bottom: complex plane
+    const cx = w*0.5, cy = (h+110)/2;
+    // find scale from full trace
+    let ext = 1e-9;
+    for(const p of pts){ ext = Math.max(ext, Math.abs(p[0]), Math.abs(p[1])); }
+    const sc = Math.min(w*0.42, (h-130)*0.46)/ext;
+    hline(g, cx-w*0.44, cx+w*0.44, cy, Pal.grid);
+    g.beginPath(); g.moveTo(cx, cy-(h-130)*0.48); g.lineTo(cx, cy+(h-130)*0.48);
+    g.strokeStyle=Pal.grid; g.lineWidth=1; g.stroke();
+    axisText(g, 'I (real)', cx+w*0.44, cy+12, 'right');
+    axisText(g, 'J (imag)', cx+8, cy-(h-130)*0.46, 'left');
+    // trace up to sweep
+    g.beginPath();
+    Motion.partialPath(g, s => {
+      const p = pts[Math.round(s*(pts.length-1))];
+      return [cx+p[0]*sc, cy-p[1]*sc];
+    }, pts.length, sweep);
+    Motion.strokeGlow(g, Pal.blue, 2.8, Pal.glow);
+    const cur = pts[Math.round(sweep*(pts.length-1))];
+    Motion.haloDot(g, cx+cur[0]*sc, cy-cur[1]*sc, 4, Pal.blue);
+    // final F arrow once sweep completes
+    const F = pts[pts.length-1];
+    if(sweep>0.98){
+      Motion.arrow(g, cx, cy, cx+F[0]*sc, cy-F[1]*sc, Pal.orange, {w:3, glow:Pal.glow});
+    }
+    const asq = F[0]*F[0]+F[1]*F[1];
+    out.innerHTML = `λ = <b>${lam.toFixed(2)}</b> · F = ${F[0].toFixed(3)} ${F[1]<0?'−':'+'} ${Math.abs(F[1]).toFixed(3)}i · |F|² = <b>${asq.toFixed(4)}</b>`;
+  });
+})();
+
+/* ================= fig 6: spectrum + R(Fn) ============================== */
+(function(){
+  const cv = document.getElementById('cv-spectrum');
+  const slider = document.getElementById('sp-fn');
+  const out = document.getElementById('sp-readout');
+  // R(Fn) curve — single-pass frac=0.25 quadrature; accurate readout adaptive
+  const FNs = [], Rs = [];
+  for(let i=0;i<=80;i++){
+    const fn = 0.15 + 0.40*i/80;
+    FNs.push(fn);
+    Rs.push(coeffOf(fn)*integrateOuter(P_CLASSIC, nuOf(fn), 0.25).integral);
+  }
+  const Rmax = Math.max(...Rs);
+  let accCache = {fn:0, R:0};
+  const fnM = Motion.motor(0.35, 6);
+  slider.addEventListener('input', () => fnM.target = parseFloat(slider.value));
+  function spectrum(fn, N){
+    // integrand |F(secθ)|² sec³θ over θ
+    const nu = nuOf(fn);
+    const pts = [];
+    let ymax=1e-12;
+    for(let i=0;i<N;i++){
+      const th = i/(N-1)*(88*Math.PI/180);
+      const lam = 1/Math.cos(th);
+      const {F} = amp(P_CLASSIC, lam, nu, false);
+      const s = 1/Math.cos(th);
+      const v = (F[0]*F[0]+F[1]*F[1])*s*s*s;
+      pts.push([th, v]); if(v>ymax) ymax=v;
+    }
+    return {pts, ymax};
+  }
+  let spCache = {fn:0, sp:null};
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const fn = fnM.value;
+    if(Math.abs(fn-spCache.fn)>2e-4){ spCache = {fn, sp: spectrum(fn, 200)}; }
+    const {pts, ymax} = spCache.sp;
+    const half = w*0.52;
+    const padL=40, padB=34, padT=24;
+    // left: spectrum
+    const xm = th => padL + th/(88*Math.PI/180)*(half-padL-14);
+    const ym = v => h-padB - v/ymax*(h-padB-padT);
+    hline(g, padL, half-14, h-padB, Pal.axis);
+    const lastI = Math.max(1, Math.round(intro*(pts.length-1)));
+    g.beginPath();
+    Motion.partialPath(g, s => {
+      const p = pts[Math.round(s*(pts.length-1))];
+      return [xm(p[0]), ym(p[1])];
+    }, pts.length, intro);
+    Motion.strokeGlow(g, Pal.blue, 2.8, Pal.glow);
+    // fill only under the portion drawn so far
+    g.lineTo(xm(pts[lastI][0]), h-padB); g.lineTo(xm(0), h-padB); g.closePath();
+    g.globalAlpha=.08; g.fillStyle=Pal.blue; g.fill(); g.globalAlpha=1;
+    axisText(g, '0°', xm(0), h-padB+12, 'center');
+    axisText(g, '45°', xm(Math.PI/4), h-padB+12, 'center');
+    axisText(g, '88°', xm(88*Math.PI/180), h-padB+12, 'center');
+    axisText(g, 'wave direction θ', (padL+half-14)/2, h-8, 'center');
+    axisText(g, '|F|² sec³θ', padL+4, padT-10, 'left');
+    // right: R(Fn)
+    const rx0 = half+26, rx1 = w-16;
+    const rxm = f => rx0 + (f-0.15)/0.40*(rx1-rx0);
+    const rym = R => h-padB - R/Rmax*(h-padB-padT);
+    hline(g, rx0, rx1, h-padB, Pal.axis);
+    g.beginPath();
+    Motion.partialPath(g, s => {
+      const i = Math.round(s*(FNs.length-1));
+      return [rxm(FNs[i]), rym(Rs[i])];
+    }, FNs.length, intro);
+    Motion.strokeGlow(g, Pal.orange, 2.8, Pal.glow);
+    axisText(g, '0.15', rx0, h-padB+12, 'center');
+    axisText(g, '0.35', rxm(0.35), h-padB+12, 'center');
+    axisText(g, '0.55', rx1, h-padB+12, 'center');
+    axisText(g, 'Froude number', (rx0+rx1)/2, h-8, 'center');
+    axisText(g, 'R (N)', rx0+4, padT-10, 'left');
+    // moving dot at fn (interpolate curve)
+    const fi = Math.max(0, Math.min(FNs.length-1, (fn-0.15)/0.40*(FNs.length-1)));
+    const i0 = Math.floor(fi), i1 = Math.min(FNs.length-1, i0+1);
+    const Rc = Rs[i0] + (Rs[i1]-Rs[i0])*(fi-i0);
+    Motion.haloDot(g, rxm(fn), rym(Rc), 5, Pal.orange);
+    // hollows/humps annotation
+    if(intro>.9){
+      axisText(g, 'hump', rxm(0.30), rym(Rs[Math.round((0.30-0.15)/0.40*80)])-12, 'center', Pal.ink2);
+      axisText(g, 'hollow', rxm(0.35), rym(Rs[Math.round((0.35-0.15)/0.40*80)])+14, 'center', Pal.ink2);
+    }
+    if(Math.abs(fn-accCache.fn)>1e-3){
+      accCache = {fn, R: resistance(P_CLASSIC, fn).R};
+    }
+    out.innerHTML = `Fn = <b>${fn.toFixed(3)}</b> · R = <b>${accCache.R.toFixed(1)} N</b>`;
+  });
+})();
+
+/* ================= fig 7: quadrature panels ============================= */
+(function(){
+  const cv = document.getElementById('cv-quadrature');
+  const slider = document.getElementById('qd-pass');
+  const out = document.getElementById('qd-readout');
+  const fn = 0.35, nu = nuOf(fn), C = coeffOf(fn);
+  const passes = [];
+  let frac = 1;
+  for(let i=0;i<4;i++){
+    passes.push({frac, ...integrateOuter(P_CLASSIC, nu, frac, {collectPanels:true})});
+    frac /= 2;
+  }
+  const spec = [];
+  let ymax = 1e-12;
+  const THMAX = Math.acos(1/passes[0].maxLambda);
+  for(let i=0;i<260;i++){
+    const th = i/259*THMAX;
+    const lam = 1/Math.cos(th);
+    const {F} = amp(P_CLASSIC, lam, nu, false);
+    const s=1/Math.cos(th), v=(F[0]*F[0]+F[1]*F[1])*s*s*s;
+    spec.push([th,v]); if(v>ymax) ymax=v;
+  }
+  const passM = Motion.motor(0, 6);
+  slider.addEventListener('input', () => passM.target = parseInt(slider.value,10));
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const pi = Math.round(passM.value);
+    const pass = passes[pi];
+    const padL=44, padB=52, padT=22, padR=14;
+    const xm = th => padL + th/THMAX*(w-padL-padR);
+    const ym = v => h-padB - v/ymax*(h-padB-padT);
+    hline(g, padL, w-padR, h-padB, Pal.axis);
+    // integrand
+    g.beginPath();
+    Motion.partialPath(g, s => {
+      const p = spec[Math.round(s*(spec.length-1))];
+      return [xm(p[0]), ym(p[1])];
+    }, spec.length, intro);
+    Motion.strokeGlow(g, Pal.blue, 2.6, Pal.glow);
+    // panel ticks (skip any closer than 2px to the previous tick)
+    g.globalAlpha = .8*intro;
+    g.strokeStyle = Pal.orange; g.lineWidth = 1;
+    let lastX = -9;
+    g.beginPath();
+    for(const p of pass.panels){
+      const x = xm(p[0]);
+      if(x - lastX < 2) continue;
+      lastX = x;
+      g.moveTo(x, h-padB); g.lineTo(x, h-padB+8);
+    }
+    g.stroke();
+    g.globalAlpha = 1;
+    axisText(g, '0°', xm(0), h-padB+20, 'center');
+    axisText(g, (THMAX*180/Math.PI).toFixed(0)+'° (truncation: λ stopped mattering)', xm(THMAX), h-padB+20, 'right');
+    axisText(g, 'outer integrand at Fn 0.35 — panel edges below', padL, padT-8, 'left');
+    const est = pi>0 ? Math.abs(pass.integral-passes[pi-1].integral)/Math.abs(pass.integral) : NaN;
+    out.innerHTML = `pass <b>${pi+1}</b> · ${pass.panels.length} panels · ${pass.evals.toLocaleString()} evaluations · R ≈ <b>${(C*pass.integral).toFixed(4)} N</b>` +
+      (pi>0 ? ` · est. rel. error <b>${est.toExponential(1)}</b>` : ' · (first pass — no estimate yet)');
+  });
+})();
+
+/* ================= fig 8: FD cost counter =============================== */
+(function(){
+  const cv = document.getElementById('cv-fd');
+  const out = document.getElementById('fd-readout');
+  const SOLVE = 22896, REV = 15392;
+  const prog = Motion.motor(0, 1.2); // 0..1 over animation
+  let played = false;
+  const sc = Motion.scene(cv, (t, intro) => {
+    if(intro>.2 && !played){ played = true; prog.value = 0; prog.target = 1; }
+    const [g,w,h] = Motion.fit(cv);
+    const p = prog.value;
+    const padL=190, padR=90, rowH=54;
+    const y1 = h*0.30, y2 = h*0.72;
+    const full = 18*SOLVE;
+    const xw = v => (w-padL-padR)*v/full;
+    // FD row: 18 blocks appearing over p in [0, .75]
+    const fdDone = Math.min(1, p/0.75)*18;
+    g.fillStyle = Pal.orange;
+    for(let i=0;i<Math.floor(fdDone);i++){
+      g.globalAlpha = .85;
+      g.fillRect(padL + xw(i*SOLVE)+1, y1-rowH/2, Math.max(1,xw(SOLVE)-2), rowH);
+    }
+    const fpart = fdDone-Math.floor(fdDone);
+    if(fpart>0 && fdDone<18){
+      g.globalAlpha=.85;
+      g.fillRect(padL + xw(Math.floor(fdDone)*SOLVE)+1, y1-rowH/2, Math.max(1,xw(SOLVE)*fpart-2), rowH);
+    }
+    g.globalAlpha=1;
+    // one-pass row: solve block + reverse block over p in [.75, 1]
+    const op = Math.max(0, Math.min(1, (p-0.75)/0.25));
+    g.fillStyle = Pal.blue;
+    g.fillRect(padL, y2-rowH/2, xw(SOLVE*Math.min(1,op*2)), rowH);
+    g.fillStyle = Pal.aqua;
+    if(op>0.5) g.fillRect(padL+xw(SOLVE), y2-rowH/2, xw(REV*(op-0.5)*2), rowH);
+    axisText(g, 'finite differences: 18 solves', padL-10, y1, 'right', Pal.ink);
+    axisText(g, 'this PR: 1 solve + reverse pass', padL-10, y2, 'right', Pal.ink);
+    const fdCount = Math.round(Math.min(fdDone,18)*SOLVE);
+    const opCount = Math.round(SOLVE*Math.min(1,op*2) + REV*Math.max(0,(op-0.5)*2));
+    axisText(g, fdCount.toLocaleString(), padL + xw(Math.min(fdDone,18)*SOLVE)+8, y1, 'left', Pal.ink);
+    axisText(g, opCount.toLocaleString(), padL + xw(SOLVE*Math.min(1,op*2)+REV*Math.max(0,(op-0.5)*2))+8, y2, 'left', Pal.ink);
+    out.innerHTML = p>0.99 ? `<b>412,128</b> vs <b>38,288</b> inner evaluations — 10.8× fewer, before any wall-clock effects` : '';
+  });
+  document.getElementById('fd-replay').onclick = () => { prog.value=0; prog.target=1; out.textContent=''; };
+})();
+
+/* ================= fig 9: linearity ==================================== */
+(function(){
+  const cv = document.getElementById('cv-linear');
+  const sel = document.getElementById('ln-ctrl');
+  const slider = document.getElementById('ln-val');
+  const out = document.getElementById('ln-readout');
+  const names = [];
+  const rlab = ['bow','midship','stern'], clab = ['waterline','mid-depth','keel'];
+  for(let i=0;i<3;i++) for(let j=0;j<3;j++) names.push(`${rlab[i]} / ${clab[j]}`);
+  names.forEach((n,k) => {
+    const o = document.createElement('option');
+    o.value = k; o.textContent = `P${k} — ${n}`;
+    sel.appendChild(o);
+  });
+  sel.value = 3; // midship waterline
+  const fn = 0.35, nu = nuOf(fn), LAM = 1.22;
+  const {basis} = amp(P_POSITIVE, LAM, nu, true);
+  const P = P_POSITIVE.slice();
+  // fixed display scale: max extent of the tip-to-tail path at default P
+  let ext = 1e-9, exr = 0, exi = 0;
+  for(let k=0;k<9;k++){
+    exr += basis[k][0]*P[k]; exi += basis[k][1]*P[k];
+    ext = Math.max(ext, Math.abs(exr), Math.abs(exi));
+  }
+  const valM = Motion.motor(P[3], 8);
+  let selK = 3;
+  sel.addEventListener('change', () => {
+    selK = parseInt(sel.value,10);
+    slider.value = P[selK];
+    valM.value = valM.target = P[selK];
+  });
+  slider.addEventListener('input', () => { valM.target = parseFloat(slider.value); });
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    P[selK] = valM.value;
+    const cx = w*0.42, cy = h*0.62;
+    const sc = Math.min(w*0.5, h)*0.52/ext;
+    hline(g, 20, w-20, cy, Pal.grid);
+    g.beginPath(); g.moveTo(cx, 16); g.lineTo(cx, h-16);
+    g.strokeStyle=Pal.grid; g.lineWidth=1; g.stroke();
+    // tip-to-tail arrows
+    let x=cx, y=cy;
+    for(let k=0;k<9;k++){
+      const bx = basis[k][0]*P[k]*sc, by = basis[k][1]*P[k]*sc;
+      const col = k===selK ? Pal.orange : Pal.blue;
+      const dim = (k===selK) ? 1 : .45;
+      g.save(); g.globalAlpha = dim;
+      Motion.arrow(g, x, y, x+bx, y-by, col, {w: k===selK?3:2, head:6, k:intro, glow:Pal.glow});
+      g.restore();
+      x+=bx; y-=by;
+    }
+    // ghost line: locus of F as P[selK] varies 0..1.6
+    const {F} = ((Pq) => amp(Pq, LAM, nu, false))(P);
+    g.setLineDash([3,5]);
+    g.beginPath();
+    const b = basis[selK];
+    const F0re = F[0]-P[selK]*b[0], F0im = F[1]-P[selK]*b[1];
+    g.moveTo(cx+(F0re+0*b[0])*sc, cy-(F0im+0*b[1])*sc);
+    g.lineTo(cx+(F0re+1.6*b[0])*sc, cy-(F0im+1.6*b[1])*sc);
+    g.strokeStyle = Pal.muted; g.lineWidth=1.2; g.globalAlpha=.8*intro; g.stroke();
+    g.setLineDash([]); g.globalAlpha=1;
+    // total F
+    Motion.arrow(g, cx, cy, cx+F[0]*sc, cy-F[1]*sc, Pal.ink, {w:3.4, head:8, k:intro, glow:Pal.glow});
+    axisText(g, 'F', cx+F[0]*sc+10, cy-F[1]*sc-6, 'left', Pal.ink);
+    axisText(g, 'I', w-24, cy+12, 'right'); axisText(g, 'J', cx+8, 22, 'left');
+    out.innerHTML = `P${selK} = <b>${P[selK].toFixed(2)}</b> · |F|² = <b>${(F[0]*F[0]+F[1]*F[1]).toFixed(4)}</b>`;
+  });
+})();
+
+/* ================= fig 10: derivative of the square ===================== */
+(function(){
+  const cv = document.getElementById('cv-square');
+  const slider = document.getElementById('sq-eps');
+  const out = document.getElementById('sq-readout');
+  const epsM = Motion.motor(0.22, 8);
+  slider.addEventListener('input', () => epsM.target = parseFloat(slider.value));
+  const fn = 0.35, nu = nuOf(fn), LAM = 1.22;
+  const A = amp(P_POSITIVE, LAM, nu, true);
+  const F = A.F;
+  // direction the bow-waterline handle pushes F (its phase differs from F's,
+  // so both components show), scaled to |F| so the slider's ε reads as a
+  // fraction of |F| (the identity holds for any B)
+  const Braw = A.basis[0];
+  const Bn = Math.hypot(Braw[0], Braw[1]), Fn_ = Math.hypot(F[0], F[1]);
+  const B = [Braw[0]/Bn*Fn_, Braw[1]/Bn*Fn_];
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const eps = epsM.value;
+    const cx = w*0.40, cy = h*0.60;
+    const sc = Math.min(w,h)*0.42/Math.hypot(F[0],F[1]);
+    hline(g, 20, w-20, cy, Pal.grid);
+    g.beginPath(); g.moveTo(cx,16); g.lineTo(cx,h-16); g.strokeStyle=Pal.grid; g.lineWidth=1; g.stroke();
+    // |F| circle
+    const rF = Math.hypot(F[0],F[1])*sc;
+    g.beginPath(); g.arc(cx, cy, rF, 0, Math.PI*2);
+    g.strokeStyle = Pal.muted; g.globalAlpha=.35*intro; g.lineWidth=1; g.setLineDash([2,5]); g.stroke();
+    g.setLineDash([]); g.globalAlpha=1;
+    // F arrow
+    const fx = cx+F[0]*sc, fy = cy-F[1]*sc;
+    Motion.arrow(g, cx, cy, fx, fy, Pal.ink, {w:3.2, head:8, k:intro, glow:Pal.glow});
+    axisText(g, 'F', fx+8, fy, 'left', Pal.ink);
+    // nudge eps*B decomposed along/perp F
+    const uf = [F[0]/Math.hypot(F[0],F[1]), F[1]/Math.hypot(F[0],F[1])];
+    const dot = (B[0]*uf[0]+B[1]*uf[1])*eps;      // along component (signed)
+    const perp = [B[0]*eps - dot*uf[0], B[1]*eps - dot*uf[1]];
+    // full nudge (orange)
+    Motion.arrow(g, fx, fy, fx+B[0]*eps*sc, fy-B[1]*eps*sc, Pal.orange, {w:2.8, head:6, glow:Pal.glow});
+    // along-F (aqua) and perp (muted)
+    Motion.arrow(g, fx, fy, fx+dot*uf[0]*sc, fy-dot*uf[1]*sc, Pal.aqua, {w:2.6, head:6, glow:Pal.glow});
+    g.save(); g.globalAlpha=.55;
+    Motion.arrow(g, fx+dot*uf[0]*sc, fy-dot*uf[1]*sc, fx+dot*uf[0]*sc+perp[0]*sc, fy-dot*uf[1]*sc-perp[1]*sc, Pal.muted, {w:2, head:5, glow:0});
+    g.restore();
+    axisText(g, 'ε·B', fx+B[0]*eps*sc+8, fy-B[1]*eps*sc, 'left', Pal.orange);
+    axisText(g, 'along F — changes |F|', fx+dot*uf[0]*sc*1.02+8, fy-dot*uf[1]*sc*1.02+14, 'left', Pal.aqua);
+    const exact = (F[0]+B[0]*eps)**2 + (F[1]+B[1]*eps)**2 - (F[0]**2+F[1]**2);
+    const lin = 2*(F[0]*B[0]+F[1]*B[1])*eps;
+    out.innerHTML = `ε = <b>${eps.toFixed(2)}</b> · exact Δ|F|² = <b>${exact.toFixed(4)}</b> · linear 2Re(F̄·B)ε = <b>${lin.toFixed(4)}</b> · gap = ${(exact-lin).toFixed(4)} (∝ ε²)`;
+  });
+})();
+
+/* ================= fig 12: gradient demo ================================ */
+(function(){
+  const FN = 0.35;
+  const st = buildHullFig('cv-gradient', P_POSITIVE, {gradient:true, arrowScale:0.32});
+  const out = document.getElementById('gr-readout');
+  const arrowM = [...Array(9)].map(() => Motion.motor(0, 6));
+  let cur = null, history = [];
+  function recompute(){
+    cur = gradient(st.P, FN);
+    for(let k=0;k<9;k++) arrowM[k].target = cur.grad[k];
+    st.gradArrows = arrowM.map(m => m.value);
+    show();
+  }
+  st.gradArrows = [0,0,0,0,0,0,0,0,0];
+  // keep displayed arrows gliding
+  setInterval(() => { if(cur) st.gradArrows = arrowM.map(m => m.value); }, 50);
+  function show(){
+    out.innerHTML = `R = <b>${cur.R.toFixed(2)} N</b> · displacement = <b>${volume(st.P).toFixed(3)} m³</b>` +
+      (history.length ? ` · steps: ${history.length}` : '');
+  }
+  st.onChange = () => { if(st.drag<0) recompute(); };
+  recompute();
+  function step(){
+    const gmax = Math.max(...cur.grad.map(Math.abs));
+    const eta = 0.015/gmax;
+    const Pn = st.P.map((v,k) => Math.max(0.02, v - eta*cur.grad[k]));
+    history.push(cur.R);
+    st.set(Pn);
+  }
+  document.getElementById('gr-step').onclick = step;
+  let running = false;
+  document.getElementById('gr-run').onclick = () => {
+    if(running) return;
+    running = true;
+    let n = 0;
+    const tick = () => {
+      if(n++ >= 22){ running = false; show(); return; }
+      step();
+      setTimeout(tick, 70);
+    };
+    tick();
+  };
+  document.getElementById('gr-reset').onclick = () => { history=[]; st.set(P_POSITIVE); };
+})();
+
+/* ================= fig 13: V-curve ===================================== */
+(function(){
+  const cv = document.getElementById('cv-vcurve');
+  // PR data: h, wigley max scaled error, multispan cubic max scaled error
+  const data = [
+    [1e-2, 2.83e-6, 3.19e-6],
+    [1e-3, 1.62e-11, 1.19e-10],
+    [1e-4, 1.03e-10, 1.21e-10],
+    [1e-5, 1.65e-9, 5.42e-10],
+    [1e-6, 1.92e-8, 3.23e-9],
+    [1e-7, 1.99e-7, 2.69e-8],
+  ];
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const padL=64, padR=20, padT=30, padB=44;
+    const lx = v => padL + (Math.log10(v)+7)/5*(w-padL-padR);       // h: 1e-7..1e-2
+    const ly = v => h-padB - (Math.log10(v)+12)/7*(h-padT-padB);    // err: 1e-12..1e-5
+    // grid
+    for(let e=-12;e<=-5;e++){
+      hline(g, padL, w-padR, ly(10**e), Pal.grid);
+      axisText(g, '1e'+e, padL-6, ly(10**e), 'right');
+    }
+    for(let e=-7;e<=-2;e++) axisText(g, '1e'+e, lx(10**e), h-padB+14, 'center');
+    axisText(g, 'finite-difference step h', (padL+w-padR)/2, h-8, 'center');
+    axisText(g, 'max scaled disagreement, analytic vs FD', padL, padT-12, 'left');
+    const series = [[1, Pal.blue, 'Wigley'], [2, Pal.orange, 'multi-span cubic']];
+    for(const [ci, col, label] of series){
+      g.beginPath();
+      Motion.partialPath(g, s => {
+        const i = Math.round(s*(data.length-1));
+        return [lx(data[i][0]), ly(data[i][ci])];
+      }, data.length, intro);
+      Motion.strokeGlow(g, col, 2.6, Pal.glow);
+      for(const d of data) Motion.haloDot(g, lx(d[0]), ly(d[ci]), 3.5, col);
+    }
+    axisText(g, 'Wigley', lx(1.3e-7), ly(2.2e-7)-12, 'left', Pal.blue);
+    axisText(g, 'multi-span cubic', lx(1.3e-7), ly(2.8e-8)+14, 'left', Pal.orange);
+    if(intro>.9){
+      axisText(g, '← cancellation (subtracting equals)', lx(2e-6), padT+8, 'left', Pal.ink2);
+      axisText(g, 'truncation ∝ h² →', lx(1e-3), padT+8, 'left', Pal.ink2);
+    }
+  });
+})();
+
+/* ================= fig 14: performance ================================= */
+(function(){
+  const cv = document.getElementById('cv-perf');
+  const rows = [
+    ['gradient, 100-sample run', 48.293, 2.943, '16.4×'],
+    ['gradient, 150-sample run', 41.856, 2.971, '14.1×'],
+  ];
+  Motion.scene(cv, (t, intro) => {
+    const [g,w,h] = Motion.fit(cv);
+    const padL=200, padR=150;
+    const xw = v => (w-padL-padR)*v/50;
+    let y = 46;
+    axisText(g, 'time for one nine-control gradient (ms, median)', padL, 16, 'left', Pal.ink2);
+    for(const [label, fd, an, ratio] of rows){
+      axisText(g, label, padL-10, y+18, 'right', Pal.ink);
+      g.fillStyle = Pal.orange; g.globalAlpha=.9;
+      g.fillRect(padL, y, xw(fd)*intro, 16);
+      g.fillStyle = Pal.blue;
+      g.fillRect(padL, y+22, Math.max(2,xw(an)*intro), 16);
+      g.globalAlpha=1;
+      axisText(g, fd.toFixed(1)+' ms — finite differences', padL+xw(fd)*intro+8, y+8, 'left');
+      axisText(g, an.toFixed(1)+' ms — exact ('+ratio+')', padL+Math.max(2,xw(an)*intro)+8, y+30, 'left');
+      y += 74;
+    }
+    axisText(g, 'plain resistance sweep (21 speeds): 41.2→38.3 ms and 46.6→41.6 ms (−7 to −11%)', padL-10-  (0), y+6, 'left', Pal.ink2);
+    axisText(g, 'low-Froude single solve: −4.6% / +5.0% across runs — inconclusive', padL-10-(0), y+26, 'left', Pal.ink2);
+  });
+})();
+
+Motion.start();
+</script>
