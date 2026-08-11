@@ -1,7 +1,7 @@
 //! Validated hull wrapper: a B-spline half-breadth surface plus everything
 //! the resistance computations need, precomputed once.
 
-use crate::bspline::BSplineSurface;
+use crate::bspline::{ders_basis, BSplineSurface};
 use crate::error::{Error, Result};
 use crate::quadrature::gauss_legendre;
 
@@ -371,6 +371,44 @@ impl Hull {
 
     pub(crate) fn fx_coeff(&self) -> &[f64] {
         &self.fx_coeff
+    }
+
+    /// Reverse the linear map from surface controls to the local polynomial
+    /// coefficients of `∂f/∂x` used by the exact Michell inner integral.
+    pub(crate) fn fx_control_adjoint(&self, coeff_adjoint: &[f64]) -> Vec<f64> {
+        let surface = &self.surface;
+        let (p, q) = (surface.degree_x(), surface.degree_z());
+        let xs = surface.x_span_indices();
+        let zs = surface.z_span_indices();
+        assert_eq!(coeff_adjoint.len(), xs.len() * zs.len() * p * (q + 1));
+
+        let mut factorial = vec![1.0f64; p.max(q) + 2];
+        for index in 1..factorial.len() {
+            factorial[index] = factorial[index - 1] * index as f64;
+        }
+        let mut control_adjoint = vec![0.0; surface.control().len()];
+        for (isx, &sx) in xs.iter().enumerate() {
+            let ndx = ders_basis(surface.knots_x(), p, sx, surface.knots_x()[sx], p);
+            for (isz, &sz) in zs.iter().enumerate() {
+                let ndz = ders_basis(surface.knots_z(), q, sz, surface.knots_z()[sz], q);
+                for a in 0..p {
+                    for b in 0..=q {
+                        let coefficient = coeff_adjoint
+                            [((isx * zs.len() + isz) * p + a) * (q + 1) + b]
+                            / (factorial[a] * factorial[b]);
+                        for (i, &bx) in ndx[a + 1].iter().enumerate() {
+                            let ci = sx - p + i;
+                            for (j, &bz) in ndz[b].iter().enumerate() {
+                                let cj = sz - q + j;
+                                control_adjoint[ci * surface.n_ctrl_z() + cj] +=
+                                    coefficient * bx * bz;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        control_adjoint
     }
 
     /// `∂f_a/∂x` coefficients for the antisymmetric half-beam, or `None` if the

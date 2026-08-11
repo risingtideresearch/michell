@@ -82,6 +82,19 @@ pub struct WaveResistance {
     pub max_lambda: f64,
 }
 
+/// Michell resistance and its exact first derivative with respect to the
+/// symmetric hull's B-spline control net (row-major, matching
+/// [`crate::BSplineSurface::control`]).
+#[derive(Debug, Clone)]
+pub struct WaveResistanceGradient {
+    pub wave: WaveResistance,
+    /// `∂R_w/∂Pᵢⱼ` [N/m] for each half-breadth control value.
+    pub control_gradient: Vec<f64>,
+    /// Inner-integral evaluations in the one reverse pass, separate from the
+    /// primal evaluations reported by [`WaveResistance::inner_evaluations`].
+    pub gradient_evaluations: usize,
+}
+
 /// Position of one hull of a multihull, in the global (fleet) frame.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Placement {
@@ -104,6 +117,87 @@ pub fn wave_resistance_with(
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
     multihull_wave_resistance_with(&[(hull, Placement::default())], cond, opts)
+}
+
+/// Wave resistance and exact B-spline control-net gradient with default
+/// quadrature options. See [`wave_resistance_gradient_with`].
+pub fn wave_resistance_gradient(hull: &Hull, cond: &Conditions) -> Result<WaveResistanceGradient> {
+    wave_resistance_gradient_with(hull, cond, &WaveOptions::default())
+}
+
+/// Wave resistance and exact B-spline control-net gradient.
+///
+/// The inner amplitude is linear in every control value and the resistance is
+/// quadratic in that amplitude. This routine reverse-accumulates
+/// `2 Re(conj(F) · ∂F/∂Pᵢⱼ)` on the final adaptive outer-quadrature pass, then
+/// applies the transpose of the exact control-to-span-polynomial map. Its cost
+/// is one primal convergence plus one reverse pass, independent of the number
+/// of controls; no finite differencing is used.
+///
+/// The derivative holds knots, degrees, speed, and fluid conditions fixed. It
+/// is currently defined for a symmetric [`Hull`]; an asymmetric hull has two
+/// physical control nets and is rejected rather than returning an ambiguous
+/// derivative of only its symmetric mean surface.
+pub fn wave_resistance_gradient_with(
+    hull: &Hull,
+    cond: &Conditions,
+    opts: &WaveOptions,
+) -> Result<WaveResistanceGradient> {
+    if hull.is_asymmetric() {
+        return Err(Error::InvalidGeometry(
+            "wave_resistance_gradient requires a symmetric hull".into(),
+        ));
+    }
+    let members = [(hull, Placement::default())];
+    validate_fleet(&members, cond, opts)?;
+    let u = cond.speed;
+    let g = cond.gravity;
+    let nu = g / (u * u);
+    let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
+    let params = OuterParams {
+        nu,
+        x_half: hull.x_half_extent(),
+        y_half: 0.0,
+        t_max: hull.draft(),
+    };
+
+    let mut primal_inner = InnerIntegral::new(hull, nu);
+    let (wave, frac) = run_outer_with_frac(&params, opts, coeff, |lambda| {
+        primal_inner.eval(lambda).abs_sq()
+    });
+
+    const GL_N: usize = 16;
+    let (gx, gw) = gauss_legendre(GL_N);
+    let mut coeff_adjoint = vec![0.0; hull.fx_coeff().len()];
+    let mut reverse_inner = InnerIntegral::new(hull, nu);
+    let mut gradient_evaluations = 0usize;
+    let (reverse_integral, reverse_max_lambda) = integrate_outer(
+        &params,
+        frac,
+        &gx,
+        &gw,
+        &mut |lambda, weight| {
+            reverse_inner
+                .eval_with_coeff_adjoint(lambda, weight, &mut coeff_adjoint)
+                .abs_sq()
+        },
+        &mut gradient_evaluations,
+    );
+    debug_assert!(
+        (coeff * reverse_integral - wave.resistance).abs()
+            <= 1e-12 * wave.resistance.abs().max(1.0)
+    );
+    debug_assert_eq!(reverse_max_lambda, wave.max_lambda);
+
+    let mut control_gradient = hull.fx_control_adjoint(&coeff_adjoint);
+    for derivative in &mut control_gradient {
+        *derivative *= coeff;
+    }
+    Ok(WaveResistanceGradient {
+        wave,
+        control_gradient,
+        gradient_evaluations,
+    })
 }
 
 /// Wave resistance of a hull **heeled** by `heel` radians about its
@@ -493,7 +587,9 @@ struct OuterParams {
 fn integrate_outer(
     params: &OuterParams,
     frac: f64,
-    amp_sq: &mut impl FnMut(f64) -> f64,
+    gx: &[f64],
+    gw: &[f64],
+    amp_sq: &mut impl FnMut(f64, f64) -> f64,
     evals: &mut usize,
 ) -> (f64, f64) {
     const GL_N: usize = 16;
@@ -507,7 +603,6 @@ fn integrate_outer(
     const LAMBDA_HARD_CAP: f64 = 1e4;
     const MAX_EVALS_PER_PASS: usize = 4_000_000;
 
-    let (gx, gw) = gauss_legendre(GL_N);
     let nu = params.nu;
     let (x_half, y_half, t_max) = (params.x_half, params.y_half, params.t_max);
 
@@ -515,9 +610,7 @@ fn integrate_outer(
     // 2 ν x_half d(sec θ)/dθ, the z-decay envelope 2 ν T d(sec²θ)/dθ, and the
     // transverse separation phase ν y λ√(λ²−1) = ν y sec θ tan θ contributes
     // 2 ν y_half d(sec θ tan θ)/dθ = 2 ν y_half sec θ (sec²θ + tan²θ).
-    let rate = |theta: f64| -> f64 {
-        let sec = 1.0 / theta.cos();
-        let tan = theta.tan();
+    let rate = |sec: f64, tan: f64| -> f64 {
         2.0 * nu * sec * tan * (x_half + t_max * sec)
             + 2.0 * nu * y_half * sec * (sec * sec + tan * tan)
             + 4.0
@@ -532,8 +625,11 @@ fn integrate_outer(
     let mut window_sum = 0.0f64;
     let mut window_phase = 0.0f64;
     let mut pass_evals = 0usize;
+    let mut lambda = 1.0f64;
     while theta < FRAC_PI_2 - 1e-12 {
-        let local_rate = rate(theta);
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        let sec_theta = 1.0 / cos_theta;
+        let local_rate = rate(sec_theta, sin_theta * sec_theta);
         let dt = (frac * 2.0 * PI / local_rate)
             .min(frac * cap)
             .min(FRAC_PI_2 - theta)
@@ -544,16 +640,18 @@ fn integrate_outer(
         for (i, &xi) in gx.iter().enumerate() {
             let th = mid + half * xi;
             let sec = 1.0 / th.cos();
-            panel += gw[i] * amp_sq(sec) * sec * sec * sec;
+            let sec_cubed = sec * sec * sec;
+            panel += gw[i] * amp_sq(sec, half * gw[i] * sec_cubed) * sec_cubed;
         }
         panel *= half;
         total += panel;
         pass_evals += GL_N;
         theta += dt;
+        lambda = 1.0 / theta.cos();
 
         // Truncation: only past λ = 2, and only when an entire window of
         // accumulated oscillation phase contributed negligibly.
-        if 1.0 / theta.cos() > 2.0 {
+        if lambda > 2.0 {
             window_sum += panel;
             window_phase += local_rate * dt;
             if window_phase >= STOP_WINDOW_PHASE {
@@ -564,12 +662,12 @@ fn integrate_outer(
                 window_phase = 0.0;
             }
         }
-        if 1.0 / theta.cos() > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
+        if lambda > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
             break;
         }
     }
     *evals += pass_evals;
-    (total, 1.0 / theta.cos().max(1e-300))
+    (total, lambda)
 }
 
 // ---------------------------------------------------------------------------
@@ -615,22 +713,26 @@ fn superpose<M: MemberWave>(members: &mut [M], nu: f64, lambda: f64) -> f64 {
 /// March the outer integral to the requested tolerance and assemble the
 /// [`WaveResistance`]; `coeff = 4ρg²/(πU²)` is the Michell prefactor. Shared by
 /// every wave-resistance entry point.
-fn run_outer(
+fn run_outer_with_frac(
     params: &OuterParams,
     opts: &WaveOptions,
     coeff: f64,
     mut amp_sq: impl FnMut(f64) -> f64,
-) -> WaveResistance {
+) -> (WaveResistance, f64) {
+    const GL_N: usize = 16;
+    let (gx, gw) = gauss_legendre(GL_N);
+    let mut sample = |lambda: f64, _weight: f64| amp_sq(lambda);
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+    let (mut integral, mut max_lambda) =
+        integrate_outer(params, frac, &gx, &gw, &mut sample, &mut evals);
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+        let (refined, ml) = integrate_outer(params, frac, &gx, &gw, &mut sample, &mut evals);
         evals_total += evals;
         let scale = refined.abs().max(f64::MIN_POSITIVE);
         est_rel = (refined - integral).abs() / scale;
@@ -640,12 +742,24 @@ fn run_outer(
             break;
         }
     }
-    WaveResistance {
-        resistance: coeff * integral,
-        est_rel_error: est_rel,
-        inner_evaluations: evals_total,
-        max_lambda,
-    }
+    (
+        WaveResistance {
+            resistance: coeff * integral,
+            est_rel_error: est_rel,
+            inner_evaluations: evals_total,
+            max_lambda,
+        },
+        frac,
+    )
+}
+
+fn run_outer(
+    params: &OuterParams,
+    opts: &WaveOptions,
+    coeff: f64,
+    amp_sq: impl FnMut(f64) -> f64,
+) -> WaveResistance {
+    run_outer_with_frac(params, opts, coeff, amp_sq).0
 }
 
 /// Shared validation for the multihull entry points.
@@ -811,6 +925,24 @@ impl<'h> InnerIntegral<'h> {
         self.eval_pair(lambda).0
     }
 
+    /// Evaluate the source amplitude and reverse-accumulate the derivative of
+    /// `weight · |F(λ)|²` with respect to every local `∂f/∂x` coefficient.
+    fn eval_with_coeff_adjoint(
+        &mut self,
+        lambda: f64,
+        weight: f64,
+        coeff_adjoint: &mut [f64],
+    ) -> C64 {
+        let kx = self.nu * lambda;
+        let kappa = self.nu * lambda * lambda;
+        if !self.fill_zm(kappa) {
+            return C64::ZERO;
+        }
+        let amplitude = self.accumulate(kx, self.hull.fx_coeff());
+        self.accumulate_coeff_adjoint(kx, amplitude, weight, coeff_adjoint);
+        amplitude
+    }
+
     /// The source amplitude `F(λ)` and, for an asymmetric hull, the companion
     /// **dipole** amplitude `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz` from the
     /// antisymmetric half-beam. `G` is `None` for a symmetric hull. Both share
@@ -885,6 +1017,35 @@ impl<'h> InnerIntegral<'h> {
             f = f + phase * span_sum;
         }
         f
+    }
+
+    fn accumulate_coeff_adjoint(
+        &mut self,
+        kx: f64,
+        amplitude: C64,
+        weight: f64,
+        coeff_adjoint: &mut [f64],
+    ) {
+        let hull = self.hull;
+        let (p, q) = (self.p, self.q);
+        let nsz = hull.spans_z().len();
+        let x_center = hull.x_center();
+        assert_eq!(coeff_adjoint.len(), hull.fx_coeff().len());
+        for (s, sx) in hull.spans_x().iter().enumerate() {
+            osc_moments(kx, sx.len, p - 1, &mut self.xm);
+            let phase = C64::cis(kx * (sx.start - x_center));
+            for (a, &xma) in self.xm.iter().enumerate() {
+                let x_basis = phase * xma;
+                for t in 0..nsz {
+                    for b in 0..=q {
+                        let index = ((s * nsz + t) * p + a) * (q + 1) + b;
+                        let basis = x_basis.scale(self.zm[t * (q + 1) + b]);
+                        coeff_adjoint[index] +=
+                            weight * 2.0 * (amplitude.re * basis.re + amplitude.im * basis.im);
+                    }
+                }
+            }
+        }
     }
 }
 

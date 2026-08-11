@@ -94,8 +94,9 @@ pub use hull::Hull;
 pub use michell::{
     asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
     multihull_heel_wave_resistance, multihull_wave_resistance, multihull_wave_resistance_lifting,
-    multihull_wave_resistance_with, wave_resistance, wave_resistance_with, LiftingGrid, Placement,
-    WaveOptions, WaveResistance,
+    multihull_wave_resistance_with, wave_resistance, wave_resistance_gradient,
+    wave_resistance_gradient_with, wave_resistance_with, LiftingGrid, Placement, WaveOptions,
+    WaveResistance, WaveResistanceGradient,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
