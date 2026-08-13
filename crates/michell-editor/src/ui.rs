@@ -439,7 +439,7 @@ fn output_section(ui: &mut Ui, o: &mut Output, dir: Option<&Path>) -> bool {
             ComboBox::from_id_salt("out-format")
                 .selected_text(o.format.as_str())
                 .show_ui(ui, |ui| {
-                    for f in [OutputFormat::Csv, OutputFormat::Json] {
+                    for f in OutputFormat::ALL {
                         changed |= ui.selectable_value(&mut o.format, f, f.as_str()).changed();
                     }
                 });
@@ -448,7 +448,7 @@ fn output_section(ui: &mut Ui, o: &mut Output, dir: Option<&Path>) -> bool {
             ui.horizontal(|ui| {
                 changed |= ui.text_edit_singleline(&mut o.file).changed();
                 if ui.button("Browse…").clicked() {
-                    let ext = o.format.as_str();
+                    let ext = o.format.ext();
                     if let Some(p) = save_file_relative(dir, ext, &format!("study.{ext}")) {
                         o.file = p;
                         changed = true;
@@ -457,7 +457,12 @@ fn output_section(ui: &mut Ui, o: &mut Output, dir: Option<&Path>) -> bool {
             });
             ui.end_row();
         });
-    ui.label(RichText::new("blank file → results print to stdout").weak());
+    let hint = if o.format == OutputFormat::Binary {
+        "blank file → <manifest>.msw next to the manifest; opens in the viewer when the sweep finishes"
+    } else {
+        "blank file → results print to stdout"
+    };
+    ui.label(RichText::new(hint).weak());
     changed
 }
 

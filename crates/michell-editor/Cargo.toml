@@ -9,6 +9,10 @@ license = "MIT"
 name = "michell-editor"
 path = "src/main.rs"
 
+[[bin]]
+name = "michell-viewer"
+path = "src/bin/viewer.rs"
+
 [dependencies]
 michell = { path = "../michell" }
 michell-cli = { path = "../michell-cli" }

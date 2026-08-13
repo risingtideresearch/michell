@@ -8,3 +8,4 @@ pub mod preview;
 pub mod runner;
 pub mod ui;
 pub mod validate;
+pub mod viewer;

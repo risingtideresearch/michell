@@ -49,6 +49,7 @@ const MAGIC: &[u8; 4] = b"MSWP";
 const VERSION: u32 = 1;
 
 /// One sample of the free-wave spectrum at a propagation angle θ.
+#[derive(Clone)]
 pub struct SpecSample {
     pub theta: f64,
     pub amp_re: f64,
@@ -158,6 +159,219 @@ fn put_u64(buf: &mut Vec<u8>, v: u64) {
 
 fn put_f64(buf: &mut Vec<u8>, v: f64) {
     buf.extend_from_slice(&v.to_le_bytes());
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+//
+// The writer above is the format's authority; this is its inverse. Front-ends
+// (the `.msw` viewer) decode an archive into typed rows without re-hardcoding
+// the byte layout. Every read is bounds-checked and returns an error rather
+// than panicking, since a `.msw` on disk is untrusted input.
+// ---------------------------------------------------------------------------
+
+/// Study-level scalars and the row-column schema, from the `META` blob.
+#[derive(Clone, Debug)]
+pub struct Meta {
+    pub name: Option<String>,
+    pub fluid: String,
+    pub gravity: f64,
+    pub density: f64,
+    /// Reference length for Froude number (the longest hull).
+    pub l_ref: f64,
+    /// Whether the sweep solved flotation (equilibrium mode).
+    pub float_mode: bool,
+    pub speeds_ms: Vec<f64>,
+    /// Names of the swept-parameter columns (align to `Row::params`).
+    pub axis_labels: Vec<String>,
+    /// Names of the scalar-metric columns (align to `Row::metrics`).
+    pub metric_labels: Vec<String>,
+    pub spectrum_points: usize,
+    pub gz_step_deg: f64,
+    pub gz_max_deg: f64,
+}
+
+/// One output row: the swept values, the metrics, and the per-row curves.
+#[derive(Clone)]
+pub struct Row {
+    pub params: Vec<f64>,
+    pub metrics: Vec<f64>,
+    /// Righting-arm curve as `(heel_rad, gz_m)` pairs; empty when GZ is
+    /// undefined (no weight+vcg loading).
+    pub gz_curve: Vec<(f64, f64)>,
+    pub wavenumber: f64,
+    pub transverse_wavelength: f64,
+    pub spectrum: Vec<SpecSample>,
+}
+
+/// A fully decoded archive: the study metadata, the rows, and the bundled
+/// source files (kept so a study stays reproducible from the archive alone).
+pub struct SweepArchive {
+    pub manifest_name: String,
+    pub manifest_json: String,
+    /// `(filename, raw bytes)` for each referenced hull file.
+    pub hull_files: Vec<(String, Vec<u8>)>,
+    pub meta: Meta,
+    pub rows: Vec<Row>,
+}
+
+/// A bounds-checked, little-endian read cursor over a byte slice.
+struct Cursor<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
+        let end = self.pos.checked_add(n).ok_or("archive: length overflow")?;
+        if end > self.data.len() {
+            return Err("archive: unexpected end of data (truncated?)".into());
+        }
+        let s = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(s)
+    }
+
+    fn u32(&mut self) -> Result<u32, String> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()))
+    }
+
+    fn u64(&mut self) -> Result<u64, String> {
+        Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+
+    fn f64(&mut self) -> Result<f64, String> {
+        Ok(f64::from_le_bytes(self.take(8)?.try_into().unwrap()))
+    }
+}
+
+/// Decode a `.msw` archive. Unknown blob kinds are skipped so a newer writer's
+/// additions do not break an older reader.
+pub fn read(bytes: &[u8]) -> Result<SweepArchive, String> {
+    if bytes.len() < 8 || &bytes[0..4] != MAGIC {
+        return Err("not an MSWP archive (bad magic)".into());
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    if version != VERSION {
+        return Err(format!("unsupported archive version {version}"));
+    }
+
+    let mut cur = Cursor {
+        data: bytes,
+        pos: 8,
+    };
+    let mut manifest_name = String::new();
+    let mut manifest_json = String::new();
+    let mut hull_files = Vec::new();
+    let mut meta_json: Option<String> = None;
+    let mut rows_blob: Option<&[u8]> = None;
+    while cur.pos < bytes.len() {
+        let kind = cur.u32()?;
+        let name_len = cur.u32()? as usize;
+        let name = String::from_utf8(cur.take(name_len)?.to_vec())
+            .map_err(|_| "archive: blob name is not valid UTF-8".to_string())?;
+        let data_len = cur.u64()? as usize;
+        let data = cur.take(data_len)?;
+        match kind {
+            KIND_MANIFEST => {
+                manifest_name = name;
+                manifest_json = String::from_utf8_lossy(data).into_owned();
+            }
+            KIND_HULLFILE => hull_files.push((name, data.to_vec())),
+            KIND_META => meta_json = Some(String::from_utf8_lossy(data).into_owned()),
+            KIND_ROWS => rows_blob = Some(data),
+            _ => {} // forward-compatible: ignore blobs we don't recognize
+        }
+    }
+
+    let meta = parse_meta(&meta_json.ok_or("archive has no META blob")?)?;
+    let rows = decode_rows(rows_blob.ok_or("archive has no ROWS blob")?)?;
+    Ok(SweepArchive {
+        manifest_name,
+        manifest_json,
+        hull_files,
+        meta,
+        rows,
+    })
+}
+
+fn parse_meta(text: &str) -> Result<Meta, String> {
+    use crate::json::Json;
+    let j = crate::json::parse(text).map_err(|e| format!("META JSON: {e}"))?;
+    let str_arr = |key: &str| -> Vec<String> {
+        j.get(key)
+            .and_then(Json::as_arr)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let num_arr = |key: &str| -> Vec<f64> {
+        j.get(key)
+            .and_then(Json::as_arr)
+            .map(|a| a.iter().filter_map(Json::as_f64).collect())
+            .unwrap_or_default()
+    };
+    let num = |key: &str, default: f64| j.get(key).and_then(Json::as_f64).unwrap_or(default);
+    let gz = j.get("gz_scan");
+    Ok(Meta {
+        name: j.get("name").and_then(Json::as_str).map(str::to_string),
+        fluid: j
+            .get("fluid")
+            .and_then(Json::as_str)
+            .unwrap_or("seawater")
+            .to_string(),
+        gravity: num("gravity", 9.80665),
+        density: num("density", 0.0),
+        l_ref: num("l_ref", 0.0),
+        float_mode: matches!(j.get("float_mode"), Some(Json::Bool(true))),
+        speeds_ms: num_arr("speeds_ms"),
+        axis_labels: str_arr("axis_labels"),
+        metric_labels: str_arr("metric_labels"),
+        spectrum_points: num("spectrum_points", 0.0) as usize,
+        gz_step_deg: gz.and_then(|g| g.get("step_deg")).and_then(Json::as_f64).unwrap_or(0.0),
+        gz_max_deg: gz.and_then(|g| g.get("max_deg")).and_then(Json::as_f64).unwrap_or(0.0),
+    })
+}
+
+fn decode_rows(data: &[u8]) -> Result<Vec<Row>, String> {
+    let mut c = Cursor { data, pos: 0 };
+    let n_rows = c.u32()?;
+    let n_axes = c.u32()? as usize;
+    let n_metrics = c.u32()? as usize;
+    let mut rows = Vec::with_capacity(n_rows as usize);
+    for _ in 0..n_rows {
+        let params = (0..n_axes).map(|_| c.f64()).collect::<Result<Vec<_>, _>>()?;
+        let metrics = (0..n_metrics).map(|_| c.f64()).collect::<Result<Vec<_>, _>>()?;
+        let gz_n = c.u32()?;
+        let mut gz_curve = Vec::with_capacity(gz_n as usize);
+        for _ in 0..gz_n {
+            gz_curve.push((c.f64()?, c.f64()?));
+        }
+        let wavenumber = c.f64()?;
+        let transverse_wavelength = c.f64()?;
+        let spec_n = c.u32()?;
+        let mut spectrum = Vec::with_capacity(spec_n as usize);
+        for _ in 0..spec_n {
+            spectrum.push(SpecSample {
+                theta: c.f64()?,
+                amp_re: c.f64()?,
+                amp_im: c.f64()?,
+                drw_dtheta: c.f64()?,
+            });
+        }
+        rows.push(Row {
+            params,
+            metrics,
+            gz_curve,
+            wavenumber,
+            transverse_wavelength,
+            spectrum,
+        });
+    }
+    Ok(rows)
 }
 
 /// A parsed archive — used by the round-trip test and available to readers.
@@ -306,5 +520,67 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(Reader::new(b"NOPE\0\0\0\0").is_err());
+        assert!(read(b"NOPE\0\0\0\0").is_err());
+    }
+
+    /// The public `read()` decoder is the inverse of the writer: a built
+    /// archive round-trips into typed metadata and rows.
+    #[test]
+    fn public_read_round_trips() {
+        let mut rows = Rows::new(2, 3);
+        rows.push(
+            &[1.0, 2.0],
+            &[10.0, 20.0, 30.0],
+            &[(0.0, 0.0), (0.1, 0.5)],
+            0.5,
+            12.5,
+            &[SpecSample {
+                theta: -0.2,
+                amp_re: 1.0,
+                amp_im: -1.0,
+                drw_dtheta: 3.0,
+            }],
+        );
+        rows.push(&[3.0, 4.0], &[11.0, 21.0, 31.0], &[], 0.6, 10.0, &[]);
+
+        let meta = "{\"name\":\"demo\",\"fluid\":\"seawater\",\"gravity\":9.81,\
+             \"density\":1025,\"l_ref\":8,\"float_mode\":true,\"speeds_ms\":[2,3],\
+             \"axis_labels\":[\"speed\",\"dz\"],\
+             \"metric_labels\":[\"rw\",\"rv\",\"rt\"],\"spectrum_points\":129,\
+             \"gz_scan\":{\"step_deg\":2.5,\"max_deg\":90}}";
+        let mut ar = Archive::default();
+        ar.add(KIND_MANIFEST, "study.json", b"{\"name\":\"demo\"}".to_vec());
+        ar.add(KIND_HULLFILE, "h.hull", b"michell-hull v1\n".to_vec());
+        ar.add(KIND_META, "meta.json", meta.as_bytes().to_vec());
+        ar.add(KIND_ROWS, "rows", rows.into_blob());
+        let bytes = ar.into_bytes();
+
+        let a = read(&bytes).expect("decodes");
+        assert_eq!(a.manifest_name, "study.json");
+        assert_eq!(a.hull_files.len(), 1);
+        assert_eq!(a.hull_files[0].0, "h.hull");
+        assert_eq!(a.meta.name.as_deref(), Some("demo"));
+        assert!(a.meta.float_mode);
+        assert_eq!(a.meta.axis_labels, ["speed", "dz"]);
+        assert_eq!(a.meta.metric_labels, ["rw", "rv", "rt"]);
+        assert_eq!(a.meta.speeds_ms, [2.0, 3.0]);
+        assert_eq!(a.meta.gz_step_deg, 2.5);
+        assert_eq!(a.rows.len(), 2);
+        assert_eq!(a.rows[0].params, [1.0, 2.0]);
+        assert_eq!(a.rows[0].metrics, [10.0, 20.0, 30.0]);
+        assert_eq!(a.rows[0].gz_curve, [(0.0, 0.0), (0.1, 0.5)]);
+        assert_eq!(a.rows[0].wavenumber, 0.5);
+        assert_eq!(a.rows[0].spectrum.len(), 1);
+        assert_eq!(a.rows[0].spectrum[0].drw_dtheta, 3.0);
+        assert!(a.rows[1].gz_curve.is_empty());
+        assert!(a.rows[1].spectrum.is_empty());
+    }
+
+    #[test]
+    fn read_rejects_truncated() {
+        let mut ar = Archive::default();
+        ar.add(KIND_META, "m", b"{}".to_vec());
+        let bytes = ar.into_bytes();
+        assert!(read(&bytes[..bytes.len() - 1]).is_err());
     }
 }
