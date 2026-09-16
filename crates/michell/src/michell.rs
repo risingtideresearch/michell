@@ -50,6 +50,75 @@ use crate::moments::{exp_moments, exp_moments_complex, osc_moments, C64};
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
+/// How the wave integral closes a hull whose half-breadth does not vanish at
+/// the transom.
+///
+/// Michell's integral is over a **closed** body: the free-wave amplitude
+/// `∬(∂f/∂x) …` assumes `f` reaches zero at both ends. A transom leaves a step
+/// there, and taking the step at face value models a body that shuts
+/// instantaneously — which radiates far too much. What a real ventilated
+/// transom does is let the flow leave the edge cleanly and close in a hollow
+/// some way downstream.
+///
+/// The closure follows the standard thin-ship treatment (Doctors & Day;
+/// Couser & Molland): append a **virtual appendage** running aft from the
+/// transom over a hollow length `L_v`, with the half-beam decaying
+/// `f_v(x, z) = f_T(z)·φ(s)`, `s = (x_T − x)/L_v`. The shape is the smoothstep
+/// `φ(s) = (1 − s)²(1 + 2s)`, flat at both ends, so the appendage introduces no
+/// new discontinuity of its own: `f` is continuous at the transom and closes
+/// tangentially. The bare step is the `L_v → 0` limit and is recovered exactly.
+///
+/// For a hull that already closes aft this is inert — every variant gives a
+/// bit-for-bit unchanged result.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransomClosure {
+    /// Leave the transom open: classical Michell, which assumes the body
+    /// closes and therefore drops the transom's contribution entirely.
+    None,
+    /// Hollow length from the **ballistic** estimate `L_v = c·d_T·Fn_T`, i.e.
+    /// `c·U·√(d_T/g)`: water leaving the transom horizontally at `U` falls the
+    /// transom depth `d_T` under gravity, and `c = √2` is the free-fall value
+    /// ([`BALLISTIC_COEFF`]). Raising `c` lengthens the hollow and softens the
+    /// transom's wave-making.
+    Ballistic { coeff: f64 },
+    /// Hollow of a prescribed length [m], independent of speed.
+    ///
+    /// `length = 0` is the bare step — the transom shutting instantaneously.
+    /// It is the limit the closure is built to reproduce, and useful as a
+    /// bound, but it is not a physical model: a discontinuous body radiates at
+    /// every wave angle, so its amplitude falls off only algebraically in `λ`
+    /// and the outer quadrature needs a far wider `λ` range to converge
+    /// (orders of magnitude slower than any positive hollow).
+    Fixed { length: f64 },
+}
+
+/// The free-fall hollow-length coefficient: a particle leaving the transom
+/// horizontally at `U` falls `d_T` in `√(2d_T/g)`, travelling `√2·U·√(d_T/g)`.
+pub const BALLISTIC_COEFF: f64 = std::f64::consts::SQRT_2;
+
+impl Default for TransomClosure {
+    fn default() -> Self {
+        TransomClosure::Ballistic {
+            coeff: BALLISTIC_COEFF,
+        }
+    }
+}
+
+impl TransomClosure {
+    /// Hollow length [m] for a transom of immersion `depth` at `ν = g/U²`.
+    /// `None` switches the closure off; a non-positive length collapses to the
+    /// bare step, which the amplitude handles as the `L_v → 0` limit.
+    fn hollow_length(self, depth: f64, nu: f64) -> Option<f64> {
+        match self {
+            TransomClosure::None => None,
+            // L_v = c·U·√(d_T/g) = c·√(d_T/ν), since ν = g/U².
+            TransomClosure::Ballistic { coeff } => Some(coeff * (depth / nu).sqrt()),
+            TransomClosure::Fixed { length } => Some(length),
+        }
+        .filter(|l| l.is_finite() && *l >= 0.0)
+    }
+}
+
 /// Options for the outer-integral quadrature.
 #[derive(Debug, Clone, Copy)]
 pub struct WaveOptions {
@@ -57,6 +126,8 @@ pub struct WaveOptions {
     pub rel_tol: f64,
     /// Maximum number of panel-halving refinement passes.
     pub max_refinements: usize,
+    /// How to close a transom stern. Inert for a hull that closes aft.
+    pub transom: TransomClosure,
 }
 
 impl Default for WaveOptions {
@@ -64,8 +135,17 @@ impl Default for WaveOptions {
         WaveOptions {
             rel_tol: 1e-5,
             max_refinements: 4,
+            transom: TransomClosure::default(),
         }
     }
+}
+
+/// `∫_0^1 φ'(s) e^{iKs} ds` for the smoothstep hollow `φ = (1−s)²(1+2s)`,
+/// whose derivative is `6s² − 6s`. At `K = 0` this is `φ(1) − φ(0) = −1`,
+/// the bare-step limit.
+fn hollow_shape_moment(k: f64, scratch: &mut Vec<C64>) -> C64 {
+    osc_moments(k, 1.0, 2, scratch);
+    scratch[2].scale(6.0) - scratch[1].scale(6.0)
 }
 
 /// Wave resistance result with quadrature diagnostics.
@@ -204,7 +284,7 @@ pub fn multihull_heel_wave_resistance(
     let mut mem: Vec<HeelMember> = members
         .iter()
         .map(|(h, p)| HeelMember {
-            inner: HeelInner::new(h, nu, heel),
+            inner: HeelInner::new(h, nu, heel, opts.transom),
             dx: h.x_center() + p.x - cx_ref,
             dy: p.y - y_ref,
         })
@@ -260,7 +340,7 @@ pub fn multihull_wave_resistance_with(
     let mut mem: Vec<SourceMember> = members
         .iter()
         .map(|(h, p)| SourceMember {
-            inner: InnerIntegral::new(h, nu),
+            inner: InnerIntegral::new(h, nu, opts.transom),
             dx: h.x_center() + p.x - cx_ref,
             dy: p.y - y_ref,
         })
@@ -398,7 +478,7 @@ pub fn multihull_wave_resistance_lifting(
                 None
             };
             LiftMember {
-                inner: InnerIntegral::new(h, nu),
+                inner: InnerIntegral::new(h, nu, opts.transom),
                 dipole,
                 dx: h.x_center() + p.x - cx_ref,
                 dy: p.y - y_ref,
@@ -419,6 +499,17 @@ pub fn multihull_wave_resistance_lifting(
 /// depend on that (physically irrelevant) choice of origin while `I² + J²`
 /// does not.
 pub fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f64, f64)> {
+    inner_integrals_with(hull, cond, lambda, &WaveOptions::default())
+}
+
+/// [`inner_integrals`] with an explicit transom closure (the rest of
+/// [`WaveOptions`] governs the outer quadrature and does not apply here).
+pub fn inner_integrals_with(
+    hull: &Hull,
+    cond: &Conditions,
+    lambda: f64,
+    opts: &WaveOptions,
+) -> Result<(f64, f64)> {
     cond.validate()?;
     if !(lambda.is_finite() && lambda >= 1.0) {
         return Err(Error::InvalidConditions(format!(
@@ -426,7 +517,7 @@ pub fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f
         )));
     }
     let nu = cond.gravity / (cond.speed * cond.speed);
-    let mut inner = InnerIntegral::new(hull, nu);
+    let mut inner = InnerIntegral::new(hull, nu, opts.transom);
     let f = inner.eval(lambda);
     Ok((f.re, f.im))
 }
@@ -772,32 +863,286 @@ impl MemberWave for HeelMember<'_> {
 }
 
 /// Exact (per-span closed-form) evaluation of I + iJ at λ.
+/// Near-field hull transforms at one wavenumber pair, in the `e^{−i k_x x}`
+/// convention with `x` measured from the hull's x-centre:
+///
+/// ```text
+/// q     = ∬ ∂f/∂x          e^{−ik_x x} e^{−κz}     (the Michell amplitude, conjugated)
+/// p     = ∬ f              e^{−ik_x x} e^{−κz}
+/// q1    = ∬ (x−x_c) ∂f/∂x  e^{−ik_x x} e^{−κz}
+/// w     = ∫ ∂f/∂x(x,0)         e^{−ik_x x} dx       (waterline)
+/// p_wl  = ∫ f(x,0)             e^{−ik_x x} dx
+/// q1_wl = ∫ (x−x_c) ∂f/∂x(x,0) e^{−ik_x x} dx
+/// ```
+///
+/// The common phase `e^{ik_x x_c}` cancels in every product the sinkage and
+/// trim integrals form; the moment reference is applied by the caller as
+/// `(x − x_ref) = (x − x_c) + (x_c − x_ref)`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SquatTransforms {
+    pub q: C64,
+    pub p: C64,
+    pub q1: C64,
+    pub w: C64,
+    pub p_wl: C64,
+    pub q1_wl: C64,
+}
+
+/// A hull's coefficient nets contracted against the z-moments at one decay
+/// rate `κ` (see [`InnerIntegral::contract_z`]).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ZContracted {
+    /// `Σ_{t,b} c_fx[s,t,a,b] Zm_t[b]`, indexed `[s * p + a]`.
+    pub g_fx: Vec<f64>,
+    /// The same for `f`, indexed `[s * (p + 1) + a]`.
+    pub g_f: Vec<f64>,
+    /// `∫ f_T(z) e^{−κz} dz`: the transom section's z-factor.
+    pub z_t: f64,
+    /// False when the whole hull lies below the exponential's support.
+    pub any: bool,
+}
+
+impl Default for SquatTransforms {
+    fn default() -> Self {
+        SquatTransforms {
+            q: C64::ZERO,
+            p: C64::ZERO,
+            q1: C64::ZERO,
+            w: C64::ZERO,
+            p_wl: C64::ZERO,
+            q1_wl: C64::ZERO,
+        }
+    }
+}
+
+impl SquatTransforms {
+    fn conj_in_place(&mut self) {
+        let conj = |v: C64| C64::new(v.re, -v.im);
+        self.q = conj(self.q);
+        self.p = conj(self.p);
+        self.q1 = conj(self.q1);
+        self.w = conj(self.w);
+        self.p_wl = conj(self.p_wl);
+        self.q1_wl = conj(self.q1_wl);
+    }
+}
+
 pub(crate) struct InnerIntegral<'h> {
     hull: &'h Hull,
     nu: f64,
+    transom: TransomClosure,
     /// Scratch: z-moments including the e^{−κ z0} shift, [n_spans_z][q+1].
     zm: Vec<f64>,
     /// Scratch: raw x-moments for one span.
     xm: Vec<C64>,
     /// Scratch: raw z-moments for one span.
     zm_raw: Vec<f64>,
+    /// Scratch: hollow-shape moments for the transom closure.
+    sm: Vec<C64>,
     p: usize,
     q: usize,
 }
 
 impl<'h> InnerIntegral<'h> {
-    pub(crate) fn new(hull: &'h Hull, nu: f64) -> Self {
+    pub(crate) fn new(hull: &'h Hull, nu: f64, transom: TransomClosure) -> Self {
         let p = hull.surface().degree_x();
         let q = hull.surface().degree_z();
         InnerIntegral {
             hull,
             nu,
+            transom,
             zm: vec![0.0; hull.spans_z().len() * (q + 1)],
             xm: Vec::with_capacity(p),
             zm_raw: Vec::with_capacity(q + 1),
+            sm: Vec::with_capacity(3),
             p,
             q,
         }
+    }
+
+    /// Free-wave amplitude of the transom's virtual appendage.
+    ///
+    /// With `f_v = f_T(z)·φ(s)`, `s = (x_T − x)/L_v`, substituting
+    /// `x = x_T − s·L_v` separates the double integral completely:
+    ///
+    /// ```text
+    /// F_v = −e^{i k_x x_T} · [∫ f_T(z) e^{−κz} dz] · ∫_0^1 φ'(s) e^{−i k_x L_v s} ds
+    /// ```
+    ///
+    /// The z-factor is the transom section against the **same** per-span
+    /// z-moments the hull itself uses (already filled by `fill_zm`), so the
+    /// closure costs one dot product and one 3-term moment call per λ, and
+    /// carries no quadrature error either.
+    fn transom_term(&mut self, kx: f64) -> C64 {
+        let Some(tr) = self.hull.transom() else {
+            return C64::ZERO;
+        };
+        let Some(lv) = self.transom.hollow_length(tr.depth, self.nu) else {
+            return C64::ZERO;
+        };
+        let q = self.q;
+        let z_factor: f64 = (0..self.hull.spans_z().len())
+            .flat_map(|t| {
+                let base = t * (q + 1);
+                (0..=q).map(move |b| (base + b, base + b))
+            })
+            .map(|(i, j)| tr.coeff[i] * self.zm[j])
+            .sum();
+        let shape = hollow_shape_moment(-kx * lv, &mut self.sm);
+        let phase = C64::cis(kx * (tr.x - self.hull.x_center()));
+        C64::ZERO - (phase * shape).scale(z_factor)
+    }
+
+    /// Every near-field hull transform the sinkage/trim integrals need, at an
+    /// arbitrary wavenumber pair `(k_x, κ)` — off the dispersion curve, which
+    /// is where the local (principal-value) part of the pressure lives.
+    /// Composes [`Self::contract_z`] and [`Self::transforms_at`]; a quadrature
+    /// that walks many `k_x` at one `κ` should call those two directly (as
+    /// [`crate::squat`] does) rather than re-contracting per point.
+    #[allow(dead_code, reason = "convenience wrapper exercised directly by tests")]
+    pub(crate) fn eval_transforms(&mut self, kx: f64, kappa: f64) -> SquatTransforms {
+        let mut zc = ZContracted::default();
+        self.contract_z(kappa, &mut zc);
+        self.transforms_at(&zc, kx)
+    }
+
+    /// Contract every coefficient net against the z-moments at decay `κ`:
+    /// `G[s][a] = Σ_t Σ_b c[s,t,a,b] · Zm_t[b]`, for `∂f/∂x` and for `f`, plus
+    /// the transom section's own z-factor. Everything that depends on `κ`
+    /// happens here, once; [`Self::transforms_at`] then costs one
+    /// `osc_moments` call per x-span for each `k_x`, which is what makes a
+    /// 2-D wavenumber quadrature affordable on a hull with hundreds of spans.
+    pub(crate) fn contract_z(&mut self, kappa: f64, out: &mut ZContracted) {
+        let hull = self.hull;
+        let (p, q) = (self.p, self.q);
+        let nsz = hull.spans_z().len();
+        let nsx = hull.spans_x().len();
+        out.g_fx.clear();
+        out.g_f.clear();
+        out.g_fx.resize(nsx * p, 0.0);
+        out.g_f.resize(nsx * (p + 1), 0.0);
+        out.z_t = 0.0;
+        out.any = self.fill_zm(kappa);
+        if !out.any {
+            return;
+        }
+        let cfx = hull.fx_coeff();
+        let cf = hull.f_coeff();
+        for s in 0..nsx {
+            for a in 0..p {
+                let mut g = 0.0;
+                for tz in 0..nsz {
+                    let base = ((s * nsz + tz) * p + a) * (q + 1);
+                    let zrow = &self.zm[tz * (q + 1)..(tz + 1) * (q + 1)];
+                    for b in 0..=q {
+                        g += cfx[base + b] * zrow[b];
+                    }
+                }
+                out.g_fx[s * p + a] = g;
+            }
+            for a in 0..=p {
+                let mut g = 0.0;
+                for tz in 0..nsz {
+                    let base = ((s * nsz + tz) * (p + 1) + a) * (q + 1);
+                    let zrow = &self.zm[tz * (q + 1)..(tz + 1) * (q + 1)];
+                    for b in 0..=q {
+                        g += cf[base + b] * zrow[b];
+                    }
+                }
+                out.g_f[s * (p + 1) + a] = g;
+            }
+        }
+        if let Some(tr) = hull.transom() {
+            out.z_t = (0..nsz)
+                .flat_map(|tz| (0..=q).map(move |b| tz * (q + 1) + b))
+                .map(|i| tr.coeff[i] * self.zm[i])
+                .sum();
+        }
+    }
+
+    /// The six transforms at `k_x`, from a contraction at some `κ`. The
+    /// waterline rows (`Z = 0` on the first z-span) do not depend on `κ` and
+    /// are read straight from the coefficient nets. Results are in the
+    /// `e^{−ik_x x}` convention with `x` from the hull's x-centre.
+    pub(crate) fn transforms_at(&mut self, zc: &ZContracted, kx: f64) -> SquatTransforms {
+        let hull = self.hull;
+        let (p, q) = (self.p, self.q);
+        let nsz = hull.spans_z().len();
+        let x_center = hull.x_center();
+        let mut t = SquatTransforms::default();
+        if !zc.any {
+            return t;
+        }
+        let cfx = hull.fx_coeff();
+        let cf = hull.f_coeff();
+        for (s, sx) in hull.spans_x().iter().enumerate() {
+            // Moments up to X^p: f has degree p, and so does (X + d)·∂f/∂x.
+            osc_moments(kx, sx.len, p, &mut self.xm);
+            let d = sx.start - x_center;
+            let phase = C64::cis(kx * d);
+            let (mut q_s, mut q1_s, mut w_s, mut q1w_s) =
+                (C64::ZERO, C64::ZERO, C64::ZERO, C64::ZERO);
+            for a in 0..p {
+                let g = zc.g_fx[s * p + a];
+                let gw = cfx[(s * nsz * p + a) * (q + 1)];
+                q_s = q_s + self.xm[a].scale(g);
+                w_s = w_s + self.xm[a].scale(gw);
+                // (x − x_c)·∂f/∂x = (X + d)·∂f/∂x on this span.
+                let shifted = self.xm[a + 1] + self.xm[a].scale(d);
+                q1_s = q1_s + shifted.scale(g);
+                q1w_s = q1w_s + shifted.scale(gw);
+            }
+            let (mut p_s, mut pw_s) = (C64::ZERO, C64::ZERO);
+            for a in 0..=p {
+                let g = zc.g_f[s * (p + 1) + a];
+                let gw = cf[(s * nsz * (p + 1) + a) * (q + 1)];
+                p_s = p_s + self.xm[a].scale(g);
+                pw_s = pw_s + self.xm[a].scale(gw);
+            }
+            t.q = t.q + phase * q_s;
+            t.q1 = t.q1 + phase * q1_s;
+            t.w = t.w + phase * w_s;
+            t.q1_wl = t.q1_wl + phase * q1w_s;
+            t.p = t.p + phase * p_s;
+            t.p_wl = t.p_wl + phase * pw_s;
+        }
+        self.add_transom_transforms(kx, zc.z_t, &mut t);
+        // Everything above is in the kernel's e^{+i k_x (x − x_c)} convention;
+        // the near-field formulas are written for e^{−i k_x x}. All nets are
+        // real, so the conversion is a conjugation.
+        t.conj_in_place();
+        t
+    }
+
+    /// The transom appendage's share of every transform (kernel convention).
+    /// With `f_v = f_T(z)·φ(s)`, `s = (x_T − x)/L_v`, and `x − x_T = −s·L_v`:
+    ///   ∬ f_v            → e^{iκ_x(x_T−x_c)} · Z_T · L_v ∫φ e^{−ik_xL_v s}
+    ///   ∬ (x−x_T)∂f_v/∂x → e^{iκ_x(x_T−x_c)} · Z_T · L_v ∫ s φ′ e^{−ik_xL_v s}
+    /// and the waterline versions replace `Z_T` by `f_T(0)`.
+    fn add_transom_transforms(&mut self, kx: f64, z_t: f64, t: &mut SquatTransforms) {
+        let Some(tr) = self.hull.transom() else {
+            return;
+        };
+        let Some(lv) = self.transom.hollow_length(tr.depth, self.nu) else {
+            return;
+        };
+        let f_t0 = tr.half_beam;
+        let dx_t = tr.x - self.hull.x_center();
+        let phase = C64::cis(kx * dx_t);
+        // φ = 1 − 3s² + 2s³, φ′ = 6s² − 6s, sφ′ = 6s³ − 6s².
+        osc_moments(-kx * lv, 1.0, 3, &mut self.sm);
+        let m = &self.sm;
+        let shape_dx = m[2].scale(6.0) - m[1].scale(6.0);
+        let shape_f = (m[0] - m[2].scale(3.0) + m[3].scale(2.0)).scale(lv);
+        let shape_xdx = (m[3].scale(6.0) - m[2].scale(6.0)).scale(lv);
+        let q_app = C64::ZERO - (phase * shape_dx);
+        t.q = t.q + q_app.scale(z_t);
+        t.w = t.w + q_app.scale(f_t0);
+        t.p = t.p + (phase * shape_f).scale(z_t);
+        t.p_wl = t.p_wl + (phase * shape_f).scale(f_t0);
+        let q1_app = (phase * shape_xdx) + q_app.scale(dx_t);
+        t.q1 = t.q1 + q1_app.scale(z_t);
+        t.q1_wl = t.q1_wl + q1_app.scale(f_t0);
     }
 
     /// Source free-wave amplitude `I + iJ` at λ = sec θ. Phases use x relative
@@ -821,7 +1166,11 @@ impl<'h> InnerIntegral<'h> {
         if !self.fill_zm(kappa) {
             return (C64::ZERO, hull.fx_a_coeff().map(|_| C64::ZERO));
         }
-        let f = self.accumulate(kx, hull.fx_coeff());
+        let f = self.accumulate(kx, hull.fx_coeff()) + self.transom_term(kx);
+        // The camber (dipole) system is not closed here: an asymmetric hull's
+        // antisymmetric half-beam has its own transom section, which this
+        // crate does not yet carry. Symmetric hulls — the default contract —
+        // are unaffected.
         let g = hull.fx_a_coeff().map(|c| self.accumulate(kx, c));
         (f, g)
     }
@@ -893,6 +1242,7 @@ impl<'h> InnerIntegral<'h> {
 pub(crate) struct HeelInner<'h> {
     hull: &'h Hull,
     nu: f64,
+    transom: TransomClosure,
     cos_phi: f64,
     sin_phi: f64,
     /// Scratch: complex z-moments including the e^{−κ z0} shift, [n_spans_z][q+1].
@@ -901,25 +1251,52 @@ pub(crate) struct HeelInner<'h> {
     xm: Vec<C64>,
     /// Scratch: raw complex z-moments for one span.
     zm_raw: Vec<C64>,
+    /// Scratch: hollow-shape moments for the transom closure.
+    sm: Vec<C64>,
     p: usize,
     q: usize,
 }
 
 impl<'h> HeelInner<'h> {
-    fn new(hull: &'h Hull, nu: f64, heel: f64) -> Self {
+    fn new(hull: &'h Hull, nu: f64, heel: f64, transom: TransomClosure) -> Self {
         let p = hull.surface().degree_x();
         let q = hull.surface().degree_z();
         HeelInner {
             hull,
             nu,
+            transom,
             cos_phi: heel.cos(),
             sin_phi: heel.sin(),
             zm: vec![C64::ZERO; hull.spans_z().len() * (q + 1)],
             xm: Vec::with_capacity(p),
             zm_raw: Vec::with_capacity(q + 1),
+            sm: Vec::with_capacity(3),
             p,
             q,
         }
+    }
+
+    /// The transom closure on the tilted centreplane — the upright term with
+    /// the complex `κ` already carried by `zm`, so heel and closure compose
+    /// without either kernel knowing about the other.
+    fn transom_term(&mut self, kx: f64) -> C64 {
+        let Some(tr) = self.hull.transom() else {
+            return C64::ZERO;
+        };
+        let Some(lv) = self.transom.hollow_length(tr.depth, self.nu) else {
+            return C64::ZERO;
+        };
+        let q = self.q;
+        let mut z_factor = C64::ZERO;
+        for t in 0..self.hull.spans_z().len() {
+            let base = t * (q + 1);
+            for b in 0..=q {
+                z_factor = z_factor + self.zm[base + b].scale(tr.coeff[base + b]);
+            }
+        }
+        let shape = hollow_shape_moment(-kx * lv, &mut self.sm);
+        let phase = C64::cis(kx * (tr.x - self.hull.x_center()));
+        C64::ZERO - phase * shape * z_factor
     }
 
     /// Free-wave amplitude of the tilted source distribution at λ, for the wave
@@ -934,7 +1311,7 @@ impl<'h> HeelInner<'h> {
         if !self.fill_zm(kappa) {
             return C64::ZERO;
         }
-        self.accumulate(kx)
+        self.accumulate(kx) + self.transom_term(kx)
     }
 
     fn fill_zm(&mut self, kappa: C64) -> bool {
@@ -992,6 +1369,71 @@ mod tests {
     use super::*;
     use crate::hulls::wigley;
 
+    /// On the dispersion pair (k_x, κ) = (νλ, νλ²) the near-field `q` is the
+    /// Michell amplitude, conjugated: one code path, two entry points.
+    #[test]
+    fn near_field_q_is_the_conjugate_amplitude_on_the_dispersion_curve() {
+        let hull = wigley(10.0, 1.0, 0.625).unwrap();
+        let nu = 9.80665 / (3.0 * 3.0);
+        let mut inner = InnerIntegral::new(&hull, nu, TransomClosure::default());
+        for lambda in [1.0, 1.3, 2.2, 5.0] {
+            let amp = inner.eval(lambda);
+            let t = inner.eval_transforms(nu * lambda, nu * lambda * lambda);
+            let scale = amp.abs().max(1e-300);
+            assert!(
+                (t.q.re - amp.re).abs() < 1e-12 * scale && (t.q.im + amp.im).abs() < 1e-12 * scale,
+                "λ = {lambda}: q = {:?}, amplitude = {:?}",
+                t.q,
+                amp
+            );
+        }
+    }
+
+    /// Integration by parts in x on a closed body: ∫ f e^{−ik_x x} = (1/ik_x) ∫ f_x e^{−ik_x x},
+    /// i.e. `i k_x p = q` (and `i k_x p_wl = w` along the waterline). Holds
+    /// off the dispersion curve too, and — the real point — for a transom
+    /// hull only once the appendage is included, so this pins the appendage's
+    /// share of every transform.
+    #[test]
+    fn near_field_transforms_satisfy_the_closure_identity() {
+        let check = |hull: &Hull, closure: TransomClosure, tag: &str| {
+            let nu = 9.80665 / (2.5 * 2.5);
+            let mut inner = InnerIntegral::new(hull, nu, closure);
+            for (kx, kappa) in [(0.7, 0.9), (2.0, 4.0), (3.5, 1.2), (nu * 1.4, nu * 1.96)] {
+                let t = inner.eval_transforms(kx, kappa);
+                let ikx = C64::new(0.0, kx);
+                let lhs = ikx * t.p;
+                let lhs_wl = ikx * t.p_wl;
+                let s1 = t.q.abs().max(1e-12);
+                let s2 = t.w.abs().max(1e-12);
+                assert!(
+                    (lhs - t.q).abs() < 1e-10 * s1,
+                    "{tag} (k_x {kx}, κ {kappa}): i k_x p = {:?} vs q = {:?}",
+                    lhs,
+                    t.q
+                );
+                assert!(
+                    (lhs_wl - t.w).abs() < 1e-10 * s2,
+                    "{tag} (k_x {kx}, κ {kappa}): i k_x p_wl = {:?} vs w = {:?}",
+                    lhs_wl,
+                    t.w
+                );
+            }
+        };
+        check(&wigley(10.0, 1.0, 0.625).unwrap(), TransomClosure::None, "wigley");
+
+        // A wedge open at the stern closes only with its appendage.
+        let knots_x = vec![0.0, 0.0, 8.0, 8.0];
+        let knots_z = vec![0.0, 0.0, 0.25, 0.25];
+        let wedge = Hull::new(
+            crate::BSplineSurface::new(1, 1, knots_x, knots_z, vec![0.4, 0.0, 0.0, 0.0]).unwrap(),
+        )
+        .unwrap();
+        assert!(wedge.transom().is_some());
+        check(&wedge, TransomClosure::Fixed { length: 1.3 }, "wedge+appendage");
+        check(&wedge, TransomClosure::default(), "wedge+ballistic");
+    }
+
     #[test]
     fn staggered_fleet_resistance_is_mirror_symmetric() {
         // A staggered pair and its mirror image about y = 0 are the same
@@ -1031,8 +1473,8 @@ mod tests {
         .unwrap();
         let hull2 = Hull::new(shifted).unwrap();
         let nu = 9.80665 / (3.0f64 * 3.0);
-        let mut i1 = InnerIntegral::new(&hull, nu);
-        let mut i2 = InnerIntegral::new(&hull2, nu);
+        let mut i1 = InnerIntegral::new(&hull, nu, TransomClosure::default());
+        let mut i2 = InnerIntegral::new(&hull2, nu, TransomClosure::default());
         for lambda in [1.0, 1.4, 2.5, 6.0] {
             let a = i1.eval(lambda).abs_sq();
             let b = i2.eval(lambda).abs_sq();

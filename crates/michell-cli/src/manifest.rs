@@ -5,9 +5,12 @@
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_heeled, FleetState, LoadCase};
+use michell::float::{
+    solve_equilibrium_bodies_dynamic, solve_equilibrium_heeled, FleetState, LoadCase,
+};
 use michell::inclined::InclinedGrid;
 use michell::iges::{HullPose, Platform};
+use michell::squat::{dynamic_load_closure, SquatOptions};
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
 const KNOT: f64 = 1852.0 / 3600.0;
@@ -65,6 +68,8 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let mut gravity = STANDARD_GRAVITY;
     let mut rho_override = None;
     let mut nu_override = None;
+    let mut dynamic_mode = false;
+    let mut squat_opts = SquatOptions::default();
     if let Some(o) = doc.get("options") {
         if let Some(v) = o.get("samples").and_then(Json::as_str) {
             settings.samples = parse_pair(v)?;
@@ -87,12 +92,29 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         if let Some(v) = o.get("form_factor").and_then(Json::as_f64) {
             form_factor = v;
         }
+        if let Some(v) = o.get("transom") {
+            let spec = v.as_str().ok_or_else(|| {
+                "options.transom: expected a string — off | ballistic[=COEFF] | hollow=METRES"
+                    .to_string()
+            })?;
+            wave_opts.transom = crate::parse_transom(Some(spec))?;
+        }
         if let Some(v) = o.get("gravity").and_then(Json::as_f64) {
             gravity = v;
         }
         rho_override = o.get("rho").and_then(Json::as_f64);
         nu_override = o.get("nu").and_then(Json::as_f64);
+        if let Some(v) = o.get("dynamic") {
+            dynamic_mode = match v {
+                Json::Bool(b) => *b,
+                _ => return Err("options.dynamic: expected true or false".into()),
+            };
+        }
+        if let Some(v) = o.get("squat_tol").and_then(Json::as_f64) {
+            squat_opts.rel_tol = v;
+        }
     }
+    squat_opts.wave.transom = wave_opts.transom;
     let bopts: BodyOptions = body_options(&settings);
     let fluid_name = doc
         .get("fluid")
@@ -300,6 +322,23 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                     { \"target\": \"vcg\", \"value\": 0 } to put G on it)"
             .into());
     }
+    if dynamic_mode && !float_mode {
+        return Err("options.dynamic requires a weight axis (dynamic sinkage/trim \
+                    is solved at the platform's equilibrium)"
+            .into());
+    }
+    if dynamic_mode && axes.iter().any(|a| matches!(a.target, Target::HeelDeg)) {
+        return Err("options.dynamic cannot be combined with a heel axis: the \
+                    thin-ship squat closure does not yet carry heel (it \
+                    evaluates the fleet upright); run them as separate sweeps"
+            .into());
+    }
+    if dynamic_mode && vcg_mode {
+        return Err("options.dynamic cannot be combined with a vcg axis (GZ is \
+                    a heeled quantity, and dynamic mode forbids heel); drop \
+                    one or run them as separate sweeps"
+            .into());
+    }
 
     // Base situate: reference length for Froude numbers.
     let mut l_ref = 0.0f64;
@@ -360,6 +399,11 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         .chain(["sinkage", "trim_deg", "volume", "lcb"].iter().map(|s| s.to_string()))
         .chain(if vcg_mode { &["gz", "rm"][..] } else { &[] }.iter().map(|s| s.to_string()))
         .chain(
+            if dynamic_mode { &["fz", "lift_pct"][..] } else { &[] }
+                .iter()
+                .map(|s| s.to_string()),
+        )
+        .chain(
             [
                 "dry",
                 "band_exceeded",
@@ -385,6 +429,27 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         out.push('\n');
     }
     let mut first_row = true;
+
+    fn emit_row(nums: &[f64], header: &[String], format: &str, first_row: &mut bool, out: &mut String) {
+        if format == "json" {
+            if !*first_row {
+                out.push(',');
+            }
+            *first_row = false;
+            out.push('{');
+            for (i, (k, v)) in header.iter().zip(nums).enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!("{k:?}:{v}"));
+            }
+            out.push('}');
+        } else {
+            let row: Vec<String> = nums.iter().map(|v| format!("{v}")).collect();
+            out.push_str(&row.join(","));
+            out.push('\n');
+        }
+    }
 
     let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
     // Section-integration resolution for the heeled inclined-waterplane
@@ -426,142 +491,196 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             }
         }
 
-        // Heel enters the hydrostatics as a true inclined-waterplane rotation
-        // inside `solve_equilibrium_heeled` (a heel axis requires a vcg axis
-        // requires a weight axis, so only the weight branch below can heel).
-        let (state, sinkage, trim_deg, volume, lcb, gz_solved) = if let Some(mass) = weight {
-            let eq = solve_equilibrium_heeled(
-                &bodies,
-                0.0,
-                &poses,
-                &LoadCase { mass, lcg },
-                density,
-                heel,
-                vcg.unwrap_or(0.0),
-                &bopts,
-                incl_grid,
-            )
-            .map_err(|e| format!("point {}: {e}", point + 1))?;
-            (
-                eq.fleet,
-                eq.sinkage,
-                eq.trim.to_degrees(),
-                eq.volume,
-                eq.lcb,
-                eq.gz,
-            )
-        } else {
-            let mut members = Vec::new();
-            let mut dry = 0usize;
-            let mut band_exceeded = 0usize;
-            let mut volume = 0.0;
-            let mut moment = 0.0;
-            for (h, pose) in hulls.iter().zip(&poses) {
-                match h
-                    .body
-                    .situate(waterline, pose, &Platform::default(), &bopts)
-                    .map_err(|e| format!("point {}: {e}", point + 1))?
-                {
-                    Some(sb) => {
-                        volume += sb.hull.displaced_volume();
-                        moment +=
-                            (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
-                        band_exceeded += sb.band_exceeded;
-                        members.push((sb.hull, sb.placement));
-                    }
-                    None => dry += 1,
-                }
-            }
-            let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
-            (
-                FleetState {
-                    members,
-                    dry,
-                    band_exceeded,
-                },
-                0.0,
-                0.0,
-                volume,
-                lcb,
-                0.0,
-            )
-        };
-        // Righting arm (from the inclined cut) and moment. Reported only with a
-        // vcg axis, which the constraints tie to a weight axis, so `gz_solved`
-        // is the solved-equilibrium value here.
-        let gz_rm = vcg.map(|_| (gz_solved, weight.unwrap_or(0.0) * gravity * gz_solved));
-
-        let members: Vec<(&Hull, Placement)> =
-            state.members.iter().map(|(h, p)| (h, *p)).collect();
-
-        for &u in &speeds {
-            let cond = make_cond(u)?;
-            let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
-                (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
-            } else {
-                // The heel axis repositions each demihull (transverse offset +
-                // immersion via `heel_poses`); the heel wave kernel adds the
-                // remaining rotation-about-own-axis effect, so the resistance
-                // column is consistent with the heeled GZ state.
-                let r = if heel != 0.0 {
-                    michell::multihull_resistance_heeled(
-                        &members,
-                        &cond,
-                        &wave_opts,
-                        form_factor,
-                        heel,
-                    )
-                } else {
-                    michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
-                }
+        if dynamic_mode {
+            // Attitude depends on speed here (the near-field pressure grows
+            // with U), so equilibrium is re-solved for every speed rather
+            // than once per point. Warm-starting each speed from the last
+            // keeps this to a handful of Newton iterations once the curve
+            // gets going, since sinkage and trim vary smoothly with speed.
+            let mass = weight.expect("dynamic_mode requires a weight axis (checked above)");
+            let mut warm: Option<(f64, f64)> = None;
+            for &u in &speeds {
+                let cond = make_cond(u)?;
+                let closure = dynamic_load_closure(&cond, lcg.unwrap_or(0.0), &squat_opts);
+                let dyn_eq = solve_equilibrium_bodies_dynamic(
+                    &bodies,
+                    0.0,
+                    &poses,
+                    &LoadCase { mass, lcg },
+                    density,
+                    gravity,
+                    &bopts,
+                    closure,
+                    warm,
+                )
                 .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                warm = Some((dyn_eq.sinkage, dyn_eq.trim));
+
+                let members: Vec<(&Hull, Placement)> =
+                    dyn_eq.fleet.members.iter().map(|(h, p)| (h, *p)).collect();
+                let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
+                    (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+                } else {
+                    let r = michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
+                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                    (
+                        r.wave.resistance,
+                        r.viscous_total,
+                        r.total,
+                        r.effective_power,
+                        r.interference,
+                        r.cw,
+                        r.ct,
+                    )
+                };
+                let froude = u / (gravity * l_ref).sqrt();
+                let nums: Vec<f64> = vals
+                    .iter()
+                    .cloned()
+                    .chain([
+                        dyn_eq.sinkage,
+                        dyn_eq.trim.to_degrees(),
+                        dyn_eq.volume,
+                        dyn_eq.lcb,
+                    ])
+                    .chain([dyn_eq.dynamic.force_up, 100.0 * dyn_eq.lift_fraction])
+                    .chain([
+                        dyn_eq.fleet.dry as f64,
+                        dyn_eq.fleet.band_exceeded as f64,
+                        u,
+                        froude,
+                        rw,
+                        rv,
+                        rt,
+                        pe,
+                        iff,
+                        cw,
+                        ct,
+                    ])
+                    .collect();
+                emit_row(&nums, &header, &format, &mut first_row, &mut out);
+            }
+        } else {
+            // Heel enters the hydrostatics as a true inclined-waterplane rotation
+            // inside `solve_equilibrium_heeled` (a heel axis requires a vcg axis
+            // requires a weight axis, so only the weight branch below can heel).
+            let (state, sinkage, trim_deg, volume, lcb, gz_solved) = if let Some(mass) = weight {
+                let eq = solve_equilibrium_heeled(
+                    &bodies,
+                    0.0,
+                    &poses,
+                    &LoadCase { mass, lcg },
+                    density,
+                    heel,
+                    vcg.unwrap_or(0.0),
+                    &bopts,
+                    incl_grid,
+                )
+                .map_err(|e| format!("point {}: {e}", point + 1))?;
                 (
-                    r.wave.resistance,
-                    r.viscous_total,
-                    r.total,
-                    r.effective_power,
-                    r.interference,
-                    r.cw,
-                    r.ct,
+                    eq.fleet,
+                    eq.sinkage,
+                    eq.trim.to_degrees(),
+                    eq.volume,
+                    eq.lcb,
+                    eq.gz,
+                )
+            } else {
+                let mut members = Vec::new();
+                let mut dry = 0usize;
+                let mut band_exceeded = 0usize;
+                let mut volume = 0.0;
+                let mut moment = 0.0;
+                for (h, pose) in hulls.iter().zip(&poses) {
+                    match h
+                        .body
+                        .situate(waterline, pose, &Platform::default(), &bopts)
+                        .map_err(|e| format!("point {}: {e}", point + 1))?
+                    {
+                        Some(sb) => {
+                            volume += sb.hull.displaced_volume();
+                            moment +=
+                                (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
+                            band_exceeded += sb.band_exceeded;
+                            members.push((sb.hull, sb.placement));
+                        }
+                        None => dry += 1,
+                    }
+                }
+                let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
+                (
+                    FleetState {
+                        members,
+                        dry,
+                        band_exceeded,
+                    },
+                    0.0,
+                    0.0,
+                    volume,
+                    lcb,
+                    0.0,
                 )
             };
-            let froude = u / (gravity * l_ref).sqrt();
-            let nums: Vec<f64> = vals
-                .iter()
-                .cloned()
-                .chain([sinkage, trim_deg, volume, lcb])
-                .chain(gz_rm.map(|(gz, rm)| [gz, rm]).into_iter().flatten())
-                .chain([
-                    state.dry as f64,
-                    state.band_exceeded as f64,
-                    u,
-                    froude,
-                    rw,
-                    rv,
-                    rt,
-                    pe,
-                    iff,
-                    cw,
-                    ct,
-                ])
-                .collect();
-            if format == "json" {
-                if !first_row {
-                    out.push(',');
-                }
-                first_row = false;
-                out.push('{');
-                for (i, (k, v)) in header.iter().zip(&nums).enumerate() {
-                    if i > 0 {
-                        out.push(',');
+            // Righting arm (from the inclined cut) and moment. Reported only with a
+            // vcg axis, which the constraints tie to a weight axis, so `gz_solved`
+            // is the solved-equilibrium value here.
+            let gz_rm = vcg.map(|_| (gz_solved, weight.unwrap_or(0.0) * gravity * gz_solved));
+
+            let members: Vec<(&Hull, Placement)> =
+                state.members.iter().map(|(h, p)| (h, *p)).collect();
+
+            for &u in &speeds {
+                let cond = make_cond(u)?;
+                let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
+                    (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
+                } else {
+                    // The heel axis repositions each demihull (transverse offset +
+                    // immersion via `heel_poses`); the heel wave kernel adds the
+                    // remaining rotation-about-own-axis effect, so the resistance
+                    // column is consistent with the heeled GZ state.
+                    let r = if heel != 0.0 {
+                        michell::multihull_resistance_heeled(
+                            &members,
+                            &cond,
+                            &wave_opts,
+                            form_factor,
+                            heel,
+                        )
+                    } else {
+                        michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
                     }
-                    out.push_str(&format!("{k:?}:{v}"));
-                }
-                out.push('}');
-            } else {
-                let row: Vec<String> = nums.iter().map(|v| format!("{v}")).collect();
-                out.push_str(&row.join(","));
-                out.push('\n');
+                    .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                    (
+                        r.wave.resistance,
+                        r.viscous_total,
+                        r.total,
+                        r.effective_power,
+                        r.interference,
+                        r.cw,
+                        r.ct,
+                    )
+                };
+                let froude = u / (gravity * l_ref).sqrt();
+                let nums: Vec<f64> = vals
+                    .iter()
+                    .cloned()
+                    .chain([sinkage, trim_deg, volume, lcb])
+                    .chain(gz_rm.map(|(gz, rm)| [gz, rm]).into_iter().flatten())
+                    .chain([
+                        state.dry as f64,
+                        state.band_exceeded as f64,
+                        u,
+                        froude,
+                        rw,
+                        rv,
+                        rt,
+                        pe,
+                        iff,
+                        cw,
+                        ct,
+                    ])
+                    .collect();
+                emit_row(&nums, &header, &format, &mut first_row, &mut out);
             }
         }
         eprintln!("point {}/{points} done", point + 1);

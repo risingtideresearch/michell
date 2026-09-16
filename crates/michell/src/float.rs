@@ -11,13 +11,17 @@
 //! handled (its contribution drops to zero), and being dry at equilibrium is
 //! reported, not an error.
 //!
-//! All of this is *hydrostatic*: no speed-dependent (dynamic) sinkage/trim.
+//! The balance is *hydrostatic* by default. At speed the hull also feels a
+//! hydrodynamic vertical force and pitch moment (thin-ship dynamic sinkage
+//! and trim); [`solve_equilibrium_dynamic_with`] folds a caller-supplied
+//! [`DynamicLoad`] into the same Newton core as a forcing term.
 //!
 //! Transverse stability rides on [`solve_equilibrium_heeled`]: it holds the
 //! displacement at a prescribed heel and reads the righting arm off the true
 //! inclined-waterplane cut ([`crate::inclined`]).
 
 use crate::body::{Body, BodyOptions};
+use crate::conditions::STANDARD_GRAVITY;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
 use crate::iges::{HullPose, ImportOptions, Platform, SourceFleet};
@@ -102,13 +106,97 @@ fn totals(fleet: &FleetState) -> Totals {
     t
 }
 
-/// Generic equilibrium core. `situate(sinkage, trim, coarse)` produces the
-/// fleet at a platform state (coarse = reduced sampling for iterations).
-pub fn solve_equilibrium_with(
+/// Speed-dependent hydrodynamic load on the fleet at a platform state, as
+/// handed to [`solve_equilibrium_dynamic_with`] by the caller's closure. Both
+/// entries are in the fleet frame: `force_up` is the net vertical
+/// hydrodynamic force [N, positive **up**]; `moment_bow_up` is the pitch
+/// moment [N·m, positive **bow (+x) up**] about the pivot station
+/// `load.lcg.unwrap_or(0.0)` at the waterline. A hull sucked down at speed
+/// reports a negative `force_up`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DynamicLoad {
+    pub force_up: f64,
+    pub moment_bow_up: f64,
+}
+
+/// A solved floating condition at speed: the hydrostatics of [`Equilibrium`]
+/// balanced against a [`DynamicLoad`] (see [`solve_equilibrium_dynamic_with`]).
+#[derive(Debug)]
+pub struct DynamicEquilibrium {
+    /// Solved additional immersion of the platform [m] (relative to the base
+    /// waterline; negative = riding higher).
+    pub sinkage: f64,
+    /// Solved platform pitch [rad]; positive raises the +x end.
+    pub trim: f64,
+    /// The fleet situated at the solution, at full requested resolution.
+    pub fleet: FleetState,
+    /// Achieved displaced volume [m³] — the hydrostatic displacement alone,
+    /// which differs from `mass / density` by the dynamic force's share.
+    pub volume: f64,
+    /// Achieved longitudinal centre of buoyancy [m].
+    pub lcb: f64,
+    /// The dynamic load at the solution, as evaluated on `fleet`.
+    pub dynamic: DynamicLoad,
+    /// `force_up` as a fraction of the weight (negative = suction / sinkage).
+    /// Past a few tenths the quasi-static balance is being asked a lot of;
+    /// that is reported here, never refused.
+    pub lift_fraction: f64,
+    /// Newton iterations used (both phases).
+    pub iterations: usize,
+    /// |ρg(∇ − target) + F_z| / (ρg·target) at the solution: the vertical
+    /// imbalance as a fraction of the weight.
+    pub volume_residual: f64,
+    /// |LCB − lcg + M/(ρg∇)| [m] at the solution: the moment imbalance as an
+    /// LCB shift (0 when lcg is None).
+    pub lcb_residual: f64,
+}
+
+/// What the Newton core hands back, before it is packaged as an
+/// [`Equilibrium`] or a [`DynamicEquilibrium`].
+struct Solved {
+    sinkage: f64,
+    trim: f64,
+    fleet: FleetState,
+    totals: Totals,
+    lcb: f64,
+    /// Zero when the solve carried no dynamic closure.
+    dynamic: DynamicLoad,
+    iterations: usize,
+    volume_residual: f64,
+    lcb_residual: f64,
+}
+
+/// `x` plus the dynamic forcing, when there is one. A branch rather than
+/// `x + f.unwrap_or(0.0)` so the hydrostatic path's arithmetic is untouched
+/// by the dynamic variant (bit-for-bit, signed zeros included).
+fn forced(x: f64, f: Option<f64>) -> f64 {
+    match f {
+        None => x,
+        Some(f) => x + f,
+    }
+}
+
+/// The caller's dynamic-load closure, as the Newton core borrows it.
+type DynamicFn<'a> = &'a mut dyn FnMut(&FleetState) -> Result<DynamicLoad>;
+
+/// The Newton core shared by [`solve_equilibrium_with`] and
+/// [`solve_equilibrium_dynamic_with`]. With `dynamic`, every iteration adds
+/// the closure's load — scaled to volume-metre units by `1/(ρg)` — to the
+/// hydrostatic residuals: `(∇ − W/ρ + F_z/ρg, M_x − lcg·∇ + M/ρg)`. The
+/// Jacobian stays the analytic waterplane one, i.e. the dynamic load is
+/// treated as a slowly varying forcing (quasi-Newton). The closure is
+/// expensive (a resistance evaluation), so it runs exactly once per
+/// iteration, on the fleet already situated for that iteration, and never on
+/// a dry fleet. `warm_start` seeds `(sinkage, trim)` and skips the coarse
+/// phase.
+fn equilibrium_core(
     mut situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
+    mut dynamic: Option<DynamicFn<'_>>,
     load: &LoadCase,
     density: f64,
-) -> Result<Equilibrium> {
+    gravity: f64,
+    warm_start: Option<(f64, f64)>,
+) -> Result<Solved> {
     if !(load.mass.is_finite() && load.mass > 0.0) {
         return Err(Error::InvalidConditions(format!(
             "load mass must be finite and positive, got {}",
@@ -118,20 +206,44 @@ pub fn solve_equilibrium_with(
     if !(density.is_finite() && density > 0.0) {
         return Err(Error::InvalidConditions("density must be positive".into()));
     }
+    if !(gravity.is_finite() && gravity > 0.0) {
+        return Err(Error::InvalidConditions("gravity must be positive".into()));
+    }
     if let Some(l) = load.lcg {
         if !l.is_finite() {
             return Err(Error::InvalidConditions("lcg must be finite".into()));
         }
     }
+    if let Some((s0, tau0)) = warm_start {
+        if !(s0.is_finite() && tau0.is_finite()) {
+            return Err(Error::InvalidConditions(format!(
+                "warm start (sinkage {s0}, trim {tau0}) must be finite"
+            )));
+        }
+    }
     let v_target = load.mass / density;
     let z_guess = v_target.cbrt().max(1e-3);
     let pivot_x = load.lcg.unwrap_or(0.0);
+    // The dynamic load in the residuals' units: volume and volume-metres.
+    let per_rho_g = 1.0 / (density * gravity);
+    let to_forcing = |d: DynamicLoad| (d.force_up * per_rho_g, d.moment_bow_up * per_rho_g);
 
-    let mut s = 0.0f64;
-    let mut tau = 0.0f64;
+    let (mut s, mut tau) = warm_start.unwrap_or((0.0, 0.0));
     let mut iterations = 0usize;
+    // The latest dynamic evaluation with the (state, phase) it was made at,
+    // so the final report can reuse it rather than pay for another.
+    let mut last_dynamic: Option<((f64, f64, bool), DynamicLoad)> = None;
 
-    for (coarse, max_iters, tol_v) in [(true, 30usize, 1e-3f64), (false, 20, 2e-4)] {
+    // (coarse sampling, iteration cap, volume tolerance) per phase. A warm
+    // start is presumed close (the previous speed's solution) and goes
+    // straight to the fine phase.
+    const PHASES: [(bool, usize, f64); 2] = [(true, 30, 1e-3), (false, 20, 2e-4)];
+    let phases = if warm_start.is_some() {
+        &PHASES[1..]
+    } else {
+        &PHASES[..]
+    };
+    for &(coarse, max_iters, tol_v) in phases {
         let mut converged = false;
         // Adaptive relaxation: the waterplane-property Jacobian can
         // underestimate the true sensitivity (e.g. flare or structure
@@ -154,6 +266,19 @@ pub fn solve_equilibrium_with(
                 s += 0.5 * z_guess;
                 continue;
             }
+            let forcing = match dynamic.as_mut() {
+                None => None,
+                Some(d) => {
+                    let dl = d(&fleet)?;
+                    if !(dl.force_up.is_finite() && dl.moment_bow_up.is_finite()) {
+                        return Err(Error::InvalidConditions(format!(
+                            "dynamic load must be finite, got {dl:?} at sinkage {s}, trim {tau}"
+                        )));
+                    }
+                    last_dynamic = Some(((s, tau, coarse), dl));
+                    Some(to_forcing(dl))
+                }
+            };
             let t = totals(&fleet);
             let z_scale = t.draft.max(z_guess);
             let l_scale = fleet
@@ -162,8 +287,10 @@ pub fn solve_equilibrium_with(
                 .map(|(h, _)| h.length())
                 .fold(0.0f64, f64::max)
                 .max(1e-6);
-            let r1 = t.volume - v_target;
+            let r1 = forced(t.volume - v_target, forcing.map(|f| f.0));
             let lcb = t.moment_x / t.volume;
+            // The moment imbalance as an LCB shift: what the trim converges on.
+            let lcb_err = |lcg: f64| forced(lcb - lcg, forcing.map(|f| f.1 / t.volume));
             if t.wp_area <= 1e-12 {
                 return Err(Error::InvalidGeometry(
                     "waterplane area vanished during the equilibrium solve \
@@ -174,7 +301,7 @@ pub fn solve_equilibrium_with(
             let (mut ds, mut dtau) = match load.lcg {
                 None => (r1 / t.wp_area, 0.0),
                 Some(lcg) => {
-                    let r2 = t.moment_x - lcg * t.volume;
+                    let r2 = forced(t.moment_x - lcg * t.volume, forcing.map(|f| f.1));
                     // d/ds and d/dτ of (V, M); rotation about (lcg, waterline).
                     let dv_ds = t.wp_area;
                     let dv_dt = -(t.wp_moment - pivot_x * t.wp_area);
@@ -207,11 +334,11 @@ pub fn solve_equilibrium_with(
             let done_v = r1.abs() <= tol_v * v_target;
             let done_m = match load.lcg {
                 None => true,
-                Some(lcg) => (lcb - lcg).abs() <= 1e-4 * l_scale,
+                Some(lcg) => lcb_err(lcg).abs() <= 1e-4 * l_scale,
             };
             let metric = (r1.abs() / (tol_v * v_target)).max(match load.lcg {
                 None => 0.0,
-                Some(lcg) => (lcb - lcg).abs() / (1e-4 * l_scale),
+                Some(lcg) => lcb_err(lcg).abs() / (1e-4 * l_scale),
             });
             if metric < best.0 {
                 best = (metric, s, tau);
@@ -219,7 +346,7 @@ pub fn solve_equilibrium_with(
             if std::env::var("MICHELL_DEBUG_FLOAT").is_ok() {
                 eprintln!(
                     "DBG iter={iterations} s={s:.6} tau={tau:.6} V={:.6} lcb={lcb:.6} \
-                     Aw={:.4} Mw={:.4} Iw={:.4} ds={ds:.6} dtau={dtau:.6}",
+                     Aw={:.4} Mw={:.4} Iw={:.4} ds={ds:.6} dtau={dtau:.6} dyn={forcing:?}",
                     t.volume, t.wp_area, t.wp_moment, t.wp_second
                 );
             }
@@ -266,16 +393,109 @@ pub fn solve_equilibrium_with(
     } else {
         0.0
     };
-    Ok(Equilibrium {
+    let dynamic_load = match dynamic.as_mut() {
+        None => DynamicLoad::default(),
+        Some(_) if fleet.members.is_empty() => DynamicLoad::default(),
+        Some(d) => match last_dynamic {
+            // Converged: the last iteration evaluated the closure on this
+            // very state at full resolution, so the fleet — and the load —
+            // are the same. Only a near-miss fallback moves the state and
+            // has to pay for one more evaluation.
+            Some(((ls, lt, false), dl)) if ls == s && lt == tau => dl,
+            _ => d(&fleet)?,
+        },
+    };
+    let forcing = dynamic.is_some().then(|| to_forcing(dynamic_load));
+    let volume_residual = forced(t.volume - v_target, forcing.map(|f| f.0)).abs() / v_target;
+    let lcb_residual = load.lcg.map_or(0.0, |l| {
+        let shift = match forcing {
+            Some((_, fm)) if t.volume > 0.0 => Some(fm / t.volume),
+            _ => None,
+        };
+        forced(lcb - l, shift).abs()
+    });
+    Ok(Solved {
         sinkage: s,
         trim: tau,
-        volume: t.volume,
-        lcb,
-        waterplane_area: t.wp_area,
-        iterations,
-        volume_residual: (t.volume - v_target).abs() / v_target,
-        lcb_residual: load.lcg.map_or(0.0, |l| (lcb - l).abs()),
         fleet,
+        totals: t,
+        lcb,
+        dynamic: dynamic_load,
+        iterations,
+        volume_residual,
+        lcb_residual,
+    })
+}
+
+/// Generic equilibrium core. `situate(sinkage, trim, coarse)` produces the
+/// fleet at a platform state (coarse = reduced sampling for iterations).
+pub fn solve_equilibrium_with(
+    situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
+    load: &LoadCase,
+    density: f64,
+) -> Result<Equilibrium> {
+    // Gravity cancels from a purely hydrostatic balance; any value serves.
+    let sol = equilibrium_core(situate, None, load, density, STANDARD_GRAVITY, None)?;
+    Ok(Equilibrium {
+        sinkage: sol.sinkage,
+        trim: sol.trim,
+        volume: sol.totals.volume,
+        lcb: sol.lcb,
+        waterplane_area: sol.totals.wp_area,
+        iterations: sol.iterations,
+        volume_residual: sol.volume_residual,
+        lcb_residual: sol.lcb_residual,
+        fleet: sol.fleet,
+    })
+}
+
+/// Equilibrium at speed: [`solve_equilibrium_with`] with a hydrodynamic
+/// vertical force and pitch moment in the balance — thin-ship dynamic
+/// sinkage and trim. `dynamic(&fleet)` returns the [`DynamicLoad`] on the
+/// fleet as situated at the state under test, and the solve satisfies
+///
+/// ```text
+/// ρg(∇ − W/ρ)     + F_z = 0
+/// ρg(M_x − lcg·∇) + M   = 0        M_x = ∫ x d∇
+/// ```
+///
+/// so a suction (`force_up < 0`) sinks the hull below its hydrostatic
+/// displacement and a bow-up moment trims it bow-up. The closure runs once
+/// per iteration (never more), on the coarsened fleets of the first phase as
+/// well as the fine ones, and the reported `dynamic` is its value on the
+/// returned fleet. `warm_start` seeds `(sinkage, trim)` — the previous
+/// speed's solution, when sweeping — and skips the coarse phase. Tolerances
+/// are the hydrostatic solver's; the dynamic terms are carried as a forcing
+/// against the waterplane Jacobian, so a load that varies strongly with
+/// attitude simply takes more iterations. A force past ~30 % of the weight
+/// is solved like any other and shows up in `lift_fraction`.
+pub fn solve_equilibrium_dynamic_with(
+    situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
+    mut dynamic: impl FnMut(&FleetState) -> Result<DynamicLoad>,
+    load: &LoadCase,
+    density: f64,
+    gravity: f64,
+    warm_start: Option<(f64, f64)>,
+) -> Result<DynamicEquilibrium> {
+    let sol = equilibrium_core(
+        situate,
+        Some(&mut dynamic),
+        load,
+        density,
+        gravity,
+        warm_start,
+    )?;
+    Ok(DynamicEquilibrium {
+        sinkage: sol.sinkage,
+        trim: sol.trim,
+        volume: sol.totals.volume,
+        lcb: sol.lcb,
+        dynamic: sol.dynamic,
+        lift_fraction: sol.dynamic.force_up / (load.mass * gravity),
+        iterations: sol.iterations,
+        volume_residual: sol.volume_residual,
+        lcb_residual: sol.lcb_residual,
+        fleet: sol.fleet,
     })
 }
 
@@ -362,6 +582,68 @@ pub fn solve_equilibrium(
     )
 }
 
+/// One pose per body, or the mismatch as an error.
+fn check_poses(bodies: &[&Body], poses: &[HullPose]) -> Result<()> {
+    if bodies.len() != poses.len() {
+        return Err(Error::InvalidInput(format!(
+            "{} poses supplied for {} bodies",
+            poses.len(),
+            bodies.len()
+        )));
+    }
+    Ok(())
+}
+
+/// The reduced sampling the Newton iterations run on: about half the
+/// stations and waterlines (never below 31 × 11) over a capped control net.
+fn coarse_body_options(opts: &BodyOptions) -> BodyOptions {
+    let mut coarse_opts = *opts;
+    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
+    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
+    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
+    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
+    coarse_opts
+}
+
+/// The `situate` closure over a body fleet that the equilibrium solvers run
+/// on: every body at its pose under the platform state, the dry ones counted
+/// rather than lofted; coarsened options for the iterations, the caller's
+/// for the polish.
+fn body_situator<'a>(
+    bodies: &'a [&'a Body],
+    water_offset: f64,
+    poses: &'a [HullPose],
+    pivot_x: f64,
+    opts: &'a BodyOptions,
+) -> impl FnMut(f64, f64, bool) -> Result<FleetState> + 'a {
+    let coarse_opts = coarse_body_options(opts);
+    move |s, tau, coarse| {
+        let platform = Platform {
+            sinkage: s,
+            trim: tau,
+            pivot_x,
+        };
+        let o = if coarse { &coarse_opts } else { opts };
+        let mut members = Vec::new();
+        let mut dry = 0usize;
+        let mut band_exceeded = 0usize;
+        for (body, pose) in bodies.iter().zip(poses) {
+            match body.situate(water_offset, pose, &platform, o)? {
+                Some(sb) => {
+                    band_exceeded += sb.band_exceeded;
+                    members.push((sb.hull, sb.placement));
+                }
+                None => dry += 1,
+            }
+        }
+        Ok(FleetState {
+            members,
+            dry,
+            band_exceeded,
+        })
+    }
+}
+
 /// Equilibrium of an assembly of full-band bodies at design poses.
 /// `water_offset` is the base water position below the design floatplane
 /// (normally 0) that the solved sinkage is measured from.
@@ -373,47 +655,40 @@ pub fn solve_equilibrium_bodies(
     density: f64,
     opts: &BodyOptions,
 ) -> Result<Equilibrium> {
-    if bodies.len() != poses.len() {
-        return Err(Error::InvalidInput(format!(
-            "{} poses supplied for {} bodies",
-            poses.len(),
-            bodies.len()
-        )));
-    }
+    check_poses(bodies, poses)?;
     let pivot_x = load.lcg.unwrap_or(0.0);
-    let mut coarse_opts = *opts;
-    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
-    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
-    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
-    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
     solve_equilibrium_with(
-        |s, tau, coarse| {
-            let platform = Platform {
-                sinkage: s,
-                trim: tau,
-                pivot_x,
-            };
-            let o = if coarse { &coarse_opts } else { opts };
-            let mut members = Vec::new();
-            let mut dry = 0usize;
-            let mut band_exceeded = 0usize;
-            for (body, pose) in bodies.iter().zip(poses) {
-                match body.situate(water_offset, pose, &platform, o)? {
-                    Some(sb) => {
-                        band_exceeded += sb.band_exceeded;
-                        members.push((sb.hull, sb.placement));
-                    }
-                    None => dry += 1,
-                }
-            }
-            Ok(FleetState {
-                members,
-                dry,
-                band_exceeded,
-            })
-        },
+        body_situator(bodies, water_offset, poses, pivot_x, opts),
         load,
         density,
+    )
+}
+
+/// [`solve_equilibrium_bodies`] at speed: the same body fleet balanced
+/// against the caller's [`DynamicLoad`] (see
+/// [`solve_equilibrium_dynamic_with`] for the balance, the closure contract,
+/// and `warm_start`).
+#[allow(clippy::too_many_arguments)]
+pub fn solve_equilibrium_bodies_dynamic(
+    bodies: &[&Body],
+    water_offset: f64,
+    poses: &[HullPose],
+    load: &LoadCase,
+    density: f64,
+    gravity: f64,
+    opts: &BodyOptions,
+    dynamic: impl FnMut(&FleetState) -> Result<DynamicLoad>,
+    warm_start: Option<(f64, f64)>,
+) -> Result<DynamicEquilibrium> {
+    check_poses(bodies, poses)?;
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    solve_equilibrium_dynamic_with(
+        body_situator(bodies, water_offset, poses, pivot_x, opts),
+        dynamic,
+        load,
+        density,
+        gravity,
+        warm_start,
     )
 }
 
@@ -475,13 +750,7 @@ pub fn solve_equilibrium_heeled(
     opts: &BodyOptions,
     grid: InclinedGrid,
 ) -> Result<HeeledEquilibrium> {
-    if bodies.len() != poses.len() {
-        return Err(Error::InvalidInput(format!(
-            "{} poses supplied for {} bodies",
-            poses.len(),
-            bodies.len()
-        )));
-    }
+    check_poses(bodies, poses)?;
     if !(load.mass.is_finite() && load.mass > 0.0) {
         return Err(Error::InvalidConditions(format!(
             "load mass must be finite and positive, got {}",
@@ -512,37 +781,8 @@ pub fn solve_equilibrium_heeled(
     // from the exact inclined cut at the solved attitude, so the righting arm
     // carries the full (nonlinear) form stability.
     let heeled = heel_poses(bodies, poses, heel)?;
-    let mut coarse_opts = *opts;
-    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
-    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
-    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
-    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
     let eq = solve_equilibrium_with(
-        |s, tau, coarse| {
-            let platform = Platform {
-                sinkage: s,
-                trim: tau,
-                pivot_x,
-            };
-            let o = if coarse { &coarse_opts } else { opts };
-            let mut members = Vec::new();
-            let mut dry = 0usize;
-            let mut band_exceeded = 0usize;
-            for (body, pose) in bodies.iter().zip(&heeled) {
-                match body.situate(water_offset, pose, &platform, o)? {
-                    Some(sb) => {
-                        band_exceeded += sb.band_exceeded;
-                        members.push((sb.hull, sb.placement));
-                    }
-                    None => dry += 1,
-                }
-            }
-            Ok(FleetState {
-                members,
-                dry,
-                band_exceeded,
-            })
-        },
+        body_situator(bodies, water_offset, &heeled, pivot_x, opts),
         load,
         density,
     )?;

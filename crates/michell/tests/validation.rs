@@ -87,6 +87,7 @@ fn wigley_wave_resistance_matches_reference() {
     let opts = WaveOptions {
         rel_tol: 1e-7,
         max_refinements: 6,
+        ..Default::default()
     };
     for fn_ in [0.25, 0.35] {
         let u = fn_ * (G * l).sqrt();
@@ -143,6 +144,7 @@ fn catamaran_matches_analytic_interference() {
     let opts = WaveOptions {
         rel_tol: 1e-7,
         max_refinements: 6,
+        ..Default::default()
     };
     let got = michell::multihull_wave_resistance_with(&members, &cond, &opts)
         .unwrap()
@@ -175,6 +177,7 @@ fn tandem_matches_analytic_interference() {
     let opts = WaveOptions {
         rel_tol: 1e-7,
         max_refinements: 6,
+        ..Default::default()
     };
     let got = michell::multihull_wave_resistance_with(&members, &cond, &opts)
         .unwrap()

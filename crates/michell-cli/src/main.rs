@@ -25,6 +25,7 @@ fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("resistance") => cmd_resistance(&args[1..]),
+        Some("squat") => cmd_squat(&args[1..]),
         Some("sweep") => {
             // A JSON manifest is the preferred sweep interface.
             if let Some(path) = args.get(1).filter(|a| a.ends_with(".json")) {
@@ -59,6 +60,7 @@ michell — thin-ship wave resistance (Michell's integral) + ITTC-57 friction
 
 USAGE
   michell resistance <hull>... --speeds A[:B:STEP] [options]  resistance curve
+  michell squat <hull>... --speeds A[:B:STEP] [options]       dynamic sinkage/trim force
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
@@ -93,7 +95,19 @@ MULTIHULLS
   Froude numbers use the longest hull's length. Demihulls are assumed
   symmetric about their own centerplanes.
 
-SPEED SELECTION (resistance)
+SQUAT (thin-ship dynamic sinkage and trim)
+  michell squat <hull>... --speeds A[:B:STEP] [--knots] [--pivot X]
+  The near-field pressure's vertical force Fz (+ up) and pitch moment M
+  (+ bow-up, about --pivot at the waterline; default the fleet's LCF) on
+  the hulls held at their current attitude, from the same exact hull
+  transforms as the wave integral (sinkage is the local field; trim is
+  mostly the wave part). Reports the lift fraction Fz/(rho g V) and the
+  first-order equivalent sinkage -Fz/(rho g Aw) and trim M/(rho g I_L),
+  I_L about the LCF. Thin-ship overstates both ~20-40% vs surface-panel
+  linear theory at Fn 0.3-0.4; the linearisation expires once |lift| is a
+  real share of the weight.
+
+SPEED SELECTION (resistance, squat)
   --speeds A[:B:STEP]   speeds in m/s (inclusive range)
   --froude A[:B:STEP]   length Froude numbers instead of speeds
   --knots               interpret and display speeds in knots
@@ -121,6 +135,12 @@ PHYSICS OPTIONS
   --gravity G           override g [m/s2]
   --form-factor K       viscous form factor (1+k), default 0
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
+  --transom SPEC        transom-stern closure: off | ballistic[=COEFF] |
+                        hollow=METRES. A transom leaves the half-breadth open
+                        at the stern; the closure appends a virtual hollow of
+                        length L_v = COEFF*U*sqrt(d_T/g) (default COEFF=sqrt2,
+                        the ballistic free-fall value) so the body closes.
+                        Inert on a hull that closes aft
   --heel DEG            (resistance) heel the whole fleet DEG degrees about the
                         platform's longitudinal axis; adds the tilted-thickness
                         wave-making (|DEG| < 90). Viscous resistance is
@@ -611,6 +631,23 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
         println!("draft           {:>10.4} m", m.hull.draft());
         println!("wetted surface  {:>10.4} m^2", m.hull.wetted_surface());
         println!("displaced vol   {:>10.4} m^3", m.hull.displaced_volume());
+        if let Some(t) = m.hull.transom() {
+            // A wet transom is outside what the wave integral models, so say
+            // so here rather than letting it pass silently into a resistance
+            // curve. A_T/A_X is the usual measure of how much it matters.
+            println!(
+                "transom         {:>10.4} m^2 immersed ({:.1}% of max section), \
+                 depth {:.4} m, beam {:.4} m",
+                t.area,
+                100.0 * t.area / m.hull.max_section_area(),
+                t.depth,
+                2.0 * t.half_beam,
+            );
+            println!(
+                "                wave resistance does not model transom sterns; \
+                 treat Rw as approximate"
+            );
+        }
         let s = m.hull.surface();
         println!(
             "spline          degree {}x{}, control net {}x{}",
@@ -618,6 +655,163 @@ fn cmd_info(args: &[String]) -> Result<(), String> {
             s.degree_z(),
             s.n_ctrl_x(),
             s.n_ctrl_z()
+        );
+    }
+    Ok(())
+}
+
+/// Parse `--transom`: `off`, `ballistic[=COEFF]`, or `hollow=METRES`.
+///
+/// Default (flag absent) is the ballistic hollow — inert on a hull that closes
+/// aft, so only transom-sterned geometry is affected.
+pub(crate) fn parse_transom(spec: Option<&str>) -> Result<michell::TransomClosure, String> {
+    use michell::TransomClosure;
+    let Some(spec) = spec else {
+        return Ok(TransomClosure::default());
+    };
+    let (key, val) = match spec.split_once('=') {
+        Some((k, v)) => (k, Some(v)),
+        None => (spec, None),
+    };
+    let num = |v: Option<&str>, what: &str| -> Result<f64, String> {
+        v.ok_or_else(|| format!("--transom {key}: expected {key}=<{what}>"))?
+            .parse::<f64>()
+            .map_err(|_| format!("--transom: cannot parse number {:?}", v.unwrap_or("")))
+            .and_then(|x| {
+                if x.is_finite() && x >= 0.0 {
+                    Ok(x)
+                } else {
+                    Err(format!("--transom: {what} must be finite and >= 0"))
+                }
+            })
+    };
+    match key {
+        "off" | "none" => Ok(TransomClosure::None),
+        "ballistic" => Ok(match val {
+            None => TransomClosure::default(),
+            Some(_) => TransomClosure::Ballistic {
+                coeff: num(val, "coefficient")?,
+            },
+        }),
+        "hollow" | "length" => Ok(TransomClosure::Fixed {
+            length: num(val, "metres")?,
+        }),
+        other => Err(format!(
+            "--transom {other:?}: expected off | ballistic[=COEFF] | hollow=METRES"
+        )),
+    }
+}
+
+fn cmd_squat(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err("usage: michell squat <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into());
+    }
+    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    let members: Vec<(&Hull, Placement)> =
+        loaded.iter().map(|m| (&m.hull, m.placement)).collect();
+    let l_ref = members
+        .iter()
+        .map(|(h, _)| h.length())
+        .fold(0.0f64, f64::max);
+    let knots = p.switch("--knots");
+    let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
+    let speeds: Vec<f64> = match (p.flag("speeds"), p.flag("froude")) {
+        (Some(_), Some(_)) => return Err("give either --speeds or --froude, not both".into()),
+        (Some(s), None) => {
+            let v = parse_range(s)?;
+            if knots {
+                v.into_iter().map(|u| u * KNOT).collect()
+            } else {
+                v
+            }
+        }
+        (None, Some(f)) => parse_range(f)?
+            .into_iter()
+            .map(|fr| fr * (g * l_ref).sqrt())
+            .collect(),
+        (None, None) => return Err("select speeds with --speeds or --froude".into()),
+    };
+    let mut opts = michell::squat::SquatOptions::default();
+    if let Some(t) = p.f64_flag("rel-tol")? {
+        opts.rel_tol = t;
+    }
+    opts.wave.transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
+
+    // Fleet waterplane in fleet coordinates: area, first and second moments,
+    // and the LCF, which is the default pivot and the axis I_L is taken about.
+    let (mut aw, mut mw, mut iw, mut vol) = (0.0, 0.0, 0.0, 0.0);
+    for (h, pl) in &members {
+        let a = h.waterplane_area();
+        let m = h.waterplane_moment() + pl.x * a;
+        aw += a;
+        mw += m;
+        iw += h.waterplane_second_moment() + 2.0 * pl.x * h.waterplane_moment() + pl.x * pl.x * a;
+        vol += h.displaced_volume();
+    }
+    if aw <= 0.0 {
+        return Err("fleet has no waterplane".into());
+    }
+    let lcf = mw / aw;
+    let pivot = p.f64_flag("pivot")?.unwrap_or(lcf);
+    // Trimming inertia about the LCF (the parallel-axis correction of I_w).
+    let i_l = iw - mw * mw / aw;
+
+    for (h, _) in &members {
+        if let Some(t) = h.transom() {
+            eprintln!(
+                "note: transom immersed ({:.1}% of max section); squat is evaluated on the \
+                 closed composite body ({:?})",
+                100.0 * t.area / h.max_section_area(),
+                opts.wave.transom
+            );
+        }
+    }
+    println!(
+        "fleet: {} hull(s), L(ref) {:.3} m, Aw {:.3} m^2, LCF {:.3} m, I_L {:.3} m^4, vol {:.3} m^3; pivot {:.3} m",
+        members.len(),
+        l_ref,
+        aw,
+        lcf,
+        i_l,
+        vol,
+        pivot
+    );
+    println!(
+        "{:>8} {:>7} {:>11} {:>8} {:>12} {:>12} {:>12} {:>9} {:>8}",
+        if knots { "U[kn]" } else { "U[m/s]" },
+        "Fn",
+        "Fz[N]",
+        "lift%",
+        "M[N m]",
+        "s_eq[mm]",
+        "trim_eq[deg]",
+        "M_wave%",
+        "err"
+    );
+    for &u in &speeds {
+        let cond = p.conditions(u)?;
+        let d = michell::squat::multihull_dynamic_force(&members, &cond, pivot, &opts)
+            .map_err(|e| format!("{e}"))?;
+        let rho = cond.fluid.density;
+        let s_eq = -d.force_up / (rho * g * aw);
+        let trim_eq = (d.moment_bow_up / (rho * g * i_l)).to_degrees();
+        let wave_share = if d.moment_bow_up.abs() > 0.0 {
+            100.0 * d.moment_wave / d.moment_bow_up
+        } else {
+            0.0
+        };
+        println!(
+            "{:8.3} {:7.3} {:11.2} {:8.2} {:12.2} {:12.2} {:12.4} {:9.1} {:8.1e}",
+            if knots { u / KNOT } else { u },
+            u / (g * l_ref).sqrt(),
+            d.force_up,
+            100.0 * d.lift_fraction,
+            d.moment_bow_up,
+            1000.0 * s_eq,
+            trim_eq,
+            wave_share,
+            d.est_rel_error
         );
     }
     Ok(())
@@ -667,6 +861,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
     }
+    wave_opts.transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
 
     let mut rows = Vec::new();
     for &u in &speeds {
@@ -1037,6 +1232,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
     }
+    wave_opts.transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
     let density = p.conditions(1.0)?.fluid.density;
 
     let points: usize = axes

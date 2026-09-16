@@ -45,7 +45,7 @@
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement};
+use crate::michell::{InnerIntegral, Placement, TransomClosure};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -162,7 +162,7 @@ impl<'h> FreeWaveSpectrum<'h> {
             members: members
                 .iter()
                 .map(|(h, p)| Member {
-                    inner: InnerIntegral::new(h, nu),
+                    inner: InnerIntegral::new(h, nu, TransomClosure::default()),
                     dx: h.x_center() + p.x - x_ref,
                     y: p.y,
                 })

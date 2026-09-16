@@ -14,6 +14,55 @@ pub(crate) struct Span {
     pub len: f64,
 }
 
+/// A transom whose area is under this fraction of the hull's maximum section
+/// area is not reported: it is hydrodynamically negligible and, on a lofted
+/// hull, indistinguishable from the fit's own wiggle at a closing stern.
+const TRANSOM_AREA_REL: f64 = 1e-3;
+
+/// The aft-end section of a hull whose half-breadth does not close there — a
+/// **transom**.
+///
+/// The geometry contract puts the bow at the high-`x` end, so the transom, if
+/// there is one, is the section at the hull's lowest `x`. `f_T(z) = f(x_T, z)`
+/// is a piecewise polynomial on the hull's own z-spans, which is what lets the
+/// virtual-appendage closure reuse the exact free-wave kernel.
+///
+/// Presence alone is not a warning: a transom clear of the water is simply a
+/// closed hull as far as the wave integral is concerned. What matters is
+/// [`Transom::depth`] and the area ratio against [`Hull::max_section_area`].
+#[derive(Debug, Clone)]
+pub struct Transom {
+    /// Station of the transom — the aft end of the hull's x-domain [m].
+    pub x: f64,
+    /// Immersion depth [m], as the **equivalent rectangle**:
+    /// `A_T / (2 · max_z f_T)` — the depth of a rectangle of the transom's
+    /// widest beam carrying the same immersed area. Exact for a rectangular
+    /// transom; `T/2` for one tapering linearly to the keel.
+    ///
+    /// Deliberately not a level crossing of `f_T`. A hull lofted from CAD
+    /// cannot hold the transom's sharp lower edge: the fit leaves a tail of a
+    /// few percent of the waterline beam running most of the way down the
+    /// draft, so "the deepest z carrying beam" is set by the fit's ringing
+    /// rather than by the transom, and lands near the keel whatever threshold
+    /// it is given. An area measure is insensitive to that tail — and it is
+    /// also the scale a closure wants, since what sets the hollow is how much
+    /// water has to fill in behind the transom, not where its edge sits.
+    pub depth: f64,
+    /// Immersed transom area, `2∫₀^T f_T(z) dz` [m²] — both sides.
+    pub area: f64,
+    /// Half-beam at the waterline, `f_T(0)` [m].
+    pub half_beam: f64,
+    /// Per-z-span polynomial coefficients of the transom section:
+    /// `f_T(z) = Σ_b c[b] (z − z0_sz)^b` on z-span `sz`, flattened as
+    /// `[sz * (q + 1) + b]` to match the layout [`Hull::fx_coeff`] uses.
+    ///
+    /// Carried for the virtual-appendage closure, which multiplies it by a
+    /// polynomial decay in `x` and hands the product to the same exact
+    /// per-span kernel the hull itself goes through.
+    #[allow(dead_code, reason = "consumed by the virtual-appendage closure")]
+    pub(crate) coeff: Vec<f64>,
+}
+
 /// A validated hull.
 ///
 /// Geometry contract (see crate docs): `y = f(x, z) >= 0` is the local
@@ -31,6 +80,12 @@ pub struct Hull {
     /// i.e. index `((sx * nsz + sz) * p + a) * (q + 1) + b`,
     /// with `a = 0..p` (p = degree_x) and `b = 0..=q` (q = degree_z).
     fx_coeff: Vec<f64>,
+    /// Local polynomial coefficients of `f` itself per span pair, same
+    /// indexing as `fx_coeff` but with `a = 0..=p` (one more x power), i.e.
+    /// index `((sx * nsz + sz) * (p + 1) + a) * (q + 1) + b`. The near-field
+    /// (sinkage/trim) transforms need moments of `f` and `x·∂f/∂x`, not only
+    /// of `∂f/∂x`; carrying `f` per span keeps them exact too.
+    f_coeff: Vec<f64>,
     /// `∂f_a/∂x` coefficients for the **antisymmetric** half-beam
     /// `f_a = (f₊ − f₋)/2` of an asymmetric hull, same layout as `fx_coeff`.
     /// `None` for a port/starboard-symmetric hull (the default contract), in
@@ -51,6 +106,8 @@ pub struct Hull {
     waterplane_moment: f64,
     waterplane_second_moment: f64,
     waterplane_transverse_moment: f64,
+    max_section_area: f64,
+    transom: Option<Transom>,
 }
 
 impl Hull {
@@ -107,7 +164,7 @@ impl Hull {
             .collect();
 
         // Local polynomial coefficients of fx = ∂f/∂x on every span pair.
-        let fx_coeff = compute_fx_coeff(&surface, &xs, &zs);
+        let (fx_coeff, f_coeff) = compute_span_coeffs(&surface, &xs, &zs);
 
         // Geometric integrals by per-span Gauss-Legendre.
         // Volume: integrand is polynomial of degree (p, q) => exact.
@@ -174,11 +231,15 @@ impl Hull {
             }
         }
 
+        let max_section_area = max_section_area_of(&surface, &spans_x, &spans_z);
+        let transom = detect_transom(&surface, &xs, &zs, &spans_z, draft, max_section_area);
+
         Ok(Hull {
             surface,
             spans_x,
             spans_z,
             fx_coeff,
+            f_coeff,
             fx_a_coeff: None,
             a_surface: None,
             length: x1 - x0,
@@ -192,6 +253,8 @@ impl Hull {
             waterplane_moment: wp_mx,
             waterplane_second_moment: wp_ixx,
             waterplane_transverse_moment: wp_iyy,
+            max_section_area,
+            transom,
         })
     }
 
@@ -270,7 +333,7 @@ impl Hull {
         // Antisymmetric ∂f_a/∂x on the same spans.
         let xs = a_surface.x_span_indices();
         let zs = a_surface.z_span_indices();
-        hull.fx_a_coeff = Some(compute_fx_coeff(&a_surface, &xs, &zs));
+        hull.fx_a_coeff = Some(compute_span_coeffs(&a_surface, &xs, &zs).0);
         hull.a_surface = Some(a_surface);
 
         // Two-sided geometry corrections: wetted surface and the centreplane
@@ -352,6 +415,22 @@ impl Hull {
         }
     }
 
+    /// Maximum immersed section area `A_X = max_x 2∫₀^T f(x, z) dz` [m²].
+    ///
+    /// The reference area the transom is judged against: `A_T/A_X` is the
+    /// standard measure of how much of a transom-stern vessel this is.
+    pub fn max_section_area(&self) -> f64 {
+        self.max_section_area
+    }
+
+    /// The hull's transom, if its half-breadth does not close at the aft
+    /// (low-`x`) end. `None` for a hull that closes there — which is what
+    /// classical Michell theory assumes, and the only case this crate's wave
+    /// integral currently models.
+    pub fn transom(&self) -> Option<&Transom> {
+        self.transom.as_ref()
+    }
+
     pub(crate) fn spans_x(&self) -> &[Span] {
         &self.spans_x
     }
@@ -362,6 +441,10 @@ impl Hull {
 
     pub(crate) fn fx_coeff(&self) -> &[f64] {
         &self.fx_coeff
+    }
+
+    pub(crate) fn f_coeff(&self) -> &[f64] {
+        &self.f_coeff
     }
 
     /// `∂f_a/∂x` coefficients for the antisymmetric half-beam, or `None` if the
@@ -400,10 +483,15 @@ fn zj_map(sz: &Span, node: f64) -> f64 {
     sz.start + sz.len * (node + 1.0) / 2.0
 }
 
-/// Local polynomial coefficients of `∂f/∂x` per span pair, in the flattened
-/// layout documented on [`Hull::fx_coeff`]. Shared by the symmetric and
+/// Local polynomial coefficients of `∂f/∂x` and of `f` per span pair, in the
+/// flattened layouts documented on [`Hull::fx_coeff`] and [`Hull::f_coeff`].
+/// Both come from one corner-Taylor pass; shared by the symmetric and
 /// asymmetric constructors so both paths use identical arithmetic.
-fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Vec<f64> {
+fn compute_span_coeffs(
+    surface: &BSplineSurface,
+    xs: &[usize],
+    zs: &[usize],
+) -> (Vec<f64>, Vec<f64>) {
     let p = surface.degree_x();
     let q = surface.degree_z();
     // Factorials up to max degree (degrees are small).
@@ -413,20 +501,116 @@ fn compute_fx_coeff(surface: &BSplineSurface, xs: &[usize], zs: &[usize]) -> Vec
     }
     let nsz = zs.len();
     let mut fx_coeff = vec![0.0f64; xs.len() * nsz * p * (q + 1)];
+    let mut f_coeff = vec![0.0f64; xs.len() * nsz * (p + 1) * (q + 1)];
     for (isx, &sx) in xs.iter().enumerate() {
         for (isz, &sz) in zs.iter().enumerate() {
             let d = surface.corner_partials(sx, sz);
-            for a in 0..p {
-                for b in 0..=q {
-                    // f = Σ D[a][b]/(a! b!) X^a Z^b  =>
-                    // fx coefficient of X^a Z^b is D[a+1][b]/(a! b!).
+            for b in 0..=q {
+                // f = Σ D[a][b]/(a! b!) X^a Z^b  =>
+                // fx coefficient of X^a Z^b is D[a+1][b]/(a! b!).
+                for a in 0..p {
                     fx_coeff[((isx * nsz + isz) * p + a) * (q + 1) + b] =
                         d[a + 1][b] / (fact[a] * fact[b]);
+                }
+                for a in 0..=p {
+                    f_coeff[((isx * nsz + isz) * (p + 1) + a) * (q + 1) + b] =
+                        d[a][b] / (fact[a] * fact[b]);
                 }
             }
         }
     }
-    fx_coeff
+    (fx_coeff, f_coeff)
+}
+
+/// Maximum immersed section area `A_X = max_x 2∫₀^T f(x, z) dz`.
+///
+/// Exact in z (the integrand is polynomial of degree `q` on each z-span); the
+/// maximum over x is located by sampling each x-span, which is ample for a
+/// quantity that only ever appears as the denominator of a ratio.
+fn max_section_area_of(surface: &BSplineSurface, spans_x: &[Span], spans_z: &[Span]) -> f64 {
+    const SAMPLES_PER_SPAN: usize = 16;
+    let q = surface.degree_z();
+    let (zn, zw) = gauss_legendre(q / 2 + 2);
+    let mut best = 0.0f64;
+    for sx in spans_x {
+        for i in 0..=SAMPLES_PER_SPAN {
+            let x = sx.start + sx.len * i as f64 / SAMPLES_PER_SPAN as f64;
+            let mut area = 0.0;
+            for sz in spans_z {
+                let jac = sz.len / 2.0;
+                for (j, &zj) in zn.iter().enumerate() {
+                    area += zw[j] * jac * surface.eval(x, zj_map(sz, zj));
+                }
+            }
+            best = best.max(2.0 * area);
+        }
+    }
+    best
+}
+
+/// Detect a transom: a non-closing half-breadth at the aft (low-`x`) end.
+///
+/// The section polynomial comes from the same corner-Taylor data the span
+/// derivatives use — at `X = 0` on the first x-span, `f_T`'s coefficient of
+/// `Z^b` is `D[0][b]/b!` — so the transom is carried in exactly the form the
+/// free-wave kernel already integrates exactly.
+fn detect_transom(
+    surface: &BSplineSurface,
+    xs: &[usize],
+    zs: &[usize],
+    spans_z: &[Span],
+    draft: f64,
+    max_section_area: f64,
+) -> Option<Transom> {
+    let q = surface.degree_z();
+    let x_t = surface.x_domain().0;
+
+    let mut fact = vec![1.0f64; q + 2];
+    for i in 1..fact.len() {
+        fact[i] = fact[i - 1] * i as f64;
+    }
+    let mut coeff = vec![0.0f64; zs.len() * (q + 1)];
+    for (isz, &sz) in zs.iter().enumerate() {
+        let d = surface.corner_partials(xs[0], sz);
+        for b in 0..=q {
+            coeff[isz * (q + 1) + b] = d[0][b] / fact[b];
+        }
+    }
+
+    // Area: exact per z-span (polynomial of degree q), both sides.
+    let (zn, zw) = gauss_legendre(q / 2 + 2);
+    let mut area = 0.0;
+    for sz in spans_z {
+        let jac = sz.len / 2.0;
+        for (j, &zj) in zn.iter().enumerate() {
+            area += zw[j] * jac * surface.eval(x_t, zj_map(sz, zj));
+        }
+    }
+    area *= 2.0;
+    if !(area > TRANSOM_AREA_REL * max_section_area) {
+        return None;
+    }
+
+    // Equivalent-rectangle immersion depth (see `Transom::depth`). Normalised
+    // on the transom's largest half-beam rather than f_T(0), so a section
+    // carrying no beam right at the waterline still gets a sane depth.
+    let n = 16 * spans_z.len();
+    let peak = (0..=n).fold(0.0f64, |m, i| {
+        m.max(surface.eval(x_t, draft * i as f64 / n as f64))
+    });
+    let depth = if peak > 0.0 {
+        (area / (2.0 * peak)).min(draft)
+    } else {
+        0.0
+    };
+
+    Some(Transom {
+        x: x_t,
+        depth,
+        area,
+        half_beam: surface.eval(x_t, 0.0),
+        coeff,
+    })
 }
 
 /// One-sided wetted surface `∬ √(1 + fx² + fz²) dx dz` of a half-breadth
@@ -476,4 +660,46 @@ fn waterplane_transverse_moment_of(surface: &BSplineSurface) -> f64 {
         }
     }
     iyy
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The transom section polynomial is what the virtual-appendage closure
+    /// will integrate, so it has to reproduce the surface along `x = x_T`
+    /// span for span — including across an interior knot.
+    #[test]
+    fn transom_coefficients_reproduce_the_section() {
+        let knots_x = vec![0.0, 0.0, 0.0, 0.0, 3.0, 6.0, 9.0, 9.0, 9.0, 9.0];
+        let knots_z = vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0];
+        let (nx, nz) = (6usize, 4usize);
+        // A net well clear of zero at the aft end (i = 0) tapering to a closed
+        // bow: a genuine transom-sterned hull.
+        let mut control = vec![0.0; nx * nz];
+        for i in 0..nx {
+            for j in 0..nz {
+                let taper = 1.0 - i as f64 / (nx - 1) as f64;
+                control[i * nz + j] = 0.6 * taper * (1.0 - 0.25 * j as f64);
+            }
+        }
+        let surface = BSplineSurface::new(3, 2, knots_x, knots_z, control).unwrap();
+        let hull = Hull::new(surface).unwrap();
+        let tr = hull.transom().expect("tapered-to-bow hull has a transom");
+
+        let q = hull.surface().degree_z();
+        for (isz, sz) in hull.spans_z().iter().enumerate() {
+            for k in 0..=8 {
+                let z = sz.start + sz.len * k as f64 / 8.0;
+                let dz = z - sz.start;
+                let row = &tr.coeff[isz * (q + 1)..(isz + 1) * (q + 1)];
+                let poly = row.iter().rev().fold(0.0, |acc, &c| acc * dz + c);
+                let exact = hull.surface().eval(tr.x, z);
+                assert!(
+                    (poly - exact).abs() < 1e-12 * exact.abs().max(1.0),
+                    "z = {z}: polynomial {poly} vs surface {exact}"
+                );
+            }
+        }
+    }
 }

@@ -47,8 +47,10 @@
 //!
 //! - Thin-ship (Michell) linearisation: slender hull, `|∂f/∂x| ≪ 1`; no
 //!   sinkage, trim, or wave-breaking; deep water; infinite fluid extent.
-//! - The half-breadth should close at both ends (`f = 0` at bow and stern).
-//!   Transom sterns are not yet modelled.
+//! - The half-breadth should close at the bow (`f = 0` there). A **transom
+//!   stern** is closed by a virtual appendage — see [`TransomClosure`] — whose
+//!   hollow length defaults to the ballistic estimate; the bow has no such
+//!   treatment.
 //! - The control net must be non-negative (sufficient condition for
 //!   `f >= 0`).
 //!
@@ -83,6 +85,7 @@ mod michell;
 mod moments;
 mod quadrature;
 pub mod spectrum;
+pub mod squat;
 pub mod stl;
 
 pub use bspline::BSplineSurface;
@@ -90,12 +93,13 @@ pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
 pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, ViscousResistance};
 pub use grid::SampleGrid;
-pub use hull::Hull;
+pub use hull::{Hull, Transom};
 pub use michell::{
     asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
+    inner_integrals_with,
     multihull_heel_wave_resistance, multihull_wave_resistance, multihull_wave_resistance_lifting,
     multihull_wave_resistance_with, wave_resistance, wave_resistance_with, LiftingGrid, Placement,
-    WaveOptions, WaveResistance,
+    TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
