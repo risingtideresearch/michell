@@ -282,7 +282,7 @@ fn equilibrium_core(
                 s += 0.5 * z_guess;
                 continue;
             }
-            let forcing = match dynamic.as_mut() {
+            let dl_base = match dynamic.as_mut() {
                 None => None,
                 Some(d) => {
                     let dl = d(&fleet)?;
@@ -292,9 +292,10 @@ fn equilibrium_core(
                         )));
                     }
                     last_dynamic = Some(((s, tau, coarse), dl));
-                    Some(to_forcing(dl))
+                    Some(dl)
                 }
             };
+            let forcing = dl_base.map(to_forcing);
             let t = totals(&fleet);
             let z_scale = t.draft.max(z_guess);
             let l_scale = fleet
@@ -303,6 +304,70 @@ fn equilibrium_core(
                 .map(|(h, _)| h.length())
                 .fold(0.0f64, f64::max)
                 .max(1e-6);
+            // The dynamic load's own sensitivity to (s, τ), by one-sided finite
+            // difference against `dl_base`, falling back to the other side if
+            // the perturbed fleet goes dry (only relevant right at the edge of
+            // floating). The analytic Jacobian below (`t.wp_area` etc.) treats
+            // the dynamic load as a *constant* added to the residual — exact
+            // for the hydrostatic terms, but only zeroth-order for a force that
+            // genuinely curves with attitude (a large transom's immersion
+            // changing character, say). That mismatch is what turns plain
+            // quasi-Newton into a limit cycle no matter how precisely the force
+            // itself is resolved — confirmed on the motivating case by finding
+            // loose- and tight-quadrature evaluations agreeing to <1% across
+            // the very range the solver was oscillating in, which rules out
+            // quadrature noise as the cause. `h_s`/`h_tau` sit comfortably
+            // above that noise floor while staying well inside the existing
+            // step-size clamps below.
+            // Scoped to the same phases the handoff damping above covers —
+            // never the initial, cold, far-from-solution coarse phase. That
+            // phase already converges reliably on the pure hydrostatic
+            // Jacobian alone (it always has; the mismatch this section
+            // exists for only shows up once precision matters, in the fine
+            // phase), and empirically, probing a finite difference from a
+            // wild starting guess is actively harmful: on the motivating
+            // case, applying it unconditionally sent the cold coarse phase
+            // to a multi-metre "sinkage" and a trim past the 20° abort
+            // limit, diverging outright where the plain analytic Jacobian
+            // had always converged in under ten iterations.
+            let dyn_jac = if is_handoff_phase {
+                dl_base
+            } else {
+                None
+            }
+            .map(|dl| {
+                let h_s = 0.02 * z_scale;
+                let h_tau = 0.01f64;
+                let mut probe = |ds: f64, dtau: f64| -> Result<Option<DynamicLoad>> {
+                    let f = situate(s + ds, tau + dtau, coarse)?;
+                    if f.members.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(dynamic.as_mut().expect("dl_base implies a closure")(&f)?))
+                    }
+                };
+                let mut one_sided = |h: f64, along_s: bool| -> Result<Option<(f64, f64)>> {
+                    let (fwd_ds, fwd_dt) = if along_s { (h, 0.0) } else { (0.0, h) };
+                    let sample = match probe(fwd_ds, fwd_dt)? {
+                        Some(v) => Some((h, v)),
+                        None => probe(-fwd_ds, -fwd_dt)?.map(|v| (-h, v)),
+                    };
+                    Ok(sample.map(|(signed_h, v)| {
+                        (
+                            (v.force_up - dl.force_up) / signed_h,
+                            (v.moment_bow_up - dl.moment_bow_up) / signed_h,
+                        )
+                    }))
+                };
+                let ds_slope = one_sided(h_s, true)?;
+                // Trim isn't being solved without an lcg, so skip those evals.
+                let dt_slope = match load.lcg {
+                    Some(_) => one_sided(h_tau, false)?,
+                    None => None,
+                };
+                Ok::<_, Error>((ds_slope, dt_slope))
+            });
+            let dyn_jac = dyn_jac.transpose()?;
             let r1 = forced(t.volume - v_target, forcing.map(|f| f.0));
             let lcb = t.moment_x / t.volume;
             // The moment imbalance as an LCB shift: what the trim converges on.
@@ -314,15 +379,39 @@ fn equilibrium_core(
                         .into(),
                 ));
             }
+            // Fold the dynamic load's own sensitivity into the hydrostatic
+            // Jacobian, in the same volume/volume-metre units `forced` already
+            // uses (i.e. scaled by `per_rho_g`). `None` (no closure, a zero
+            // load, or a dry perturbed fleet on that axis) leaves the pure
+            // hydrostatic term untouched, so a hydrostatic-only solve — and a
+            // dynamic one whose load has no local sensitivity to reach for —
+            // is completely unaffected.
+            let (dfz_ds, dm_ds_dyn) = dyn_jac
+                .and_then(|(ds_slope, _)| ds_slope)
+                .map_or((0.0, 0.0), |(dfz, dm)| (per_rho_g * dfz, per_rho_g * dm));
+            let (dfz_dt, dm_dt_dyn) = dyn_jac
+                .and_then(|(_, dt_slope)| dt_slope)
+                .map_or((0.0, 0.0), |(dfz, dm)| (per_rho_g * dfz, per_rho_g * dm));
+            // d/ds and d/dτ of (V, M); rotation about (lcg, waterline), plus
+            // the dynamic terms above.
+            let dv_ds = t.wp_area + dfz_ds;
+            let dv_dt = -(t.wp_moment - pivot_x * t.wp_area) + dfz_dt;
             let (mut ds, mut dtau) = match load.lcg {
-                None => (r1 / t.wp_area, 0.0),
+                None => {
+                    if dv_ds > 1e-12 * t.wp_area {
+                        (r1 / dv_ds, 0.0)
+                    } else {
+                        // The dynamic sensitivity overwhelmed the waterplane
+                        // area (a very steep local force gradient): fall back
+                        // to the pure hydrostatic step rather than divide by a
+                        // near-zero or negative denominator.
+                        (r1 / t.wp_area, 0.0)
+                    }
+                }
                 Some(lcg) => {
                     let r2 = forced(t.moment_x - lcg * t.volume, forcing.map(|f| f.1));
-                    // d/ds and d/dτ of (V, M); rotation about (lcg, waterline).
-                    let dv_ds = t.wp_area;
-                    let dv_dt = -(t.wp_moment - pivot_x * t.wp_area);
-                    let dm_ds = t.wp_moment;
-                    let dm_dt = -(t.wp_second - pivot_x * t.wp_moment);
+                    let dm_ds = t.wp_moment + dm_ds_dyn;
+                    let dm_dt = -(t.wp_second - pivot_x * t.wp_moment) + dm_dt_dyn;
                     let dr2_ds = dm_ds - lcg * dv_ds;
                     let dr2_dt = dm_dt - lcg * dv_dt;
                     let det = dv_ds * dr2_dt - dv_dt * dr2_ds;

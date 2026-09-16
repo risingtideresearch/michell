@@ -170,10 +170,14 @@ fn constant_suction_adds_its_share_of_displacement() {
     assert!((dy.dynamic.force_up + 0.05 * weight).abs() < 1e-9);
     // Symmetric body, centred load, pure force: no trim to speak of.
     assert!(dy.trim.abs() < 1e-3, "trim {}", dy.trim);
-    // The expensive closure runs once per iteration, and at most once more
-    // for the final report.
+    // The closure runs once per iteration for the base evaluation, plus up
+    // to one finite-difference probe each for sinkage and trim sensitivity
+    // (this case solves both, `lcg: Some(0.0)`) — the Jacobian the Newton
+    // step now folds the dynamic load's own local sensitivity into, rather
+    // than treating it as a constant added to a purely hydrostatic
+    // residual — plus at most one more evaluation for the final report.
     assert!(
-        calls <= dy.iterations + 1,
+        calls <= 3 * dy.iterations + 1,
         "{calls} dynamic evaluations for {} iterations",
         dy.iterations
     );

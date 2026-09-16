@@ -463,13 +463,36 @@ step overshoots correcting for what is really a model or operating-point
 shift, not a residual to chase — so that first step is damped whenever the
 dynamic load is genuinely nonzero (inert, bit for bit, when it is zero or
 absent); ordinary within-phase oscillation detection recovers full speed
-within a couple more iterations regardless. On a hull with a substantial
-immersed transom (a large `lift_pct`, order 15–20% of the weight, is the
-warning sign) the force can still be a genuinely rough function of attitude
-near the transom — its own hollow length depends on the current transom
-depth, which depends on attitude — so a `dynamic: true` sweep there may take
-more iterations or, rarely, still report a loose residual; a hull that closes
-cleanly aft (no `Transom` reported by `michell info`) does not hit this.
+within a couple more iterations regardless.
+
+That damping alone isn't the whole story once a hull's transom is
+substantial (a large `lift_pct`, order 15–20% of the weight, is the warning
+sign): the near-field force can have genuine local curvature there — its own
+hollow length depends on the current transom depth, which depends on
+attitude — that the Newton core's analytic Jacobian (purely hydrostatic
+waterplane properties) has no way to see, since it treats the dynamic load as
+a *constant* added to the residual. Confirmed on the motivating case by
+comparing loose- and tight-quadrature force evaluations across the operating
+range: they agreed to <1%, ruling out quadrature noise, while the force
+itself showed a real sign change in local slope — a genuine Jacobian
+mismatch, not roughness. So on every phase but the initial, cold, from-scratch
+one (i.e. exactly where the handoff damping above applies), the solver also
+takes two extra finite-difference evaluations per iteration — perturbing
+sinkage, then trim — and folds the dynamic load's own local sensitivity into
+the Newton Jacobian alongside the hydrostatic terms. Deliberately **not**
+applied during the initial coarse phase: that phase already converges
+reliably on the hydrostatic Jacobian alone, and probing a finite difference
+from a wild, far-from-solution starting guess turned out to be actively
+harmful there (found by testing it unscoped: it sent a cold solve to a
+multi-metre "sinkage" and a trim past the 20° abort limit). Real cost: this
+roughly triples the per-iteration evaluation count on top of the near-field
+quadrature's own expense, so a `dynamic: true` sweep on a transom-heavy hull
+is priced in minutes per point, not seconds — but it is what took a case that
+previously failed outright (a 3-speed sweep erroring at the last point,
+residual 24× tolerance) to a clean converged solve at every speed. A hull
+that closes cleanly aft (no `Transom` reported by `michell info`) never
+exercises any of this — the Jacobian addition is `None`, bit for bit,
+whenever the dynamic load has no local sensitivity to add.
 
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
