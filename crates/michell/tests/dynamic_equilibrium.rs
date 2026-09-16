@@ -380,3 +380,94 @@ fn dynamic_equilibrium_reduces_to_hydrostatic_at_low_speed() {
     );
     assert!(dyn_eq.lift_fraction.abs() < 1e-2);
 }
+
+// ---------------------------------------------------------------------------
+// Robustness: a large coarse-to-fine geometry/force jump. A coarsened loft
+// cannot resolve fine stern detail (a transom, a chine) the way the
+// full-resolution one does, so `situate` can hand back a visibly different
+// fleet at the very same (sinkage, trim) right at the coarse→fine boundary —
+// and with a dynamic closure, the force jumps too. This is a synthetic stand
+// -in (two very different Wigley beams for "coarse loft" vs "fine loft" of
+// the same nominal hull), and it does exercise a real several-times jump in
+// V, Aw, and the dynamic load at the handoff — but it converges cleanly
+// within a handful of extra iterations with or without the coarse-phase
+// exit damping below, so it does not by itself discriminate that fix.
+//
+// The fix was motivated and validated against the real case instead: an
+// E12-catamaran-derived hull with a transom close to fully immersed, where
+// the actual near-field force has a genuine nonlinear, possibly
+// non-monotone dependence on attitude near the transom (its own hollow
+// length depends on the current transom depth, which depends on attitude),
+// not just a step change in magnitude — a limit cycle a synthetic geometry
+// swap doesn't reproduce. There, the fix took a case that failed to
+// converge (or stalled at several times the tolerance) to a clean solve.
+// This test stays as a basic robustness check on the API — the solver
+// should not error outright on a large handoff jump — while the sharper
+// scenario remains open for a slower, real-geometry regression test.
+// ---------------------------------------------------------------------------
+
+use michell::float::solve_equilibrium_dynamic_with;
+use michell::iges::Platform;
+
+#[test]
+fn coarse_to_fine_handoff_does_not_stall_convergence() {
+    let (l, t, fb) = (10.0, 0.625, 0.3);
+    // Two meaningfully different "lofts" of the same nominal hull, standing
+    // in for a coarse control net vs the full-resolution one.
+    let coarse_body = wigley_body(l, 1.0, t, fb);
+    let fine_body = wigley_body(l, 1.8, t, fb);
+    let mass = RHO * 4.0 / 9.0 * 1.0 * l * t; // sized to the coarse beam
+
+    let situate = |s: f64, tau: f64, coarse: bool| -> Result<FleetState> {
+        let body = if coarse { &coarse_body } else { &fine_body };
+        let platform = Platform {
+            sinkage: s,
+            trim: tau,
+            pivot_x: 0.0,
+        };
+        match body.situate(0.0, &HullPose::default(), &platform, &BodyOptions::default())? {
+            Some(sb) => Ok(FleetState {
+                members: vec![(sb.hull, sb.placement)],
+                dry: 0,
+                band_exceeded: sb.band_exceeded,
+            }),
+            None => Ok(FleetState {
+                members: vec![],
+                dry: 1,
+                band_exceeded: 0,
+            }),
+        }
+    };
+    // A dynamic load that is a real consequence of the geometry it is
+    // handed (the hull's own waterplane area), not a synthetic counter — so
+    // it genuinely jumps when `situate`'s geometry jumps at the handoff.
+    let dynamic = |fleet: &FleetState| -> Result<DynamicLoad> {
+        let area: f64 = fleet.members.iter().map(|(h, _)| h.waterplane_area()).sum();
+        let moment: f64 = fleet
+            .members
+            .iter()
+            .map(|(h, p)| (h.lcb_x() + p.x) * h.displaced_volume())
+            .sum();
+        Ok(DynamicLoad {
+            force_up: -400.0 * area,
+            moment_bow_up: 300.0 * moment,
+        })
+    };
+
+    let load = LoadCase {
+        mass,
+        lcg: Some(0.3),
+    };
+    let result = solve_equilibrium_dynamic_with(situate, dynamic, &load, RHO, G, None);
+    assert!(
+        result.is_ok(),
+        "equilibrium should converge despite the coarse/fine geometry mismatch: {:?}",
+        result.err()
+    );
+    let eq = result.unwrap();
+    assert!(
+        eq.volume_residual < 1e-2,
+        "residual too loose after the handoff: {}",
+        eq.volume_residual
+    );
+}

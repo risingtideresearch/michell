@@ -243,7 +243,7 @@ fn equilibrium_core(
     } else {
         &PHASES[..]
     };
-    for &(coarse, max_iters, tol_v) in phases {
+    for (phase_idx, &(coarse, max_iters, tol_v)) in phases.iter().enumerate() {
         let mut converged = false;
         // Adaptive relaxation: the waterplane-property Jacobian can
         // underestimate the true sensitivity (e.g. flare or structure
@@ -252,6 +252,22 @@ fn equilibrium_core(
         // gently while it doesn't.
         let mut relax = 1.0f64;
         let mut last_sign = 0.0f64;
+        // Every phase but the very first, from-scratch one starts from a
+        // state that was converged *somewhere else* — the coarse phase here
+        // (a coarsened loft cannot resolve fine stern detail, a transom or a
+        // chine, the way the full-resolution one does, so `situate` can hand
+        // back a visibly different fleet at the very same `(s, tau)`), or a
+        // warm start from a *different* speed's solution, whose dynamic
+        // force can be a different scale entirely. Either way the state
+        // hasn't actually been validated against what this phase will now
+        // evaluate, so its first Newton step is speculative; damped below
+        // once (only when the dynamic load turns out genuinely nonzero) so
+        // it can't overshoot correcting for what is really a model or
+        // operating-point shift rather than a residual to chase. Ordinary
+        // within-phase oscillation detection is untouched and recovers full
+        // speed within a couple more iterations regardless.
+        let is_handoff_phase = phase_idx > 0 || warm_start.is_some();
+        let mut first_iter_of_phase = true;
         // Best state seen this phase, by tolerance-normalised residual.
         // The situate → loft model carries small-scale roughness (~0.1% of
         // volume), so Newton can stall dithering across a tolerance edge; a
@@ -329,8 +345,23 @@ fn equilibrium_core(
                 relax = (relax * 1.25).min(1.0);
             }
             last_sign = sign;
-            ds = (ds * relax).clamp(-0.3 * z_scale, 0.3 * z_scale);
-            dtau = (dtau * relax).clamp(-0.05, 0.05);
+            // The handoff damping described above: only this phase's first
+            // iteration, only when there is a genuinely nonzero dynamic load
+            // right now. Bit-for-bit unaffected when `dynamic` is `None`, or
+            // returns exactly zero (e.g. a caller probing the hydrostatic
+            // path through the dynamic API) — `handoff_damp` is then always
+            // 1.0, on every phase, warm-started or not.
+            let handoff_damp = if first_iter_of_phase
+                && is_handoff_phase
+                && forcing.is_some_and(|(f, m)| f != 0.0 || m != 0.0)
+            {
+                0.3
+            } else {
+                1.0
+            };
+            first_iter_of_phase = false;
+            ds = (ds * relax * handoff_damp).clamp(-0.3 * z_scale, 0.3 * z_scale);
+            dtau = (dtau * relax * handoff_damp).clamp(-0.05, 0.05);
             let done_v = r1.abs() <= tol_v * v_target;
             let done_m = match load.lcg {
                 None => true,

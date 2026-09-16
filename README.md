@@ -450,17 +450,26 @@ values over a fine grid until you know how much resolution you need.
 `options.squat_tol` overrides the closure's own quadrature tolerance
 (default `1e-4`; loosening it trades sweep speed for a rougher force/moment).
 
-**Known rough edge**: on a hull with a substantial immersed transom (a large
-`lift_pct`, order 15–20% of the weight, is the warning sign), the Newton
-solve's coarse-to-fine handoff — a deliberately coarsened control net during
-early iterations, full resolution for the polish — can land on two lofts that
-disagree enough right at the transom to perturb the dynamic force at the
-handoff, and the fine phase's fixed iteration budget doesn't always fully
-recover: it converges to a residual a few times looser than the hydrostatic
-solver's own tolerance rather than diverging outright, or occasionally reports
-"did not converge". Treat a `dynamic: true` result on a transom-heavy hull as
-provisional until this is tightened up; a hull that closes cleanly aft (no
-`Transom` reported by `michell info`) does not hit this.
+Two situations hand the dynamic Newton solver a state that was converged
+*somewhere else* rather than validated against what it is about to evaluate:
+the coarse-to-fine handoff (a deliberately coarsened control net for early
+iterations, full resolution for the polish — a coarsened loft cannot resolve
+fine stern detail, a transom or a chine, the way the full-resolution one
+does, so the same `(sinkage, trim)` can loft to a visibly different fleet),
+and a sweep's speed-to-speed warm start (seeded from a *different* speed's
+converged solution, whose dynamic force can be a different scale entirely).
+Either can perturb the dynamic force enough that an undamped first Newton
+step overshoots correcting for what is really a model or operating-point
+shift, not a residual to chase — so that first step is damped whenever the
+dynamic load is genuinely nonzero (inert, bit for bit, when it is zero or
+absent); ordinary within-phase oscillation detection recovers full speed
+within a couple more iterations regardless. On a hull with a substantial
+immersed transom (a large `lift_pct`, order 15–20% of the weight, is the
+warning sign) the force can still be a genuinely rough function of attitude
+near the transom — its own hollow length depends on the current transom
+depth, which depends on attitude — so a `dynamic: true` sweep there may take
+more iterations or, rarely, still report a loose residual; a hull that closes
+cleanly aft (no `Transom` reported by `michell info`) does not hit this.
 
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
