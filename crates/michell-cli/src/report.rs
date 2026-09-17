@@ -12,7 +12,9 @@ use michell::body::Body;
 use michell::float::{solve_equilibrium_bodies_dynamic, LoadCase};
 use michell::iges::{HullPose, Platform};
 use michell::squat::dynamic_load_closure;
-use michell::{multihull_resistance_with, Conditions, FreeWaveSpectrum, Hull, Placement};
+use michell::{
+    multihull_resistance_with, Conditions, FreeWaveSpectrum, Hull, Placement, TransomClosure,
+};
 
 const PAGE_W: f64 = 792.0;
 const PAGE_H: f64 = 612.0;
@@ -277,7 +279,13 @@ fn draw_plan_view(
     let nx = 520usize;
     let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round().clamp(64.0, 900.0) as usize;
 
-    let mut spec = FreeWaveSpectrum::new(members, cond).map_err(|e| format!("{e}"))?;
+    // Plain thin-ship field, not the resistance/squat integrals' transom
+    // virtual-appendage closure: that closure fixes up an integrated force
+    // and is not a model of the actual (breaking, unsteady) near-transom
+    // sea surface, so drawing it here would show fabricated structure
+    // behind a wet transom that doesn't correspond to anything real.
+    let mut spec = FreeWaveSpectrum::new_with_transom(members, cond, TransomClosure::None)
+        .map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, nx, ny)
         .map_err(|e| format!("{e}"))?;
@@ -374,10 +382,16 @@ fn body_to_water(
     (x, z - zw)
 }
 
-/// A hull's keel/rocker and deck/sheer lines, plus its design-waterline
-/// mark, all mapped into the water frame at the solved sinkage/trim.
+/// A hull's keel/rocker line and design-waterline mark, mapped into the
+/// water frame at the solved sinkage/trim.
 struct HullProfile {
     keel: Vec<[f64; 2]>,
+    /// The top of the body's modelled band (`z_b = 0`). Not a real sheer or
+    /// deck line: the source geometry for this crate's hulls typically stops
+    /// a few centimetres above the design waterline (it was exported as the
+    /// wetted hull only, with a small margin for the sinkage/trim range of
+    /// interest, not as a full topsides model). Kept only to bound the
+    /// x-range for the wave-elevation cut; deliberately not drawn.
     deck: Vec<[f64; 2]>,
     design_wl: Vec<[f64; 2]>,
 }
@@ -440,7 +454,8 @@ fn draw_profile_view(
     // to the flat sea surface as a negative depth.
     let mut wave_cut: Vec<[f64; 2]> = Vec::new();
     if !members.is_empty() {
-        let mut spec = FreeWaveSpectrum::new(members, cond).map_err(|e| format!("{e}"))?;
+        let mut spec = FreeWaveSpectrum::new_with_transom(members, cond, TransomClosure::None)
+            .map_err(|e| format!("{e}"))?;
         let (x0, x1) = data_x_range(&profiles);
         const N: usize = 160;
         for i in 0..N {
@@ -451,7 +466,10 @@ fn draw_profile_view(
         }
     }
 
-    // Data bounds (down-positive z; we flip to page y-up at draw time).
+    // Data bounds (down-positive z; we flip to page y-up at draw time). The
+    // "deck" curve isn't drawn (see HullProfile's doc comment: it is not a
+    // real sheer line) but still contributes to the x-range, since it spans
+    // the hull's full modelled length regardless of local wetness.
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     let mut z_lo = 0.0f64; // includes the still-water line
@@ -475,20 +493,21 @@ fn draw_profile_view(
     let x_pad = 0.03 * (x_hi - x_lo);
     x_lo -= x_pad;
     x_hi += x_pad;
-    let z_pad = 0.15 * (z_hi - z_lo).max(0.1);
+    let z_pad = 0.15 * (z_hi - z_lo).max(0.02);
     z_lo -= z_pad;
     z_hi += z_pad;
 
+    // A hull's draft is a small fraction of its length (this one is roughly
+    // 30:1), so true-proportion scaling would draw everything of interest
+    // into a sliver a few points tall. Scale x and z independently instead,
+    // filling most of the panel's height with the z data, and report the
+    // resulting exaggeration so the distortion is stated, not hidden.
     let sx = rect[2] / (x_hi - x_lo);
-    let sz = rect[3] / (z_hi - z_lo);
-    let s = sx.min(sz);
+    let sz = 0.88 * rect[3] / (z_hi - z_lo);
+    let z_mid = 0.5 * (z_hi + z_lo);
+    let y_mid = rect[1] + 0.5 * rect[3];
     let to_page = |x: f64, z: f64| -> [f64; 2] {
-        [
-            rect[0] + (x - x_lo) * s,
-            // page y is up; data z is down-positive, so flip about the
-            // panel's vertical centre (data is pre-centred by the padding).
-            rect[1] + (z_hi - z) * s,
-        ]
+        [rect[0] + (x - x_lo) * sx, y_mid - (z - z_mid) * sz]
     };
 
     page.rect_stroke(rect, GRAY, 0.75);
@@ -503,8 +522,6 @@ fn draw_profile_view(
     for p in &profiles {
         let keel_pts: Vec<[f64; 2]> = p.keel.iter().map(|pt| to_page(pt[0], pt[1])).collect();
         page.polyline(&keel_pts, BLACK, 1.2);
-        let deck_pts: Vec<[f64; 2]> = p.deck.iter().map(|pt| to_page(pt[0], pt[1])).collect();
-        page.polyline(&deck_pts, GRAY, 0.6);
         let wl_pts: Vec<[f64; 2]> = p.design_wl.iter().map(|pt| to_page(pt[0], pt[1])).collect();
         page.polyline(&wl_pts, ORANGE, 0.9);
     }
@@ -515,8 +532,11 @@ fn draw_profile_view(
     }
 
     Ok(format!(
-        "black: keel/rocker; gray: deck/sheer; orange: design waterline; \
-         blue: still water and wake elevation cut at y = {wave_cut_y:.2} m"
+        "black: keel/rocker (modelled draft only - the source geometry \
+         has no topsides above the waterline); orange: design waterline; \
+         blue: still water and wake elevation cut at y = {wave_cut_y:.2} m; \
+         vertical exaggeration {:.1}x",
+        sz / sx
     ))
 }
 
