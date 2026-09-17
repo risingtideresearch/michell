@@ -5,10 +5,11 @@
 //! external tooling and no per-run agent orchestration: the same manifest
 //! schema `michell sweep` reads, via [`crate::manifest::parse_manifest`].
 
+use crate::json::Json;
 use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState};
 use crate::pdf::{Document, Page};
 use crate::png;
-use michell::body::Body;
+use michell::body::{Body, BodyOptions};
 use michell::float::{solve_equilibrium_bodies_dynamic, LoadCase};
 use michell::iges::{HullPose, Platform};
 use michell::squat::dynamic_load_closure;
@@ -25,7 +26,7 @@ const GRAY: [f64; 3] = [0.45, 0.45, 0.45];
 const BLUE: [f64; 3] = [0.10, 0.35, 0.75];
 const ORANGE: [f64; 3] = [0.85, 0.45, 0.05];
 
-pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
+pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Result<(), String> {
     let pm = parse_manifest(manifest_path)?;
     if !pm.dynamic_mode {
         return Err(
@@ -36,6 +37,18 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
                 .into(),
         );
     }
+
+    // The Newton solve is what makes this command slow (minutes per row);
+    // everything downstream of a (sinkage, trim) pair — re-lofting the wetted
+    // hulls, the resistance breakdown, the images — is cheap. So the cache
+    // holds only the solved scalars, keyed positionally (row order is
+    // deterministic for a given manifest), and is validated against each
+    // row's own axis values and speed before being trusted.
+    let cached_rows: Vec<CachedRow> = match cache_path {
+        Some(p) if std::path::Path::new(p).exists() => load_cache(p)?,
+        _ => Vec::new(),
+    };
+    let mut cache_out: Vec<CachedRow> = Vec::new();
 
     let bodies: Vec<&Body> = pm.hulls.iter().map(|h| &h.body).collect();
     let total_rows = pm.points * pm.speeds.len();
@@ -65,29 +78,60 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
             } else {
                 format!("{point_label}, ")
             };
-            eprintln!(
-                "row {}/{total_rows}: solving {prefix}U = {u:.3} m/s (Fn {froude:.3})...",
-                rows.len() + 1
-            );
+            let row_no = rows.len() + 1;
             let cond = pm.fluid.make_cond(u)?;
-            let closure = dynamic_load_closure(&cond, pivot_x, &pm.squat_opts);
-            let dyn_eq = solve_equilibrium_bodies_dynamic(
-                &bodies,
-                0.0,
-                &poses,
-                &LoadCase { mass, lcg },
-                pm.density,
-                pm.gravity,
-                &pm.bopts,
-                closure,
-                warm,
-            )
-            .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
-            warm = Some((dyn_eq.sinkage, dyn_eq.trim));
 
+            let cached = cached_rows
+                .get(row_no - 1)
+                .filter(|c| c.point == point + 1 && (c.speed - u).abs() <= 1e-6 * u.max(1.0))
+                .filter(|c| axes_match(&c.axis, &pm.axes, &vals));
+
+            let (sinkage, trim, rt, pe) = if let Some(c) = cached {
+                eprintln!(
+                    "row {row_no}/{total_rows}: {prefix}U = {u:.3} m/s (Fn {froude:.3}) \
+                     from cache (sinkage {:.4} m, trim {:.3} deg)",
+                    c.sinkage,
+                    c.trim_rad.to_degrees()
+                );
+                (c.sinkage, c.trim_rad, c.rt, c.pe)
+            } else {
+                eprintln!(
+                    "row {row_no}/{total_rows}: solving {prefix}U = {u:.3} m/s (Fn {froude:.3})..."
+                );
+                let closure = dynamic_load_closure(&cond, pivot_x, &pm.squat_opts);
+                let dyn_eq = solve_equilibrium_bodies_dynamic(
+                    &bodies,
+                    0.0,
+                    &poses,
+                    &LoadCase { mass, lcg },
+                    pm.density,
+                    pm.gravity,
+                    &pm.bopts,
+                    closure,
+                    warm,
+                )
+                .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                eprintln!(
+                    "row {row_no}/{total_rows} done in {:.1}s: sinkage {:.4} m, trim {:.3} deg",
+                    row_started.elapsed().as_secs_f64(),
+                    dyn_eq.sinkage,
+                    dyn_eq.trim.to_degrees()
+                );
+                (dyn_eq.sinkage, dyn_eq.trim, None, None)
+            };
+            warm = Some((sinkage, trim));
+
+            let platform = Platform {
+                sinkage,
+                trim,
+                pivot_x,
+            };
+            let members_owned = situate_at(&bodies, &poses, &platform, &pm.bopts)?;
             let members: Vec<(&Hull, Placement)> =
-                dyn_eq.fleet.members.iter().map(|(h, p)| (h, *p)).collect();
-            let resistance = if members.is_empty() {
+                members_owned.iter().map(|(h, p)| (h, *p)).collect();
+            let resistance = if rt.is_some() {
+                None
+            } else if members.is_empty() {
                 None
             } else {
                 Some(
@@ -95,13 +139,9 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
                         .map_err(|e| format!("point {} U={u}: {e}", point + 1))?,
                 )
             };
+            let rt = rt.or_else(|| resistance.as_ref().map(|r| r.total));
+            let pe = pe.or_else(|| resistance.as_ref().map(|r| r.effective_power));
 
-            let row_no = rows.len() + 1;
-            let platform = Platform {
-                sinkage: dyn_eq.sinkage,
-                trim: dyn_eq.trim,
-                pivot_x,
-            };
             let page = build_detail_page(
                 &mut doc,
                 row_no,
@@ -120,18 +160,27 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
                 point_label: point_label.clone(),
                 speed: u,
                 froude,
-                sinkage: dyn_eq.sinkage,
-                trim_deg: dyn_eq.trim.to_degrees(),
-                rt: resistance.as_ref().map(|r| r.total),
-                pe: resistance.as_ref().map(|r| r.effective_power),
+                sinkage,
+                trim_deg: trim.to_degrees(),
+                rt,
+                pe,
             });
             detail_pages.push(page);
-            eprintln!(
-                "row {row_no}/{total_rows} done in {:.1}s: sinkage {:.4} m, trim {:.3} deg",
-                row_started.elapsed().as_secs_f64(),
-                dyn_eq.sinkage,
-                dyn_eq.trim.to_degrees()
-            );
+            cache_out.push(CachedRow {
+                point: point + 1,
+                axis: pm
+                    .axes
+                    .iter()
+                    .zip(&vals)
+                    .map(|(a, &v)| (a.label.clone(), v))
+                    .collect(),
+                speed: u,
+                froude,
+                sinkage,
+                trim_rad: trim,
+                rt,
+                pe,
+            });
         }
 
         for (i, a) in pm.axes.iter().enumerate().rev() {
@@ -141,6 +190,11 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
             }
             idx[i] = 0;
         }
+    }
+
+    if let Some(p) = cache_path {
+        write_cache(p, &cache_out)?;
+        eprintln!("wrote {p} ({} row(s) cached)", cache_out.len());
     }
 
     let index = build_index_page(manifest_path, &rows);
@@ -178,6 +232,120 @@ fn axis_label(axes: &[Axis], vals: &[f64]) -> String {
         .map(|(a, v)| format!("{}={v:.3}", a.label))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// One row's solved state, as read from or written to `--cache`. Deliberately
+/// minimal: just the two Newton unknowns plus enough of the row's own inputs
+/// (point index, axis values, speed) to sanity-check that a cached entry
+/// still belongs to the row it's about to replace solving for. `rt`/`pe` are
+/// cached too so a cache-only run never needs to touch the resistance
+/// integral either, but their absence just means "recompute them" — they
+/// are not load-bearing for validation.
+struct CachedRow {
+    point: usize,
+    axis: Vec<(String, f64)>,
+    speed: f64,
+    froude: f64,
+    sinkage: f64,
+    trim_rad: f64,
+    rt: Option<f64>,
+    pe: Option<f64>,
+}
+
+fn axes_match(cached: &[(String, f64)], axes: &[Axis], vals: &[f64]) -> bool {
+    cached.len() == axes.len()
+        && axes.iter().zip(vals).all(|(a, &v)| {
+            cached
+                .iter()
+                .any(|(k, cv)| k == &a.label && (cv - v).abs() <= 1e-9 * v.abs().max(1.0))
+        })
+}
+
+fn load_cache(path: &str) -> Result<Vec<CachedRow>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let doc = crate::json::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+    let rows = doc
+        .get("rows")
+        .and_then(Json::as_arr)
+        .ok_or_else(|| format!("{path}: expected an object with a \"rows\" array"))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let field = |name: &str| {
+            r.get(name)
+                .and_then(Json::as_f64)
+                .ok_or_else(|| format!("{path}: row missing numeric \"{name}\""))
+        };
+        let mut axis = Vec::new();
+        if let Some(Json::Obj(kv)) = r.get("axis") {
+            for (k, v) in kv {
+                if let Some(f) = v.as_f64() {
+                    axis.push((k.clone(), f));
+                }
+            }
+        }
+        out.push(CachedRow {
+            point: field("point")? as usize,
+            axis,
+            speed: field("speed")?,
+            froude: field("froude").unwrap_or(0.0),
+            sinkage: field("sinkage")?,
+            trim_rad: field("trim_rad")?,
+            rt: field("rt").ok(),
+            pe: field("pe").ok(),
+        });
+    }
+    Ok(out)
+}
+
+fn write_cache(path: &str, rows: &[CachedRow]) -> Result<(), String> {
+    let mut out = String::from("{\n  \"rows\": [\n");
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!("    {{\"point\":{},\"axis\":{{", r.point));
+        for (j, (k, v)) in r.axis.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("{k:?}:{v}"));
+        }
+        out.push_str(&format!(
+            "}},\"speed\":{},\"froude\":{},\"sinkage\":{},\"trim_rad\":{}",
+            r.speed, r.froude, r.sinkage, r.trim_rad
+        ));
+        if let Some(rt) = r.rt {
+            out.push_str(&format!(",\"rt\":{rt}"));
+        }
+        if let Some(pe) = r.pe {
+            out.push_str(&format!(",\"pe\":{pe}"));
+        }
+        out.push('}');
+    }
+    out.push_str("\n  ]\n}\n");
+    std::fs::write(path, out).map_err(|e| format!("cannot write {path}: {e}"))
+}
+
+/// Re-loft the fleet directly at a known (sinkage, trim) — the cheap,
+/// non-iterative half of what the Newton solver does on every call. Used
+/// both for a fresh solve's result and to rebuild a cached row's geometry
+/// without re-solving it.
+fn situate_at(
+    bodies: &[&Body],
+    poses: &[HullPose],
+    platform: &Platform,
+    opts: &BodyOptions,
+) -> Result<Vec<(Hull, Placement)>, String> {
+    let mut members = Vec::new();
+    for (body, pose) in bodies.iter().zip(poses) {
+        if let Some(sb) = body
+            .situate(0.0, pose, platform, opts)
+            .map_err(|e| format!("{e}"))?
+        {
+            members.push((sb.hull, sb.placement));
+        }
+    }
+    Ok(members)
 }
 
 #[allow(clippy::too_many_arguments)]

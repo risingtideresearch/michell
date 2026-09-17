@@ -196,7 +196,7 @@ SWEEPS
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
                                 keeps the old single-hull wetted output
-  michell report study.json -o report.pdf
+  michell report study.json -o report.pdf [--cache solved.json]
                                 dynamic-mode (options.dynamic: true) manifests
                                 only: re-solves sinkage/trim at each speed and
                                 renders a self-contained PDF — an index page
@@ -204,6 +204,13 @@ SWEEPS
                                 profile view (keel, design waterline, and a
                                 wave elevation cut). No agent/script needed;
                                 one invocation produces the whole report.
+                                --cache FILE: read solved sinkage/trim from
+                                FILE instead of re-solving rows it already
+                                covers, and (re)write FILE with every row's
+                                solved state afterward. The Newton solve is
+                                what makes this command slow; a cache lets a
+                                report-format change re-render in seconds
+                                instead of minutes on a later run.
 
 PLACE (reconstruct CAD geometry from a studied configuration)
   michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7,dz=0.05 -o boat.igs
@@ -1043,7 +1050,9 @@ struct Axis {
 fn cmd_report(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     let Some(manifest_path) = p.positional.first() else {
-        return Err("usage: michell report <study.json> [-o report.pdf]".into());
+        return Err(
+            "usage: michell report <study.json> [-o report.pdf] [--cache solved.json]".into(),
+        );
     };
     if !manifest_path.ends_with(".json") {
         return Err("michell report takes a JSON manifest, same schema as `michell sweep`".into());
@@ -1052,7 +1061,7 @@ fn cmd_report(args: &[String]) -> Result<(), String> {
         return Err("report takes a single manifest; put every axis in the JSON file".into());
     }
     let out_path = p.flag("output").cloned().unwrap_or_else(|| "report.pdf".to_string());
-    report::run(manifest_path, &out_path)
+    report::run(manifest_path, &out_path, p.flag("cache").map(String::as_str))
 }
 
 fn cmd_sweep(args: &[String]) -> Result<(), String> {
