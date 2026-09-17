@@ -13,7 +13,9 @@ use michell::iges::{HullPose, Platform};
 use michell::squat::{dynamic_load_closure, SquatOptions};
 use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
-const KNOT: f64 = 1852.0 / 3600.0;
+/// One knot in m/s. Lives here because the manifest parses speeds in knots;
+/// `main` and `report` share it rather than each keeping a copy.
+pub(crate) const KNOT: f64 = 1852.0 / 3600.0;
 
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum PoseParam {

@@ -6,7 +6,7 @@
 //! schema `michell sweep` reads, via [`crate::manifest::parse_manifest`].
 
 use crate::json::Json;
-use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState};
+use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState, KNOT};
 use crate::pdf::{Document, Page};
 use crate::png;
 use michell::body::{Body, BodyOptions};
@@ -37,6 +37,14 @@ const KELVIN_TAN: f64 = 0.353_553_390_593_273_76;
 /// because this kind of loft has no sharp keel edge to find: under the hull
 /// the fitted half-beam decays into a few millimetres of ringing that
 /// wanders on down to the bottom of the band.
+/// Overall propulsive coefficient assumed when turning effective power into
+/// brake power on the index. It is one stand-in for the whole chain - hull
+/// efficiency, relative rotative efficiency, open-water propeller efficiency
+/// and shaft losses - and NOT a propeller calculation. 0.55 is a reasonable
+/// working figure for a small craft; change it here if the installation is
+/// known. The index states the value next to the column so nobody reads BP
+/// as a prediction.
+const PROPULSIVE_EFFICIENCY: f64 = 0.55;
 const KEEL_BEAM_FRACTION: f64 = 0.10;
 const KEEL_MIN_BEAM: f64 = 2.0e-3;
 
@@ -102,15 +110,18 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
 
             let (sinkage, trim, rt, pe) = if let Some(c) = cached {
                 eprintln!(
-                    "row {row_no}/{total_rows}: {prefix}U = {u:.3} m/s (Fn {froude:.3}) \
-                     from cache (sinkage {:.4} m, trim {:.3} deg)",
+                    "row {row_no}/{total_rows}: {prefix}U = {u:.3} m/s ({:.2} kn, \
+                     Fn {froude:.3}) from cache (sinkage {:.4} m, trim {:.3} deg)",
+                    u / KNOT,
                     c.sinkage,
                     c.trim_rad.to_degrees()
                 );
                 (c.sinkage, c.trim_rad, c.rt, c.pe)
             } else {
                 eprintln!(
-                    "row {row_no}/{total_rows}: solving {prefix}U = {u:.3} m/s (Fn {froude:.3})..."
+                    "row {row_no}/{total_rows}: solving {prefix}U = {u:.3} m/s \
+                     ({:.2} kn, Fn {froude:.3})...",
+                    u / KNOT
                 );
                 let closure = dynamic_load_closure(&cond, pivot_x, &pm.squat_opts);
                 let dyn_eq = solve_equilibrium_bodies_dynamic(
@@ -418,10 +429,11 @@ fn build_detail_page(
     band: BandCheck,
 ) -> Result<Page, String> {
     let mut page = Page::new(PAGE_W, PAGE_H);
+    let knots = speed / KNOT;
     let title = if point_label.is_empty() {
-        format!("Row {row_no}: U = {speed:.3} m/s (Fn {froude:.3})")
+        format!("Row {row_no}: U = {speed:.3} m/s ({knots:.2} kn, Fn {froude:.3})")
     } else {
-        format!("Row {row_no}: {point_label}, U = {speed:.3} m/s (Fn {froude:.3})")
+        format!("Row {row_no}: {point_label}, U = {speed:.3} m/s ({knots:.2} kn, Fn {froude:.3})")
     };
     page.text(MARGIN, PAGE_H - 26.0, 14.0, BLACK, &title);
     page.text_right(PAGE_W - MARGIN, PAGE_H - 26.0, 9.0, GRAY, "index");
@@ -935,16 +947,29 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
     page.text(MARGIN, PAGE_H - 30.0, 16.0, BLACK, "Speed sweep report");
     page.text(MARGIN, PAGE_H - 46.0, 9.0, GRAY, manifest_path);
 
-    let cols = ["row", "point", "U [m/s]", "Fn", "sinkage [m]", "trim [deg]", "Rt [N]", "Pe [W]"];
+    let cols = [
+        "row",
+        "point",
+        "U [m/s]",
+        "U [kn]",
+        "Fn",
+        "sinkage [m]",
+        "trim [deg]",
+        "Rt [kN]",
+        "Pe [kW]",
+        "BP [kW]",
+    ];
     let col_x = [
         MARGIN,
-        MARGIN + 40.0,
-        MARGIN + 220.0,
-        MARGIN + 300.0,
-        MARGIN + 360.0,
+        MARGIN + 34.0,
+        MARGIN + 210.0,
+        MARGIN + 268.0,
+        MARGIN + 322.0,
+        MARGIN + 372.0,
         MARGIN + 450.0,
-        MARGIN + 540.0,
-        MARGIN + 620.0,
+        MARGIN + 528.0,
+        MARGIN + 592.0,
+        MARGIN + 656.0,
     ];
     let mut y = PAGE_H - 74.0;
     for (c, &x) in cols.iter().zip(&col_x) {
@@ -967,19 +992,45 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
         page.link_to_page([col_x[0] - 2.0, y - 3.0, col_x[1] - 4.0, y + 9.0], target);
         page.text(col_x[1], y, 9.0, BLACK, &row.point_label);
         page.text(col_x[2], y, 9.0, BLACK, &format!("{:.3}", row.speed));
-        page.text(col_x[3], y, 9.0, BLACK, &format!("{:.3}", row.froude));
-        page.text(col_x[4], y, 9.0, BLACK, &format!("{:.4}", row.sinkage));
-        page.text(col_x[5], y, 9.0, BLACK, &format!("{:.3}", row.trim_deg));
+        page.text(col_x[3], y, 9.0, BLACK, &format!("{:.2}", row.speed / KNOT));
+        page.text(col_x[4], y, 9.0, BLACK, &format!("{:.3}", row.froude));
+        page.text(col_x[5], y, 9.0, BLACK, &format!("{:.4}", row.sinkage));
+        page.text(col_x[6], y, 9.0, BLACK, &format!("{:.3}", row.trim_deg));
         if let Some(rt) = row.rt {
-            page.text(col_x[6], y, 9.0, BLACK, &format!("{rt:.1}"));
+            page.text(col_x[7], y, 9.0, BLACK, &format!("{:.3}", rt / 1000.0));
         }
         if let Some(pe) = row.pe {
-            page.text(col_x[7], y, 9.0, BLACK, &format!("{pe:.1}"));
+            page.text(col_x[8], y, 9.0, BLACK, &format!("{:.2}", pe / 1000.0));
+            page.text(
+                col_x[9],
+                y,
+                9.0,
+                BLACK,
+                &format!("{:.2}", pe / 1000.0 / PROPULSIVE_EFFICIENCY),
+            );
         }
         if row.band.exceeded > 0 {
-            page.text(col_x[7] + 56.0, y, 9.0, ORANGE, "*");
+            page.text(col_x[9] + 50.0, y, 9.0, ORANGE, "*");
         }
     }
+
+    // Brake power is the one column here that is not computed from the
+    // geometry, so state the assumption under the table rather than leaving
+    // a reader to infer it from a column heading.
+    y -= 22.0;
+    draw_caption(
+        &mut page,
+        MARGIN,
+        y,
+        &format!(
+            "Pe is effective power, Rt x U. BP = Pe / {PROPULSIVE_EFFICIENCY:.2}, an assumed \
+             overall propulsive coefficient.\n\
+             That one number stands in for hull, relative-rotative, open-water propeller and \
+             shaft efficiency together - a placeholder for a real propeller, not a prediction \
+             from one."
+        ),
+    );
+    y -= 9.5;
 
     // A row whose pose lifted water above the lofted band was integrated over
     // a hull that is missing its immersed upper stern, so its Rt and Pe are
@@ -987,7 +1038,7 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
     let flagged = rows.iter().filter(|r| r.band.exceeded > 0).count();
     if flagged > 0 {
         let need = rows.iter().fold(0.0f64, |m, r| m.max(r.band.need));
-        y -= 24.0;
+        y -= 20.0;
         page.text(
             MARGIN,
             y,

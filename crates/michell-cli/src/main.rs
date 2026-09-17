@@ -11,10 +11,9 @@ mod report;
 mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
+use manifest::KNOT;
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
-
-const KNOT: f64 = 1852.0 / 3600.0; // m/s
 
 fn main() {
     if let Err(e) = run() {
