@@ -2143,10 +2143,37 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
     };
     let n = src.len();
     // The band reaches from the keel to `--band` metres above the design
-    // waterline (default: half the design draft). Including the deck in the
-    // fit would distort the wetted geometry — a deck is a cliff for a
-    // height-field loft — so the band should stay below it; a sweep that
-    // rises past the band is reported per-pose as band_exceeded.
+    // waterline. The old default of half the draft was far too mean: a
+    // dynamic sweep routinely sinks and trims past it, and everything above
+    // the band is then taken as zero half-beam, which silently removes hull
+    // (see BandCheck in report.rs). Default generously instead.
+    //
+    // The worry that motivated the mean default — that a deck is a cliff for
+    // a height-field loft and would distort the wetted fit — turns out to be
+    // small next to the cost of the band itself. Lofting e12 at a matched
+    // control density and comparing resistance at the design waterline, where
+    // every band describes the SAME wetted hull, the deck costs about 0.3%:
+    //
+    //   band 0.05 (40x32)    Rw 361.2 N at 8 kn, 662.4 N at 16 kn
+    //   band 0.35 (40x64)       366.3                670.0
+    //   band 0.80 (40x112)      367.3                670.6   <- deck included
+    //   band 0.80 (40x32)       373.8                678.6   <- net NOT scaled
+    //
+    // The real cost of a tall band is the last row: holding the control net
+    // fixed spends it on topsides and starves the wetted zone, which moved Rw
+    // by 3.5%. So take the band, and scale the net in z with it. A taller
+    // band also lifts the band top away from the waterline, which removes an
+    // artificial edge near the water: peak |df/dx| in the wetted hull fell
+    // from 43.9 to 14.9 across that series.
+    //
+    // Still capped rather than simply maximal: `top` is only the extent of
+    // the supplied file, and a file that carries a cabin, rails or a rig
+    // above the sheer is not something a half-breadth height field should be
+    // asked to fit. 1.5x the draft is well past any attitude a displacement
+    // sweep reaches, and stays near the sheer on a normal hull.
+    /// Default `--band`, in multiples of the design draft above the design
+    /// waterline. Generous on purpose: see the note above.
+    const DEFAULT_BAND_DRAFTS: f64 = 1.5;
     let band_flag = p.f64_flag("band")?;
     let mut lofted = Vec::new();
     for idx in 0..n {
@@ -2159,7 +2186,7 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
                  the hull (keel bound z = {bottom:.3})"
             ));
         }
-        let margin = band_flag.unwrap_or(0.5 * draft_est).max(0.0);
+        let margin = band_flag.unwrap_or(DEFAULT_BAND_DRAFTS * draft_est).max(0.0);
         let band_top = (design_wl + margin).min(top);
         // A band that stops well below the top of the supplied geometry is
         // the quiet way to get wrong answers later: any pose that immerses
@@ -2188,6 +2215,23 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         detect_opts.fit.n_ctrl_x = detect_opts.fit.n_ctrl_x.min(10);
         detect_opts.fit.n_ctrl_z = detect_opts.fit.n_ctrl_z.min(7);
         let mut hull_opts = opts;
+        // Scale the z control net with the band so the wetted zone keeps the
+        // resolution it had under the old, shorter default band; without this
+        // a generous band is a downgrade, not an upgrade. An explicit
+        // --fit-control still wins.
+        if !settings.fit_explicit {
+            let band_height = band_top - bottom;
+            let reference = (1.0 + 0.5) * draft_est; // keel to the old default band top
+            let scale = if reference > 0.0 {
+                band_height / reference
+            } else {
+                1.0
+            };
+            let scaled = (hull_opts.fit.n_ctrl_z as f64 * scale).round();
+            hull_opts.fit.n_ctrl_z = (scaled as usize)
+                .max(hull_opts.fit.n_ctrl_z)
+                .min(opts.waterlines.saturating_sub(2));
+        }
         if hull_opts.centerplane.is_none() {
             hull_opts.centerplane = src
                 .situate_one(
