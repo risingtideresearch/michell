@@ -25,6 +25,19 @@ const BLACK: [f64; 3] = [0.0, 0.0, 0.0];
 const GRAY: [f64; 3] = [0.45, 0.45, 0.45];
 const BLUE: [f64; 3] = [0.10, 0.35, 0.75];
 const ORANGE: [f64; 3] = [0.85, 0.45, 0.05];
+/// Hull silhouette fills in the profile view: the part above the actual
+/// water surface, and the submerged part the wave integral actually sees.
+const HULL_DRY: [f64; 3] = [0.84, 0.83, 0.81];
+const HULL_WET: [f64; 3] = [0.60, 0.65, 0.72];
+/// `tan` of the Kelvin wedge half-angle, `asin(1/3)` = 19.4712 degrees.
+const KELVIN_TAN: f64 = 0.353_553_390_593_273_76;
+/// A station's keel is the deepest point whose half-beam still clears this
+/// fraction of that station's own design-waterline half-beam, floored at
+/// `KEEL_MIN_BEAM`. It has to sit above the loft's residual (centimetres of
+/// half-beam near a cut-off transom) or every station reports the band
+/// bottom and the "rocker" draws as a straight line.
+const KEEL_BEAM_FRACTION: f64 = 0.02;
+const KEEL_MIN_BEAM: f64 = 1.0e-3;
 
 pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Result<(), String> {
     let pm = parse_manifest(manifest_path)?;
@@ -126,7 +139,16 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim,
                 pivot_x,
             };
-            let members_owned = situate_at(&bodies, &poses, &platform, &pm.bopts)?;
+            let (members_owned, band_exceeded) =
+                situate_at(&bodies, &poses, &platform, &pm.bopts)?;
+            if band_exceeded > 0 {
+                eprintln!(
+                    "row {row_no}/{total_rows}: WARNING {band_exceeded} wetted sample(s) rose \
+                     above the top of the lofted band. That geometry is not in the .hull file \
+                     and was taken as zero half-beam, so this row understates the immersed \
+                     hull. Re-loft with a taller --band."
+                );
+            }
             let members: Vec<(&Hull, Placement)> =
                 members_owned.iter().map(|(h, p)| (h, *p)).collect();
             let resistance = if rt.is_some() {
@@ -154,6 +176,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 &pm.hulls,
                 &poses,
                 &platform,
+                band_exceeded,
             )?;
             rows.push(RowSummary {
                 row_no,
@@ -164,6 +187,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim_deg: trim.to_degrees(),
                 rt,
                 pe,
+                band_exceeded,
             });
             detail_pages.push(page);
             cache_out.push(CachedRow {
@@ -221,6 +245,10 @@ struct RowSummary {
     trim_deg: f64,
     rt: Option<f64>,
     pe: Option<f64>,
+    /// Wetted samples that fell above the lofted band at this row's pose.
+    /// Non-zero means the hull the forces were computed on is missing its
+    /// immersed upper stern, so `rt`/`pe` in the index understate the row.
+    band_exceeded: usize,
 }
 
 /// A compact repr of a point's non-speed axis values (e.g. a spacing or lcg
@@ -335,17 +363,19 @@ fn situate_at(
     poses: &[HullPose],
     platform: &Platform,
     opts: &BodyOptions,
-) -> Result<Vec<(Hull, Placement)>, String> {
+) -> Result<(Vec<(Hull, Placement)>, usize), String> {
     let mut members = Vec::new();
+    let mut band_exceeded = 0usize;
     for (body, pose) in bodies.iter().zip(poses) {
         if let Some(sb) = body
             .situate(0.0, pose, platform, opts)
             .map_err(|e| format!("{e}"))?
         {
+            band_exceeded += sb.band_exceeded;
             members.push((sb.hull, sb.placement));
         }
     }
-    Ok(members)
+    Ok((members, band_exceeded))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -361,6 +391,7 @@ fn build_detail_page(
     hulls: &[MHull],
     poses: &[HullPose],
     platform: &Platform,
+    band_exceeded: usize,
 ) -> Result<Page, String> {
     let mut page = Page::new(PAGE_W, PAGE_H);
     let title = if point_label.is_empty() {
@@ -372,11 +403,14 @@ fn build_detail_page(
     page.text_right(PAGE_W - MARGIN, PAGE_H - 26.0, 9.0, GRAY, "index");
     page.link_to_page([PAGE_W - MARGIN - 40.0, PAGE_H - 34.0, PAGE_W - MARGIN, PAGE_H - 20.0], 0);
 
-    let plan_rect = [MARGIN, PAGE_H - 300.0, PAGE_W - 2.0 * MARGIN, 232.0];
-    let profile_rect = [MARGIN, 56.0, PAGE_W - 2.0 * MARGIN, 200.0];
+    // The plan panel takes the taller share. Its wake is drawn to true
+    // proportions now (see draw_plan_view), so panel height buys wake
+    // coverage astern rather than just pixels.
+    let plan_rect = [MARGIN, 240.0, PAGE_W - 2.0 * MARGIN, 322.0];
+    let profile_rect = [MARGIN, 66.0, PAGE_W - 2.0 * MARGIN, 140.0];
 
     let plan_caption = draw_plan_view(doc, &mut page, plan_rect, members, cond, l_ref)?;
-    page.text(plan_rect[0], plan_rect[1] - 12.0, 8.0, GRAY, &plan_caption);
+    draw_caption(&mut page, plan_rect[0], plan_rect[1] - 12.0, &plan_caption);
     page.text(
         plan_rect[0],
         plan_rect[1] + plan_rect[3] + 4.0,
@@ -400,17 +434,25 @@ fn build_detail_page(
         members,
         cond,
         profile_hull_y,
+        band_exceeded,
     )?;
-    page.text(profile_rect[0], profile_rect[1] - 12.0, 8.0, GRAY, &profile_caption);
+    draw_caption(&mut page, profile_rect[0], profile_rect[1] - 12.0, &profile_caption);
     page.text(
         profile_rect[0],
         profile_rect[1] + profile_rect[3] + 4.0,
         9.0,
         BLACK,
-        "Profile: sinkage/trim (keel and design waterline) with a wave elevation cut",
+        "Profile: hull at the solved sinkage and trim, with a wave elevation cut",
     );
 
     Ok(page)
+}
+
+/// Draw a panel caption, one line per `\n`, running downward from `top`.
+fn draw_caption(page: &mut Page, x: f64, top: f64, text: &str) {
+    for (i, line) in text.split('\n').enumerate() {
+        page.text(x, top - 9.5 * i as f64, 8.0, GRAY, line);
+    }
 }
 
 /// Render the plan-view Kelvin wake heatmap for this row directly into the
@@ -439,12 +481,37 @@ fn draw_plan_view(
         x_hi = x_hi.max(h1 + p.x);
         y_abs = y_abs.max(p.y.abs());
     }
-    let x1 = x_hi + 0.35 * l_ref;
-    let x0 = x_lo - 3.0 * l_ref;
-    let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
+    // Frame the wake to TRUE PROPORTIONS. The panel is far wider than it is
+    // tall, so asking for a fixed astern reach and letting the raster stretch
+    // to fill the rect squashed the transverse axis about 2.6x here: the
+    // Kelvin wedge drew at roughly 8 degrees instead of its 19.47, and the
+    // hulls came out as needles. Derive the astern reach from the panel's own
+    // aspect instead, so the wedge exactly fills the panel height:
+    //   isotropic  =>  yh = a * Lx,  a = rect_h / (2 rect_w)
+    //   wedge      =>  yh = KELVIN_TAN * d,  Lx = d + fore_aft
+    //   hence      =>  d = a * fore_aft / (KELVIN_TAN - a)
+    let ahead = 0.35 * l_ref;
+    let fore_aft = (x_hi - x_lo) + ahead;
+    let a = 0.5 * rect[3] / rect[2];
+    let mut lx = if a < KELVIN_TAN {
+        fore_aft * KELVIN_TAN / (KELVIN_TAN - a)
+    } else {
+        // Panel tall enough that the wedge never leaves its sides; fall back
+        // to a fixed reach rather than dividing by something non-positive.
+        fore_aft + 3.0 * l_ref
+    };
+    let mut yh = a * lx;
+    // Never clip the fleet itself, even at the cost of some wake.
+    let need = 1.15 * y_abs + 0.12 * l_ref;
+    if yh < need {
+        yh = need;
+        lx = yh / a;
+    }
+    let x1 = x_hi + ahead;
+    let x0 = x1 - lx;
     let (y0, y1) = (-yh, yh);
 
-    let nx = 520usize;
+    let nx = 760usize;
     let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round().clamp(64.0, 900.0) as usize;
 
     // Plain thin-ship field, not the resistance/squat integrals' transom
@@ -467,16 +534,25 @@ fn draw_plan_view(
         }
     }
 
+    // Fade the field from the stern forward: the free-wave spectrum is a
+    // downstream representation, so over and ahead of the ship it is not the
+    // real surface. This used to be a hard switch at x_lo, which painted a
+    // full-height vertical seam straight down the panel at exactly the
+    // transom - a fake transom wave, drawn by the renderer rather than the
+    // physics. Ramp it smoothly across the stern instead.
     const FADE_TOWARD: [u8; 3] = [0xf0, 0xef, 0xec];
     const FADE_FRACTION: f64 = 0.55;
+    let ramp = 0.45 * l_ref;
     let mut rgb = vec![0u8; 3 * nx * ny];
     for iy in 0..ny {
         let row = ny - 1 - iy; // row 0 = top = +y edge, matching Document::image's convention
         for ix in 0..nx {
             let t = grid.get(ix, iy) / vmax;
             let mut c = png::diverging(t);
-            if grid.x(ix) > x_lo {
-                c = png::fade(c, FADE_TOWARD, FADE_FRACTION);
+            let u = ((grid.x(ix) - (x_lo - ramp)) / (2.0 * ramp)).clamp(0.0, 1.0);
+            let smooth = u * u * (3.0 - 2.0 * u); // smoothstep, C1 at both ends
+            if smooth > 0.0 {
+                c = png::fade(c, FADE_TOWARD, FADE_FRACTION * smooth);
             }
             rgb[3 * (row * nx + ix)..3 * (row * nx + ix) + 3].copy_from_slice(&c);
         }
@@ -504,7 +580,9 @@ fn draw_plan_view(
     page.image(id, rect);
 
     Ok(format!(
-        "zeta +-{vmax:.4} m; x {x0:.1}..{x1:.1} m, y {y0:.1}..{y1:.1} m{}",
+        "true proportions, {:.1} hull lengths of wake astern; zeta +-{vmax:.4} m; \
+         x {x0:.1}..{x1:.1} m, y {y0:.1}..{y1:.1} m{}",
+        (x_lo - x0) / l_ref,
         if grid.resolution_limited {
             " (grid-resolution limited)"
         } else {
@@ -550,53 +628,77 @@ fn body_to_water(
     (x, z - zw)
 }
 
-/// A hull's keel/rocker line and design-waterline mark, mapped into the
-/// water frame at the solved sinkage/trim.
+/// A hull's centreplane profile at the solved attitude: the keel/rocker
+/// line, the top of the lofted band, the design-waterline mark, and the
+/// (band-top, keel) pairs that bound the hull's silhouette.
 struct HullProfile {
     keel: Vec<[f64; 2]>,
-    /// The top of the body's modelled band (`z_b = 0`). Not a real sheer or
-    /// deck line: the source geometry for this crate's hulls typically stops
-    /// a few centimetres above the design waterline (it was exported as the
-    /// wetted hull only, with a small margin for the sinkage/trim range of
-    /// interest, not as a full topsides model). Kept only to bound the
-    /// x-range for the wave-elevation cut; deliberately not drawn.
-    deck: Vec<[f64; 2]>,
+    /// The top of the body's modelled band (`z_b = 0`). This is where the
+    /// loft was cut, NOT a sheer line: `michell loft --band` deliberately
+    /// stops the fit a short way above the design waterline, because a deck
+    /// is a cliff for a height-field loft. The source CAD may well carry
+    /// full topsides above it; the `.hull` body simply does not. Drawn, and
+    /// labelled as the band top, so a pose that immerses past it is visible
+    /// rather than silently missing.
+    band_top: Vec<[f64; 2]>,
     design_wl: Vec<[f64; 2]>,
+    /// `[band top, keel]` pairs at the stations that carry any beam.
+    silhouette: Vec<[[f64; 2]; 2]>,
+    /// Band top's height above the design waterline [m], for the caption.
+    band_above_wl: f64,
 }
 
 fn hull_profile_at(body: &Body, pose: &HullPose, platform: &Platform) -> HullProfile {
-    const STATIONS: usize = 60;
-    const SCAN: usize = 48;
+    const STATIONS: usize = 120;
+    const SCAN: usize = 160;
     let (x0, x1) = body.surface().x_domain();
     let (_, depth) = body.surface().z_domain();
     let pivot_x = pose.pivot_x.unwrap_or(0.5 * (x0 + x1));
-    let eps = 1e-4 * body.surface().eval(0.5 * (x0 + x1), body.waterline()).max(1e-6);
 
     let mut keel = Vec::with_capacity(STATIONS);
-    let mut deck = Vec::with_capacity(STATIONS);
+    let mut band_top = Vec::with_capacity(STATIONS);
     let mut design_wl = Vec::with_capacity(STATIONS);
+    let mut silhouette = Vec::with_capacity(STATIONS);
+    let mut fs = vec![0.0f64; SCAN];
     for i in 0..STATIONS {
         let xb = x0 + (x1 - x0) * i as f64 / (STATIONS - 1) as f64;
-        let mut bottom = None;
-        for j in 0..SCAN {
-            let zb = depth * j as f64 / (SCAN - 1) as f64;
-            if body.surface().eval(xb, zb) > eps {
-                bottom = Some(zb);
-            }
+        // Local keel: the DEEPEST z whose half-beam clears a threshold scaled
+        // to this station's own waterline beam. The previous fixed epsilon
+        // (1e-4 of the midship beam, ~0.04 mm here) sat far below the loft's
+        // own residual, so spline ringing kept every station "wet" all the
+        // way down and the keel curve came out as the band bottom - a
+        // straight line carrying no shape at all.
+        let f_wl = body.surface().eval(xb, body.waterline()).max(0.0);
+        let eps = (KEEL_BEAM_FRACTION * f_wl).max(KEEL_MIN_BEAM);
+        let z_of = |j: usize| depth * j as f64 / (SCAN - 1) as f64;
+        for (j, f) in fs.iter_mut().enumerate() {
+            *f = body.surface().eval(xb, z_of(j));
         }
+        let bottom = fs.iter().rposition(|&f| f > eps).map(|j| {
+            // Interpolate the crossing rather than quantising to the scan.
+            if j + 1 < SCAN && fs[j] > fs[j + 1] {
+                let t = ((fs[j] - eps) / (fs[j] - fs[j + 1])).clamp(0.0, 1.0);
+                z_of(j) + t * (z_of(j + 1) - z_of(j))
+            } else {
+                z_of(j)
+            }
+        });
+        let top = body_to_water(xb, 0.0, body, pose, pivot_x, platform);
+        band_top.push([top.0, top.1]);
         if let Some(zb) = bottom {
             let (xw, zw) = body_to_water(xb, zb, body, pose, pivot_x, platform);
             keel.push([xw, zw]);
+            silhouette.push([[top.0, top.1], [xw, zw]]);
         }
-        let (xw, zw) = body_to_water(xb, 0.0, body, pose, pivot_x, platform);
-        deck.push([xw, zw]);
         let (xw, zw) = body_to_water(xb, body.waterline(), body, pose, pivot_x, platform);
         design_wl.push([xw, zw]);
     }
     HullProfile {
         keel,
-        deck,
+        band_top,
         design_wl,
+        silhouette,
+        band_above_wl: body.waterline(),
     }
 }
 
@@ -610,6 +712,7 @@ fn draw_profile_view(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     wave_cut_y: f64,
+    band_exceeded: usize,
 ) -> Result<String, String> {
     let profiles: Vec<HullProfile> = hulls
         .iter()
@@ -635,15 +738,14 @@ fn draw_profile_view(
     }
 
     // Data bounds (down-positive z; we flip to page y-up at draw time). The
-    // "deck" curve isn't drawn (see HullProfile's doc comment: it is not a
-    // real sheer line) but still contributes to the x-range, since it spans
-    // the hull's full modelled length regardless of local wetness.
+    // band-top curve spans the hull's full modelled length regardless of
+    // local wetness, so it sets the x-range.
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     let mut z_lo = 0.0f64; // includes the still-water line
     let mut z_hi = 0.0f64;
     for p in &profiles {
-        for pt in p.keel.iter().chain(&p.deck).chain(&p.design_wl) {
+        for pt in p.keel.iter().chain(&p.band_top).chain(&p.design_wl) {
             x_lo = x_lo.min(pt[0]);
             x_hi = x_hi.max(pt[0]);
             z_lo = z_lo.min(pt[1]);
@@ -679,15 +781,44 @@ fn draw_profile_view(
     };
 
     page.rect_stroke(rect, GRAY, 0.75);
+
+    // Hull silhouette first, so every line below reads on top of it. Filling
+    // the body's centreplane section in two tones, split at the ACTUAL water
+    // surface, is what makes this panel show a boat: the darker area is the
+    // hull the wave integral sees, and the gap between the flat water line
+    // and the orange design waterline is the sinkage and trim this row
+    // solved for. Two stroked curves alone showed neither.
+    for p in &profiles {
+        let wet: Vec<[[f64; 2]; 2]> = p
+            .silhouette
+            .iter()
+            .filter(|sl| sl[1][1] > 0.0)
+            .map(|sl| [[sl[0][0], sl[0][1].max(0.0)], sl[1]])
+            .collect();
+        let dry: Vec<[[f64; 2]; 2]> = p
+            .silhouette
+            .iter()
+            .filter(|sl| sl[0][1] < 0.0)
+            .map(|sl| [sl[0], [sl[1][0], sl[1][1].min(0.0)]])
+            .collect();
+        for (band, fill) in [(dry, HULL_DRY), (wet, HULL_WET)] {
+            if band.len() < 2 {
+                continue;
+            }
+            let mut poly: Vec<[f64; 2]> =
+                band.iter().map(|sl| to_page(sl[0][0], sl[0][1])).collect();
+            poly.extend(band.iter().rev().map(|sl| to_page(sl[1][0], sl[1][1])));
+            page.filled_polygon(&poly, fill);
+        }
+    }
+
     // Still water: exactly flat by construction (sinkage/trim are baked
     // into the hull curves below), always drawn across the full panel width.
-    page.polyline(
-        &[to_page(x_lo, 0.0), to_page(x_hi, 0.0)],
-        BLUE,
-        0.5,
-    );
+    page.polyline(&[to_page(x_lo, 0.0), to_page(x_hi, 0.0)], BLUE, 0.5);
 
     for p in &profiles {
+        let top_pts: Vec<[f64; 2]> = p.band_top.iter().map(|pt| to_page(pt[0], pt[1])).collect();
+        page.polyline(&top_pts, GRAY, 0.6);
         let keel_pts: Vec<[f64; 2]> = p.keel.iter().map(|pt| to_page(pt[0], pt[1])).collect();
         page.polyline(&keel_pts, BLACK, 1.2);
         let wl_pts: Vec<[f64; 2]> = p.design_wl.iter().map(|pt| to_page(pt[0], pt[1])).collect();
@@ -699,20 +830,30 @@ fn draw_profile_view(
         page.polyline(&cut_pts, BLUE, 0.9);
     }
 
-    Ok(format!(
-        "black: keel/rocker (modelled draft only - the source geometry \
-         has no topsides above the waterline); orange: design waterline; \
-         blue: still water and wake elevation cut at y = {wave_cut_y:.2} m; \
-         vertical exaggeration {:.1}x",
+    let band_h = profiles.first().map(|p| p.band_above_wl).unwrap_or(0.0);
+    let mut caption = format!(
+        "shaded: hull centreplane section, darker = submerged; black: keel/rocker; \
+         gray: top of lofted band; orange: design waterline; blue: still water and \
+         wake cut at y = {wave_cut_y:.2} m\n\
+         band top is {band_h:.2} m above the design waterline - topsides above it are \
+         not in the .hull file; vertical exaggeration {:.1}x",
         sz / sx
-    ))
+    );
+    if band_exceeded > 0 {
+        caption.push_str(&format!(
+            "\nWARNING: the water rose above the band top at {band_exceeded} wetted \
+             sample(s) - that hull is missing from the file and was counted as zero \
+             beam, so the immersed hull shown (and this row's forces) are understated"
+        ));
+    }
+    Ok(caption)
 }
 
 fn data_x_range(profiles: &[HullProfile]) -> (f64, f64) {
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     for p in profiles {
-        for pt in p.deck.iter() {
+        for pt in p.band_top.iter() {
             x_lo = x_lo.min(pt[0]);
             x_hi = x_hi.max(pt[0]);
         }
@@ -770,6 +911,36 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
         if let Some(pe) = row.pe {
             page.text(col_x[7], y, 9.0, BLACK, &format!("{pe:.1}"));
         }
+        if row.band_exceeded > 0 {
+            page.text(col_x[7] + 56.0, y, 9.0, ORANGE, "*");
+        }
+    }
+
+    // A row whose pose lifted water above the lofted band was integrated over
+    // a hull that is missing its immersed upper stern, so its Rt and Pe are
+    // understated. Say so next to the numbers, not only on the detail page.
+    let flagged = rows.iter().filter(|r| r.band_exceeded > 0).count();
+    if flagged > 0 {
+        y -= 24.0;
+        page.text(
+            MARGIN,
+            y,
+            8.0,
+            ORANGE,
+            &format!(
+                "* {flagged} of {} row(s): the solved attitude immersed the hull above the \
+                 top of the lofted band.",
+                rows.len()
+            ),
+        );
+        page.text(
+            MARGIN,
+            y - 10.0,
+            8.0,
+            GRAY,
+            "That geometry is not in the .hull file and was taken as zero half-beam, so Rt \
+             and Pe are understated. Re-loft with a taller --band to close the gap.",
+        );
     }
     page
 }
