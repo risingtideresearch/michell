@@ -36,6 +36,7 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
     }
 
     let bodies: Vec<&Body> = pm.hulls.iter().map(|h| &h.body).collect();
+    let total_rows = pm.points * pm.speeds.len();
     let mut doc = Document::new();
     let mut detail_pages: Vec<Page> = Vec::new();
     let mut rows: Vec<RowSummary> = Vec::new();
@@ -55,6 +56,17 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
 
         let mut warm: Option<(f64, f64)> = None;
         for &u in &pm.speeds {
+            let row_started = std::time::Instant::now();
+            let froude = u / (pm.gravity * pm.l_ref).sqrt();
+            let prefix = if point_label.is_empty() {
+                String::new()
+            } else {
+                format!("{point_label}, ")
+            };
+            eprintln!(
+                "row {}/{total_rows}: solving {prefix}U = {u:.3} m/s (Fn {froude:.3})...",
+                rows.len() + 1
+            );
             let cond = pm.fluid.make_cond(u)?;
             let closure = dynamic_load_closure(&cond, pivot_x, &pm.squat_opts);
             let dyn_eq = solve_equilibrium_bodies_dynamic(
@@ -73,7 +85,6 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
 
             let members: Vec<(&Hull, Placement)> =
                 dyn_eq.fleet.members.iter().map(|(h, p)| (h, *p)).collect();
-            let froude = u / (pm.gravity * pm.l_ref).sqrt();
             let resistance = if members.is_empty() {
                 None
             } else {
@@ -113,6 +124,12 @@ pub fn run(manifest_path: &str, out_path: &str) -> Result<(), String> {
                 pe: resistance.as_ref().map(|r| r.effective_power),
             });
             detail_pages.push(page);
+            eprintln!(
+                "row {row_no}/{total_rows} done in {:.1}s: sinkage {:.4} m, trim {:.3} deg",
+                row_started.elapsed().as_secs_f64(),
+                dyn_eq.sinkage,
+                dyn_eq.trim.to_degrees()
+            );
         }
 
         for (i, a) in pm.axes.iter().enumerate().rev() {
