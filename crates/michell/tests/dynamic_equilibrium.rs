@@ -434,11 +434,13 @@ fn coarse_to_fine_handoff_does_not_stall_convergence() {
                 members: vec![(sb.hull, sb.placement)],
                 dry: 0,
                 band_exceeded: sb.band_exceeded,
+                band_overshoot: sb.band_overshoot,
             }),
             None => Ok(FleetState {
                 members: vec![],
                 dry: 1,
                 band_exceeded: 0,
+                band_overshoot: 0.0,
             }),
         }
     };

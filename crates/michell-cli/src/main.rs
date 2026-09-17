@@ -1399,6 +1399,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                     members,
                     dry: 0,
                     band_exceeded: 0,
+                    band_overshoot: 0.0,
                 });
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
@@ -2160,6 +2161,23 @@ fn cmd_loft(args: &[String]) -> Result<(), String> {
         }
         let margin = band_flag.unwrap_or(0.5 * draft_est).max(0.0);
         let band_top = (design_wl + margin).min(top);
+        // A band that stops well below the top of the supplied geometry is
+        // the quiet way to get wrong answers later: any pose that immerses
+        // past it loses hull, because `situate` takes the missing half-beam
+        // as zero and only reports a count. Say up front what was kept and
+        // what was left behind, in units of the draft that will be sunk and
+        // trimmed, so the choice is made with eyes open.
+        let kept = band_top - design_wl;
+        let available = top - design_wl;
+        if available - kept > 1e-3 {
+            eprintln!(
+                "note: hull {idx}: band keeps {kept:.3} m above the design waterline \
+                 ({:.0}% of the {draft_est:.3} m draft); the source carries {available:.3} m \
+                 above it. A pose that immerses more than {kept:.3} m at any station loses \
+                 the rest - raise --band if a sweep will sink or trim past that.",
+                100.0 * kept / draft_est
+            );
+        }
         // Detect the centerplane at the *design* waterline, where the hull is
         // symmetric and the fold physically matters — band-top probes sample
         // topsides, where fittings can skew the detection — then hold it

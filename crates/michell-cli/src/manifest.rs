@@ -705,6 +705,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 let mut members = Vec::new();
                 let mut dry = 0usize;
                 let mut band_exceeded = 0usize;
+                let mut band_overshoot = 0.0f64;
                 let mut volume = 0.0;
                 let mut moment = 0.0;
                 for (h, pose) in hulls.iter().zip(&poses) {
@@ -718,6 +719,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                             moment +=
                                 (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
                             band_exceeded += sb.band_exceeded;
+                            band_overshoot = band_overshoot.max(sb.band_overshoot);
                             members.push((sb.hull, sb.placement));
                         }
                         None => dry += 1,
@@ -729,6 +731,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         members,
                         dry,
                         band_exceeded,
+                        band_overshoot,
                     },
                     0.0,
                     0.0,

@@ -140,14 +140,14 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim,
                 pivot_x,
             };
-            let (members_owned, band_exceeded) =
-                situate_at(&bodies, &poses, &platform, &pm.bopts)?;
-            if band_exceeded > 0 {
+            let (members_owned, band) = situate_at(&bodies, &poses, &platform, &pm.bopts)?;
+            if band.exceeded > 0 {
                 eprintln!(
-                    "row {row_no}/{total_rows}: WARNING {band_exceeded} wetted sample(s) rose \
-                     above the top of the lofted band. That geometry is not in the .hull file \
-                     and was taken as zero half-beam, so this row understates the immersed \
-                     hull. Re-loft with a taller --band."
+                    "row {row_no}/{total_rows}: WARNING {} wetted sample(s) rose above the top \
+                     of the lofted band. That geometry is not in the .hull file and was taken \
+                     as zero half-beam, so this row understates the immersed hull and its \
+                     forces. Re-loft with --band {:.2} or more.",
+                    band.exceeded, band.need
                 );
             }
             let members: Vec<(&Hull, Placement)> =
@@ -177,7 +177,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 &pm.hulls,
                 &poses,
                 &platform,
-                band_exceeded,
+                band,
             )?;
             rows.push(RowSummary {
                 row_no,
@@ -188,7 +188,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim_deg: trim.to_degrees(),
                 rt,
                 pe,
-                band_exceeded,
+                band,
             });
             detail_pages.push(page);
             cache_out.push(CachedRow {
@@ -206,6 +206,13 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 rt,
                 pe,
             });
+            // Persist after every row, not once at the end. These solves run
+            // for minutes each; a sweep that is interrupted, killed, or fails
+            // on a later row used to throw away every row it had already
+            // paid for, which defeats the point of having a cache.
+            if let Some(p) = cache_path {
+                write_cache(p, &cache_out)?;
+            }
         }
 
         for (i, a) in pm.axes.iter().enumerate().rev() {
@@ -246,10 +253,10 @@ struct RowSummary {
     trim_deg: f64,
     rt: Option<f64>,
     pe: Option<f64>,
-    /// Wetted samples that fell above the lofted band at this row's pose.
-    /// Non-zero means the hull the forces were computed on is missing its
-    /// immersed upper stern, so `rt`/`pe` in the index understate the row.
-    band_exceeded: usize,
+    /// Whether this row's pose stayed inside the lofted band. When it did
+    /// not, the hull the forces were computed on is missing its immersed
+    /// upper stern, so `rt`/`pe` in the index understate the row.
+    band: BandCheck,
 }
 
 /// A compact repr of a point's non-speed axis values (e.g. a spacing or lcg
@@ -364,19 +371,35 @@ fn situate_at(
     poses: &[HullPose],
     platform: &Platform,
     opts: &BodyOptions,
-) -> Result<(Vec<(Hull, Placement)>, usize), String> {
+) -> Result<(Vec<(Hull, Placement)>, BandCheck), String> {
     let mut members = Vec::new();
-    let mut band_exceeded = 0usize;
+    let mut band = BandCheck::default();
     for (body, pose) in bodies.iter().zip(poses) {
         if let Some(sb) = body
             .situate(0.0, pose, platform, opts)
             .map_err(|e| format!("{e}"))?
         {
-            band_exceeded += sb.band_exceeded;
+            band.exceeded += sb.band_exceeded;
+            if sb.band_overshoot > 0.0 {
+                // What --band would have covered this pose: the band this
+                // body already carries above its design waterline, plus how
+                // far the water climbed past its top.
+                band.need = band.need.max(body.waterline() + sb.band_overshoot);
+            }
             members.push((sb.hull, sb.placement));
         }
     }
-    Ok((members, band_exceeded))
+    Ok((members, band))
+}
+
+/// Whether a row's pose stayed inside the geometry the `.hull` files carry,
+/// and if not, the `--band` that would have covered it.
+#[derive(Debug, Clone, Copy, Default)]
+struct BandCheck {
+    /// Wetted samples that fell above a body's band top, summed over hulls.
+    exceeded: usize,
+    /// Smallest `michell loft --band` that would have contained this pose [m].
+    need: f64,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -392,7 +415,7 @@ fn build_detail_page(
     hulls: &[MHull],
     poses: &[HullPose],
     platform: &Platform,
-    band_exceeded: usize,
+    band: BandCheck,
 ) -> Result<Page, String> {
     let mut page = Page::new(PAGE_W, PAGE_H);
     let title = if point_label.is_empty() {
@@ -435,7 +458,7 @@ fn build_detail_page(
         members,
         cond,
         profile_hull_y,
-        band_exceeded,
+        band,
     )?;
     draw_caption(&mut page, profile_rect[0], profile_rect[1] - 12.0, &profile_caption);
     page.text(
@@ -751,7 +774,7 @@ fn draw_profile_view(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     wave_cut_y: f64,
-    band_exceeded: usize,
+    band: BandCheck,
 ) -> Result<String, String> {
     let profiles: Vec<HullProfile> = hulls
         .iter()
@@ -880,11 +903,12 @@ fn draw_profile_view(
         100.0 * KEEL_BEAM_FRACTION,
         sz / sx
     );
-    if band_exceeded > 0 {
+    if band.exceeded > 0 {
         caption.push_str(&format!(
-            "\nWARNING: the water rose above the band top at {band_exceeded} wetted \
-             sample(s) - that hull is missing from the file and was counted as zero \
-             beam, so the immersed hull shown (and this row's forces) are understated"
+            "\nWARNING: water rose above the band top at {} wetted sample(s) - that hull \
+             is missing from the file and counted as zero beam, so the immersed hull shown \
+             and this row's forces are understated. Re-loft with --band {:.2} or more.",
+            band.exceeded, band.need
         ));
     }
     Ok(caption)
@@ -952,7 +976,7 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
         if let Some(pe) = row.pe {
             page.text(col_x[7], y, 9.0, BLACK, &format!("{pe:.1}"));
         }
-        if row.band_exceeded > 0 {
+        if row.band.exceeded > 0 {
             page.text(col_x[7] + 56.0, y, 9.0, ORANGE, "*");
         }
     }
@@ -960,8 +984,9 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
     // A row whose pose lifted water above the lofted band was integrated over
     // a hull that is missing its immersed upper stern, so its Rt and Pe are
     // understated. Say so next to the numbers, not only on the detail page.
-    let flagged = rows.iter().filter(|r| r.band_exceeded > 0).count();
+    let flagged = rows.iter().filter(|r| r.band.exceeded > 0).count();
     if flagged > 0 {
+        let need = rows.iter().fold(0.0f64, |m, r| m.max(r.band.need));
         y -= 24.0;
         page.text(
             MARGIN,
@@ -979,8 +1004,11 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
             y - 10.0,
             8.0,
             GRAY,
-            "That geometry is not in the .hull file and was taken as zero half-beam, so Rt \
-             and Pe are understated. Re-loft with a taller --band to close the gap.",
+            &format!(
+                "That geometry is not in the .hull file and was taken as zero half-beam, so \
+                 Rt and Pe are understated. Re-loft with michell loft --band {need:.2} or \
+                 more and re-run."
+            ),
         );
     }
     page

@@ -48,6 +48,9 @@ pub struct FleetState {
     /// (bodies only): non-zero means missing topside geometry and
     /// under-counted buoyancy at this state.
     pub band_exceeded: usize,
+    /// Worst distance any wetted sample rose above a member's band top [m].
+    /// Re-loft with `--band` raised by at least this much to cover the state.
+    pub band_overshoot: f64,
 }
 
 /// A solved floating condition.
@@ -690,6 +693,7 @@ pub fn solve_equilibrium(
             Ok(FleetState {
                 dry: fl.dry.len(),
                 band_exceeded: 0, // IGES situates carry the full geometry
+                band_overshoot: 0.0,
                 members: fl
                     .members
                     .into_iter()
@@ -747,10 +751,12 @@ fn body_situator<'a>(
         let mut members = Vec::new();
         let mut dry = 0usize;
         let mut band_exceeded = 0usize;
+        let mut band_overshoot = 0.0f64;
         for (body, pose) in bodies.iter().zip(poses) {
             match body.situate(water_offset, pose, &platform, o)? {
                 Some(sb) => {
                     band_exceeded += sb.band_exceeded;
+                    band_overshoot = band_overshoot.max(sb.band_overshoot);
                     members.push((sb.hull, sb.placement));
                 }
                 None => dry += 1,
@@ -760,6 +766,7 @@ fn body_situator<'a>(
             members,
             dry,
             band_exceeded,
+            band_overshoot,
         })
     }
 }

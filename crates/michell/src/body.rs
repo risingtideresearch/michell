@@ -62,6 +62,11 @@ pub struct SituatedBody {
     /// past the modelled sheer): their geometry is unknown and was taken as
     /// zero. A non-zero count means the pose exceeds what the file covers.
     pub band_exceeded: usize,
+    /// How far the water rose above the band top at the worst such sample
+    /// [m], zero when the band was not exceeded. This is the actionable
+    /// number: re-lofting with `--band` raised by at least this much puts
+    /// the whole wetted hull back inside the file.
+    pub band_overshoot: f64,
 }
 
 /// A full-band hull body.
@@ -223,6 +228,7 @@ impl Body {
         let mut fx = vec![f64::NAN; ns * nw];
         let mut fz = vec![f64::NAN; ns * nw];
         let mut band_exceeded = 0usize;
+        let mut band_overshoot = 0.0f64;
         // The forward scan and this inverse map round-trip through the same
         // rotations, so grid rows meant to land exactly on a domain edge (the
         // keel row, the end stations) can overshoot by roundoff; clamp a
@@ -247,6 +253,7 @@ impl Body {
                     // unconstrained and the count reports that the pose
                     // exceeds what the file models.
                     band_exceeded += 1;
+                    band_overshoot = band_overshoot.max(-zb);
                     continue;
                 }
                 let (xb, zb) = (xb.clamp(x0, x1), zb.clamp(0.0, depth));
@@ -271,6 +278,7 @@ impl Body {
             fit,
             grid,
             band_exceeded,
+            band_overshoot,
         }))
     }
 }
