@@ -12,18 +12,7 @@ pub fn encode_rgb(width: usize, height: usize, rgb: &[u8]) -> Vec<u8> {
         raw.push(0);
         raw.extend_from_slice(&rgb[row * stride..(row + 1) * stride]);
     }
-    // zlib stream: header + stored (uncompressed) deflate blocks + adler32.
-    let mut z = vec![0x78, 0x01];
-    let mut off = 0;
-    while off < raw.len() {
-        let n = (raw.len() - off).min(65535);
-        z.push(u8::from(off + n == raw.len()));
-        z.extend_from_slice(&(n as u16).to_le_bytes());
-        z.extend_from_slice(&(!(n as u16)).to_le_bytes());
-        z.extend_from_slice(&raw[off..off + n]);
-        off += n;
-    }
-    z.extend_from_slice(&adler32(&raw).to_be_bytes());
+    let z = zlib_store(&raw);
 
     let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     let mut ihdr = Vec::with_capacity(13);
@@ -35,6 +24,28 @@ pub fn encode_rgb(width: usize, height: usize, rgb: &[u8]) -> Vec<u8> {
     chunk(&mut png, b"IDAT", &z);
     chunk(&mut png, b"IEND", &[]);
     png
+}
+
+/// Wrap `data` as a valid zlib stream using DEFLATE's uncompressed ("stored")
+/// block type — no compression algorithm needed, just the container framing.
+/// Shared by the PNG `IDAT` stream here and PDF's `/FlateDecode` image
+/// streams in [`crate::pdf`], which both just need *some* valid zlib stream.
+pub fn zlib_store(data: &[u8]) -> Vec<u8> {
+    let mut z = vec![0x78, 0x01];
+    let mut off = 0;
+    while off < data.len() || off == 0 {
+        let n = (data.len() - off).min(65535);
+        z.push(u8::from(off + n == data.len()));
+        z.extend_from_slice(&(n as u16).to_le_bytes());
+        z.extend_from_slice(&(!(n as u16)).to_le_bytes());
+        z.extend_from_slice(&data[off..off + n]);
+        off += n;
+        if data.is_empty() {
+            break;
+        }
+    }
+    z.extend_from_slice(&adler32(data).to_be_bytes());
+    z
 }
 
 fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {

@@ -4,8 +4,10 @@ mod formats;
 mod gridio;
 mod json;
 mod manifest;
+mod pdf;
 mod png;
 mod render;
+mod report;
 mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
@@ -39,6 +41,7 @@ fn run() -> Result<(), String> {
                 cmd_sweep(&args[1..])
             }
         }
+        Some("report") => cmd_report(&args[1..]),
         Some("info") => cmd_info(&args[1..]),
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
@@ -67,6 +70,7 @@ USAGE
   michell view <hull>... --speed U [--port N] [options]       interactive fleet viewer
   michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
   michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
+  michell report study.json [-o report.pdf]                   dynamic sweep -> PDF report
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
 HULL INPUTS (sniffed by header / extension)
@@ -192,6 +196,14 @@ SWEEPS
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
                                 keeps the old single-hull wetted output
+  michell report study.json -o report.pdf
+                                dynamic-mode (options.dynamic: true) manifests
+                                only: re-solves sinkage/trim at each speed and
+                                renders a self-contained PDF — an index page
+                                plus, per row, a plan-view wake image and a
+                                profile view (keel, design waterline, and a
+                                wave elevation cut). No agent/script needed;
+                                one invocation produces the whole report.
 
 PLACE (reconstruct CAD geometry from a studied configuration)
   michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7,dz=0.05 -o boat.igs
@@ -1026,6 +1038,21 @@ struct Axis {
     label: String,
     values: Vec<f64>,
     target: Target,
+}
+
+fn cmd_report(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    let Some(manifest_path) = p.positional.first() else {
+        return Err("usage: michell report <study.json> [-o report.pdf]".into());
+    };
+    if !manifest_path.ends_with(".json") {
+        return Err("michell report takes a JSON manifest, same schema as `michell sweep`".into());
+    }
+    if p.positional.len() > 1 {
+        return Err("report takes a single manifest; put every axis in the JSON file".into());
+    }
+    let out_path = p.flag("output").cloned().unwrap_or_else(|| "report.pdf".to_string());
+    report::run(manifest_path, &out_path)
 }
 
 fn cmd_sweep(args: &[String]) -> Result<(), String> {

@@ -16,7 +16,7 @@ use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 const KNOT: f64 = 1852.0 / 3600.0;
 
 #[derive(Clone, Copy, PartialEq)]
-enum PoseParam {
+pub(crate) enum PoseParam {
     Dx,
     Dy,
     Dz,
@@ -24,7 +24,7 @@ enum PoseParam {
     TrimDeg,
 }
 
-enum Target {
+pub(crate) enum Target {
     Weight,
     Lcg,
     Vcg,
@@ -40,19 +40,123 @@ enum SpeedUnit {
     Froude,
 }
 
-struct Axis {
-    label: String,
-    values: Vec<f64>,
-    target: Target,
+pub(crate) struct Axis {
+    pub(crate) label: String,
+    pub(crate) values: Vec<f64>,
+    pub(crate) target: Target,
 }
 
-struct MHull {
-    id: String,
-    body: Body,
-    base: HullPose,
+pub(crate) struct MHull {
+    pub(crate) id: String,
+    pub(crate) body: Body,
+    pub(crate) base: HullPose,
 }
 
-pub fn run(manifest_path: &str) -> Result<(), String> {
+/// Fluid/gravity settings resolved from `options`/`fluid`, bundled so a
+/// speed-conditions closure can be reconstructed at any call site (a fresh
+/// per-speed `Conditions` is cheap; storing a closure across a struct
+/// boundary is not worth the lifetime gymnastics here).
+pub(crate) struct FluidCfg {
+    fluid_name: String,
+    rho_override: Option<f64>,
+    nu_override: Option<f64>,
+    pub(crate) gravity: f64,
+}
+
+impl FluidCfg {
+    pub(crate) fn make_cond(&self, speed: f64) -> Result<Conditions, String> {
+        let mut c = match self.fluid_name.as_str() {
+            "seawater" => Conditions::seawater(speed),
+            "freshwater" => Conditions::freshwater(speed),
+            other => return Err(format!("fluid {other:?}: expected seawater or freshwater")),
+        };
+        if let Some(r) = self.rho_override {
+            c.fluid.density = r;
+        }
+        if let Some(n) = self.nu_override {
+            c.fluid.kinematic_viscosity = n;
+        }
+        c.gravity = self.gravity;
+        Ok(c)
+    }
+}
+
+/// A manifest parsed and validated, ready to be swept: every option resolved,
+/// every hull loaded, every axis (including the mandatory speed axis)
+/// converted to SI values. Shared by the CSV/JSON `sweep` command and the
+/// image-producing `report` command, so both stay consistent with the same
+/// manifest schema without duplicating its parsing.
+pub(crate) struct ParsedManifest {
+    pub(crate) hulls: Vec<MHull>,
+    pub(crate) axes: Vec<Axis>,
+    pub(crate) speeds: Vec<f64>,
+    pub(crate) dynamic_mode: bool,
+    pub(crate) squat_opts: SquatOptions,
+    pub(crate) wave_opts: WaveOptions,
+    pub(crate) form_factor: f64,
+    pub(crate) gravity: f64,
+    pub(crate) density: f64,
+    pub(crate) bopts: BodyOptions,
+    pub(crate) l_ref: f64,
+    pub(crate) points: usize,
+    pub(crate) vcg_mode: bool,
+    pub(crate) fluid: FluidCfg,
+}
+
+/// The resolved per-point state: every hull's pose plus the scalar targets
+/// (weight, lcg, vcg, heel, waterline) an axis entry may have set.
+pub(crate) struct PointState {
+    pub(crate) poses: Vec<HullPose>,
+    pub(crate) waterline: f64,
+    pub(crate) weight: Option<f64>,
+    pub(crate) lcg: Option<f64>,
+    pub(crate) vcg: Option<f64>,
+    pub(crate) heel: f64,
+}
+
+/// Resolve one sweep point's axis values into hull poses and scalar targets.
+pub(crate) fn point_state(hulls: &[MHull], axes: &[Axis], vals: &[f64]) -> PointState {
+    let mut poses: Vec<HullPose> = hulls.iter().map(|h| h.base).collect();
+    let mut waterline = 0.0f64;
+    let mut weight = None;
+    let mut lcg = None;
+    let mut vcg = None;
+    let mut heel = 0.0f64;
+    for (a, &v) in axes.iter().zip(vals) {
+        match &a.target {
+            Target::Waterline => waterline = v,
+            Target::Weight => weight = Some(v),
+            Target::Lcg => lcg = Some(v),
+            Target::Vcg => vcg = Some(v),
+            Target::HeelDeg => heel = v.to_radians(),
+            Target::Pose(idxs, pp) => {
+                for &hi in idxs {
+                    let pose = &mut poses[hi];
+                    match pp {
+                        PoseParam::Dx => pose.dx = hulls[hi].base.dx + v,
+                        PoseParam::Dy => pose.dy = hulls[hi].base.dy + v,
+                        PoseParam::Dz => pose.dz = hulls[hi].base.dz + v,
+                        PoseParam::Spread => {
+                            let side = hulls[hi].body.centerplane() + hulls[hi].base.dy;
+                            pose.dy = hulls[hi].base.dy + if side < 0.0 { -v } else { v };
+                        }
+                        PoseParam::TrimDeg => pose.trim = hulls[hi].base.trim + v.to_radians(),
+                    }
+                }
+            }
+        }
+    }
+    PointState {
+        poses,
+        waterline,
+        weight,
+        lcg,
+        vcg,
+        heel,
+    }
+}
+
+pub(crate) fn parse_manifest(manifest_path: &str) -> Result<ParsedManifest, String> {
     let text = std::fs::read_to_string(manifest_path)
         .map_err(|e| format!("cannot read {manifest_path}: {e}"))?;
     let doc = parse_json(&text).map_err(|e| format!("{manifest_path}: {e}"))?;
@@ -119,23 +223,15 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let fluid_name = doc
         .get("fluid")
         .and_then(Json::as_str)
-        .unwrap_or("seawater");
-    let make_cond = |speed: f64| -> Result<Conditions, String> {
-        let mut c = match fluid_name {
-            "seawater" => Conditions::seawater(speed),
-            "freshwater" => Conditions::freshwater(speed),
-            other => return Err(format!("fluid {other:?}: expected seawater or freshwater")),
-        };
-        if let Some(r) = rho_override {
-            c.fluid.density = r;
-        }
-        if let Some(n) = nu_override {
-            c.fluid.kinematic_viscosity = n;
-        }
-        c.gravity = gravity;
-        Ok(c)
+        .unwrap_or("seawater")
+        .to_string();
+    let fluid = FluidCfg {
+        fluid_name,
+        rho_override,
+        nu_override,
+        gravity,
     };
-    let density = make_cond(1.0)?.fluid.density;
+    let density = fluid.make_cond(1.0)?.fluid.density;
 
     // Hulls.
     let hull_specs = doc
@@ -379,6 +475,50 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
         if float_mode { ", equilibrium mode" } else { "" }
     );
 
+    Ok(ParsedManifest {
+        hulls,
+        axes,
+        speeds,
+        dynamic_mode,
+        squat_opts,
+        wave_opts,
+        form_factor,
+        gravity,
+        density,
+        bopts,
+        l_ref,
+        points,
+        vcg_mode,
+        fluid,
+    })
+}
+
+pub fn run(manifest_path: &str) -> Result<(), String> {
+    let dir = std::path::Path::new(manifest_path)
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(manifest_path)
+        .map_err(|e| format!("cannot read {manifest_path}: {e}"))?;
+    let doc = parse_json(&text).map_err(|e| format!("{manifest_path}: {e}"))?;
+    let ParsedManifest {
+        hulls,
+        axes,
+        speeds,
+        dynamic_mode,
+        squat_opts,
+        wave_opts,
+        form_factor,
+        gravity,
+        density,
+        bopts,
+        l_ref,
+        points,
+        vcg_mode,
+        fluid,
+        ..
+    } = parse_manifest(manifest_path)?;
+
     // Output setup.
     let (format, out_file) = match doc.get("output") {
         Some(o) => (
@@ -458,38 +598,14 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     let mut idx = vec![0usize; axes.len()];
     for point in 0..points {
         let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
-        let mut poses: Vec<HullPose> = hulls.iter().map(|h| h.base).collect();
-        let mut waterline = 0.0f64;
-        let mut weight = None;
-        let mut lcg = None;
-        let mut vcg = None;
-        let mut heel = 0.0f64;
-        for (a, &v) in axes.iter().zip(&vals) {
-            match &a.target {
-                Target::Waterline => waterline = v,
-                Target::Weight => weight = Some(v),
-                Target::Lcg => lcg = Some(v),
-                Target::Vcg => vcg = Some(v),
-                Target::HeelDeg => heel = v.to_radians(),
-                Target::Pose(idxs, pp) => {
-                    for &hi in idxs {
-                        let pose = &mut poses[hi];
-                        match pp {
-                            PoseParam::Dx => pose.dx = hulls[hi].base.dx + v,
-                            PoseParam::Dy => pose.dy = hulls[hi].base.dy + v,
-                            PoseParam::Dz => pose.dz = hulls[hi].base.dz + v,
-                            PoseParam::Spread => {
-                                let side = hulls[hi].body.centerplane() + hulls[hi].base.dy;
-                                pose.dy = hulls[hi].base.dy + if side < 0.0 { -v } else { v };
-                            }
-                            PoseParam::TrimDeg => {
-                                pose.trim = hulls[hi].base.trim + v.to_radians()
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let PointState {
+            poses,
+            waterline,
+            weight,
+            lcg,
+            vcg,
+            heel,
+        } = point_state(&hulls, &axes, &vals);
 
         if dynamic_mode {
             // Attitude depends on speed here (the near-field pressure grows
@@ -500,7 +616,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
             let mass = weight.expect("dynamic_mode requires a weight axis (checked above)");
             let mut warm: Option<(f64, f64)> = None;
             for &u in &speeds {
-                let cond = make_cond(u)?;
+                let cond = fluid.make_cond(u)?;
                 let closure = dynamic_load_closure(&cond, lcg.unwrap_or(0.0), &squat_opts);
                 let dyn_eq = solve_equilibrium_bodies_dynamic(
                     &bodies,
@@ -630,7 +746,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                 state.members.iter().map(|(h, p)| (h, *p)).collect();
 
             for &u in &speeds {
-                let cond = make_cond(u)?;
+                let cond = fluid.make_cond(u)?;
                 let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
                     (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
                 } else {
