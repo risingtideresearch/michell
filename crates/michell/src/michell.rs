@@ -281,7 +281,7 @@ pub fn multihull_heel_wave_resistance(
     let t_max = members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max);
     let params = fleet_outer_params(members, nu, cx_ref, y_ref, t_max * heel.sin().abs());
 
-    let mut mem: Vec<HeelMember> = members
+    let mem: Vec<HeelMember> = members
         .iter()
         .map(|(h, p)| HeelMember {
             inner: HeelInner::new(h, nu, heel, opts.transom),
@@ -291,9 +291,7 @@ pub fn multihull_heel_wave_resistance(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
-        superpose(&mut mem, nu, lambda)
-    }))
+    Ok(run_outer(&params, opts, coeff, mem))
 }
 
 /// Combined wave resistance of several thin hulls (multihull), with default
@@ -337,7 +335,7 @@ pub fn multihull_wave_resistance_with(
     let (cx_ref, y_ref) = fleet_phase_refs(members);
     let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
 
-    let mut mem: Vec<SourceMember> = members
+    let mem: Vec<SourceMember> = members
         .iter()
         .map(|(h, p)| SourceMember {
             inner: InnerIntegral::new(h, nu, opts.transom),
@@ -347,9 +345,7 @@ pub fn multihull_wave_resistance_with(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
-        superpose(&mut mem, nu, lambda)
-    }))
+    Ok(run_outer(&params, opts, coeff, mem))
 }
 
 /// Grid resolution for the centreplane lifting solve behind
@@ -408,6 +404,7 @@ pub fn asymmetric_wave_resistance_lifting(
 
 /// One fleet member's precomputed inner integral and (for an asymmetric hull)
 /// its solved centreplane dipole distribution.
+#[derive(Clone)]
 struct LiftMember<'h> {
     inner: InnerIntegral<'h>,
     /// The solved doublet distribution and the hull length (to re-centre the
@@ -461,7 +458,7 @@ pub fn multihull_wave_resistance_lifting(
     let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
 
     // Solve each asymmetric member's centreplane once (up front, not per λ).
-    let mut mem: Vec<LiftMember> = members
+    let mem: Vec<LiftMember> = members
         .iter()
         .map(|(h, p)| {
             let dipole = if h.is_asymmetric() {
@@ -487,9 +484,7 @@ pub fn multihull_wave_resistance_lifting(
         .collect();
 
     let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, |lambda| {
-        superpose(&mut mem, nu, lambda)
-    }))
+    Ok(run_outer(&params, opts, coeff, mem))
 }
 
 /// The Michell inner integrals `(I(λ), J(λ))` — the free-wave amplitude
@@ -579,12 +574,27 @@ struct OuterParams {
 }
 
 /// Marching-panel Gauss–Legendre integration of
-/// `∫_0^{π/2} |A(sec θ)|² sec³θ dθ`, where `amp_sq` supplies the combined
-/// `|A|²` of the fleet's two (±θ) wave systems.
-fn integrate_outer(
+/// `∫_0^{π/2} |A(sec θ)|² sec³θ dθ`, where `|A|²` is the combined amplitude
+/// of the fleet's two (±θ) wave systems ([`superpose`] over `members`).
+///
+/// **Parallel structure.** The panel schedule depends only on the geometry
+/// (`params`) and `frac` — never on integrand values — so it is generated
+/// ahead in batches, every panel of a batch is evaluated independently
+/// (each worker on its own clone of the members, see [`crate::parallel`]),
+/// and the truncation test is then applied to the panels *in θ order*. The
+/// accumulation order and every per-panel operation are those of the plain
+/// serial march, so the result is bit-for-bit independent of the thread
+/// count; the only cost of parallelism is the tail of the final batch past
+/// the truncation point, bounded by the batch size. `theta_hint` — where the
+/// previous (coarser) pass truncated — lets a refinement pass schedule its
+/// whole expected range as one batch; the first pass grows its batches.
+///
+/// Returns the integral and the θ the march stopped at.
+fn integrate_outer<M: MemberWave>(
     params: &OuterParams,
     frac: f64,
-    amp_sq: &mut impl FnMut(f64) -> f64,
+    members: &[M],
+    theta_hint: Option<f64>,
     evals: &mut usize,
 ) -> (f64, f64) {
     const GL_N: usize = 16;
@@ -597,6 +607,11 @@ fn integrate_outer(
     const STOP_WINDOW_PHASE: f64 = 8.0 * PI;
     const LAMBDA_HARD_CAP: f64 = 1e4;
     const MAX_EVALS_PER_PASS: usize = 4_000_000;
+    /// Panels per worker in a first batch: small enough that a pass which
+    /// truncates early wastes little, large enough to amortise the thread
+    /// spawn; batches double while the march continues.
+    const FIRST_BATCH_PER_WORKER: usize = 32;
+    const MAX_BATCH: usize = 2048;
 
     let (gx, gw) = gauss_legendre(GL_N);
     let nu = params.nu;
@@ -618,49 +633,112 @@ fn integrate_outer(
     // phase is linear near 0 and already covered by rate(0)).
     let cap = (2.0 * PI / (2.0 * nu * x_half).sqrt().max(1.0)).min(0.12);
 
+    /// One scheduled panel: `[theta, theta + dt]` with the local phase rate
+    /// that sized it.
+    struct Panel {
+        theta: f64,
+        dt: f64,
+        rate: f64,
+    }
+
+    // One panel's Gauss–Legendre sum (before the half-width factor).
+    let panel_sum = |mem: &mut Vec<M>, p: &Panel| -> f64 {
+        let half = p.dt / 2.0;
+        let mid = p.theta + half;
+        let mut panel = 0.0;
+        for (k, &xi) in gx.iter().enumerate() {
+            let th = mid + half * xi;
+            let sec = 1.0 / th.cos();
+            panel += gw[k] * superpose(mem, nu, sec) * sec * sec * sec;
+        }
+        panel
+    };
+
+    // With a single worker there is nothing to batch: march panel by panel
+    // on one private copy of the members, exactly as the serial loop did,
+    // so no panel past the truncation point is ever evaluated.
+    let workers = crate::parallel::threads();
+    let serial = workers == 1;
+    let mut local: Vec<M> = if serial { members.to_vec() } else { Vec::new() };
+
     let mut theta = 0.0f64;
     let mut total = 0.0f64;
     let mut window_sum = 0.0f64;
     let mut window_phase = 0.0f64;
     let mut pass_evals = 0usize;
-    while theta < FRAC_PI_2 - 1e-12 {
-        let local_rate = rate(theta);
-        let dt = (frac * 2.0 * PI / local_rate)
-            .min(frac * cap)
-            .min(FRAC_PI_2 - theta)
-            .max(1e-15);
-        let half = dt / 2.0;
-        let mid = theta + half;
-        let mut panel = 0.0;
-        for (i, &xi) in gx.iter().enumerate() {
-            let th = mid + half * xi;
-            let sec = 1.0 / th.cos();
-            panel += gw[i] * amp_sq(sec) * sec * sec * sec;
-        }
-        panel *= half;
-        total += panel;
-        pass_evals += GL_N;
-        theta += dt;
-
-        // Truncation: only past λ = 2, and only when an entire window of
-        // accumulated oscillation phase contributed negligibly.
-        if 1.0 / theta.cos() > 2.0 {
-            window_sum += panel;
-            window_phase += local_rate * dt;
-            if window_phase >= STOP_WINDOW_PHASE {
-                if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
-                    break;
-                }
-                window_sum = 0.0;
-                window_phase = 0.0;
+    let mut batch = if serial { 1 } else { FIRST_BATCH_PER_WORKER * workers };
+    let mut stopped = false;
+    while !stopped && theta < FRAC_PI_2 - 1e-12 {
+        // Schedule the next batch, mirroring the march's own stopping rules
+        // (hard λ cap, evaluation budget) so no panel is scheduled that the
+        // serial loop would not have reached.
+        // The first batch of a refinement pass runs straight to the hint.
+        let to_hint = theta_hint.filter(|_| theta == 0.0 && !serial);
+        let mut panels: Vec<Panel> = Vec::with_capacity(batch);
+        let mut th = theta;
+        let mut ev = pass_evals;
+        while (panels.len() < batch || to_hint.is_some_and(|h| th < h)) && th < FRAC_PI_2 - 1e-12 {
+            let local_rate = rate(th);
+            let dt = (frac * 2.0 * PI / local_rate)
+                .min(frac * cap)
+                .min(FRAC_PI_2 - th)
+                .max(1e-15);
+            panels.push(Panel {
+                theta: th,
+                dt,
+                rate: local_rate,
+            });
+            th += dt;
+            ev += GL_N;
+            if 1.0 / th.cos() > LAMBDA_HARD_CAP || ev > MAX_EVALS_PER_PASS {
+                break;
             }
         }
-        if 1.0 / theta.cos() > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
-            break;
+
+        // Evaluate every panel's Gauss–Legendre sum, independently.
+        let sums: Vec<f64> = if serial {
+            panels.iter().map(|p| panel_sum(&mut local, p)).collect()
+        } else {
+            crate::parallel::map_indexed(
+                panels.len(),
+                || members.to_vec(),
+                |mem, i| panel_sum(mem, &panels[i]),
+            )
+        };
+
+        // Accumulate in θ order and apply the truncation rules exactly as the
+        // serial march does, panel by panel.
+        for (p, sum) in panels.iter().zip(sums) {
+            let panel = sum * (p.dt / 2.0);
+            total += panel;
+            pass_evals += GL_N;
+            theta = p.theta + p.dt;
+
+            // Truncation: only past λ = 2, and only when an entire window of
+            // accumulated oscillation phase contributed negligibly.
+            if 1.0 / theta.cos() > 2.0 {
+                window_sum += panel;
+                window_phase += p.rate * p.dt;
+                if window_phase >= STOP_WINDOW_PHASE {
+                    if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
+                        stopped = true;
+                        break;
+                    }
+                    window_sum = 0.0;
+                    window_phase = 0.0;
+                }
+            }
+            if 1.0 / theta.cos() > LAMBDA_HARD_CAP || pass_evals > MAX_EVALS_PER_PASS {
+                stopped = true;
+                break;
+            }
+        }
+        if !serial {
+            batch = (batch * 2).min(MAX_BATCH);
         }
     }
     *evals += pass_evals;
-    (total, 1.0 / theta.cos().max(1e-300))
+    (total, theta)
 }
 
 // ---------------------------------------------------------------------------
@@ -674,7 +752,9 @@ fn integrate_outer(
 // ---------------------------------------------------------------------------
 
 /// One fleet member's contribution to the far-field free-wave amplitude.
-trait MemberWave {
+/// `Clone + Send` so the outer quadrature can hand each worker thread its own
+/// copy (the scratch buffers are per-member; the hull itself is shared).
+trait MemberWave: Clone + Send + Sync {
     /// `(A₊, A₋)` — the amplitudes this member carries into the +θ and −θ wave
     /// systems at `λ` (before the placement phase).
     fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64);
@@ -704,29 +784,32 @@ fn superpose<M: MemberWave>(members: &mut [M], nu: f64, lambda: f64) -> f64 {
 }
 
 /// March the outer integral to the requested tolerance and assemble the
-/// [`WaveResistance`]; `coeff = 4ρg²/(πU²)` is the Michell prefactor. Shared by
+/// [`WaveResistance`]; `coeff = 4ρg²/(πU²)` is the Michell prefactor and
+/// `members` the fleet whose combined amplitude is integrated. Shared by
 /// every wave-resistance entry point.
-fn run_outer(
+fn run_outer<M: MemberWave>(
     params: &OuterParams,
     opts: &WaveOptions,
     coeff: f64,
-    mut amp_sq: impl FnMut(f64) -> f64,
+    members: Vec<M>,
 ) -> WaveResistance {
     let mut evals_total = 0usize;
     let mut frac = 1.0;
     let mut evals = 0usize;
-    let (mut integral, mut max_lambda) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+    let (mut integral, mut theta_stop) =
+        integrate_outer(params, frac, &members, None, &mut evals);
     evals_total += evals;
     let mut est_rel = f64::INFINITY;
     for _ in 0..opts.max_refinements {
         frac *= 0.5;
         let mut evals = 0usize;
-        let (refined, ml) = integrate_outer(params, frac, &mut amp_sq, &mut evals);
+        let (refined, th) =
+            integrate_outer(params, frac, &members, Some(theta_stop), &mut evals);
         evals_total += evals;
         let scale = refined.abs().max(f64::MIN_POSITIVE);
         est_rel = (refined - integral).abs() / scale;
         integral = refined;
-        max_lambda = ml;
+        theta_stop = th;
         if est_rel <= opts.rel_tol {
             break;
         }
@@ -735,7 +818,7 @@ fn run_outer(
         resistance: coeff * integral,
         est_rel_error: est_rel,
         inner_evaluations: evals_total,
-        max_lambda,
+        max_lambda: 1.0 / theta_stop.cos().max(1e-300),
     }
 }
 
@@ -800,6 +883,7 @@ fn fleet_outer_params(
 }
 
 /// Upright source (thickness) member carrying the strip-closure camber dipole.
+#[derive(Clone)]
 struct SourceMember<'h> {
     inner: InnerIntegral<'h>,
     dx: f64,
@@ -847,6 +931,7 @@ impl MemberWave for LiftMember<'_> {
 
 /// Heeled member: the tilted-centreplane (complex-`κ`) source amplitude for the
 /// ±θ systems, at a shared platform heel angle.
+#[derive(Clone)]
 struct HeelMember<'h> {
     inner: HeelInner<'h>,
     dx: f64,
@@ -927,6 +1012,7 @@ impl SquatTransforms {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct InnerIntegral<'h> {
     hull: &'h Hull,
     nu: f64,
@@ -1239,6 +1325,7 @@ impl<'h> InnerIntegral<'h> {
 /// [`heel_wave_resistance`]). The x-oscillation moments and the per-span
 /// accumulate are identical to the upright kernel; only the z-moment is complex
 /// (via [`exp_moments_complex`]), so the real path is entirely untouched.
+#[derive(Clone)]
 pub(crate) struct HeelInner<'h> {
     hull: &'h Hull,
     nu: f64,

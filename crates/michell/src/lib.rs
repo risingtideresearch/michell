@@ -83,6 +83,7 @@ pub mod lifting;
 pub mod lifting3d;
 mod michell;
 mod moments;
+pub mod parallel;
 mod quadrature;
 pub mod spectrum;
 pub mod squat;

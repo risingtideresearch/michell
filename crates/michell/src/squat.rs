@@ -237,6 +237,7 @@ pub fn multihull_dynamic_force(
 }
 
 /// One member's evaluator plus its fleet-frame placement.
+#[derive(Clone)]
 struct Member<'h> {
     inner: InnerIntegral<'h>,
     /// Fleet-frame x of the hull's own phase centre.
@@ -244,6 +245,9 @@ struct Member<'h> {
     y: f64,
 }
 
+/// `Clone` so each worker thread of a θ fan-out gets its own scratch (the
+/// hulls themselves are shared by reference).
+#[derive(Clone)]
 struct Fleet<'h> {
     members: Vec<Member<'h>>,
     nu: f64,
@@ -453,26 +457,40 @@ impl<'h> Fleet<'h> {
             (pf + h0_f * log_term, pm + h0_m * log_term)
         };
 
-        let mut f_sum = 0.0;
-        let mut m_sum = 0.0;
+        // θ nodes and weights; the last entry is the sliver θ ∈ (θ_c, π/2),
+        // where the integrand is near its θ → π/2 limit.
+        let mut nodes: Vec<(f64, f64)> = Vec::with_capacity(n_theta * gx.len() + 1);
         for it in 0..n_theta {
             let (a, b) = (
                 theta_c * it as f64 / n_theta as f64,
                 theta_c * (it + 1) as f64 / n_theta as f64,
             );
             for (gi, &x) in gx.iter().enumerate() {
-                let theta = 0.5 * (b - a) * x + 0.5 * (a + b);
-                let wth = 0.5 * (b - a) * gw[gi];
-                let (pf, pm) = at_theta(self, theta, evals);
-                f_sum += wth * pf;
-                m_sum += wth * pm;
+                nodes.push((0.5 * (b - a) * x + 0.5 * (a + b), 0.5 * (b - a) * gw[gi]));
             }
         }
-        // The sliver θ ∈ (θ_c, π/2): the integrand is near its θ → π/2 limit.
-        let (pf_c, pm_c) = at_theta(self, theta_c, evals);
-        let sliver = FRAC_PI_2 - theta_c;
-        f_sum += sliver * pf_c;
-        m_sum += sliver * pm_c;
+        nodes.push((theta_c, FRAC_PI_2 - theta_c));
+
+        // Every node's k-integral is independent given the shared
+        // contractions; each worker runs on its own clone of the fleet.
+        let this: &Self = self;
+        let at_theta = &at_theta;
+        let per_node: Vec<(f64, f64, usize)> = crate::parallel::map_indexed(
+            nodes.len(),
+            || this.clone(),
+            |fleet, i| {
+                let mut ev = 0usize;
+                let (pf, pm) = at_theta(fleet, nodes[i].0, &mut ev);
+                (pf, pm, ev)
+            },
+        );
+        let mut f_sum = 0.0;
+        let mut m_sum = 0.0;
+        for (&(_, wth), &(pf, pm, ev)) in nodes.iter().zip(&per_node) {
+            f_sum += wth * pf;
+            m_sum += wth * pm;
+            *evals += ev;
+        }
         (4.0 * f_sum, 4.0 * m_sum)
     }
 
@@ -486,24 +504,36 @@ impl<'h> Fleet<'h> {
         let theta_max = (nu / kx_cap).min(1.0).acos().min(FRAC_PI_2 - 1e-7);
         let n_theta = 48 * level;
         let (gx, gw) = gauss_legendre(8);
-        let mut sum = 0.0;
+        let mut nodes: Vec<(f64, f64)> = Vec::with_capacity(n_theta * gx.len());
         for it in 0..n_theta {
             let (a, b) = (
                 theta_max * it as f64 / n_theta as f64,
                 theta_max * (it + 1) as f64 / n_theta as f64,
             );
             for (gi, &x) in gx.iter().enumerate() {
-                let theta = 0.5 * (b - a) * x + 0.5 * (a + b);
-                let w = 0.5 * (b - a) * gw[gi];
+                nodes.push((0.5 * (b - a) * x + 0.5 * (a + b), 0.5 * (b - a) * gw[gi]));
+            }
+        }
+        let this: &Self = self;
+        let vals: Vec<f64> = crate::parallel::map_indexed(
+            nodes.len(),
+            || this.clone(),
+            |fleet, i| {
+                let theta = nodes[i].0;
                 let lam = 1.0 / theta.cos();
                 let kx = nu * lam;
                 let k = nu * lam * lam;
                 let ky = (k * k - kx * kx).max(0.0).sqrt();
-                *evals += 1;
-                let fm = self.forms(kx, ky, k);
-                let val = (fm.rq.scale(k) - fm.rwq).im;
-                sum += w * val * lam * lam;
-            }
+                let fm = fleet.forms(kx, ky, k);
+                (fm.rq.scale(k) - fm.rwq).im
+            },
+        );
+        *evals += nodes.len();
+        // Same expression, same association, as the serial loop had.
+        let mut sum = 0.0;
+        for (&(theta, w), &val) in nodes.iter().zip(&vals) {
+            let lam = 1.0 / theta.cos();
+            sum += w * val * lam * lam;
         }
         sum
     }

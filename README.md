@@ -70,7 +70,14 @@ member. `multihull_resistance` also reports the interference factor
 (see below); their dipole systems superpose with the source systems.
 
 Performance: a full 21-speed Wigley resistance curve at the default 1e-5
-tolerance runs in ~20 ms (release build).
+tolerance runs in ~20 ms (release build). The outer quadrature and the
+near-field (sinkage/trim) integrals fan their independent nodes out across
+the machine's cores with `std::thread::scope` (still no dependencies); the
+reduction order is the serial one, so the answer is bit-for-bit independent
+of the thread count. The worker budget is per thread (`michell::parallel`),
+so a caller that already runs jobs in parallel can hand each job a share of
+the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
+environment disables threading altogether.
 
 ### Asymmetric hulls
 
