@@ -144,11 +144,7 @@ impl<'h> FreeWaveSpectrum<'h> {
         }
         let nu = cond.gravity / (cond.speed * cond.speed);
         let n = members.len() as f64;
-        let x_ref = members
-            .iter()
-            .map(|(h, p)| h.x_center() + p.x)
-            .sum::<f64>()
-            / n;
+        let x_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
         Ok(FreeWaveSpectrum {
             nu,
             speed: cond.speed,

@@ -3,7 +3,9 @@
 //! Usage: cargo run --example inspect_iges -- file.igs
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: inspect_iges <file.igs>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: inspect_iges <file.igs>");
     let text = std::fs::read_to_string(&path).expect("read file");
     let file = michell::iges::parse(&text).expect("parse");
     println!("units scale: {}", file.units_scale);
@@ -34,10 +36,7 @@ fn main() {
     for (i, s) in file.surfaces.iter().take(3).enumerate() {
         println!(
             "patch {i}: ctrl {}x{}, knots-u {:?}, knots-v {:?}",
-            s.n_ctrl_u,
-            s.n_ctrl_v,
-            s.knots_u,
-            s.knots_v
+            s.n_ctrl_u, s.n_ctrl_v, s.knots_u, s.knots_v
         );
     }
 }

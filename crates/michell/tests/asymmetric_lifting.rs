@@ -99,10 +99,13 @@ fn dipole_scales_quadratically_with_asymmetry() {
 fn symmetric_hull_is_rejected() {
     let hull = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
     let cond = Conditions::seawater(3.0);
-    assert!(
-        asymmetric_wave_resistance_lifting(&hull, &cond, &Default::default(), LiftingGrid::default())
-            .is_err()
-    );
+    assert!(asymmetric_wave_resistance_lifting(
+        &hull,
+        &cond,
+        &Default::default(),
+        LiftingGrid::default()
+    )
+    .is_err());
 }
 
 /// Mirroring the hull (`f_a → −f_a`) flips the sign of the solved μ but not
@@ -132,9 +135,14 @@ fn grid_convergence() {
     let (asym, _) = asymmetric(0.5);
     let cond = Conditions::seawater(3.0);
     let r = |nx, nz| {
-        asymmetric_wave_resistance_lifting(&asym, &cond, &Default::default(), LiftingGrid { nx, nz })
-            .unwrap()
-            .resistance
+        asymmetric_wave_resistance_lifting(
+            &asym,
+            &cond,
+            &Default::default(),
+            LiftingGrid { nx, nz },
+        )
+        .unwrap()
+        .resistance
     };
     let coarse = r(16, 5);
     let medium = r(28, 8);
@@ -143,5 +151,8 @@ fn grid_convergence() {
         (fine - medium).abs() < (medium - coarse).abs(),
         "not settling: {coarse}, {medium}, {fine}"
     );
-    assert!((fine - medium).abs() < 0.05 * fine, "fine grid not converged");
+    assert!(
+        (fine - medium).abs() < 0.05 * fine,
+        "fine grid not converged"
+    );
 }

@@ -142,8 +142,7 @@ fn literal(bytes: &[u8], at: &mut usize, word: &str, v: Json) -> Result<Json, St
 
 fn number(bytes: &[u8], at: &mut usize) -> Result<Json, String> {
     let start = *at;
-    while *at < bytes.len()
-        && matches!(bytes[*at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+    while *at < bytes.len() && matches!(bytes[*at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
     {
         *at += 1;
     }

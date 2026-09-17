@@ -143,7 +143,11 @@ pub fn render(scene: &Scene, cam: &Camera, light: &Light, width: usize, height: 
         .map(|(v, &n0)| {
             let to_eye = normalize(sub(cam.eye, v.pos));
             // Two-sided: light the face the viewer sees.
-            let n = if dot(n0, to_eye) < 0.0 { scale(n0, -1.0) } else { n0 };
+            let n = if dot(n0, to_eye) < 0.0 {
+                scale(n0, -1.0)
+            } else {
+                n0
+            };
             let lambert = dot(n, light.dir).max(0.0);
             let mut c = scale(v.base, light.ambient + light.diffuse * lambert);
             if v.ks > 0.0 {
@@ -246,11 +250,29 @@ fn raster_tri(
     if area.abs() < 1e-12 {
         return;
     }
-    let x0 = v.iter().map(|p| p.0).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-    let x1 = (v.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max).ceil() as isize)
+    let x0 = v
+        .iter()
+        .map(|p| p.0)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0) as usize;
+    let x1 = (v
+        .iter()
+        .map(|p| p.0)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil() as isize)
         .clamp(0, w as isize - 1) as usize;
-    let y0 = v.iter().map(|p| p.1).fold(f64::INFINITY, f64::min).floor().max(0.0) as usize;
-    let y1 = (v.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max).ceil() as isize)
+    let y0 = v
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::INFINITY, f64::min)
+        .floor()
+        .max(0.0) as usize;
+    let y1 = (v
+        .iter()
+        .map(|p| p.1)
+        .fold(f64::NEG_INFINITY, f64::max)
+        .ceil() as isize)
         .clamp(0, h as isize - 1) as usize;
     if x0 > x1 || y0 > y1 {
         return;

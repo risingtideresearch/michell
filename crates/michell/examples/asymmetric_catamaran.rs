@@ -49,15 +49,43 @@ fn main() {
         let u = fr * (STANDARD_GRAVITY * l).sqrt();
         let c = Conditions::seawater(u);
         let sym = [
-            (&mean, Placement { x: 0.0, y: sep / 2.0 }),
-            (&mean, Placement { x: 0.0, y: -sep / 2.0 }),
+            (
+                &mean,
+                Placement {
+                    x: 0.0,
+                    y: sep / 2.0,
+                },
+            ),
+            (
+                &mean,
+                Placement {
+                    x: 0.0,
+                    y: -sep / 2.0,
+                },
+            ),
         ];
         let asym = [
-            (&h, Placement { x: 0.0, y: sep / 2.0 }),
-            (&h_m, Placement { x: 0.0, y: -sep / 2.0 }),
+            (
+                &h,
+                Placement {
+                    x: 0.0,
+                    y: sep / 2.0,
+                },
+            ),
+            (
+                &h_m,
+                Placement {
+                    x: 0.0,
+                    y: -sep / 2.0,
+                },
+            ),
         ];
-        let rs = multihull_wave_resistance_lifting(&sym, &c, &opts, grid).unwrap().resistance;
-        let ra = multihull_wave_resistance_lifting(&asym, &c, &opts, grid).unwrap().resistance;
+        let rs = multihull_wave_resistance_lifting(&sym, &c, &opts, grid)
+            .unwrap()
+            .resistance;
+        let ra = multihull_wave_resistance_lifting(&asym, &c, &opts, grid)
+            .unwrap()
+            .resistance;
         println!(
             "{fr:>5.2} {u:>7.3} {rs:>12.2} {ra:>12.2} {:>8.1}%",
             100.0 * (ra - rs) / rs

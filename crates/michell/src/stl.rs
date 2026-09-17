@@ -187,18 +187,8 @@ pub fn mesh_fleet(bytes: &[u8], units_scale: f64, reference_waterline: f64) -> R
             let (x, y, zd) = (v[0], v[1], reference_waterline - v[2]);
             grow(&mut all_box[c], x, y, zd);
             if wet {
-                grow(
-                    wet_box[c].get_or_insert([x, x, y, y, zd, zd]),
-                    x,
-                    y,
-                    zd,
-                );
-                grow(
-                    global_wet.get_or_insert([x, x, y, y, zd, zd]),
-                    x,
-                    y,
-                    zd,
-                );
+                grow(wet_box[c].get_or_insert([x, x, y, y, zd, zd]), x, y, zd);
+                grow(global_wet.get_or_insert([x, x, y, y, zd, zd]), x, y, zd);
             }
         }
     }
@@ -291,7 +281,9 @@ pub fn mesh_fleet(bytes: &[u8], units_scale: f64, reference_waterline: f64) -> R
         let dist = |a: &[f64; 6], b: &[f64; 6]| -> f64 {
             (0..3)
                 .map(|k| {
-                    let gap = (a[2 * k] - b[2 * k + 1]).max(b[2 * k] - a[2 * k + 1]).max(0.0);
+                    let gap = (a[2 * k] - b[2 * k + 1])
+                        .max(b[2 * k] - a[2 * k + 1])
+                        .max(0.0);
                     gap * gap
                 })
                 .sum()
@@ -322,10 +314,7 @@ pub fn mesh_fleet(bytes: &[u8], units_scale: f64, reference_waterline: f64) -> R
             hulls[rank[ci]].push(*tri);
         }
     }
-    Ok(MeshFleet {
-        units_scale,
-        hulls,
-    })
+    Ok(MeshFleet { units_scale, hulls })
 }
 
 impl MeshFleet {
@@ -381,7 +370,7 @@ impl MeshFleet {
         let mut members = Vec::new();
         let mut dry = Vec::new();
         for (hi, pose) in poses.iter().enumerate() {
-            match self.situate_hull(hi, waterline_z, pose, platform, opts)? {
+            match self.situate_hull(hi, waterline_z, pose, platform, opts, &mut |_| {})? {
                 Some(m) => members.push(m),
                 None => dry.push(hi),
             }
@@ -398,13 +387,28 @@ impl MeshFleet {
         platform: &Platform,
         opts: &ImportOptions,
     ) -> Result<Option<ImportedHull>> {
+        self.situate_one_progress(idx, waterline_z, pose, platform, opts, &mut |_| {})
+    }
+
+    /// Like [`MeshFleet::situate_one`], but reports loft-sampling progress as a
+    /// fraction in `0.0..=1.0` (one call per station) through `progress`, so a
+    /// front-end can show a bar. The final surface fit is not subdivided.
+    pub fn situate_one_progress(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
+    ) -> Result<Option<ImportedHull>> {
         if idx >= self.hulls.len() {
             return Err(Error::InvalidInput(format!(
                 "hull index {idx} out of range ({} hulls)",
                 self.hulls.len()
             )));
         }
-        self.situate_hull(idx, waterline_z, pose, platform, opts)
+        self.situate_hull(idx, waterline_z, pose, platform, opts, progress)
     }
 
     fn situate_hull(
@@ -414,6 +418,7 @@ impl MeshFleet {
         pose: &HullPose,
         platform: &Platform,
         opts: &ImportOptions,
+        progress: &mut dyn FnMut(f32),
     ) -> Result<Option<ImportedHull>> {
         if opts.stations < 8 || opts.waterlines < 6 {
             return Err(Error::InvalidInput(
@@ -425,10 +430,12 @@ impl MeshFleet {
         // (x, y, z' = wl - z).
         let src = &self.hulls[hi];
         let px = pose.pivot_x.unwrap_or_else(|| {
-            let (lo, hi) = src.iter().flat_map(|t| t.iter()).fold(
-                (f64::INFINITY, f64::NEG_INFINITY),
-                |(lo, hi), v| (lo.min(v[0]), hi.max(v[0])),
-            );
+            let (lo, hi) = src
+                .iter()
+                .flat_map(|t| t.iter())
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(v[0]), hi.max(v[0]))
+                });
             0.5 * (lo + hi)
         });
         let (pose_sin, pose_cos) = pose.trim.sin_cos();
@@ -539,7 +546,9 @@ impl MeshFleet {
                 x_min + length * (1.0 - c) / 2.0
             })
             .collect();
-        let waterlines: Vec<f64> = (0..nw).map(|j| draft * j as f64 / (nw - 1) as f64).collect();
+        let waterlines: Vec<f64> = (0..nw)
+            .map(|j| draft * j as f64 / (nw - 1) as f64)
+            .collect();
         let mut grid = vec![0.0f64; ns * nw];
         let mut ambiguous = 0usize;
         let mut max_asym = 0.0f64;
@@ -560,6 +569,7 @@ impl MeshFleet {
                 }
                 grid[i * nw + j] = folded;
             }
+            progress((i + 1) as f32 / ns as f32);
         }
 
         // Value-only grid: a tessellated mesh carries no usable slopes.
