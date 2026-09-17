@@ -31,13 +31,14 @@ const HULL_DRY: [f64; 3] = [0.84, 0.83, 0.81];
 const HULL_WET: [f64; 3] = [0.60, 0.65, 0.72];
 /// `tan` of the Kelvin wedge half-angle, `asin(1/3)` = 19.4712 degrees.
 const KELVIN_TAN: f64 = 0.353_553_390_593_273_76;
-/// A station's keel is the deepest point whose half-beam still clears this
-/// fraction of that station's own design-waterline half-beam, floored at
-/// `KEEL_MIN_BEAM`. It has to sit above the loft's residual (centimetres of
-/// half-beam near a cut-off transom) or every station reports the band
-/// bottom and the "rocker" draws as a straight line.
-const KEEL_BEAM_FRACTION: f64 = 0.02;
-const KEEL_MIN_BEAM: f64 = 1.0e-3;
+/// The profile's keel line is the contour where a station's half-beam falls
+/// to this fraction of that station's own design-waterline half-beam,
+/// floored at `KEEL_MIN_BEAM`. It is a contour and not literally the keel
+/// because this kind of loft has no sharp keel edge to find: under the hull
+/// the fitted half-beam decays into a few millimetres of ringing that
+/// wanders on down to the bottom of the band.
+const KEEL_BEAM_FRACTION: f64 = 0.10;
+const KEEL_MIN_BEAM: f64 = 2.0e-3;
 
 pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Result<(), String> {
     let pm = parse_manifest(manifest_path)?;
@@ -651,42 +652,80 @@ struct HullProfile {
 fn hull_profile_at(body: &Body, pose: &HullPose, platform: &Platform) -> HullProfile {
     const STATIONS: usize = 120;
     const SCAN: usize = 160;
+    const SMOOTH_PASSES: usize = 3;
     let (x0, x1) = body.surface().x_domain();
     let (_, depth) = body.surface().z_domain();
     let pivot_x = pose.pivot_x.unwrap_or(0.5 * (x0 + x1));
+    let xs: Vec<f64> = (0..STATIONS)
+        .map(|i| x0 + (x1 - x0) * i as f64 / (STATIONS - 1) as f64)
+        .collect();
+    let z_of = |j: usize| depth * j as f64 / (SCAN - 1) as f64;
+
+    // Raw keel depth per station, in the body's own frame.
+    let mut raw: Vec<Option<f64>> = Vec::with_capacity(STATIONS);
+    let mut fs = vec![0.0f64; SCAN];
+    for &xb in &xs {
+        let f_wl = body.surface().eval(xb, body.waterline()).max(0.0);
+        let eps = (KEEL_BEAM_FRACTION * f_wl).max(KEEL_MIN_BEAM);
+        for (j, f) in fs.iter_mut().enumerate() {
+            *f = body.surface().eval(xb, z_of(j));
+        }
+        // Walk DOWN from the band top and stop at the first crossing back
+        // below eps. Taking the DEEPEST crossing instead - the obvious
+        // reading of "where does the hull stop" - lands in the ringing tail
+        // this loft leaves under the hull, a few millimetres of half-beam
+        // wandering all the way to the band bottom. The detected depth then
+        // hops between ripple lobes from one station to the next and the
+        // keel draws as a sawtooth.
+        let mut entered = false;
+        let mut keel = None;
+        for j in 0..SCAN {
+            if !entered {
+                entered = fs[j] > eps;
+            } else if fs[j] <= eps {
+                let t = ((fs[j - 1] - eps) / (fs[j - 1] - fs[j])).clamp(0.0, 1.0);
+                keel = Some(z_of(j - 1) + t * (z_of(j) - z_of(j - 1)));
+                break;
+            }
+        }
+        raw.push(match (entered, keel) {
+            (true, None) => Some(depth), // beam all the way to the band bottom
+            (_, k) => k,
+        });
+    }
+
+    // Light binomial smoothing of the detected depths. A hull's underside is
+    // smooth; what survives the crossing rule above is detection jitter of a
+    // millimetre or two, which this panel's vertical exaggeration magnifies
+    // into a visible sawtooth. The window shrinks at the ends so the transom
+    // and the stem stay exactly where they were found rather than being
+    // rounded off by the filter.
+    let mut zs: Vec<f64> = raw.iter().filter_map(|v| *v).collect();
+    let n = zs.len();
+    for _ in 0..SMOOTH_PASSES {
+        let o = zs.clone();
+        for i in 0..n {
+            zs[i] = match i.min(n - 1 - i).min(2) {
+                0 => o[i],
+                1 => 0.25 * (o[i - 1] + 2.0 * o[i] + o[i + 1]),
+                _ => {
+                    (o[i - 2] + 4.0 * o[i - 1] + 6.0 * o[i] + 4.0 * o[i + 1] + o[i + 2]) / 16.0
+                }
+            };
+        }
+    }
 
     let mut keel = Vec::with_capacity(STATIONS);
     let mut band_top = Vec::with_capacity(STATIONS);
     let mut design_wl = Vec::with_capacity(STATIONS);
     let mut silhouette = Vec::with_capacity(STATIONS);
-    let mut fs = vec![0.0f64; SCAN];
-    for i in 0..STATIONS {
-        let xb = x0 + (x1 - x0) * i as f64 / (STATIONS - 1) as f64;
-        // Local keel: the DEEPEST z whose half-beam clears a threshold scaled
-        // to this station's own waterline beam. The previous fixed epsilon
-        // (1e-4 of the midship beam, ~0.04 mm here) sat far below the loft's
-        // own residual, so spline ringing kept every station "wet" all the
-        // way down and the keel curve came out as the band bottom - a
-        // straight line carrying no shape at all.
-        let f_wl = body.surface().eval(xb, body.waterline()).max(0.0);
-        let eps = (KEEL_BEAM_FRACTION * f_wl).max(KEEL_MIN_BEAM);
-        let z_of = |j: usize| depth * j as f64 / (SCAN - 1) as f64;
-        for (j, f) in fs.iter_mut().enumerate() {
-            *f = body.surface().eval(xb, z_of(j));
-        }
-        let bottom = fs.iter().rposition(|&f| f > eps).map(|j| {
-            // Interpolate the crossing rather than quantising to the scan.
-            if j + 1 < SCAN && fs[j] > fs[j + 1] {
-                let t = ((fs[j] - eps) / (fs[j] - fs[j + 1])).clamp(0.0, 1.0);
-                z_of(j) + t * (z_of(j + 1) - z_of(j))
-            } else {
-                z_of(j)
-            }
-        });
+    let mut k = 0usize;
+    for (i, &xb) in xs.iter().enumerate() {
         let top = body_to_water(xb, 0.0, body, pose, pivot_x, platform);
         band_top.push([top.0, top.1]);
-        if let Some(zb) = bottom {
-            let (xw, zw) = body_to_water(xb, zb, body, pose, pivot_x, platform);
+        if raw[i].is_some() {
+            let (xw, zw) = body_to_water(xb, zs[k], body, pose, pivot_x, platform);
+            k += 1;
             keel.push([xw, zw]);
             silhouette.push([[top.0, top.1], [xw, zw]]);
         }
@@ -832,11 +871,13 @@ fn draw_profile_view(
 
     let band_h = profiles.first().map(|p| p.band_above_wl).unwrap_or(0.0);
     let mut caption = format!(
-        "shaded: hull centreplane section, darker = submerged; black: keel/rocker; \
-         gray: top of lofted band; orange: design waterline; blue: still water and \
-         wake cut at y = {wave_cut_y:.2} m\n\
-         band top is {band_h:.2} m above the design waterline - topsides above it are \
+        "shaded: hull centreplane section, darker = submerged; black: keel, the {:.0}% \
+         half-beam contour lightly smoothed (this loft has no sharp keel edge); \
+         orange: design waterline\n\
+         blue: still water and the wake cut at y = {wave_cut_y:.2} m; gray: top of the \
+         lofted band, {band_h:.2} m above the design waterline - topsides above it are \
          not in the .hull file; vertical exaggeration {:.1}x",
+        100.0 * KEEL_BEAM_FRACTION,
         sz / sx
     );
     if band_exceeded > 0 {
