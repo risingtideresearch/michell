@@ -455,9 +455,22 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
     // Section-integration resolution for the heeled inclined-waterplane
     // hydrostatics (volume balance, trim, and GZ).
     let incl_grid = InclinedGrid::default();
-    let mut idx = vec![0usize; axes.len()];
-    for point in 0..points {
-        let vals: Vec<f64> = axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
+    // Grid order: the last axis varies fastest (odometer order).
+    let mut strides = vec![1usize; axes.len()];
+    for i in (0..axes.len().saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * axes[i + 1].values.len();
+    }
+
+    // Evaluate one grid point into its rows (one per speed). Everything it
+    // reads — axes, bodies, options, speeds — is immutable, so points are
+    // independent and evaluate in any order, on any thread.
+    let eval_point = |point: usize| -> Result<Vec<Vec<f64>>, String> {
+        let vals: Vec<f64> = axes
+            .iter()
+            .enumerate()
+            .map(|(i, a)| a.values[(point / strides[i]) % a.values.len()])
+            .collect();
+        let mut rows: Vec<Vec<f64>> = Vec::with_capacity(speeds.len());
         let mut poses: Vec<HullPose> = hulls.iter().map(|h| h.base).collect();
         let mut waterline = 0.0f64;
         let mut weight = None;
@@ -558,7 +571,7 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         ct,
                     ])
                     .collect();
-                emit_row(&nums, &header, &format, &mut first_row, &mut out);
+                rows.push(nums);
             }
         } else {
             // Heel enters the hydrostatics as a true inclined-waterplane rotation
@@ -680,16 +693,61 @@ pub fn run(manifest_path: &str) -> Result<(), String> {
                         ct,
                     ])
                     .collect();
-                emit_row(&nums, &header, &format, &mut first_row, &mut out);
+                rows.push(nums);
             }
         }
-        eprintln!("point {}/{points} done", point + 1);
-        for (i, a) in axes.iter().enumerate().rev() {
-            idx[i] += 1;
-            if idx[i] < a.values.len() {
-                break;
-            }
-            idx[i] = 0;
+        Ok(rows)
+    };
+
+    // Fan the points out across the cores: workers pull the next point off a
+    // shared counter (so slow points and fast points balance), and each
+    // worker's library calls get an equal share of the remaining cores — a
+    // study with fewer points than cores still fills the machine through the
+    // solver's own θ-node parallelism. Rows are gathered per point and
+    // written in grid order afterwards, so the output is independent of
+    // scheduling.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    /// A point's rows (one per speed), or the error that stopped it.
+    type PointRows = Result<Vec<Vec<f64>>, String>;
+    let cores = michell::parallel::available();
+    let workers = cores.min(points).max(1);
+    let inner_threads = (cores / workers).max(1);
+    let next = AtomicUsize::new(0);
+    let done = AtomicUsize::new(0);
+    let eval_point = &eval_point;
+    let mut results: Vec<(usize, PointRows)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    michell::parallel::set_threads(inner_threads);
+                    let mut local = Vec::new();
+                    loop {
+                        let point = next.fetch_add(1, Ordering::Relaxed);
+                        if point >= points {
+                            break;
+                        }
+                        let r = eval_point(point);
+                        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        eprintln!("point {n}/{points} done");
+                        if r.is_err() {
+                            // Stop handing out work; the error surfaces below.
+                            next.fetch_max(points, Ordering::Relaxed);
+                        }
+                        local.push((point, r));
+                    }
+                    local
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("sweep worker panicked"))
+            .collect()
+    });
+    results.sort_by_key(|(point, _)| *point);
+    for (_, rows) in results {
+        for nums in rows? {
+            emit_row(&nums, &header, &format, &mut first_row, &mut out);
         }
     }
     if format == "json" {
