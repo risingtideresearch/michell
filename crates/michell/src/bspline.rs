@@ -182,6 +182,11 @@ fn validate_knots(knots: &[f64], degree: usize, dir: &str) -> Result<usize> {
             "{dir}: degree must be at least 1"
         )));
     }
+    if degree > MAX_DEGREE {
+        return Err(Error::InvalidSpline(format!(
+            "{dir}: degree {degree} exceeds the supported maximum {MAX_DEGREE}"
+        )));
+    }
     if knots.len() < 2 * (degree + 1) {
         return Err(Error::InvalidSpline(format!(
             "{dir}: need at least {} knots for degree {degree}, got {}",
@@ -247,7 +252,7 @@ pub(crate) fn basis_rows1(
 ) -> (usize, Vec<Vec<f64>>) {
     let span = find_span(knots, degree, n_ctrl, u);
     let ders = ders_basis(knots, degree, span, u, 1);
-    (span - degree, ders)
+    (span - degree, (0..=1).map(|k| ders[k].to_vec()).collect())
 }
 
 /// Index `s` such that `knots[s] <= u < knots[s+1]` within the domain,
@@ -282,16 +287,43 @@ fn span_indices(knots: &[f64], degree: usize, n_ctrl: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Highest B-spline degree the crate accepts in either direction. Bounds the
+/// stack storage of [`ders_basis`]; CAD surfaces are almost always cubic and
+/// never beyond degree 7, and a higher-degree *fit* would be ill-advised.
+pub(crate) const MAX_DEGREE: usize = 9;
+
+/// Basis values and derivatives at one parameter, on the stack.
+///
+/// `b[k][j]` is the k-th derivative of basis function `N_{span-p+j, p}`; each
+/// row is `p + 1` long (indexing yields exactly that slice). Sized for
+/// [`MAX_DEGREE`] so a hot evaluation loop (surface points inside a Newton
+/// intersection, say) allocates nothing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BasisDers {
+    d: [[f64; MAX_DEGREE + 1]; MAX_DEGREE + 1],
+    p: usize,
+}
+
+impl std::ops::Index<usize> for BasisDers {
+    type Output = [f64];
+    #[inline]
+    fn index(&self, k: usize) -> &[f64] {
+        &self.d[k][..=self.p]
+    }
+}
+
 /// Non-zero basis functions and derivatives at `u` (Piegl & Tiller A2.3).
 ///
 /// Returns `ders[k][j]` = k-th derivative of basis function `N_{span-p+j, p}`
-/// at `u`, for `k = 0..=min(n, p)` and `j = 0..=p`.
-pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize) -> Vec<Vec<f64>> {
+/// at `u`, for `k = 0..=min(n, p)` and `j = 0..=p`. Rows past `min(n, p)` are
+/// zero.
+pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize) -> BasisDers {
+    debug_assert!(p <= MAX_DEGREE);
     let n = n.min(p);
-    let mut ndu = vec![vec![0.0f64; p + 1]; p + 1];
+    let mut ndu = [[0.0f64; MAX_DEGREE + 1]; MAX_DEGREE + 1];
     ndu[0][0] = 1.0;
-    let mut left = vec![0.0f64; p + 1];
-    let mut right = vec![0.0f64; p + 1];
+    let mut left = [0.0f64; MAX_DEGREE + 1];
+    let mut right = [0.0f64; MAX_DEGREE + 1];
     for j in 1..=p {
         left[j] = u - knots[span + 1 - j];
         right[j] = knots[span + j] - u;
@@ -306,19 +338,22 @@ pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize)
         }
         ndu[j][j] = saved;
     }
-    let mut ders = vec![vec![0.0f64; p + 1]; n + 1];
+    let mut ders = BasisDers {
+        d: [[0.0f64; MAX_DEGREE + 1]; MAX_DEGREE + 1],
+        p,
+    };
     for j in 0..=p {
-        ders[0][j] = ndu[j][p];
+        ders.d[0][j] = ndu[j][p];
     }
     if n == 0 {
         return ders;
     }
-    let mut a = [vec![0.0f64; p + 1], vec![0.0f64; p + 1]];
+    let mut a = [[0.0f64; MAX_DEGREE + 1]; 2];
     for r in 0..=p {
         let mut s1 = 0usize;
         let mut s2 = 1usize;
-        a[0].iter_mut().for_each(|v| *v = 0.0);
-        a[1].iter_mut().for_each(|v| *v = 0.0);
+        a[0] = [0.0; MAX_DEGREE + 1];
+        a[1] = [0.0; MAX_DEGREE + 1];
         a[0][0] = 1.0;
         for k in 1..=n {
             let mut d = 0.0;
@@ -342,13 +377,13 @@ pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize)
                 a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r];
                 d += a[s2][k] * ndu[r][pk];
             }
-            ders[k][r] = d;
+            ders.d[k][r] = d;
             std::mem::swap(&mut s1, &mut s2);
         }
     }
     let mut factor = p as f64;
-    for (k, row) in ders.iter_mut().enumerate().skip(1) {
-        for v in row.iter_mut() {
+    for k in 1..=n {
+        for v in ders.d[k][..=p].iter_mut() {
             *v *= factor;
         }
         factor *= (p - k) as f64;

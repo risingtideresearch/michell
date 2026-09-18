@@ -70,7 +70,14 @@ member. `multihull_resistance` also reports the interference factor
 (see below); their dipole systems superpose with the source systems.
 
 Performance: a full 21-speed Wigley resistance curve at the default 1e-5
-tolerance runs in ~20 ms (release build).
+tolerance runs in ~20 ms (release build). The outer quadrature and the
+near-field (sinkage/trim) integrals fan their independent nodes out across
+the machine's cores with `std::thread::scope` (still no dependencies); the
+reduction order is the serial one, so the answer is bit-for-bit independent
+of the thread count. The worker budget is per thread (`michell::parallel`),
+so a caller that already runs jobs in parallel can hand each job a share of
+the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
+environment disables threading altogether.
 
 ### Asymmetric hulls
 
@@ -157,6 +164,111 @@ half-systems are carried explicitly; a symmetric fleet at `φ = 0` reproduces
 single-hull case. The same scope limits apply (no waterline re-clip, no yaw
 side-force).
 
+### Transom sterns
+
+Michell's integral is over a **closed** body — `∬(∂f/∂x)…` assumes the
+half-breadth reaches zero at both ends. A transom leaves a step there, and
+taking that step at face value models a hull that shuts instantaneously, which
+radiates far too much. A real ventilated transom instead lets the flow leave
+the edge cleanly and close in a hollow some way downstream.
+
+A **virtual appendage** supplies that hollow: running aft from the transom over
+a length `L_v`, the half-beam decays as `f_v(x, z) = f_T(z)·φ(s)` with
+`s = (x_T − x)/L_v` and the smoothstep `φ(s) = (1 − s)²(1 + 2s)`, which is flat
+at both ends so `f` stays continuous at the transom and closes tangentially.
+Substituting `x = x_T − s·L_v` separates the amplitude completely:
+
+```text
+F_v = −e^{iνλx_T} · ∫ f_T(z) e^{−κz} dz · ∫₀¹ φ'(s) e^{−iνλ L_v s} ds
+```
+
+The transom section `f_T` is a piecewise polynomial on the hull's own z-spans,
+so the first factor is the *same* per-span z-moments the hull uses and the
+second is a three-term oscillatory moment — the closure is exact too, at the
+cost of one dot product per λ. It composes with the heeled (complex-`κ`) kernel
+unchanged, and `L_v → 0` reproduces the bare step analytically.
+
+The hollow length defaults to the **ballistic** estimate `L_v = √2·U·√(d_T/g)`
+— water leaving the transom horizontally at `U` falls the transom depth `d_T`
+under gravity — and is tunable (`--transom ballistic=C`, or `hollow=METRES`
+for a fixed length; `off` restores classical Michell). `Hull::transom()`
+reports the transom's immersed area, waterline beam, and equivalent-rectangle
+depth, and `michell info` prints `A_T/A_X` so a wet transom is never silent.
+**For a hull that closes aft the whole mechanism is inert**, bit for bit.
+
+Two caveats. The hollow length is a modelling choice, not a derived quantity,
+so transom results inherit that uncertainty — sweep `ballistic=C` to see how
+much it matters. And a lofted half-breadth cannot hold the transom's sharp
+lower edge: the fit smears it downward and overstates `A_T` (by ~38% on a test
+case), which feeds straight into `f_T`.
+
+### Dynamic sinkage and trim
+
+Every hydrostatic result above holds the hull at its still-water attitude.
+`michell::squat` adds the missing piece: the steady near-field pressure's
+**vertical force and pitch moment**, so a sweep can float the platform at its
+*dynamic* attitude at speed rather than its at-rest one.
+
+Write the Kelvin source in 2-D Fourier form. With the stream toward −x and `z`
+down, the free-surface condition fixes the image amplitude
+`A(k_x, k) = (k_x² + νk)/(k_x² − νk)` — rigid-wall (−1) for long modes,
+free-surface (+1) for short ones, with the steady-wave dispersion curve
+`k = k_x²/ν` the pole between them. Integrating the linearised pressure over
+the hull and reducing by parts along `x` gives the force and moment as
+wavenumber integrals of the **same per-span transforms** the wave integral
+already evaluates exactly — one extra transform of `f` itself alongside
+`∂f/∂x`, contracted against the existing z-moments (`InnerIntegral::contract_z`
+/ `transforms_at`), so a hull with hundreds of spans stays affordable. Two
+structural facts do the rest: the radiation condition's half-residue is odd in
+`k_x` and so drops out of the force (even integrand) but survives in the
+moment — **sinkage is a local-field effect, trim is mostly a wave effect** —
+and the unbounded-fluid part of the source (`−1/r`) contributes no force at
+all (d'Alembert), only a Munk-type moment for a fore-aft asymmetric hull.
+
+```text
+F_up  = −(ρU²/2π²) PV∬ d²k [ A·Re(q̄q) − ((A−1)/k)·Re(w̄q) ]
+M_res = −(4ρU²ν/π) ∫₁^∞ dλ λ/√(λ²−1) · Im[ νλ² r̄q − r̄_wl q ]   on k = k_x²/ν
+```
+
+Validated three ways: an independent from-scratch derivation panel checked the
+formulation (Rankine/wave-term split, radiation condition, low-Froude sign)
+against Havelock (1939), Yeung (1972), and the Wigley sinkage/trim literature;
+an independent NumPy oracle implementing the same integrals with adaptive
+quadrature agrees with this crate's evaluation to **<0.05% on force** and
+**~0.1% on moment** across Fn 0.05–0.45; and on the Wigley hull the sign,
+Fn²-scaling (`s/L/Fn² ≈ 0.021`–`0.032`, bracketing Havelock's rigid-wall
+ellipsoid limit and the Neumann–Michell/experimental range), and the trim
+sign-reversal near Fn ≈ 0.34–0.36 all reproduce the published pattern.
+
+`squat::multihull_dynamic_force` gives the force/moment for a fleet directly
+(demihull interaction included, through the same placement phase the wave
+superposition uses); `squat::dynamic_load_closure` adapts it to
+`float::solve_equilibrium_dynamic_with` / `solve_equilibrium_bodies_dynamic`,
+which balance it against buoyancy in the same Newton loop as the hydrostatic
+solver (`DynamicLoad`/`DynamicEquilibrium` — bit-for-bit the hydrostatic
+solver when the dynamic load is zero). `michell squat <hull>...` reports the
+force, moment, lift fraction, and first-order equivalent sinkage/trim
+directly; `options.dynamic: true` in a sweep manifest re-solves equilibrium at
+**every speed** (attitude now depends on `U`), warm-started from the previous
+speed's solution.
+
+Two things to know before using it. It does not yet compose with heel (the
+closure evaluates the fleet upright) or with the transom closure's own
+appendage moment contribution beyond what the hollow's transforms already
+carry — both are scoped out for now, and a manifest sweep rejects the
+combination rather than silently ignoring it. And thin-ship theory overstates
+sinkage/trim by the same 20–40% it overstates wave resistance by, at the same
+Fn 0.3–0.4 range, against surface-panel (Neumann–Michell) linear theory; the
+linearisation itself expires once the dynamic force is a real share of the
+weight (`DynamicForce::lift_fraction`/`DynamicEquilibrium::lift_fraction`
+report exactly that, so the boundary is visible rather than silent). The
+near-field quadrature is also markedly more expensive than the wave integral
+— tens of thousands of transform evaluations per force/moment call on a
+finely-lofted hull — so a dynamic sweep costs real wall-clock time per point;
+budget accordingly, especially before a large speed × load grid.
+
+## Validation
+
 ## Validation
 
 `cargo test` checks, among others:
@@ -171,10 +283,14 @@ side-force).
 
 ## Assumptions and limitations
 
-- Michell linearisation: slender hull (`|∂f/∂x| ≪ 1`), no sinkage/trim, no
-  breaking, deep water, infinite domain, monohull.
-- Half-breadth should close at both ends; **transom sterns are not yet
-  modelled** (planned: virtual closure).
+- Michell linearisation: slender hull (`|∂f/∂x| ≪ 1`), no breaking, deep
+  water, infinite domain, monohull. Sinkage and trim are hydrostatic by
+  default (the still-water attitude); `michell::squat` / `options.dynamic`
+  (see below) solve the speed-dependent attitude instead, at real
+  computational cost and only up to the same linearisation.
+- Half-breadth should close at the bow. A **transom stern** is closed by a
+  virtual appendage (`--transom`, `TransomClosure`); its hollow length is a
+  modelling choice, so transom-sterned results carry that uncertainty.
 - Viscous model is a flat-plate correlation; supply your own form factor.
 
 ## Input front-ends
@@ -340,9 +456,70 @@ All poses are hydrostatic (no speed-dependent squat).
     { "target": "vaka", "param": "scale", "values": [0.9, 1.0, 1.1] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
-  "options": { "rel_tol": 1e-5, "form_factor": 0.05 }
+  "options": { "rel_tol": 1e-5, "form_factor": 0.05, "transom": "ballistic=1.4" }
 }
 ```
+
+`options.transom` picks the transom-stern closure — `off`,
+`ballistic[=COEFF]` (default, `COEFF = √2`), or `hollow=METRES` — matching the
+`--transom` flag; it is inert on a hull whose half-breadth closes aft.
+
+`options.dynamic: true` switches from hydrostatic to **dynamic** sinkage/trim
+(see [Dynamic sinkage and trim](#dynamic-sinkage-and-trim) above): equilibrium
+is re-solved at every speed rather than once per point, adding `fz` (dynamic
+force, N) and `lift_pct` (as a fraction of the weight, %) columns; `sinkage`/
+`trim_deg`/`volume`/`lcb` become the dynamic-attitude values. Requires a
+`weight` axis, and cannot combine with a `heel` or `vcg` axis. Real cost: the
+near-field quadrature is far more expensive than the wave integral it reuses
+parts of, and equilibrium calls it every Newton iteration at every speed —
+budget minutes, not seconds, per sweep point, and prefer a handful of speed
+values over a fine grid until you know how much resolution you need.
+`options.squat_tol` overrides the closure's own quadrature tolerance
+(default `1e-4`; loosening it trades sweep speed for a rougher force/moment).
+
+Two situations hand the dynamic Newton solver a state that was converged
+*somewhere else* rather than validated against what it is about to evaluate:
+the coarse-to-fine handoff (a deliberately coarsened control net for early
+iterations, full resolution for the polish — a coarsened loft cannot resolve
+fine stern detail, a transom or a chine, the way the full-resolution one
+does, so the same `(sinkage, trim)` can loft to a visibly different fleet),
+and a sweep's speed-to-speed warm start (seeded from a *different* speed's
+converged solution, whose dynamic force can be a different scale entirely).
+Either can perturb the dynamic force enough that an undamped first Newton
+step overshoots correcting for what is really a model or operating-point
+shift, not a residual to chase — so that first step is damped whenever the
+dynamic load is genuinely nonzero (inert, bit for bit, when it is zero or
+absent); ordinary within-phase oscillation detection recovers full speed
+within a couple more iterations regardless.
+
+That damping alone isn't the whole story once a hull's transom is
+substantial (a large `lift_pct`, order 15–20% of the weight, is the warning
+sign): the near-field force can have genuine local curvature there — its own
+hollow length depends on the current transom depth, which depends on
+attitude — that the Newton core's analytic Jacobian (purely hydrostatic
+waterplane properties) has no way to see, since it treats the dynamic load as
+a *constant* added to the residual. Confirmed on the motivating case by
+comparing loose- and tight-quadrature force evaluations across the operating
+range: they agreed to <1%, ruling out quadrature noise, while the force
+itself showed a real sign change in local slope — a genuine Jacobian
+mismatch, not roughness. So on every phase but the initial, cold, from-scratch
+one (i.e. exactly where the handoff damping above applies), the solver also
+takes two extra finite-difference evaluations per iteration — perturbing
+sinkage, then trim — and folds the dynamic load's own local sensitivity into
+the Newton Jacobian alongside the hydrostatic terms. Deliberately **not**
+applied during the initial coarse phase: that phase already converges
+reliably on the hydrostatic Jacobian alone, and probing a finite difference
+from a wild, far-from-solution starting guess turned out to be actively
+harmful there (found by testing it unscoped: it sent a cold solve to a
+multi-metre "sinkage" and a trim past the 20° abort limit). Real cost: this
+roughly triples the per-iteration evaluation count on top of the near-field
+quadrature's own expense, so a `dynamic: true` sweep on a transom-heavy hull
+is priced in minutes per point, not seconds — but it is what took a case that
+previously failed outright (a 3-speed sweep erroring at the last point,
+residual 24× tolerance) to a clean converged solve at every speed. A hull
+that closes cleanly aft (no `Transom` reported by `michell info`) never
+exercises any of this — the Jacobian addition is `None`, bit for bit,
+whenever the dynamic load has no local sensitivity to add.
 
 Axis values: `range: [start, stop]` with optional `step` (default: a fifth
 of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
@@ -562,7 +739,7 @@ optional `centerplane`.
 
 1. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
    path.
-2. Transom closure, Python bindings.
+2. Python bindings.
 3. Longitudinal wave cuts against published Wigley measurements; wake
    animation over a speed range.
 

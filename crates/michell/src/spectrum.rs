@@ -45,7 +45,7 @@
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement};
+use crate::michell::{InnerIntegral, Placement, TransomClosure};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -126,8 +126,31 @@ fn grid_coord(a: f64, b: f64, n: usize, i: usize) -> f64 {
 
 impl<'h> FreeWaveSpectrum<'h> {
     /// Build the spectrum of a fleet (same member format as
-    /// [`crate::multihull_wave_resistance`]).
+    /// [`crate::multihull_wave_resistance`]). Uses the default transom
+    /// closure ([`TransomClosure::default`]); see [`Self::new_with_transom`]
+    /// to override it.
     pub fn new(members: &[(&'h Hull, Placement)], cond: &Conditions) -> Result<Self> {
+        Self::new_with_transom(members, cond, TransomClosure::default())
+    }
+
+    /// As [`Self::new`], with explicit control over how a wet transom is
+    /// handled.
+    ///
+    /// The wave-resistance and dynamic-squat force integrals default to the
+    /// virtual-appendage closure because it is load-bearing there: dropping
+    /// it (`TransomClosure::None`) misses the transom's contribution to the
+    /// force entirely. A *displayed* wake is a different use: the closure is
+    /// a numerical device that fixes up an integrated force, not a model of
+    /// the actual near-transom sea surface (real transom flow separates and
+    /// breaks, which linear theory cannot represent either way), so a caller
+    /// drawing "what does the wave field look like" more often wants
+    /// `TransomClosure::None` — the plain thin-ship field of the wetted hull
+    /// alone, with no added closure shape behind the transom.
+    pub fn new_with_transom(
+        members: &[(&'h Hull, Placement)],
+        cond: &Conditions,
+        transom: TransomClosure,
+    ) -> Result<Self> {
         cond.validate()?;
         if members.is_empty() {
             return Err(Error::InvalidConditions(
@@ -158,7 +181,7 @@ impl<'h> FreeWaveSpectrum<'h> {
             members: members
                 .iter()
                 .map(|(h, p)| Member {
-                    inner: InnerIntegral::new(h, nu),
+                    inner: InnerIntegral::new(h, nu, transom),
                     dx: h.x_center() + p.x - x_ref,
                     y: p.y,
                 })

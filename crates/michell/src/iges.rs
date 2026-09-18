@@ -470,6 +470,12 @@ fn parse_surface_128(p: &[f64]) -> Result<NurbsSurface3> {
         ));
     }
     for (knots, deg, n, dir) in [(&knots_u, pu, nu, "u"), (&knots_v, pv, nv, "v")] {
+        if deg > crate::bspline::MAX_DEGREE {
+            return Err(Error::Parse(format!(
+                "128 entity has degree {deg} in {dir}; the supported maximum is {}",
+                crate::bspline::MAX_DEGREE
+            )));
+        }
         if knots.iter().any(|k| !k.is_finite())
             || knots.windows(2).any(|w| w[1] < w[0])
             || knots[deg] >= knots[n]
