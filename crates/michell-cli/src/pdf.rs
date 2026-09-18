@@ -52,7 +52,8 @@ impl Page {
         self.color_stroke(rgb);
         self.ops
             .push_str(&format!("{width:.2} w {} J {} j\n", 1, 1));
-        self.ops.push_str(&format!("{:.2} {:.2} m\n", pts[0][0], pts[0][1]));
+        self.ops
+            .push_str(&format!("{:.2} {:.2} m\n", pts[0][0], pts[0][1]));
         for p in &pts[1..] {
             self.ops.push_str(&format!("{:.2} {:.2} l\n", p[0], p[1]));
         }
@@ -65,7 +66,8 @@ impl Page {
             return;
         }
         self.color_fill(fill);
-        self.ops.push_str(&format!("{:.2} {:.2} m\n", pts[0][0], pts[0][1]));
+        self.ops
+            .push_str(&format!("{:.2} {:.2} m\n", pts[0][0], pts[0][1]));
         for p in &pts[1..] {
             self.ops.push_str(&format!("{:.2} {:.2} l\n", p[0], p[1]));
         }
@@ -97,7 +99,8 @@ impl Page {
         self.ops.push_str("BT\n");
         self.ops.push_str(&format!("/F1 {size:.2} Tf\n"));
         self.ops.push_str(&format!("{x:.2} {y:.2} Td\n"));
-        self.ops.push_str(&format!("({}) Tj\n", escape_pdf_string(s)));
+        self.ops
+            .push_str(&format!("({}) Tj\n", escape_pdf_string(s)));
         self.ops.push_str("ET\n");
     }
 
@@ -257,9 +260,7 @@ impl Document {
         }
 
         for (i, page) in self.pages.iter().enumerate() {
-            let mut res = format!(
-                "<< /Font << /F1 {font_id} 0 R >>"
-            );
+            let mut res = format!("<< /Font << /F1 {font_id} 0 R >>");
             if !page.images.is_empty() {
                 res.push_str(" /XObject <<");
                 for (name, id) in &page.images {

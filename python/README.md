@@ -92,9 +92,17 @@ python examples/demo.py ../ama.hull 8      # a real .hull control net at 8 m/s
 | `pymichell/bspline.py` | `.hull` parser, Cox–de Boor B-spline surface, knot spans, corner Taylor data |
 | `pymichell/moments.py` | closed-form moment integrals `∫ tᵃ e^(ikt) dt`, `∫ tᵇ e^(−κt) dt` |
 | `pymichell/wave.py`    | exact inner integral `F`, amplitude `A(θ)`, wake grid `ζ`, `R_w` |
+| `pymichell/sweep.py`   | reader for `michell sweep` binary archives (`.msw`): `read_sweep` |
 | `tests/test_wigley.py` | validation against the crate's Wigley reference values |
 | `tests/test_moments.py`| moments vs. direct quadrature (both branches) |
+| `tests/test_sweep.py`  | `.msw` archive reader round-trip |
 | `examples/demo.py`     | compute + plot a wake |
+
+`read_sweep("study.msw")` parses a binary sweep archive written by
+`michell sweep` (a study's manifest, hull files, and per-row parameters,
+metrics, GZ curve, and spectrum). Each row carries its free-wave spectrum
+`A(θ)`, so it pairs with `wave_field` to regenerate a wake without re-running
+the study.
 
 ## Validation
 

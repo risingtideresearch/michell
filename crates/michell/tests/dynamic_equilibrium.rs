@@ -429,7 +429,12 @@ fn coarse_to_fine_handoff_does_not_stall_convergence() {
             trim: tau,
             pivot_x: 0.0,
         };
-        match body.situate(0.0, &HullPose::default(), &platform, &BodyOptions::default())? {
+        match body.situate(
+            0.0,
+            &HullPose::default(),
+            &platform,
+            &BodyOptions::default(),
+        )? {
             Some(sb) => Ok(FleetState {
                 members: vec![(sb.hull, sb.placement)],
                 dry: 0,

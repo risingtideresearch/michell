@@ -218,7 +218,10 @@ mod tests {
         let s1 = solve_centerplane(1.0, 2.0, drift_slope(0.02), 5, 12).side_force;
         let s2 = solve_centerplane(1.0, 2.0, drift_slope(0.04), 5, 12).side_force;
         assert!(s1.abs() > 0.0);
-        assert!((s2 - 2.0 * s1).abs() < 1e-9 * s1.abs(), "not linear: {s1}, {s2}");
+        assert!(
+            (s2 - 2.0 * s1).abs() < 1e-9 * s1.abs(),
+            "not linear: {s1}, {s2}"
+        );
     }
 
     /// The doublet density accumulates monotonically from the leading edge

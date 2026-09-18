@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/michell", "crates/michell-cli"]
+members = ["crates/michell", "crates/michell-cli", "crates/michell-editor"]
 resolver = "2"
 
 [profile.release]

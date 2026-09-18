@@ -32,7 +32,10 @@ fn main() {
 
     let m = 0.05;
     println!("\nParabolic camber, max-camber ratio m = {m}");
-    println!("— expect C_L = 2π(α + 2m), C_m,c/4 = −πm = {:.5}\n", -std::f64::consts::PI * m);
+    println!(
+        "— expect C_L = 2π(α + 2m), C_m,c/4 = −πm = {:.5}\n",
+        -std::f64::consts::PI * m
+    );
     println!(
         "{:>6} {:>12} {:>12} {:>12} {:>12}",
         "α[°]", "C_L (VLM)", "C_L (Glau)", "C_m (VLM)", "C_m (Glau)"
@@ -47,5 +50,8 @@ fn main() {
             vl.cl, gl.cl, vl.cm_quarter, gl.cm_quarter
         );
     }
-    println!("\nZero-lift angle for this camber: α₀ = −2m = {:.3}°", -2.0 * m / DEG);
+    println!(
+        "\nZero-lift angle for this camber: α₀ = −2m = {:.3}°",
+        -2.0 * m / DEG
+    );
 }

@@ -129,8 +129,7 @@ pub fn dynamic_load_closure<'a>(
                 moment_bow_up: 0.0,
             });
         }
-        let members: Vec<(&Hull, Placement)> =
-            fleet.members.iter().map(|(h, p)| (h, *p)).collect();
+        let members: Vec<(&Hull, Placement)> = fleet.members.iter().map(|(h, p)| (h, *p)).collect();
         let d = multihull_dynamic_force(&members, cond, x_ref, opts)?;
         Ok(crate::float::DynamicLoad {
             force_up: d.force_up,
@@ -237,6 +236,7 @@ pub fn multihull_dynamic_force(
 }
 
 /// One member's evaluator plus its fleet-frame placement.
+#[derive(Clone)]
 struct Member<'h> {
     inner: InnerIntegral<'h>,
     /// Fleet-frame x of the hull's own phase centre.
@@ -244,6 +244,9 @@ struct Member<'h> {
     y: f64,
 }
 
+/// `Clone` so each worker thread of a θ fan-out gets its own scratch (the
+/// hulls themselves are shared by reference).
+#[derive(Clone)]
 struct Fleet<'h> {
     members: Vec<Member<'h>>,
     nu: f64,
@@ -280,12 +283,7 @@ impl Default for Forms {
 }
 
 impl<'h> Fleet<'h> {
-    fn new(
-        members: &[(&'h Hull, Placement)],
-        nu: f64,
-        x_ref: f64,
-        wave: WaveOptions,
-    ) -> Self {
+    fn new(members: &[(&'h Hull, Placement)], nu: f64, x_ref: f64, wave: WaveOptions) -> Self {
         Fleet {
             members: members
                 .iter()
@@ -321,7 +319,12 @@ impl<'h> Fleet<'h> {
 
     /// The same from contractions already made at this `κ` — one per member.
     fn forms_cached(&mut self, zcs: &[ZContracted], kx: f64, ky: f64) -> Forms {
-        for ((m, zc), t) in self.members.iter_mut().zip(zcs).zip(self.scratch.iter_mut()) {
+        for ((m, zc), t) in self
+            .members
+            .iter_mut()
+            .zip(zcs)
+            .zip(self.scratch.iter_mut())
+        {
             *t = m.inner.transforms_at(zc, kx);
         }
         self.pair_sums(kx, ky)
@@ -380,7 +383,10 @@ impl<'h> Fleet<'h> {
         let mut knodes: Vec<(f64, f64)> = Vec::with_capacity(8 * (n_log + 1));
         let push_panel = |ka: f64, kb: f64, out: &mut Vec<(f64, f64)>| {
             for (gj, &xk) in gx.iter().enumerate() {
-                out.push((0.5 * (kb - ka) * xk + 0.5 * (ka + kb), 0.5 * (kb - ka) * gw[gj]));
+                out.push((
+                    0.5 * (kb - ka) * xk + 0.5 * (ka + kb),
+                    0.5 * (kb - ka) * gw[gj],
+                ));
             }
         };
         push_panel(0.0, k_lo, &mut knodes);
@@ -453,26 +459,40 @@ impl<'h> Fleet<'h> {
             (pf + h0_f * log_term, pm + h0_m * log_term)
         };
 
-        let mut f_sum = 0.0;
-        let mut m_sum = 0.0;
+        // θ nodes and weights; the last entry is the sliver θ ∈ (θ_c, π/2),
+        // where the integrand is near its θ → π/2 limit.
+        let mut nodes: Vec<(f64, f64)> = Vec::with_capacity(n_theta * gx.len() + 1);
         for it in 0..n_theta {
             let (a, b) = (
                 theta_c * it as f64 / n_theta as f64,
                 theta_c * (it + 1) as f64 / n_theta as f64,
             );
             for (gi, &x) in gx.iter().enumerate() {
-                let theta = 0.5 * (b - a) * x + 0.5 * (a + b);
-                let wth = 0.5 * (b - a) * gw[gi];
-                let (pf, pm) = at_theta(self, theta, evals);
-                f_sum += wth * pf;
-                m_sum += wth * pm;
+                nodes.push((0.5 * (b - a) * x + 0.5 * (a + b), 0.5 * (b - a) * gw[gi]));
             }
         }
-        // The sliver θ ∈ (θ_c, π/2): the integrand is near its θ → π/2 limit.
-        let (pf_c, pm_c) = at_theta(self, theta_c, evals);
-        let sliver = FRAC_PI_2 - theta_c;
-        f_sum += sliver * pf_c;
-        m_sum += sliver * pm_c;
+        nodes.push((theta_c, FRAC_PI_2 - theta_c));
+
+        // Every node's k-integral is independent given the shared
+        // contractions; each worker runs on its own clone of the fleet.
+        let this: &Self = self;
+        let at_theta = &at_theta;
+        let per_node: Vec<(f64, f64, usize)> = crate::parallel::map_indexed(
+            nodes.len(),
+            || this.clone(),
+            |fleet, i| {
+                let mut ev = 0usize;
+                let (pf, pm) = at_theta(fleet, nodes[i].0, &mut ev);
+                (pf, pm, ev)
+            },
+        );
+        let mut f_sum = 0.0;
+        let mut m_sum = 0.0;
+        for (&(_, wth), &(pf, pm, ev)) in nodes.iter().zip(&per_node) {
+            f_sum += wth * pf;
+            m_sum += wth * pm;
+            *evals += ev;
+        }
         (4.0 * f_sum, 4.0 * m_sum)
     }
 
@@ -486,24 +506,36 @@ impl<'h> Fleet<'h> {
         let theta_max = (nu / kx_cap).min(1.0).acos().min(FRAC_PI_2 - 1e-7);
         let n_theta = 48 * level;
         let (gx, gw) = gauss_legendre(8);
-        let mut sum = 0.0;
+        let mut nodes: Vec<(f64, f64)> = Vec::with_capacity(n_theta * gx.len());
         for it in 0..n_theta {
             let (a, b) = (
                 theta_max * it as f64 / n_theta as f64,
                 theta_max * (it + 1) as f64 / n_theta as f64,
             );
             for (gi, &x) in gx.iter().enumerate() {
-                let theta = 0.5 * (b - a) * x + 0.5 * (a + b);
-                let w = 0.5 * (b - a) * gw[gi];
+                nodes.push((0.5 * (b - a) * x + 0.5 * (a + b), 0.5 * (b - a) * gw[gi]));
+            }
+        }
+        let this: &Self = self;
+        let vals: Vec<f64> = crate::parallel::map_indexed(
+            nodes.len(),
+            || this.clone(),
+            |fleet, i| {
+                let theta = nodes[i].0;
                 let lam = 1.0 / theta.cos();
                 let kx = nu * lam;
                 let k = nu * lam * lam;
                 let ky = (k * k - kx * kx).max(0.0).sqrt();
-                *evals += 1;
-                let fm = self.forms(kx, ky, k);
-                let val = (fm.rq.scale(k) - fm.rwq).im;
-                sum += w * val * lam * lam;
-            }
+                let fm = fleet.forms(kx, ky, k);
+                (fm.rq.scale(k) - fm.rwq).im
+            },
+        );
+        *evals += nodes.len();
+        // Same expression, same association, as the serial loop had.
+        let mut sum = 0.0;
+        for (&(theta, w), &val) in nodes.iter().zip(&vals) {
+            let lam = 1.0 / theta.cos();
+            sum += w * val * lam * lam;
         }
         sum
     }
@@ -532,11 +564,19 @@ mod tests {
         let g = 9.80665;
         let a_w = 2.0 * b * l / 3.0;
         let opts = SquatOptions::default();
-        for (fn_, want, tol) in [(0.10, 0.0210, 0.02), (0.25, 0.0236, 0.02), (0.40, 0.0322, 0.03)] {
+        for (fn_, want, tol) in [
+            (0.10, 0.0210, 0.02),
+            (0.25, 0.0236, 0.02),
+            (0.40, 0.0322, 0.03),
+        ] {
             let u = fn_ * (g * l).sqrt();
             let cond = Conditions::seawater(u);
             let d = dynamic_force(&hull, &cond, 0.0, &opts).unwrap();
-            assert!(d.force_up < 0.0, "Fn {fn_}: force should pull the hull down, got {}", d.force_up);
+            assert!(
+                d.force_up < 0.0,
+                "Fn {fn_}: force should pull the hull down, got {}",
+                d.force_up
+            );
             let s_over_l = -d.force_up / (cond.fluid.density * g * a_w) / l;
             let coeff = s_over_l / (fn_ * fn_);
             assert!(
@@ -574,7 +614,10 @@ mod tests {
         assert!(trim_deg(0.34) < 0.02, "still ~zero at Fn 0.34");
         assert!(trim_deg(0.36) > 0.05, "bow-up by Fn 0.36");
         let t40 = trim_deg(0.40);
-        assert!((t40 - 0.73).abs() < 0.05, "Fn 0.40: {t40:.3}° (reference +0.73°)");
+        assert!(
+            (t40 - 0.73).abs() < 0.05,
+            "Fn 0.40: {t40:.3}° (reference +0.73°)"
+        );
     }
 
     /// A fleet shifted rigidly in x feels the same force and moment.
@@ -593,8 +636,14 @@ mod tests {
         };
         let (f0, m0) = at(0.0);
         let (f1, m1) = at(17.0);
-        assert!((f0 - f1).abs() < 1e-8 * f0.abs(), "force moved: {f0} vs {f1}");
-        assert!((m0 - m1).abs() < 1e-8 * m0.abs().max(1e-6), "moment moved: {m0} vs {m1}");
+        assert!(
+            (f0 - f1).abs() < 1e-8 * f0.abs(),
+            "force moved: {f0} vs {f1}"
+        );
+        assert!(
+            (m0 - m1).abs() < 1e-8 * m0.abs().max(1e-6),
+            "moment moved: {m0} vs {m1}"
+        );
     }
 
     /// Demihull interaction weakens with spacing: the pair's force approaches
@@ -611,11 +660,19 @@ mod tests {
                 (&hull, Placement { x: 0.0, y }),
                 (&hull, Placement { x: 0.0, y: -y }),
             ];
-            let pair = multihull_dynamic_force(&m, &cond, 0.0, &opts).unwrap().force_up;
+            let pair = multihull_dynamic_force(&m, &cond, 0.0, &opts)
+                .unwrap()
+                .force_up;
             (pair - 2.0 * solo).abs() / solo.abs()
         };
         let (e1, e2, e4) = (excess(0.6), excess(1.2), excess(2.4));
-        assert!(e1 > 0.02, "hulls 1.2 m apart should interact noticeably, got {e1:.3}");
-        assert!(e1 > e2 && e2 > e4, "interaction should weaken: {e1:.3} > {e2:.3} > {e4:.3}");
+        assert!(
+            e1 > 0.02,
+            "hulls 1.2 m apart should interact noticeably, got {e1:.3}"
+        );
+        assert!(
+            e1 > e2 && e2 > e4,
+            "interaction should weaken: {e1:.3} > {e2:.3} > {e4:.3}"
+        );
     }
 }

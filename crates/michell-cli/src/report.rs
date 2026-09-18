@@ -10,7 +10,7 @@ use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState, KNOT
 use crate::pdf::{Document, Page};
 use crate::png;
 use michell::body::{Body, BodyOptions};
-use michell::float::{solve_equilibrium_bodies_dynamic, LoadCase};
+use michell::float::{fleet_cg, solve_equilibrium_bodies_dynamic, LoadCase};
 use michell::iges::{HullPose, Platform};
 use michell::squat::dynamic_load_closure;
 use michell::{
@@ -49,7 +49,10 @@ const KEEL_BEAM_FRACTION: f64 = 0.10;
 const KEEL_MIN_BEAM: f64 = 2.0e-3;
 
 pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Result<(), String> {
-    let pm = parse_manifest(manifest_path)?;
+    // The report renders its own progress to stderr, which is what the CLI
+    // would have done with these lines anyway.
+    let mut say = |line: &str, _frac: Option<(usize, usize)>| eprintln!("{line}");
+    let pm = parse_manifest(manifest_path, &mut say)?;
     if !pm.dynamic_mode {
         return Err(
             "michell report currently supports dynamic-mode manifests only \
@@ -80,15 +83,26 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
 
     let mut idx = vec![0usize; pm.axes.len()];
     for point in 0..pm.points {
-        let vals: Vec<f64> = pm.axes.iter().zip(&idx).map(|(a, &i)| a.values[i]).collect();
-        let PointState {
-            poses,
-            weight,
-            lcg,
-            ..
-        } = point_state(&pm.hulls, &pm.axes, &vals);
-        let mass = weight.ok_or("dynamic report requires a weight axis (checked above)")?;
-        let pivot_x = lcg.unwrap_or(0.0);
+        let vals: Vec<f64> = pm
+            .axes
+            .iter()
+            .zip(&idx)
+            .map(|(a, &i)| a.values[i])
+            .collect();
+        let PointState { poses, loads, .. } = point_state(&pm.hulls, &pm.axes, &vals);
+        // Mass and LCG are derived from the hull and point loads carried
+        // through their poses, the same way the sweep derives them, so a
+        // report and a sweep of the same manifest agree on what floats.
+        let cg = fleet_cg(&bodies, &loads, &poses);
+        if cg.mass <= 0.0 {
+            return Err(format!(
+                "point {}: fleet carries no mass (all hull and point masses are zero)",
+                point + 1
+            ));
+        }
+        let mass = cg.mass;
+        let lcg = Some(cg.lcg);
+        let pivot_x = cg.lcg;
         let point_label = axis_label(&pm.axes, &vals);
 
         let mut warm: Option<(f64, f64)> = None;
@@ -437,7 +451,15 @@ fn build_detail_page(
     };
     page.text(MARGIN, PAGE_H - 26.0, 14.0, BLACK, &title);
     page.text_right(PAGE_W - MARGIN, PAGE_H - 26.0, 9.0, GRAY, "index");
-    page.link_to_page([PAGE_W - MARGIN - 40.0, PAGE_H - 34.0, PAGE_W - MARGIN, PAGE_H - 20.0], 0);
+    page.link_to_page(
+        [
+            PAGE_W - MARGIN - 40.0,
+            PAGE_H - 34.0,
+            PAGE_W - MARGIN,
+            PAGE_H - 20.0,
+        ],
+        0,
+    );
 
     // The plan panel takes the taller share. Its wake is drawn to true
     // proportions now (see draw_plan_view), so panel height buys wake
@@ -472,7 +494,12 @@ fn build_detail_page(
         profile_hull_y,
         band,
     )?;
-    draw_caption(&mut page, profile_rect[0], profile_rect[1] - 12.0, &profile_caption);
+    draw_caption(
+        &mut page,
+        profile_rect[0],
+        profile_rect[1] - 12.0,
+        &profile_caption,
+    );
     page.text(
         profile_rect[0],
         profile_rect[1] + profile_rect[3] + 4.0,
@@ -504,7 +531,13 @@ fn draw_plan_view(
 ) -> Result<String, String> {
     if members.is_empty() {
         page.rect_stroke(rect, GRAY, 0.75);
-        page.text(rect[0] + 8.0, rect[1] + rect[3] / 2.0, 10.0, GRAY, "fleet is dry");
+        page.text(
+            rect[0] + 8.0,
+            rect[1] + rect[3] / 2.0,
+            10.0,
+            GRAY,
+            "fleet is dry",
+        );
         return Ok("no wetted hulls at this row".to_string());
     }
 
@@ -548,7 +581,9 @@ fn draw_plan_view(
     let (y0, y1) = (-yh, yh);
 
     let nx = 760usize;
-    let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round().clamp(64.0, 900.0) as usize;
+    let ny = ((nx as f64) * (y1 - y0) / (x1 - x0))
+        .round()
+        .clamp(64.0, 900.0) as usize;
 
     // Plain thin-ship field, not the resistance/squat integrals' transom
     // virtual-appendage closure: that closure fixes up an integrated force
@@ -743,9 +778,7 @@ fn hull_profile_at(body: &Body, pose: &HullPose, platform: &Platform) -> HullPro
             zs[i] = match i.min(n - 1 - i).min(2) {
                 0 => o[i],
                 1 => 0.25 * (o[i - 1] + 2.0 * o[i] + o[i + 1]),
-                _ => {
-                    (o[i - 2] + 4.0 * o[i - 1] + 6.0 * o[i] + 4.0 * o[i + 1] + o[i + 2]) / 16.0
-                }
+                _ => (o[i - 2] + 4.0 * o[i - 1] + 6.0 * o[i] + 4.0 * o[i + 1] + o[i + 2]) / 16.0,
             };
         }
     }
@@ -850,9 +883,8 @@ fn draw_profile_view(
     let sz = 0.88 * rect[3] / (z_hi - z_lo);
     let z_mid = 0.5 * (z_hi + z_lo);
     let y_mid = rect[1] + 0.5 * rect[3];
-    let to_page = |x: f64, z: f64| -> [f64; 2] {
-        [rect[0] + (x - x_lo) * sx, y_mid - (z - z_mid) * sz]
-    };
+    let to_page =
+        |x: f64, z: f64| -> [f64; 2] { [rect[0] + (x - x_lo) * sx, y_mid - (z - z_mid) * sz] };
 
     page.rect_stroke(rect, GRAY, 0.75);
 

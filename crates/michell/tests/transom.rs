@@ -93,8 +93,8 @@ fn a_numerically_closed_stern_is_not_a_transom() {
 // ---------------------------------------------------------------------------
 
 use michell::{
-    multihull_wave_resistance_with, wave_resistance_with, Conditions, Placement,
-    TransomClosure, WaveOptions,
+    multihull_wave_resistance_with, wave_resistance_with, Conditions, Placement, TransomClosure,
+    WaveOptions,
 };
 
 fn opts(transom: TransomClosure) -> WaveOptions {
@@ -119,8 +119,14 @@ fn closure_is_inert_on_a_hull_that_closes_aft() {
         TransomClosure::Ballistic { coeff: 4.0 },
         TransomClosure::Fixed { length: 2.0 },
     ] {
-        let got = wave_resistance_with(&hull, &cond, &opts(t)).unwrap().resistance;
-        assert_eq!(base.to_bits(), got.to_bits(), "{t:?} perturbed a closed hull");
+        let got = wave_resistance_with(&hull, &cond, &opts(t))
+            .unwrap()
+            .resistance;
+        assert_eq!(
+            base.to_bits(),
+            got.to_bits(),
+            "{t:?} perturbed a closed hull"
+        );
     }
 }
 
@@ -139,13 +145,13 @@ fn zero_hollow_reproduces_the_analytic_step_term() {
         let kappa = nu * lambda * lambda;
         // integral_0^T A(1 - z/T) e^{-kz} dz = A[(1-e^{-kT})/k - (1 - (1+kT)e^{-kT})/(k^2 T)]
         let e = (-kappa * t).exp();
-        let zint =
-            a * ((1.0 - e) / kappa - (1.0 - (1.0 + kappa * t) * e) / (kappa * kappa * t));
+        let zint = a * ((1.0 - e) / kappa - (1.0 - (1.0 + kappa * t) * e) / (kappa * kappa * t));
         // Phase is measured from the hull's x-centre, as the kernel does.
         let phase = nu * lambda * (0.0 - l / 2.0);
         let (want_re, want_im) = (zint * phase.cos(), zint * phase.sin());
 
-        let closed = inner_integrals_with(&hull, &cond, lambda, TransomClosure::Fixed { length: 0.0 });
+        let closed =
+            inner_integrals_with(&hull, &cond, lambda, TransomClosure::Fixed { length: 0.0 });
         let open = inner_integrals_with(&hull, &cond, lambda, TransomClosure::None);
         let (dre, dim) = (closed.0 - open.0, closed.1 - open.1);
         let scale = zint.abs().max(1e-12);
