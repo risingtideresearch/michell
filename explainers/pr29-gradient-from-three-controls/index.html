@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PR 29 as a tiny program</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f3ec;
+      --card: #fffdf8;
+      --ink: #20201d;
+      --muted: #69665f;
+      --line: #d8d2c6;
+      --blue: #1769aa;
+      --orange: #d7632e;
+      --green: #17805c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #151513;
+        --card: #211f1b;
+        --ink: #f5f1e8;
+        --muted: #bbb4a8;
+        --line: #454038;
+        --blue: #69aee7;
+        --orange: #f28a57;
+        --green: #5bc89e;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 17px/1.62 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(780px, calc(100% - 32px)); margin: 0 auto; padding: 52px 0 90px; }
+    h1 { font-size: clamp(2rem, 6vw, 3.4rem); line-height: 1.04; letter-spacing: -.045em; margin: 0 0 18px; }
+    h2 { margin: 64px 0 12px; font-size: 1.45rem; line-height: 1.2; }
+    p { margin: 12px 0; }
+    .lede { color: var(--muted); font-size: 1.15rem; max-width: 650px; }
+    .card {
+      margin: 22px 0;
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--card);
+    }
+    .controls { display: grid; gap: 11px; margin-top: 16px; }
+    label { display: grid; grid-template-columns: 55px 1fr 58px; gap: 10px; align-items: center; }
+    label.wide { grid-template-columns: 150px 1fr 58px; }
+    input[type="range"] { width: 100%; accent-color: var(--blue); }
+    output, code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    output { text-align: right; }
+    button {
+      justify-self: start;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--ink);
+      padding: 7px 12px;
+      cursor: pointer;
+    }
+    svg { width: 100%; height: auto; display: block; }
+    .axis { stroke: var(--line); stroke-width: 1; }
+    .curve { fill: none; stroke: var(--blue); stroke-width: 3; }
+    .slope { fill: none; stroke: var(--orange); stroke-width: 2.5; }
+    .polygon { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 5; }
+    .dot { fill: var(--card); stroke: var(--blue); stroke-width: 2.5; }
+    .caption, .small { color: var(--muted); font-size: .9rem; }
+    pre {
+      margin: 18px 0;
+      padding: 16px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--card) 82%, var(--blue) 3%);
+      font-size: .91rem;
+      line-height: 1.65;
+      tab-size: 4;
+    }
+    .comment { color: var(--green); }
+    .result { color: var(--orange); }
+    .checkpoint {
+      margin: 34px 0;
+      padding: 15px 18px;
+      border-left: 4px solid var(--green);
+      background: var(--card);
+    }
+    .numbers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .number { border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: center; }
+    .number b { display: block; color: var(--blue); font-size: 1.2rem; }
+    .pipeline { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: 9px; align-items: center; text-align: center; }
+    .box { border: 1px solid var(--line); border-radius: 10px; padding: 12px 8px; background: var(--card); }
+    .back { color: var(--orange); }
+    @media (max-width: 590px) {
+      .pipeline { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .numbers { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>PR 29 as a tiny program</h1>
+  <p class="lede">Forget the notation for a moment. The method computes resistance, keeps the final integration spacing, then makes one extra sweep to learn which controls mattered.</p>
+
+  <h2>1. Start with two lists</h2>
+  <pre><span class="comment"># x positions stay fixed</span>
+knots = [0, 0, 0, 100, 100, 100]
+
+<span class="comment"># half-breadth controls may change</span>
+P = [0, 20, 0]</pre>
+  <p>The first and last controls close the hull at the centerline. The middle control pulls the curve outward.</p>
+
+  <div class="card">
+    <svg id="hull" viewBox="0 0 700 300" role="img" aria-label="Quadratic hull slice and its three controls">
+      <line class="axis" x1="45" y1="240" x2="660" y2="240"/>
+      <line class="axis" x1="45" y1="25" x2="45" y2="240"/>
+      <path id="controlPolygon" class="polygon"/>
+      <path id="hullCurve" class="curve"/>
+      <g id="controlDots"></g>
+      <text x="45" y="265" fill="currentColor">0 · stern</text>
+      <text x="345" y="265" fill="currentColor">50</text>
+      <text x="590" y="265" fill="currentColor">100 · bow</text>
+      <text x="54" y="42" fill="currentColor">half-breadth f(x)</text>
+    </svg>
+    <div class="controls">
+      <label>P₀ <input id="p0" type="range" min="0" max="40" step="1" value="0"><output id="o0">0</output></label>
+      <label>P₁ <input id="p1" type="range" min="0" max="40" step="1" value="20"><output id="o1">20</output></label>
+      <label>P₂ <input id="p2" type="range" min="0" max="40" step="1" value="0"><output id="o2">0</output></label>
+      <button id="reset" type="button">Reset to [0, 20, 0]</button>
+    </div>
+    <p id="hullReadout" class="caption"></p>
+  </div>
+
+  <p>The B-spline library can be imagined as this function:</p>
+  <pre>def half_breadth(x, P):
+    t = x / 100
+
+    weights = [
+        (1 - t) * (1 - t),
+        2 * t * (1 - t),
+        t * t,
+    ]
+
+    return dot(P, weights)</pre>
+  <p>At <code>x = 50</code>, the weights are <code>[0.25, 0.50, 0.25]</code>. The function returns <code>0×0.25 + 20×0.50 + 0×0.25 = 10</code>. The half-breadth is 10; the full beam is 20.</p>
+
+  <h2>2. Turn breadth into widening and narrowing</h2>
+  <p>Michell cares about where the hull widens and narrows. We can write that as another weighted sum of the same controls:</p>
+  <pre>def hull_slope(x, P):
+    t = x / 100
+
+    slope_weights = [
+        -2 * (1 - t) / 100,
+         2 * (1 - 2*t) / 100,
+         2 * t / 100,
+    ]
+
+    return dot(P, slope_weights)</pre>
+  <div class="card">
+    <svg id="slopePlot" viewBox="0 0 700 230" role="img" aria-label="Longitudinal slope of the hull slice">
+      <line class="axis" x1="45" y1="110" x2="660" y2="110"/>
+      <path id="slopeCurve" class="slope"/>
+      <text x="50" y="30" fill="currentColor">widens: source</text>
+      <text x="50" y="205" fill="currentColor">narrows: sink</text>
+      <text x="45" y="132" fill="currentColor">0 · stern</text>
+      <text x="590" y="132" fill="currentColor">100 · bow</text>
+    </svg>
+    <p id="slopeReadout" class="caption"></p>
+  </div>
+  <p>This function only multiplies each control by a fixed weight and adds the results. If you double a control, you double that control’s contribution. That is all “linear in the controls” means here.</p>
+
+  <div class="checkpoint"><strong>Checkpoint:</strong> fixed knots determine the weights. Controls provide the values being weighted. As long as the knots stay fixed, the program’s structure stays fixed.</div>
+
+  <h2>3. Make one toy wave measurement</h2>
+  <p>Before using the real solver, pretend we have one wave sensor. It mixes the three controls using the made-up response <code>[-1, 2, -1]</code>:</p>
+  <pre>def toy_resistance(P):
+    response = [-1, 2, -1]  <span class="comment"># invented teaching values</span>
+
+    amplitude = dot(P, response)
+    resistance = amplitude * amplitude
+
+    return resistance, amplitude, response
+
+
+R, amplitude, response = toy_resistance([0, 20, 0])
+
+<span class="result"># amplitude = 40
+# R = 1600</span></pre>
+  <p>The response values are not Michell coefficients. They simply give us a tiny program with the same shape as the real one: mix controls into a wave amplitude, then square that amplitude.</p>
+  <p>The response also sums to zero. Add the same number to all three controls and the amplitude does not change; the returned gradient always sums to zero. The real PR tests this same null direction because a uniform breadth offset has no longitudinal slope.</p>
+  <div class="card">
+    <div class="numbers">
+      <div class="number">amplitude A<b id="amplitude">40</b></div>
+      <div class="number">amplitude squared<b id="energy">1600</b></div>
+      <div class="number">returned gradient<b id="gradient">[−80, 160, −80]</b></div>
+    </div>
+  </div>
+
+  <h2>4. Run the toy program backward</h2>
+  <p>The forward function returned <code>amplitude</code> and <code>response</code> because the backward function needs them:</p>
+  <pre>def toy_backward(amplitude, response):
+    <span class="comment"># resistance = amplitude * amplitude</span>
+    resistance_change_per_amplitude = 2 * amplitude
+
+    gradient = [0, 0, 0]
+
+    for k in range(3):
+        gradient[k] = (
+            resistance_change_per_amplitude
+            * response[k]
+        )
+
+    return gradient
+
+
+gradient = toy_backward(40, [-1, 2, -1])
+
+<span class="result"># gradient = [-80, 160, -80]</span></pre>
+  <p>Read <code>gradient[1] = 160</code> as: “Near the current hull, increasing the middle control by a tiny amount increases the toy resistance about 160 times that amount.” If the endpoint controls must stay zero, the optimizer ignores the other two entries.</p>
+
+  <div class="checkpoint"><strong>The first payoff:</strong> we did not run the resistance calculation six times. One forward call saved the intermediate amplitude. One backward call produced all three answers.</div>
+
+  <h2>5. Replace the toy sensor with the real wave fan</h2>
+  <p>The real solver samples many wave directions. At each sample, every control has a different response. The numbers are complex because they carry both wave size and phase.</p>
+  <pre>def real_resistance(P, fixed_knots):
+    spacing = initial_spacing
+
+    while True:
+        wave_nodes = integration_nodes(spacing)
+        resistance = 0
+
+        for node in wave_nodes:
+            response = control_responses(node, fixed_knots)
+            amplitude = dot(P, response)   <span class="comment"># complex number</span>
+            resistance += abs(amplitude) ** 2 * node.weight
+
+        if converged(resistance):
+            return resistance, spacing
+
+        spacing = refine(spacing)</pre>
+  <p>This repeats the toy program once per wave sample. <code>node.weight</code> carries the panel width, the Gauss weight within that panel, and the <code>sec³(theta)</code> factor from Michell’s outer integral.</p>
+  <p>A teaching version could save every amplitude and response as a tape. The real code stores no per-node tape: it keeps the final refinement spacing, makes one extra sweep over only those final nodes, and recomputes the same amplitudes and responses in constant memory.</p>
+
+  <h2>6. Run the real program backward</h2>
+  <pre>def real_backward(P, final_spacing, fixed_knots):
+    gradient = [0] * len(P)
+
+    final_nodes = integration_nodes(final_spacing)
+
+    for node in final_nodes:
+        response = control_responses(node, fixed_knots)
+        amplitude = dot(P, response)       <span class="comment"># recomputed</span>
+
+        for k in range(len(P)):
+            contribution = 2 * real_part(
+                conjugate(amplitude) * response[k]
+            )
+
+            gradient[k] += contribution * node.weight
+
+    return gradient</pre>
+  <p>The unfamiliar complex-number line does the same job as <code>2 * amplitude * response[k]</code> in the toy program. It accounts for wave phase. The important part is the loop: each recomputed amplitude updates every control’s gradient.</p>
+
+  <h2>7. The two programs together</h2>
+  <div class="pipeline" aria-label="Forward and backward calculation">
+    <div class="box">controls<br><code>P</code></div><div class="arrow">→</div>
+    <div class="box">converged spacing<br><code>spacing</code></div><div class="arrow">→</div>
+    <div class="box">resistance<br><code>R</code></div>
+  </div>
+  <div class="pipeline back" aria-label="Backward gradient calculation">
+    <div class="box">control gradient<br><code>gradient</code></div><div class="arrow">←</div>
+    <div class="box">recompute final nodes<br><code>spacing</code></div><div class="arrow">←</div>
+    <div class="box">output changed by<br><code>1</code></div>
+  </div>
+  <pre>R, spacing = real_resistance(P, fixed_knots)
+gradient = real_backward(P, spacing, fixed_knots)
+
+return R, gradient</pre>
+
+  <h2>8. What finite differences would do instead</h2>
+  <pre>def finite_difference_gradient(P):
+    gradient = [0] * len(P)
+
+    for k in range(len(P)):
+        P_plus  = copy(P)
+        P_minus = copy(P)
+        P_plus[k]  += tiny_step
+        P_minus[k] -= tiny_step
+
+        R_plus  = run_entire_resistance_solver(P_plus)
+        R_minus = run_entire_resistance_solver(P_minus)
+
+        gradient[k] = (R_plus - R_minus) / (2 * tiny_step)
+
+    return gradient</pre>
+  <div class="card">
+    <label class="wide">number of controls <input id="count" type="range" min="3" max="100" step="1" value="3"><output id="countOut">3</output></label>
+    <p id="costReadout"></p>
+  </div>
+  <p class="small">PR 29 does not make its own arithmetic independent of control count; it still visits spline spans and basis functions. What it removes is the need for two complete resistance solves per control.</p>
+
+  <h2>9. One implementation detail inside PR 29</h2>
+  <p>The actual solver works with polynomial slope coefficients on each knot span. Its final bookkeeping step maps those internal gradients back to the original control net:</p>
+  <pre><span class="comment"># The forward setup did this:</span>
+span_coefficients = control_to_span_map(P, fixed_knots)
+
+<span class="comment"># The resistance backward pass first returns this:</span>
+gradient_for_span_coefficients = backward_through_waves(
+    P,
+    final_spacing,
+    fixed_knots,
+)
+
+<span class="comment"># Now send each internal contribution back to the controls
+# that produced it. This loop is the "transpose" operation.</span>
+gradient_for_controls = [0] * len(P)
+
+for span_coefficient in all_span_coefficients:
+    for control in controls_used_by(span_coefficient):
+        gradient_for_controls[control] += (
+            control_to_span_weight[span_coefficient][control]
+            * gradient_for_span_coefficients[span_coefficient]
+        )</pre>
+  <p>No approximation happens in that last loop. It walks the fixed spline conversion backward.</p>
+
+  <h2>10. Where autodiff fits</h2>
+  <p>An autodiff system can plug PR 29 into a larger design program as a hand-written backward function:</p>
+  <pre>def full_design_forward(q):
+    P, hull_saved = make_hull_forward(q)
+    R, final_spacing = resistance_forward(P)
+
+    context = (P, hull_saved, final_spacing)
+    return R, context
+
+
+def full_design_backward(context):
+    P, hull_saved, final_spacing = context
+
+    <span class="comment"># PR 29 handles this line:</span>
+    gradient_for_P = resistance_backward(P, final_spacing)
+
+    <span class="comment"># The geometry generator must handle this line:</span>
+    gradient_for_q = make_hull_backward(
+        hull_saved,
+        gradient_for_P,
+    )
+
+    return gradient_for_q</pre>
+  <p><code>q</code> might contain beam, camber, or other high-level design parameters. <code>make_hull_forward(q)</code> converts them into spline controls. PR 29 moves the gradient from resistance back to those controls. Autodiff then moves it through the geometry generator, from the controls back to <code>q</code>.</p>
+
+  <h2>11. What the returned list means</h2>
+  <pre>gradient_for_controls = [g0, g1, g2, ...]
+
+<span class="comment"># g1 answers:</span>
+<span class="comment"># "If P[1] increases slightly while everything else stays</span>
+<span class="comment">#  fixed, how quickly does resistance change?"</span></pre>
+  <p>A positive entry means widening at that control raises resistance locally. A negative entry means widening there lowers resistance locally. The optimizer usually steps in the opposite direction, subject to closed ends, volume, stability, and other design constraints.</p>
+
+  <div class="checkpoint"><strong>One-program version:</strong> <code>forward(P)</code> computes resistance and keeps the final integration spacing. <code>backward(P, spacing)</code> revisits only those final nodes, recomputes their amplitudes, and returns one gradient value per control. Fixed knots make each control’s response reusable.</div>
+</main>
+
+<script>
+  const ids = ['p0', 'p1', 'p2'];
+  const inputs = ids.map(id => document.getElementById(id));
+  const outputs = ['o0', 'o1', 'o2'].map(id => document.getElementById(id));
+  const hullCurve = document.getElementById('hullCurve');
+  const slopeCurve = document.getElementById('slopeCurve');
+  const polygon = document.getElementById('controlPolygon');
+  const dots = document.getElementById('controlDots');
+  const sx = x => 45 + 6.15 * x;
+  const sy = y => 240 - 5.0 * y;
+  const slopeY = v => 110 - 105 * v;
+
+  function controls() { return inputs.map(input => Number(input.value)); }
+  function f(P, t) { return P[0]*(1-t)**2 + 2*P[1]*t*(1-t) + P[2]*t*t; }
+  function dfdx(P, t) { return (-2*P[0]*(1-t) + 2*P[1]*(1-2*t) + 2*P[2]*t) / 100; }
+  function path(sample) {
+    const points = [];
+    for (let i=0; i<=120; i++) {
+      const t = i/120;
+      points.push(`${i ? 'L' : 'M'} ${sx(100*t).toFixed(2)} ${sample(t).toFixed(2)}`);
+    }
+    return points.join(' ');
+  }
+  function update() {
+    const P = controls();
+    outputs.forEach((out, i) => out.value = P[i]);
+    hullCurve.setAttribute('d', path(t => sy(f(P,t))));
+    slopeCurve.setAttribute('d', path(t => slopeY(dfdx(P,t))));
+    polygon.setAttribute('d', `M ${sx(0)} ${sy(P[0])} L ${sx(50)} ${sy(P[1])} L ${sx(100)} ${sy(P[2])}`);
+    dots.replaceChildren(...P.map((value, i) => {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('class', 'dot');
+      circle.setAttribute('cx', sx(i*50));
+      circle.setAttribute('cy', sy(value));
+      circle.setAttribute('r', 6);
+      return circle;
+    }));
+    const mid = f(P, .5);
+    document.getElementById('hullReadout').textContent = `At x=50: half-breadth = ${mid.toFixed(2)}, full breadth = ${(2*mid).toFixed(2)}.`;
+    document.getElementById('slopeReadout').textContent = `hull_slope returns ${dfdx(P,0).toFixed(3)} at the stern, ${dfdx(P,.5).toFixed(3)} at midships, and ${dfdx(P,1).toFixed(3)} at the bow.`;
+    const A = -P[0] + 2*P[1] - P[2];
+    const grad = [-2*A, 4*A, -2*A];
+    console.assert(Math.abs(grad.reduce((sum, value) => sum + value, 0)) < 1e-12, 'null-direction gradient');
+    document.getElementById('amplitude').textContent = A.toFixed(0);
+    document.getElementById('energy').textContent = (A*A).toFixed(0);
+    document.getElementById('gradient').textContent = `[${grad.map(v => v.toFixed(0)).join(', ')}]`;
+  }
+  inputs.forEach(input => input.addEventListener('input', update));
+  document.getElementById('reset').addEventListener('click', () => {
+    [0,20,0].forEach((value, i) => inputs[i].value = value);
+    update();
+  });
+  const count = document.getElementById('count');
+  function updateCost() {
+    const n = Number(count.value);
+    document.getElementById('countOut').value = n;
+    document.getElementById('costReadout').innerHTML = `<strong>Finite differences:</strong> ${2*n} complete resistance solves.<br><strong>PR 29:</strong> one normal convergence calculation plus one backward sweep through the final integration nodes.`;
+  }
+  count.addEventListener('input', updateCost);
+  update();
+  updateCost();
+  console.assert(Math.abs(f([0,20,0], .5) - 10) < 1e-12, 'midship half-breadth');
+  console.assert(dfdx([0,20,0], 0) === .4, 'stern slope');
+  console.assert(dfdx([0,20,0], .5) === 0, 'midship slope');
+  console.assert(slopeY(.8) >= 0 && slopeY(-.8) <= 230, 'slope plot range');
+</script>
+</body>
+</html>
