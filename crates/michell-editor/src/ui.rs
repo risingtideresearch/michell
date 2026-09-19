@@ -472,7 +472,8 @@ fn options_section(ui: &mut Ui, o: &mut Options) -> bool {
                 changed |= opt_row(ui, "fit_degree (NxM)", &mut o.fit_degree);
                 changed |= opt_row(ui, "fit_control (NxM)", &mut o.fit_control);
                 changed |= opt_row(ui, "rel_tol", &mut o.rel_tol);
-                changed |= opt_row(ui, "form_factor", &mut o.form_factor);
+                changed |= opt_row(ui, "form_factor (k)", &mut o.form_factor);
+                changed |= opt_row(ui, "roughness (cf=/ks=)", &mut o.roughness);
                 changed |= opt_row(ui, "gravity", &mut o.gravity);
                 changed |= opt_row(ui, "rho (fluid density)", &mut o.rho);
                 changed |= opt_row(ui, "nu (kinematic visc.)", &mut o.nu);

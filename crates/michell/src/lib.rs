@@ -92,7 +92,11 @@ pub mod stl;
 pub use bspline::BSplineSurface;
 pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
-pub use friction::{ittc57_cf, viscous_resistance, viscous_resistance_with, ViscousResistance};
+pub use friction::{
+    ittc57_cf, roughness_delta_cf, roughness_reynolds, schlichting_rough_cf, viscous_resistance,
+    viscous_resistance_with, viscous_resistance_with_options, Roughness, ViscousOptions,
+    ViscousResistance,
+};
 pub use grid::SampleGrid;
 pub use hull::{Hull, Transom};
 pub use michell::{
@@ -122,9 +126,15 @@ pub struct Resistance {
     pub ct: f64,
 }
 
-/// Wave + viscous resistance with default options and zero form factor.
+/// Wave + viscous resistance with default options: zero form factor, smooth
+/// hull.
 pub fn resistance(hull: &Hull, cond: &Conditions) -> Result<Resistance> {
-    resistance_with(hull, cond, &WaveOptions::default(), 0.0)
+    resistance_with(
+        hull,
+        cond,
+        &WaveOptions::default(),
+        &ViscousOptions::default(),
+    )
 }
 
 /// Combined resistance breakdown for a multihull.
@@ -152,28 +162,33 @@ pub struct MultihullResistance {
     pub interference: f64,
 }
 
-/// Multihull resistance with default options and zero form factor.
+/// Multihull resistance with default options: zero form factor, smooth hulls.
 pub fn multihull_resistance(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
 ) -> Result<MultihullResistance> {
-    multihull_resistance_with(members, cond, &WaveOptions::default(), 0.0)
+    multihull_resistance_with(
+        members,
+        cond,
+        &WaveOptions::default(),
+        &ViscousOptions::default(),
+    )
 }
 
-/// Multihull resistance with explicit quadrature options and form factor
-/// (applied to every member).
+/// Multihull resistance with explicit quadrature and viscous options (the
+/// latter applied to every member).
 pub fn multihull_resistance_with(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     wave_opts: &WaveOptions,
-    form_factor: f64,
+    viscous_opts: &ViscousOptions,
 ) -> Result<MultihullResistance> {
     let wave = multihull_wave_resistance_with(members, cond, wave_opts)?;
     let mut solo_wave_total = 0.0;
     for m in members {
         solo_wave_total += multihull_wave_resistance_with(&[*m], cond, wave_opts)?.resistance;
     }
-    multihull_resistance_core(members, cond, form_factor, wave, solo_wave_total)
+    multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
 }
 
 /// Multihull resistance for a fleet **heeled** by `heel` radians about the
@@ -185,7 +200,7 @@ pub fn multihull_resistance_heeled(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     wave_opts: &WaveOptions,
-    form_factor: f64,
+    viscous_opts: &ViscousOptions,
     heel: f64,
 ) -> Result<MultihullResistance> {
     let wave = multihull_heel_wave_resistance(members, cond, heel, wave_opts)?;
@@ -193,7 +208,7 @@ pub fn multihull_resistance_heeled(
     for m in members {
         solo_wave_total += multihull_heel_wave_resistance(&[*m], cond, heel, wave_opts)?.resistance;
     }
-    multihull_resistance_core(members, cond, form_factor, wave, solo_wave_total)
+    multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
 }
 
 /// Assemble the viscous breakdown and coefficients around an already-computed
@@ -202,13 +217,13 @@ pub fn multihull_resistance_heeled(
 fn multihull_resistance_core(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
-    form_factor: f64,
+    viscous_opts: &ViscousOptions,
     wave: WaveResistance,
     solo_wave_total: f64,
 ) -> Result<MultihullResistance> {
     let viscous: Vec<ViscousResistance> = members
         .iter()
-        .map(|(h, _)| viscous_resistance_with(h, cond, form_factor))
+        .map(|(h, _)| viscous_resistance_with_options(h, cond, viscous_opts))
         .collect::<Result<_>>()?;
     let viscous_total: f64 = viscous.iter().map(|v| v.resistance).sum();
     let wetted_surface: f64 = members.iter().map(|(h, _)| h.wetted_surface()).sum();
@@ -233,15 +248,15 @@ fn multihull_resistance_core(
     })
 }
 
-/// Wave + viscous resistance with explicit quadrature options and form factor.
+/// Wave + viscous resistance with explicit quadrature and viscous options.
 pub fn resistance_with(
     hull: &Hull,
     cond: &Conditions,
     wave_opts: &WaveOptions,
-    form_factor: f64,
+    viscous_opts: &ViscousOptions,
 ) -> Result<Resistance> {
     let wave = wave_resistance_with(hull, cond, wave_opts)?;
-    let viscous = viscous_resistance_with(hull, cond, form_factor)?;
+    let viscous = viscous_resistance_with_options(hull, cond, viscous_opts)?;
     let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * hull.wetted_surface();
     let total = wave.resistance + viscous.resistance;
     Ok(Resistance {

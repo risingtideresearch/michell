@@ -36,6 +36,134 @@ fn json_num(json: &str, key: &str) -> f64 {
         .unwrap_or_else(|_| panic!("parse {key}: {rest:?}"))
 }
 
+fn run_err(cmd: &mut Command) -> String {
+    let out = cmd.output().expect("binary runs");
+    assert!(!out.status.success(), "command unexpectedly succeeded");
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// A wigley control net to hang the viscous tests off.
+fn wigley_hull(name: &str) -> PathBuf {
+    let path = tmp(name);
+    run_ok(bin().args([
+        "wigley",
+        "--length",
+        "10",
+        "--beam",
+        "1",
+        "--draft",
+        "0.625",
+        "-o",
+        path.to_str().unwrap(),
+    ]));
+    path
+}
+
+#[test]
+fn roughness_is_separate_from_the_form_factor() {
+    // C_V = (1+k)·C_F + ΔC_F. The two knobs must be independent, and the
+    // roughness must sit *outside* the form factor: doubling k must not
+    // change the roughness share of the total.
+    let hull = wigley_hull("visc.hull");
+    let h = hull.to_str().unwrap();
+    let rv = |args: &[&str]| -> f64 {
+        let mut c = bin();
+        c.args(["resistance", h, "--speeds", "3", "--json"]);
+        c.args(args);
+        json_num(&run_ok(&mut c), "rv")
+    };
+    let plain = rv(&[]);
+    let k_only = rv(&["--form-factor", "0.2"]);
+    let cf_only = rv(&["--roughness", "cf=4e-4"]);
+    let both = rv(&["--form-factor", "0.2", "--roughness", "cf=4e-4"]);
+
+    assert!(k_only > plain && cf_only > plain);
+    // Additivity: the ΔC_F contribution is the same whatever k is.
+    let d0 = cf_only - plain;
+    let dk = both - k_only;
+    assert!(
+        (d0 - dk).abs() < 1e-9 * d0,
+        "roughness is not outside the form factor: {d0} vs {dk}"
+    );
+    // (1+k) multiplies only the friction part.
+    assert!((k_only - plain - 0.2 * plain).abs() < 1e-9 * plain);
+
+    // Reported, not silently folded in.
+    let json = run_ok(bin().args([
+        "resistance",
+        h,
+        "--speeds",
+        "3",
+        "--json",
+        "--roughness",
+        "cf=4e-4",
+    ]));
+    assert!((json_num(&json, "roughness_cf") - 4e-4).abs() < 1e-12);
+    assert!(json.contains("\"delta_cf\":0.0004"));
+    // Default is smooth and says so.
+    let plain_json = run_ok(bin().args(["resistance", h, "--speeds", "3", "--json"]));
+    assert_eq!(json_num(&plain_json, "roughness_cf"), 0.0);
+    assert!(plain_json.contains("\"roughness\":null"));
+}
+
+#[test]
+fn sand_grain_roughness_is_smooth_until_it_is_not() {
+    // A finish inside the viscous sublayer costs exactly nothing; a coarse
+    // one costs something; and the penalty grows with speed, because the
+    // fully-rough branch is Re-independent while the smooth line falls.
+    let hull = wigley_hull("visc2.hull");
+    let h = hull.to_str().unwrap();
+    let rv = |ks: &str, u: &str| -> f64 {
+        let mut c = bin();
+        c.args(["resistance", h, "--speeds", u, "--json"]);
+        if !ks.is_empty() {
+            c.args(["--roughness", ks]);
+        }
+        json_num(&run_ok(&mut c), "rv")
+    };
+    assert_eq!(rv("ks=1um", "3"), rv("", "3"));
+    assert!(rv("ks=1mm", "3") > rv("", "3"));
+
+    let excess = |u: &str| (rv("ks=1mm", u) - rv("", u)) / rv("", u);
+    assert!(
+        excess("6") > excess("2"),
+        "roughness share did not grow with speed"
+    );
+
+    // Unit suffixes are equivalent ways of saying the same height.
+    assert_eq!(rv("ks=1mm", "3"), rv("ks=1000um", "3"));
+    assert_eq!(rv("ks=1mm", "3"), rv("ks=0.001", "3"));
+
+    // The regime is reported, not left to the docs.
+    let text = run_ok(bin().args(["resistance", h, "--speeds", "3", "--roughness", "ks=1mm"]));
+    assert!(text.contains("k_s+"), "no regime note in:\n{text}");
+}
+
+#[test]
+fn rejects_bad_roughness_specs() {
+    let hull = wigley_hull("visc3.hull");
+    let h = hull.to_str().unwrap();
+    for spec in ["ks=-1um", "cf=-1e-4", "banana", "ks=", "cf=abc"] {
+        let err = run_err(bin().args(["resistance", h, "--speeds", "3", "--roughness", spec]));
+        assert!(
+            err.contains("roughness") || err.contains("length"),
+            "spec {spec:?} gave an unhelpful error: {err}"
+        );
+    }
+    // `off` is accepted and means smooth.
+    let a = run_ok(bin().args([
+        "resistance",
+        h,
+        "--speeds",
+        "3",
+        "--json",
+        "--roughness",
+        "off",
+    ]));
+    let b = run_ok(bin().args(["resistance", h, "--speeds", "3", "--json"]));
+    assert_eq!(json_num(&a, "rv"), json_num(&b, "rv"));
+}
+
 #[test]
 fn wigley_roundtrip_matches_library() {
     let hull_path = tmp("wigley.hull");

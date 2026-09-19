@@ -35,6 +35,7 @@ use michell::body::{Body, BodyOptions};
 use michell::fit::{fit_grid, FitOptions, FitReport};
 use michell::iges::{self, HullPose, ImportOptions, ImportReport, Platform};
 use michell::stl;
+use michell::Roughness;
 use michell::{BSplineSurface, Hull, Placement, SampleGrid};
 
 /// Where a hull came from, with any conversion diagnostics.
@@ -109,6 +110,54 @@ fn numbered_grid_path(spec: &str, i: usize, n: usize) -> String {
         Some(stem) => format!("{stem}-{i}.grid.json"),
         None => format!("{spec}-{i}"),
     }
+}
+
+/// Parse a length with an optional unit suffix, to metres. A bare number is
+/// metres, so `1e-4`, `0.1mm` and `100um` are the same roughness height.
+pub fn parse_length(s: &str) -> Result<f64, String> {
+    let t = s.trim();
+    let (num, scale) = [
+        ("um", 1e-6),
+        ("µm", 1e-6),
+        ("mm", 1e-3),
+        ("cm", 1e-2),
+        ("ft", 0.3048),
+        ("in", 0.0254),
+        ("m", 1.0),
+    ]
+    .iter()
+    .find_map(|(suf, k)| t.strip_suffix(suf).map(|n| (n, *k)))
+    .unwrap_or((t, 1.0));
+    num.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && *v >= 0.0)
+        .map(|v| v * scale)
+        .ok_or_else(|| format!("cannot parse length {t:?} (try 100um, 0.1mm, or 1e-4)"))
+}
+
+/// Parse a `--roughness` spec: `off`, `cf=VALUE` (a ΔC_F added outside the
+/// form factor), or `ks=LENGTH` (equivalent sand-grain height).
+pub fn parse_roughness(spec: &str) -> Result<Roughness, String> {
+    let t = spec.trim();
+    if matches!(t, "off" | "none" | "smooth") {
+        return Ok(Roughness::None);
+    }
+    if let Some(v) = t.strip_prefix("cf=") {
+        let c = v
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|x| x.is_finite() && *x >= 0.0)
+            .ok_or_else(|| format!("--roughness cf={v:?}: expected a non-negative number"))?;
+        return Ok(Roughness::DeltaCf(c));
+    }
+    if let Some(v) = t.strip_prefix("ks=") {
+        return Ok(Roughness::SandGrain(parse_length(v)?));
+    }
+    Err(format!(
+        "--roughness {t:?}: expected off | cf=DELTA_CF | ks=HEIGHT (e.g. ks=100um)"
+    ))
 }
 
 /// Parse a units name (or raw scale) to metres-per-unit.

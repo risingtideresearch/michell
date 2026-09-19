@@ -273,7 +273,7 @@ pub(crate) struct ParsedManifest {
     pub(crate) dynamic_mode: bool,
     pub(crate) squat_opts: SquatOptions,
     pub(crate) wave_opts: WaveOptions,
-    pub(crate) form_factor: f64,
+    pub(crate) viscous: michell::ViscousOptions,
     pub(crate) gravity: f64,
     pub(crate) density: f64,
     pub(crate) bopts: BodyOptions,
@@ -358,7 +358,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         dynamic_mode,
         squat_opts,
         wave_opts,
-        form_factor,
+        viscous,
         gravity,
         density,
         bopts,
@@ -749,9 +749,8 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             let (rw, rv, rt, pe, iff, cw, ct) = if members_u.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                let r =
-                    michell::multihull_resistance_with(&members_u, &cond, &wave_opts, form_factor)
-                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                let r = michell::multihull_resistance_with(&members_u, &cond, &wave_opts, &viscous)
+                    .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
                     r.viscous_total,
@@ -779,7 +778,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                                 &hm,
                                 &cond,
                                 &wave_opts,
-                                form_factor,
+                                &viscous,
                                 angle.to_radians(),
                             )
                             .map_err(|e| format!("point {} U={u} heel {angle}°: {e}", point + 1))?;
@@ -1242,7 +1241,7 @@ pub(crate) fn parse_manifest(
     // Options.
     let mut settings = LoadSettings::default();
     let mut wave_opts = WaveOptions::default();
-    let mut form_factor = 0.0;
+    let mut viscous = michell::ViscousOptions::default();
     let mut gravity = STANDARD_GRAVITY;
     let mut rho_override = None;
     let mut nu_override = None;
@@ -1269,7 +1268,13 @@ pub(crate) fn parse_manifest(
             wave_opts.rel_tol = v;
         }
         if let Some(v) = o.get("form_factor").and_then(Json::as_f64) {
-            form_factor = v;
+            viscous.form_factor = v;
+        }
+        if let Some(v) = o.get("roughness") {
+            let spec = v.as_str().ok_or_else(|| {
+                "options.roughness: expected a string — off | cf=DELTA_CF | ks=HEIGHT".to_string()
+            })?;
+            viscous.roughness = crate::formats::parse_roughness(spec)?;
         }
         if let Some(v) = o.get("transom") {
             let spec = v.as_str().ok_or_else(|| {
@@ -1697,7 +1702,7 @@ pub(crate) fn parse_manifest(
         dynamic_mode,
         squat_opts,
         wave_opts,
-        form_factor,
+        viscous,
         gravity,
         density,
         bopts,

@@ -183,7 +183,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 None
             } else {
                 Some(
-                    multihull_resistance_with(&members, &cond, &pm.wave_opts, pm.form_factor)
+                    multihull_resistance_with(&members, &cond, &pm.wave_opts, &pm.viscous)
                         .map_err(|e| format!("point {} U={u}: {e}", point + 1))?,
                 )
             };

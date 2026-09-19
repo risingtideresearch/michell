@@ -163,7 +163,20 @@ PHYSICS OPTIONS
   --fluid NAME          seawater | freshwater, at 15 C (default seawater)
   --rho R, --nu V       override density [kg/m3] / kinematic viscosity [m2/s]
   --gravity G           override g [m/s2]
-  --form-factor K       viscous form factor (1+k), default 0
+  --form-factor K       form factor k, applied as (1+k)*C_F; default 0 (a
+                        bare flat plate). A property of the SHAPE: streamline
+                        curvature and the stern's viscous pressure defect
+  --roughness SPEC      surface-roughness allowance, added OUTSIDE (1+k) as
+                        C_V = (1+k)*C_F + dC_F, per ITTC-78. A property of the
+                        SKIN, so it is kept separate from the form factor:
+                          off                 hydraulically smooth (default)
+                          cf=DELTA_CF         a prescribed dC_F you trust
+                          ks=HEIGHT           equivalent sand-grain height
+                                              (100um, 0.1mm, 1e-4); dC_F is
+                                              then speed-dependent
+                        Guide: sprayed topcoat ~30um, rolled antifouling
+                        ~100-150um, light slime a few hundred um. On a small
+                        hull this term can exceed the form factor
   --rel-tol T           wave-integral relative tolerance (default 1e-5)
   --transom SPEC        transom-stern closure: off | ballistic[=COEFF] |
                         hollow=METRES. A transom leaves the half-breadth open
@@ -348,6 +361,19 @@ impl Parsed {
         }
     }
 
+    /// The viscous knobs: form factor and roughness allowance. They are read
+    /// together because they compose as `(1+k)·C_F + ΔC_F` and are easy to
+    /// conflate — a roughness folded into `k` is invisible in the report.
+    fn viscous_options(&self) -> Result<michell::ViscousOptions, String> {
+        Ok(michell::ViscousOptions {
+            form_factor: self.f64_flag("form-factor")?.unwrap_or(0.0),
+            roughness: match self.flag("roughness") {
+                Some(spec) => formats::parse_roughness(spec)?,
+                None => michell::Roughness::None,
+            },
+        })
+    }
+
     fn load_settings(&self) -> Result<LoadSettings, String> {
         let mut s = LoadSettings::default();
         if let Some(w) = self.f64_flag("waterline")? {
@@ -519,6 +545,52 @@ fn loft_warning(fit: &michell::fit::FitReport) -> Option<String> {
             100.0 * fit.relative_rms()
         )
     })
+}
+
+/// One-line description of a roughness allowance, empty when smooth, for the
+/// header where the form factor is reported. Kept visible: the allowance can
+/// exceed the form factor on a small hull, and it is speed-dependent when it
+/// comes from a sand-grain height, so it must not look like a constant.
+fn describe_roughness(r: &michell::Roughness) -> String {
+    match r {
+        michell::Roughness::None => String::new(),
+        michell::Roughness::DeltaCf(c) => format!(", roughness dCf {c:.3e}"),
+        michell::Roughness::SandGrain(k) => {
+            format!(", roughness k_s {:.0} um (dCf varies with speed)", k * 1e6)
+        }
+    }
+}
+
+/// Where a sand-grain roughness spec lands on the smooth / transitional /
+/// fully-rough scale, over the speeds actually run.
+///
+/// `k_s⁺ = k_s·u_τ/ν` is the only thing that says whether a given finish
+/// matters at a given speed, and it is what bounds how far to trust the
+/// allowance: the estimator bridges the transitional band by the smooth /
+/// fully-rough crossover rather than fitting it, so it reads high in there.
+/// Printing the range keeps that visible instead of leaving it in the docs.
+fn roughness_regime_note<'a>(
+    mut viscous: impl Iterator<Item = &'a michell::ViscousResistance>,
+) -> Option<String> {
+    let first = viscous.find_map(|v| v.roughness_reynolds)?;
+    let (mut lo, mut hi) = (first, first);
+    for v in viscous.filter_map(|v| v.roughness_reynolds) {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+    let regime = if hi < 5.0 {
+        "hydraulically smooth over this speed range — the allowance is ~0 and \
+         the finish is not costing you anything"
+    } else if lo > 70.0 {
+        "fully rough: the allowance is on its firm asymptote"
+    } else {
+        "transitional (5 < k_s+ < 70), where the estimator bridges the \
+         crossover rather than fitting it and so reads high; treat dC_F as an \
+         upper bound, or pass --roughness cf=... if you have a better number"
+    };
+    Some(format!(
+        "                roughness k_s+ {lo:.1}..{hi:.1}, {regime}"
+    ))
 }
 
 fn describe_source(source: &Source) -> Vec<String> {
@@ -948,7 +1020,8 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         (None, None) => return Err("select speeds with --speeds or --froude".into()),
     };
 
-    let form_factor = p.f64_flag("form-factor")?.unwrap_or(0.0);
+    let viscous_opts = p.viscous_options()?;
+    let form_factor = viscous_opts.form_factor;
     let heel_deg = p.f64_flag("heel")?.unwrap_or(0.0);
     let heel = heel_deg.to_radians();
     let mut wave_opts = WaveOptions::default();
@@ -961,9 +1034,9 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     for &u in &speeds {
         let cond = p.conditions(u)?;
         let r = if heel != 0.0 {
-            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, form_factor, heel)
+            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, &viscous_opts, heel)
         } else {
-            michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
+            michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
         }
         .map_err(|e| format!("at U = {u} m/s: {e}"))?;
         rows.push((u, cond, r));
@@ -994,8 +1067,16 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         out.push_str("],");
         out.push_str(&format!(
             "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},\
-             \"heel_deg\":{},",
-            fluid.density, fluid.kinematic_viscosity, form_factor, heel_deg
+             \"roughness\":{},\"heel_deg\":{},",
+            fluid.density,
+            fluid.kinematic_viscosity,
+            form_factor,
+            match viscous_opts.roughness {
+                michell::Roughness::None => "null".to_string(),
+                michell::Roughness::DeltaCf(c) => format!("{{\"delta_cf\":{c}}}"),
+                michell::Roughness::SandGrain(k) => format!("{{\"sand_grain_m\":{k}}}"),
+            },
+            heel_deg
         ));
         out.push_str("\"points\":[");
         for (i, (u, cond, r)) in rows.iter().enumerate() {
@@ -1005,6 +1086,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             out.push_str(&format!(
                 "{{\"speed\":{u},\"froude\":{},\"rw\":{},\"rv\":{},\"total\":{},\
                  \"effective_power\":{},\"interference\":{},\"cw\":{},\"cv\":{},\"ct\":{},\
+                 \"roughness_cf\":{},\"roughness_reynolds\":{},\
                  \"wave_est_rel_error\":{}}}",
                 cond.froude_number(l_ref),
                 r.wave.resistance,
@@ -1015,6 +1097,14 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
                 r.cw,
                 r.cv,
                 r.ct,
+                // Per-member roughness is the same allowance applied to each,
+                // so the fleet's value is any member's; the k_s+ regime is
+                // per-member (it scales with each hull's own C_F).
+                r.viscous.first().map_or(0.0, |v| v.roughness_cf),
+                r.viscous
+                    .first()
+                    .and_then(|v| v.roughness_reynolds)
+                    .map_or("null".to_string(), |k| format!("{k}")),
                 r.wave.est_rel_error
             ));
         }
@@ -1042,8 +1132,13 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         println!("fleet: {}", placements.join("  "));
     }
     println!(
-        "L(ref) = {l_ref:.3} m, S = {total_s:.3} m^2, vol = {total_v:.3} m^3, form factor {form_factor}",
+        "L(ref) = {l_ref:.3} m, S = {total_s:.3} m^2, vol = {total_v:.3} m^3, \
+         form factor {form_factor}{}",
+        describe_roughness(&viscous_opts.roughness),
     );
+    if let Some(note) = roughness_regime_note(rows.iter().flat_map(|(_, _, r)| r.viscous.iter())) {
+        println!("{note}");
+    }
     if heel != 0.0 {
         println!(
             "heeled {heel_deg:.1} deg about the platform axis (tilted-thickness \
@@ -1348,7 +1443,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             .collect(),
         (None, None) => return Err("select speeds with --speeds or --froude".into()),
     };
-    let form_factor = p.f64_flag("form-factor")?.unwrap_or(0.0);
+    let viscous_opts = p.viscous_options()?;
     let mut wave_opts = WaveOptions::default();
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
@@ -1519,7 +1614,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
                 let r =
-                    michell::multihull_resistance_with(&members, &cond, &wave_opts, form_factor)
+                    michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
                         .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
