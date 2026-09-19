@@ -353,6 +353,9 @@ pub struct Options {
     pub fit_control: OptField,
     pub rel_tol: OptField,
     pub form_factor: OptField,
+    /// `options.roughness`: a spec string (`off` | `cf=…` | `ks=…`), kept
+    /// separate from the form factor because it is added outside `(1+k)`.
+    pub roughness: OptField,
     pub gravity: OptField,
     pub rho: OptField,
     pub nu: OptField,
@@ -367,6 +370,7 @@ impl Default for Options {
             fit_control: OptField::off("12x14"),
             rel_tol: OptField::off("1e-5"),
             form_factor: OptField::off("0.05"),
+            roughness: OptField::off("ks=150um"),
             gravity: OptField::off("9.80665"),
             rho: OptField::off("1025"),
             nu: OptField::off("1.19e-6"),
@@ -383,6 +387,7 @@ impl Options {
             || self.fit_control.enabled
             || self.rel_tol.enabled
             || self.form_factor.enabled
+            || self.roughness.enabled
             || self.gravity.enabled
             || self.rho.enabled
             || self.nu.enabled

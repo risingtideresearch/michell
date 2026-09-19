@@ -57,8 +57,35 @@ The numerical strategy exploits the spline structure end to end:
    until a requested relative tolerance is met, with the achieved estimate
    reported in the result.
 
-Viscous resistance: ITTC-57 `C_F = 0.075/(log₁₀Re − 2)²` with optional form
-factor, on the thin-ship wetted surface `S = 2∬√(1 + fx² + fz²) dx dz`.
+Viscous resistance follows the ITTC-78 shape on the thin-ship wetted surface
+`S = 2∬√(1 + fx² + fz²) dx dz`:
+
+```text
+C_V = (1 + k)·C_F(Re) + ΔC_F,      C_F = 0.075/(log₁₀Re − 2)²
+```
+
+The **form factor** `k` multiplies flat-plate friction — it is a property of
+the *shape* (streamline curvature speeds the flow over most of the hull, and
+the stern boundary layer costs a viscous pressure defect). The **roughness
+allowance** `ΔC_F` is added *outside* it, because surface finish is a property
+of the *skin*. They are kept apart deliberately: they come from different
+places (one from geometry, one from the paint), and on a small hull the
+roughness term can be the larger of the two, so folding it into `k` hides it.
+Both default to zero, which is the bare flat plate.
+
+`ΔC_F` can be given directly (`--roughness cf=4e-4`, which is also where
+ITTC-78's correlation allowance `C_A` goes) or estimated from an equivalent
+sand-grain height (`--roughness ks=150um`). The estimate is the textbook Moody
+construction — the excess of Prandtl–Schlichting fully-rough friction over the
+smooth line, floored at zero — so it returns **exactly** zero while the surface
+is hydraulically smooth at that Reynolds number, and grows with speed as the
+smooth line falls away beneath the Re-independent rough one. It reports the
+roughness Reynolds number `k_s⁺ = k_s·u_τ/ν` with it, because that is what says
+whether the finish matters at all (`≲ 5` smooth, `≳ 70` fully rough) and how
+far to trust the number: the transitional band between is *bridged by the
+crossover*, not fitted, so it reads high in there. Published ship correlations
+are no help at this size — on an 8 m hull at `Re ≈ 9×10⁶`, Bowden–Davison
+returns about 60% of `C_F` and Townsin returns a negative number.
 
 **Multihulls**: thin-ship far-field amplitudes superpose, so hull `j` placed
 at longitudinal offset `Δx_j` and transverse position `y_j` contributes
@@ -291,7 +318,12 @@ budget accordingly, especially before a large speed × load grid.
 - Half-breadth should close at the bow. A **transom stern** is closed by a
   virtual appendage (`--transom`, `TransomClosure`); its hollow length is a
   modelling choice, so transom-sterned results carry that uncertainty.
-- Viscous model is a flat-plate correlation; supply your own form factor.
+- Viscous model is a flat-plate correlation plus two allowances you supply:
+  a form factor `k` and a roughness `ΔC_F` (see above). Neither is derived
+  from the hull — `k` from a regression such as Holtrop–Mennen or a
+  double-body solve, `ΔC_F` from the finish. Do **not** back `k` out of a
+  measured `C_T` using this crate's `C_W`: thin-ship theory overstates `C_W`,
+  and a fit would quietly absorb that error into `k`.
 
 ## Input front-ends
 

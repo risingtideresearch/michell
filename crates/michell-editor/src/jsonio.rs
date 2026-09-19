@@ -274,6 +274,10 @@ fn options_from(o: Option<&Value>) -> Options {
         &mut opts.form_factor,
         o.get("form_factor").and_then(Value::as_f64),
     );
+    set_str(
+        &mut opts.roughness,
+        o.get("roughness").and_then(Value::as_str),
+    );
     set_num(&mut opts.gravity, o.get("gravity").and_then(Value::as_f64));
     set_num(&mut opts.rho, o.get("rho").and_then(Value::as_f64));
     set_num(&mut opts.nu, o.get("nu").and_then(Value::as_f64));
@@ -491,6 +495,7 @@ fn options_to(opts: &Options) -> Result<Value, String> {
     put_str(&mut o, "fit_control", &opts.fit_control);
     put_num(&mut o, "rel_tol", &opts.rel_tol)?;
     put_num(&mut o, "form_factor", &opts.form_factor)?;
+    put_str(&mut o, "roughness", &opts.roughness);
     put_num(&mut o, "gravity", &opts.gravity)?;
     put_num(&mut o, "rho", &opts.rho)?;
     put_num(&mut o, "nu", &opts.nu)?;
