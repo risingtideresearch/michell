@@ -17,7 +17,9 @@ mod render;
 mod report;
 mod view;
 
-use formats::{load_hulls, parse_pair, parse_range, write_hull_file, LoadSettings, Source};
+use formats::{
+    load_hulls, parse_pair, parse_range, resolved_fit, write_hull_file, LoadSettings, Source,
+};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -503,6 +505,22 @@ fn slope_line(r: &michell::fit::FitReport) -> Option<String> {
     }
 }
 
+/// A loft that cannot reach its own samples is integrating a smoothed hull,
+/// and the smoothing takes exactly the short-scale `∂f/∂x` content that feeds
+/// the diverging end of the wave spectrum — so `Rw` at low Froude goes first.
+/// Say so rather than letting it pass silently into a resistance curve.
+fn loft_warning(fit: &michell::fit::FitReport) -> Option<String> {
+    fit.under_resolved().then(|| {
+        format!(
+            "                loft residual is {:.1}% of max half-beam (rms {:.1}%); \
+             the control net cannot hold this geometry — raise --fit-control \
+             (and --samples to match). Rw at low Froude is biased first.",
+            100.0 * fit.relative_max(),
+            100.0 * fit.relative_rms()
+        )
+    })
+}
+
 fn describe_source(source: &Source) -> Vec<String> {
     match source {
         Source::Native => vec!["source: native control net (exact)".into()],
@@ -512,18 +530,24 @@ fn describe_source(source: &Source) -> Vec<String> {
                  (loft max residual {:.3e} m, rms {:.3e} m)",
                 r.max_residual, r.rms_residual
             )];
+            v.extend(loft_warning(r));
             v.extend(slope_line(r));
             v
         }
-        Source::Offsets(r) => vec![format!(
-            "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
-            r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
-        )],
+        Source::Offsets(r) => {
+            let mut v = vec![format!(
+                "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
+                r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
+            )];
+            v.extend(loft_warning(r));
+            v
+        }
         Source::Grid(r) => {
             let mut v = vec![format!(
                 "source: sample grid, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
                 r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
             )];
+            v.extend(loft_warning(r));
             v.extend(slope_line(r));
             v
         }
@@ -552,6 +576,9 @@ fn describe_source(source: &Source) -> Vec<String> {
                     r.ambiguous_samples
                 ),
             ]
+            .into_iter()
+            .chain(loft_warning(&r.fit))
+            .collect()
         }
         Source::Iges(r) => {
             let sides = if r.two_sided {
@@ -580,6 +607,7 @@ fn describe_source(source: &Source) -> Vec<String> {
                 r.ambiguous_samples,
                 r.derivative_gaps
             ));
+            v.extend(loft_warning(&r.fit));
             v.extend(slope_line(&r.fit));
             v
         }
@@ -1151,11 +1179,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         waterline_z: base_wl,
         stations: settings.samples.0,
         waterlines: settings.samples.1,
-        fit: if settings.fit_explicit {
-            settings.fit
-        } else {
-            ImportOptions::default().fit
-        },
+        fit: resolved_fit(&settings, ImportOptions::default().fit),
         centerplane: None,
     };
 
@@ -2182,7 +2206,7 @@ pub fn loft(args: &[String], report: &mut Reporter) -> Result<String, String> {
         stations: if p.flag("samples").is_some() {
             settings.samples.0
         } else {
-            241
+            301
         },
         waterlines: if p.flag("samples").is_some() {
             settings.samples.1
@@ -2195,7 +2219,7 @@ pub fn loft(args: &[String], report: &mut Reporter) -> Result<String, String> {
             michell::fit::FitOptions {
                 degree_x: 3,
                 degree_z: 3,
-                n_ctrl_x: 28,
+                n_ctrl_x: 80,
                 n_ctrl_z: 32,
                 // Honour --fit-deriv-weight even with the default net.
                 derivative_weight: settings.fit.derivative_weight,

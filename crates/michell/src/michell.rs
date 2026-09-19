@@ -992,6 +992,16 @@ pub(crate) struct ZContracted {
     pub any: bool,
 }
 
+impl ZContracted {
+    /// Reset without releasing the buffers (they are reused per k-node).
+    fn clear(&mut self) {
+        self.g_fx.clear();
+        self.g_f.clear();
+        self.z_t = 0.0;
+        self.any = false;
+    }
+}
+
 impl Default for SquatTransforms {
     fn default() -> Self {
         SquatTransforms {
@@ -1030,9 +1040,22 @@ pub(crate) struct InnerIntegral<'h> {
     zm_raw: Vec<f64>,
     /// Scratch: hollow-shape moments for the transom closure.
     sm: Vec<C64>,
+    /// Number of leading (shallowest) z-spans still above the decay floor at
+    /// the current `κ`; the deeper ones are exactly zero in `zm`.
+    z_active: usize,
     p: usize,
     q: usize,
 }
+
+/// Relative size below which a z-span's `e^{−κ z₀}` factor cannot matter.
+///
+/// The amplitude is a sum over z-spans whose shallowest term carries factor
+/// `1`, so dropping every span under `1e-20` perturbs it by `≲ n_spans·1e-20`
+/// — four orders below double epsilon. What it buys is the whole point of
+/// affording a finely-resolved loft: at large `λ`, `κ = νλ²` confines the
+/// integrand to a sliver below the waterline, and the outer quadrature spends
+/// most of its evaluations out there.
+const Z_DECAY_FLOOR: f64 = 1e-20;
 
 impl<'h> InnerIntegral<'h> {
     pub(crate) fn new(hull: &'h Hull, nu: f64, transom: TransomClosure) -> Self {
@@ -1046,6 +1069,7 @@ impl<'h> InnerIntegral<'h> {
             xm: Vec::with_capacity(p),
             zm_raw: Vec::with_capacity(q + 1),
             sm: Vec::with_capacity(3),
+            z_active: 0,
             p,
             q,
         }
@@ -1072,7 +1096,7 @@ impl<'h> InnerIntegral<'h> {
             return C64::ZERO;
         };
         let q = self.q;
-        let z_factor: f64 = (0..self.hull.spans_z().len())
+        let z_factor: f64 = (0..self.z_active)
             .flat_map(|t| {
                 let base = t * (q + 1);
                 (0..=q).map(move |b| (base + b, base + b))
@@ -1108,21 +1132,20 @@ impl<'h> InnerIntegral<'h> {
         let (p, q) = (self.p, self.q);
         let nsz = hull.spans_z().len();
         let nsx = hull.spans_x().len();
-        out.g_fx.clear();
-        out.g_f.clear();
+        out.clear();
         out.g_fx.resize(nsx * p, 0.0);
         out.g_f.resize(nsx * (p + 1), 0.0);
-        out.z_t = 0.0;
         out.any = self.fill_zm(kappa);
         if !out.any {
             return;
         }
+        let nz_active = self.z_active;
         let cfx = hull.fx_coeff();
         let cf = hull.f_coeff();
         for s in 0..nsx {
             for a in 0..p {
                 let mut g = 0.0;
-                for tz in 0..nsz {
+                for tz in 0..nz_active {
                     let base = ((s * nsz + tz) * p + a) * (q + 1);
                     let zrow = &self.zm[tz * (q + 1)..(tz + 1) * (q + 1)];
                     for b in 0..=q {
@@ -1133,7 +1156,7 @@ impl<'h> InnerIntegral<'h> {
             }
             for a in 0..=p {
                 let mut g = 0.0;
-                for tz in 0..nsz {
+                for tz in 0..nz_active {
                     let base = ((s * nsz + tz) * (p + 1) + a) * (q + 1);
                     let zrow = &self.zm[tz * (q + 1)..(tz + 1) * (q + 1)];
                     for b in 0..=q {
@@ -1144,7 +1167,7 @@ impl<'h> InnerIntegral<'h> {
             }
         }
         if let Some(tr) = hull.transom() {
-            out.z_t = (0..nsz)
+            out.z_t = (0..nz_active)
                 .flat_map(|tz| (0..=q).map(move |b| tz * (q + 1) + b))
                 .map(|i| tr.coeff[i] * self.zm[i])
                 .sum();
@@ -1274,15 +1297,22 @@ impl<'h> InnerIntegral<'h> {
         let hull = self.hull;
         let q = self.q;
         let mut any = false;
+        self.z_active = 0;
         for (t, sz) in hull.spans_z().iter().enumerate() {
             let decay = (-kappa * sz.start).exp();
-            if decay == 0.0 {
-                for b in 0..=q {
-                    self.zm[t * (q + 1) + b] = 0.0;
+            if decay < Z_DECAY_FLOOR {
+                // `spans_z` runs from the waterline down, so `decay` is
+                // monotonically decreasing: once a span is below the floor,
+                // every deeper one is too. Zero the rest and stop — the
+                // remaining spans are where most of the work at large λ used
+                // to go, for a contribution below double precision.
+                for z in self.zm[t * (q + 1)..].iter_mut() {
+                    *z = 0.0;
                 }
-                continue;
+                break;
             }
             any = true;
+            self.z_active = t + 1;
             exp_moments(kappa, sz.len, q, &mut self.zm_raw);
             for b in 0..=q {
                 self.zm[t * (q + 1) + b] = decay * self.zm_raw[b];
@@ -1309,7 +1339,7 @@ impl<'h> InnerIntegral<'h> {
             for (a, &xma) in self.xm.iter().enumerate() {
                 // g_a = Σ_t Σ_b c[s,t,a,b] · Zm[t][b]
                 let mut g_a = 0.0;
-                for t in 0..nsz {
+                for t in 0..self.z_active {
                     let base = ((s * nsz + t) * p + a) * (q + 1);
                     let zrow = &self.zm[t * (q + 1)..(t + 1) * (q + 1)];
                     let crow = &coeff[base..base + q + 1];
@@ -1345,6 +1375,9 @@ pub(crate) struct HeelInner<'h> {
     zm_raw: Vec<C64>,
     /// Scratch: hollow-shape moments for the transom closure.
     sm: Vec<C64>,
+    /// Number of leading (shallowest) z-spans still above the decay floor at
+    /// the current `κ`; the deeper ones are exactly zero in `zm`.
+    z_active: usize,
     p: usize,
     q: usize,
 }
@@ -1363,6 +1396,7 @@ impl<'h> HeelInner<'h> {
             xm: Vec::with_capacity(p),
             zm_raw: Vec::with_capacity(q + 1),
             sm: Vec::with_capacity(3),
+            z_active: 0,
             p,
             q,
         }
@@ -1410,15 +1444,19 @@ impl<'h> HeelInner<'h> {
         let hull = self.hull;
         let q = self.q;
         let mut any = false;
+        self.z_active = 0;
         for (t, sz) in hull.spans_z().iter().enumerate() {
             let decay = kappa.scale(-sz.start).exp();
-            if decay == C64::ZERO {
-                for b in 0..=q {
-                    self.zm[t * (q + 1) + b] = C64::ZERO;
+            // Only the real part of κ decays; |decay| is monotone in depth
+            // exactly as in the upright kernel, so the same prefix rule holds.
+            if decay.abs() < Z_DECAY_FLOOR {
+                for z in self.zm[t * (q + 1)..].iter_mut() {
+                    *z = C64::ZERO;
                 }
-                continue;
+                break;
             }
             any = true;
+            self.z_active = t + 1;
             exp_moments_complex(kappa, sz.len, q, &mut self.zm_raw);
             for b in 0..=q {
                 self.zm[t * (q + 1) + b] = decay * self.zm_raw[b];
@@ -1440,7 +1478,7 @@ impl<'h> HeelInner<'h> {
             let mut span_sum = C64::ZERO;
             for (a, &xma) in self.xm.iter().enumerate() {
                 let mut g_a = C64::ZERO;
-                for t in 0..nsz {
+                for t in 0..self.z_active {
                     let base = ((s * nsz + t) * p + a) * (q + 1);
                     let zrow = &self.zm[t * (q + 1)..(t + 1) * (q + 1)];
                     let crow = &coeff[base..base + q + 1];

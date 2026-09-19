@@ -171,11 +171,25 @@ impl Hull {
         // Wetted surface: smooth integrand, use a generous rule.
         // x·f and z·f raise one degree by one; +2 keeps the rule exact.
         let n_vol = (p.max(q) + 2) / 2 + 2;
-        // Wetted-surface integrand is smooth but non-polynomial; a hull may be
-        // a single span, so use a high-order rule per span.
-        let n_wet = 24;
+        // Wetted-surface integrand is smooth but non-polynomial, so it needs a
+        // genuine rule rather than an exact one. What sets a *composite*
+        // rule's accuracy is the total node count along each axis, not the
+        // count per span — so spend a fixed budget across however many spans
+        // the loft produced. A single-span hull keeps the original 24-point
+        // rule; a finely-lofted one drops to a handful per span, which is what
+        // keeps `Hull::new` affordable once a dense net puts a few thousand
+        // span pairs here (the integrand is a polynomial *within* each span,
+        // so a few nodes on a short span are already far past converged).
+        const WET_NODES_PER_AXIS: usize = 200;
+        let n_wet_x = WET_NODES_PER_AXIS
+            .div_ceil(spans_x.len().max(1))
+            .clamp(4, 24);
+        let n_wet_z = WET_NODES_PER_AXIS
+            .div_ceil(spans_z.len().max(1))
+            .clamp(4, 24);
         let (xv, wv) = gauss_legendre(n_vol);
-        let (xw, ww) = gauss_legendre(n_wet);
+        let (xwx, wwx) = gauss_legendre(n_wet_x);
+        let (xwz, wwz) = gauss_legendre(n_wet_z);
         let mut volume = 0.0;
         let mut volume_mx = 0.0;
         let mut volume_mz = 0.0;
@@ -193,13 +207,13 @@ impl Hull {
                         volume_mz += wv[i] * wv[j] * jac * z * f;
                     }
                 }
-                for (i, &xi) in xw.iter().enumerate() {
+                for (i, &xi) in xwx.iter().enumerate() {
                     let x = sx.start + sx.len * (xi + 1.0) / 2.0;
-                    for (j, &zj) in xw.iter().enumerate() {
+                    for (j, &zj) in xwz.iter().enumerate() {
                         let z = zj_map(sz, zj);
                         let fx = surface.eval_deriv(x, z, 1, 0);
                         let fz = surface.eval_deriv(x, z, 0, 1);
-                        wetted += ww[i] * ww[j] * jac * (1.0 + fx * fx + fz * fz).sqrt();
+                        wetted += wwx[i] * wwz[j] * jac * (1.0 + fx * fx + fz * fz).sqrt();
                     }
                 }
             }
@@ -538,13 +552,16 @@ fn compute_span_coeffs(
 /// maximum over x is located by sampling each x-span, which is ample for a
 /// quantity that only ever appears as the denominator of a ratio.
 fn max_section_area_of(surface: &BSplineSurface, spans_x: &[Span], spans_z: &[Span]) -> f64 {
-    const SAMPLES_PER_SPAN: usize = 16;
+    // As in `Hull::new`: a fixed number of stations over the whole hull, not
+    // per span, so a dense loft does not pay for a scan it does not need.
+    const SECTION_STATIONS: usize = 256;
+    let samples_per_span = SECTION_STATIONS.div_ceil(spans_x.len().max(1)).clamp(2, 16);
     let q = surface.degree_z();
     let (zn, zw) = gauss_legendre(q / 2 + 2);
     let mut best = 0.0f64;
     for sx in spans_x {
-        for i in 0..=SAMPLES_PER_SPAN {
-            let x = sx.start + sx.len * i as f64 / SAMPLES_PER_SPAN as f64;
+        for i in 0..=samples_per_span {
+            let x = sx.start + sx.len * i as f64 / samples_per_span as f64;
             let mut area = 0.0;
             for sz in spans_z {
                 let jac = sz.len / 2.0;
