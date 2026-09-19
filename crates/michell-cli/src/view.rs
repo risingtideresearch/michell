@@ -24,6 +24,7 @@
 //!   /api/displacement?mass=M  re-float the assembly at total mass M
 //!   /api/resistance?p=x,y;... resistance for the given world placements
 
+use crate::formats::resolved_fit;
 use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
@@ -328,11 +329,7 @@ fn bodies_from_iges(
         waterline_z: design_wl,
         stations: settings.samples.0,
         waterlines: settings.samples.1,
-        fit: if settings.fit_explicit {
-            settings.fit
-        } else {
-            ImportOptions::default().fit
-        },
+        fit: resolved_fit(settings, ImportOptions::default().fit),
         centerplane: settings.centerplane,
     };
     let src = source_fleet(&text, design_wl).ok()?;

@@ -301,14 +301,43 @@ optionally augmented with `∂f/∂x`/`∂f/∂z` channels (`NaN` = unknown at t
 sample) and per-sample weights (`0` excludes a sample — e.g. a failed CAD
 inversion, which is *unknown* geometry rather than zero beam). The grid is
 lofted to the spline by `fit::fit_grid`: weighted tensor-product least
-squares over every channel present (quantile knot placement, per-channel
-residuals reported so you can judge fit quality). Derivative observations
+squares over every channel present (quantile knot placement, banded
+Cholesky, per-channel residuals reported so you can judge fit quality). Derivative observations
 are scaled by the local sample spacing so slopes and values are
 commensurate, and a slope that predicts more change across one sample cell
 than the half-beam anywhere on its stencil is skipped — it describes
 geometry (a bilge wall, the keel fold) that no loft at that sampling can
 resolve, and fitting it would only distort the values.
 `FitOptions::derivative_weight` tunes or disables the channels.
+
+**Loft resolution matters, and is cheap.** The normal equations of a
+tensor-product loft are *banded* — a sample's basis row reaches only
+`degree` control points in each direction, so `A[i][j]` vanishes beyond
+`|i − j| > degree_x·n_ctrl_z + degree_z` — and factoring the band rather than
+the full matrix turns the solve from `O(n³)` into `O(n·b²)`. A 160×30 net
+lofts in ~0.14 s instead of ~14 s, so there is no longer a reason to run a
+control net too coarse to hold the hull. That matters more than it sounds:
+a least-squares fit that cannot reach its samples removes exactly the
+short-scale content of `∂f/∂x` that feeds the **diverging** end of the
+free-wave spectrum, and the first thing it biases is `R_w` at low Froude
+number. On a real CAD import the previous 20×12 default overstated `R_w` by
+**more than 3×** at Fn 0.15 and 2.5× at Fn 0.25, converging only around
+80×24 — which is now the import default (with a 301×61 sample grid).
+`FitReport::under_resolved` flags a fit whose RMS residual is still more
+than 2% of the hull's own half-beam scale, and the CLI prints that as a
+warning rather than letting it pass into a resistance curve.
+
+A finer net does cost time downstream — every inner integral is linear in the
+**span** count — so the kernel stops walking z-spans once `e^{−κ z₀}` falls
+below `1e-20`. At large `λ` the decay `κ = νλ²` confines the integrand to a
+sliver under the waterline, which is exactly where the outer quadrature spends
+most of its evaluations, and the dropped terms are four orders below double
+epsilon: on a real import this halves a resistance sweep with bit-identical
+output. Net effect of resolving the geometry properly: a 31-speed sweep on an
+8 m IGES hull goes from 9 s to 56 s, and stops being wrong by 3x. The residual is
+a proxy for what actually matters (error in `∂f/∂x`, not in `f`), so treat it
+as a floor on the problem, not a measure of it; where a grid carries observed
+slopes, `FitReport::fx_residual` is the sharper signal.
 
 - **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
   the human-authorable path: a station × waterline table of half-beams

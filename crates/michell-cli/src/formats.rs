@@ -75,7 +75,7 @@ impl Default for LoadSettings {
         LoadSettings {
             waterline_z: 0.0,
             centerplane: None,
-            samples: (121, 33),
+            samples: (301, 61),
             fit: FitOptions::default(),
             fit_explicit: false,
             units: None,
@@ -160,11 +160,7 @@ pub fn load_hulls(
             waterline_z: settings.waterline_z,
             stations: settings.samples.0,
             waterlines: settings.samples.1,
-            fit: if settings.fit_explicit {
-                settings.fit
-            } else {
-                ImportOptions::default().fit
-            },
+            fit: resolved_fit(settings, ImportOptions::default().fit),
             centerplane: settings.centerplane,
         };
         let poses = vec![HullPose::default(); mf.len()];
@@ -279,11 +275,7 @@ pub fn load_hulls(
             waterlines: settings.samples.1,
             // Unless set explicitly, use the denser IGES default net rather
             // than the offsets-table default.
-            fit: if settings.fit_explicit {
-                settings.fit
-            } else {
-                ImportOptions::default().fit
-            },
+            fit: resolved_fit(settings, ImportOptions::default().fit),
             centerplane: settings.centerplane,
         };
         let fleet =
@@ -408,15 +400,34 @@ pub fn load_body(path: &str) -> Result<Body, String> {
 }
 
 /// Body sampling options derived from the CLI load settings.
+/// Hold a *default* control net down to what the sample grid can support
+/// (the loft needs `n_ctrl + 2` samples per axis). Without this, a user who
+/// asks for a coarse `--samples` but leaves `--fit-control` alone gets an
+/// error from a net they never chose. An explicit `--fit-control` is left
+/// exactly as given, so an over-ambitious net still reports the real problem.
+pub fn clamp_fit_to_samples(fit: FitOptions, samples: (usize, usize)) -> FitOptions {
+    FitOptions {
+        n_ctrl_x: fit.n_ctrl_x.min(samples.0.saturating_sub(2)),
+        n_ctrl_z: fit.n_ctrl_z.min(samples.1.saturating_sub(2)),
+        ..fit
+    }
+}
+
+/// The fit a load should use: the user's if they set one, otherwise the
+/// default held down to the sample grid.
+pub fn resolved_fit(settings: &LoadSettings, default: FitOptions) -> FitOptions {
+    if settings.fit_explicit {
+        settings.fit
+    } else {
+        clamp_fit_to_samples(default, settings.samples)
+    }
+}
+
 pub fn body_options(settings: &LoadSettings) -> BodyOptions {
     BodyOptions {
         stations: settings.samples.0,
         waterlines: settings.samples.1,
-        fit: if settings.fit_explicit {
-            settings.fit
-        } else {
-            BodyOptions::default().fit
-        },
+        fit: resolved_fit(settings, BodyOptions::default().fit),
     }
 }
 

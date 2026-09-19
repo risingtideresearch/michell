@@ -368,6 +368,80 @@ fn multispan_inner_integrals_match_brute_force() {
     }
 }
 
+#[test]
+fn deep_span_cutoff_is_invisible_at_large_lambda() {
+    // At large λ the vertical decay κ = νλ² confines the integrand to a
+    // sliver under the waterline, and the kernel stops walking z-spans whose
+    // e^{−κz₀} has fallen below 1e-20. That is the optimisation that pays for
+    // a finely-resolved loft, so pin it against a brute-force reference at
+    // λ well past the point where the deep spans drop out.
+    let knots_x = vec![0.0, 0.0, 0.0, 0.0, 2.5, 5.0, 7.5, 10.0, 10.0, 10.0, 10.0];
+    let knots_z = vec![0.0, 0.0, 0.0, 0.3, 0.6, 0.9, 1.2, 1.2, 1.2];
+    let (nx, nz) = (7usize, 6usize);
+    let mut control = vec![0.0; nx * nz];
+    for i in 0..nx {
+        for j in 0..nz {
+            let gi = [0.0, 0.35, 0.8, 1.0, 0.8, 0.35, 0.0][i];
+            control[i * nz + j] = gi * (1.5 - 0.22 * j as f64);
+        }
+    }
+    let surf = BSplineSurface::new(3, 2, knots_x, knots_z, control).unwrap();
+    let hull = Hull::new(surf).unwrap();
+
+    let u = 6.0;
+    let cond = Conditions::seawater(u);
+    let nu = G / (u * u);
+    let x_mid = 5.0;
+    let (gn, gw) = gauss_legendre_ref(24);
+    let xs = [0.0, 2.5, 5.0, 7.5, 10.0];
+    let zs = [0.0, 0.3, 0.6, 0.9, 1.2];
+
+    for lambda in [8.0f64, 20.0, 40.0] {
+        let k = nu * lambda;
+        let kappa = nu * lambda * lambda;
+        // Panel the reference finely enough for the oscillation at this λ,
+        // and for the decay: both scale with λ.
+        let np_x = ((k * 2.5 / 0.5).ceil() as usize).clamp(4, 400);
+        let np_z = ((kappa * 0.3 / 0.5).ceil() as usize).clamp(4, 800);
+        let (mut i_ref, mut j_ref) = (0.0f64, 0.0f64);
+        for w in xs.windows(2) {
+            for px in 0..np_x {
+                let x0 = w[0] + (w[1] - w[0]) * px as f64 / np_x as f64;
+                let x1 = w[0] + (w[1] - w[0]) * (px + 1) as f64 / np_x as f64;
+                for v in zs.windows(2) {
+                    for pz in 0..np_z {
+                        let z0 = v[0] + (v[1] - v[0]) * pz as f64 / np_z as f64;
+                        let z1 = v[0] + (v[1] - v[0]) * (pz + 1) as f64 / np_z as f64;
+                        // Once the decay is negligible the rest contributes
+                        // nothing to the reference either.
+                        if (-kappa * z0).exp() < 1e-25 {
+                            break;
+                        }
+                        let jac = (x1 - x0) / 2.0 * ((z1 - z0) / 2.0);
+                        for (a, &na) in gn.iter().enumerate() {
+                            let x = x0 + (x1 - x0) * (na + 1.0) / 2.0;
+                            for (b, &nb) in gn.iter().enumerate() {
+                                let z = z0 + (z1 - z0) * (nb + 1.0) / 2.0;
+                                let fx = hull.surface().eval_deriv(x, z, 1, 0);
+                                let common = gw[a] * gw[b] * jac * fx * (-kappa * z).exp();
+                                i_ref += common * (k * (x - x_mid)).cos();
+                                j_ref += common * (k * (x - x_mid)).sin();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (i_got, j_got) = michell::inner_integrals(&hull, &cond, lambda).unwrap();
+        let scale = (i_ref * i_ref + j_ref * j_ref).sqrt().max(1e-300);
+        let err = ((i_got - i_ref).hypot(j_got - j_ref)) / scale;
+        assert!(
+            err < 1e-8,
+            "λ={lambda}: got ({i_got:e}, {j_got:e}), want ({i_ref:e}, {j_ref:e}), rel {err:e}"
+        );
+    }
+}
+
 /// Local Gauss-Legendre reference (independent of the crate's internal one).
 fn gauss_legendre_ref(n: usize) -> (Vec<f64>, Vec<f64>) {
     let mut nodes = vec![0.0; n];

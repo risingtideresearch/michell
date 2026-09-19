@@ -72,6 +72,55 @@ pub struct FitReport {
     pub fx_residual: Option<ChannelResiduals>,
     /// Residuals of the `∂f/∂z` channel, likewise.
     pub fz_residual: Option<ChannelResiduals>,
+    /// Largest half-beam among the fitted samples [m] — the scale the
+    /// residuals are meaningful against. `0.0` if nothing was observed.
+    pub sample_scale: f64,
+}
+
+impl FitReport {
+    /// RMS residual as a fraction of the hull's own half-beam scale.
+    pub fn relative_rms(&self) -> f64 {
+        if self.sample_scale > 0.0 {
+            self.rms_residual / self.sample_scale
+        } else {
+            0.0
+        }
+    }
+
+    /// Largest residual as a fraction of the hull's own half-beam scale.
+    pub fn relative_max(&self) -> f64 {
+        if self.sample_scale > 0.0 {
+            self.max_residual / self.sample_scale
+        } else {
+            0.0
+        }
+    }
+
+    /// Whether the control net is too coarse to hold the sampled geometry.
+    ///
+    /// A loft that cannot reach its samples is not a cosmetic problem: the
+    /// least-squares fit removes exactly the short-scale content of `∂f/∂x`
+    /// that feeds the **diverging** (large-`λ`) end of the free-wave
+    /// spectrum, so the first thing it biases is `R_w` at low Froude number,
+    /// where that end of the spectrum carries the resistance. The cure is
+    /// more control points (and enough samples to support them), which the
+    /// banded normal equations make cheap.
+    ///
+    /// The test is on the **RMS** residual, not the largest one. A single
+    /// bad sample at a stem tip or a transom corner drives `max_residual` to
+    /// a large fraction of a locally tiny half-beam without saying anything
+    /// about the hull as a whole, and calibrating against real imports (a
+    /// converged ama sits at ~1.2% max-normalised RMS; a visibly
+    /// unconverged hull at ~2.3%, and the same hull on a net three times too
+    /// coarse at ~8%) puts the useful line just above 2%.
+    ///
+    /// This is a proxy, and a conservative one: it measures the error in `f`,
+    /// while what the wave integral actually sees is the error in `∂f/∂x`. A
+    /// grid that carries observed slopes reports those separately in
+    /// [`Self::fx_residual`], which is the sharper signal where it exists.
+    pub fn under_resolved(&self) -> bool {
+        self.relative_rms() > 0.02
+    }
 }
 
 /// Fit a hull to gridded half-beam samples (value channel only). Convenience
@@ -170,7 +219,14 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
     };
 
     let n = nx * nz;
-    let mut a = vec![0.0f64; n * n];
+    // The normal equations are **banded**, not dense: a sample's basis row
+    // touches control indices `(x0 + a) * nz + (z0 + c)` for `a <= px`,
+    // `c <= pz`, so `A[i][j]` can only be non-zero for `|i - j| <= b`. Storing
+    // and factoring the band turns an O(n³) / O(n²)-memory solve into
+    // O(n·b²) / O(n·b), which is what makes a finely-resolved control net
+    // affordable (a 160x30 net drops from tens of seconds to milliseconds).
+    let b = (px * nz + pz).min(n.saturating_sub(1));
+    let mut a = vec![0.0f64; n * (b + 1)];
     let mut rhs = vec![0.0f64; n];
     let mut scratch: Vec<(usize, f64)> = Vec::with_capacity((px + 1) * (pz + 1));
     for (i, (x0, brx)) in rows_x.iter().enumerate() {
@@ -183,6 +239,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
             add_observation(
                 &mut a,
                 &mut rhs,
+                b,
                 nz,
                 (*x0, &brx[0]),
                 (*z0, &brz[0]),
@@ -195,6 +252,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
                     add_observation(
                         &mut a,
                         &mut rhs,
+                        b,
                         nz,
                         (*x0, &brx[1]),
                         (*z0, &brz[0]),
@@ -209,6 +267,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
                     add_observation(
                         &mut a,
                         &mut rhs,
+                        b,
                         nz,
                         (*x0, &brx[0]),
                         (*z0, &brz[1]),
@@ -221,9 +280,9 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
         }
     }
 
-    let l = cholesky(a, n).ok_or_else(ill_conditioned)?;
+    let l = band_cholesky(a, n, b).ok_or_else(ill_conditioned)?;
     let mut control = rhs;
-    chol_solve(&l, n, &mut control);
+    band_solve(&l, n, b, &mut control);
 
     // Enforce the hull contract f >= 0: snap numerical dust to zero, floor
     // genuine ringing (reported so the caller can add control points if it
@@ -245,6 +304,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
     let mut max_at = (st[0], wl[0]);
     let mut sum_sq = 0.0f64;
     let mut n_val = 0usize;
+    let mut sample_scale = 0.0f64;
     let mut acc_fx = (0.0f64, 0.0f64, 0usize); // (max, sum_sq, count)
     let mut acc_fz = (0.0f64, 0.0f64, 0usize);
     for (i, (x0, brx)) in rows_x.iter().enumerate() {
@@ -261,6 +321,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
             }
             sum_sq += r * r;
             n_val += 1;
+            sample_scale = sample_scale.max(f[s].abs());
             if let Some(fx) = fx {
                 if usable(fx[s], hx[i], f_near_x(s)) {
                     let r =
@@ -290,6 +351,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
         floored,
         fx_residual: channel(acc_fx),
         fz_residual: channel(acc_fz),
+        sample_scale,
     };
 
     let surface = BSplineSurface::new(px, pz, kx, kz, control)?;
@@ -302,6 +364,7 @@ pub fn fit_grid(grid: &SampleGrid, opts: &FitOptions) -> Result<(Hull, FitReport
 fn add_observation(
     a: &mut [f64],
     rhs: &mut [f64],
+    b: usize,
     nz: usize,
     bx: (usize, &[f64]),
     bz: (usize, &[f64]),
@@ -309,7 +372,6 @@ fn add_observation(
     target: f64,
     scratch: &mut Vec<(usize, f64)>,
 ) {
-    let n = rhs.len();
     scratch.clear();
     for (i, &vx) in bx.1.iter().enumerate() {
         for (j, &vz) in bz.1.iter().enumerate() {
@@ -318,11 +380,19 @@ fn add_observation(
     }
     for &(ci, c1) in scratch.iter() {
         rhs[ci] += w * c1 * target;
-        let row = &mut a[ci * n..(ci + 1) * n];
         for &(cj, c2) in scratch.iter() {
-            row[cj] += w * c1 * c2;
+            // Lower band only; the factorisation reads the symmetric half.
+            if cj <= ci {
+                a[band_idx(ci, cj, b)] += w * c1 * c2;
+            }
         }
     }
+}
+
+/// Index of `A[i][j]` (`i - b <= j <= i`) in lower-band storage.
+#[inline]
+fn band_idx(i: usize, j: usize, b: usize) -> usize {
+    i * (b + 1) + (j + b - i)
 }
 
 /// Evaluate a tensor-product row against the control net.
@@ -384,43 +454,47 @@ fn approx_knots(t: &[f64], degree: usize, n_ctrl: usize) -> Result<Vec<f64>> {
 
 /// In-place Cholesky A = L L'; returns the lower factor, or None if the
 /// matrix is not (numerically) positive definite.
-fn cholesky(mut a: Vec<f64>, n: usize) -> Option<Vec<f64>> {
+fn band_cholesky(mut a: Vec<f64>, n: usize, b: usize) -> Option<Vec<f64>> {
     for k in 0..n {
-        let mut d = a[k * n + k];
-        for j in 0..k {
-            d -= a[k * n + j] * a[k * n + j];
+        let lo_k = k.saturating_sub(b);
+        let mut d = a[band_idx(k, k, b)];
+        for j in lo_k..k {
+            let v = a[band_idx(k, j, b)];
+            d -= v * v;
         }
         if d <= 0.0 || !d.is_finite() {
             return None;
         }
         let d = d.sqrt();
-        a[k * n + k] = d;
-        for i in (k + 1)..n {
-            let mut s = a[i * n + k];
-            for j in 0..k {
-                s -= a[i * n + j] * a[k * n + j];
+        a[band_idx(k, k, b)] = d;
+        for i in (k + 1)..(k + b + 1).min(n) {
+            // L[i][j] and L[k][j] are both in band only for j >= i - b.
+            let lo = i.saturating_sub(b);
+            let mut sacc = a[band_idx(i, k, b)];
+            for j in lo..k {
+                sacc -= a[band_idx(i, j, b)] * a[band_idx(k, j, b)];
             }
-            a[i * n + k] = s / d;
+            a[band_idx(i, k, b)] = sacc / d;
         }
     }
     Some(a)
 }
 
-/// Solve L L' x = rhs in place.
-fn chol_solve(l: &[f64], n: usize, rhs: &mut [f64]) {
+/// Solve `L Lᵀ x = rhs` in place, `L` in lower-band storage.
+fn band_solve(l: &[f64], n: usize, b: usize, rhs: &mut [f64]) {
     for i in 0..n {
         let mut s = rhs[i];
-        for j in 0..i {
-            s -= l[i * n + j] * rhs[j];
+        for j in i.saturating_sub(b)..i {
+            s -= l[band_idx(i, j, b)] * rhs[j];
         }
-        rhs[i] = s / l[i * n + i];
+        rhs[i] = s / l[band_idx(i, i, b)];
     }
     for i in (0..n).rev() {
         let mut s = rhs[i];
-        for j in (i + 1)..n {
-            s -= l[j * n + i] * rhs[j];
+        for j in (i + 1)..(i + b + 1).min(n) {
+            s -= l[band_idx(j, i, b)] * rhs[j];
         }
-        rhs[i] = s / l[i * n + i];
+        rhs[i] = s / l[band_idx(i, i, b)];
     }
 }
 
@@ -596,6 +670,118 @@ mod tests {
             "hermite fit error {e2} not below value-only error {e1}"
         );
         assert!(e2 < 2e-3, "hermite fit error {e2}");
+    }
+
+    #[test]
+    fn band_solve_is_exact_on_a_dense_net() {
+        // The normal equations are factored in band storage; a wrong band
+        // index shows up as a wrong fit, not a crash, so pin the one case
+        // with a known answer: a biquadratic is exactly representable by a
+        // bicubic net of any size.
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let (st, wl, y) = wigley_grid(l, b, t, 401, 81);
+        for (nx, nz) in [(20usize, 12usize), (80, 24), (160, 40)] {
+            let opts = FitOptions {
+                degree_x: 3,
+                degree_z: 3,
+                n_ctrl_x: nx,
+                n_ctrl_z: nz,
+                ..FitOptions::default()
+            };
+            let (hull, rep) = fit_offsets(&st, &wl, &y, &opts).unwrap();
+            assert!(
+                rep.max_residual < 1e-9,
+                "{nx}x{nz}: max residual {} on an exactly representable surface",
+                rep.max_residual
+            );
+            assert!(!rep.under_resolved(), "{nx}x{nz} wrongly flagged");
+            // And the geometry that comes out of it is still the Wigley one.
+            let exact = 4.0 * b * l * t / 9.0;
+            let vol = hull.displaced_volume();
+            assert!(
+                (vol - exact).abs() < 1e-6 * exact,
+                "{nx}x{nz}: volume {vol} vs {exact}"
+            );
+        }
+    }
+
+    #[test]
+    fn residuals_fall_with_the_net_and_a_good_fit_is_not_flagged() {
+        // A hard slope break in x at 0.7L: the short-scale content of df/dx
+        // that a coarse net cannot hold. Refining must reduce the residual
+        // monotonically, and a well-resolved fit must not raise the flag.
+        let (l, t) = (10.0, 0.6);
+        let (mx, mz) = (401, 41);
+        let stations: Vec<f64> = (0..mx).map(|i| l * i as f64 / (mx - 1) as f64).collect();
+        let waterlines: Vec<f64> = (0..mz).map(|j| t * j as f64 / (mz - 1) as f64).collect();
+        let mut y = vec![0.0; mx * mz];
+        for (i, &x) in stations.iter().enumerate() {
+            let xi = 2.0 * x / l - 1.0;
+            let kink = if x < 0.7 * l {
+                1.0
+            } else {
+                1.0 + 2.5 * (x - 0.7 * l) / l
+            };
+            for (j, &z) in waterlines.iter().enumerate() {
+                y[i * mz + j] = 0.5 * (1.0 - xi * xi) * kink * (1.0 - (z / t) * (z / t));
+            }
+        }
+        let fit = |nx, nz| {
+            let opts = FitOptions {
+                degree_x: 3,
+                degree_z: 3,
+                n_ctrl_x: nx,
+                n_ctrl_z: nz,
+                ..FitOptions::default()
+            };
+            fit_offsets(&stations, &waterlines, &y, &opts).unwrap().1
+        };
+        let r: Vec<_> = [(6usize, 5usize), (20, 12), (80, 24), (160, 32)]
+            .iter()
+            .map(|&(nx, nz)| fit(nx, nz))
+            .collect();
+        for w in r.windows(2) {
+            assert!(
+                w[1].rms_residual < w[0].rms_residual,
+                "refining did not help: {} -> {}",
+                w[0].rms_residual,
+                w[1].rms_residual
+            );
+        }
+        let fine = r.last().unwrap();
+        assert!(fine.sample_scale > 0.0);
+        assert!(
+            !fine.under_resolved(),
+            "well-resolved fit flagged (rms {:.3}%)",
+            100.0 * fine.relative_rms()
+        );
+    }
+
+    #[test]
+    fn under_resolved_reads_residuals_against_the_hull_scale() {
+        // The flag is pure arithmetic on the report, so pin it directly
+        // rather than through a hull that happens to sit near the line.
+        // Calibration: a converged real import lands near 1% RMS-on-scale, a
+        // visibly unconverged one above 2%.
+        let report = |rms: f64, scale: f64| FitReport {
+            max_residual: 10.0 * rms,
+            max_residual_at: (0.0, 0.0),
+            rms_residual: rms,
+            floored: 0.0,
+            fx_residual: None,
+            fz_residual: None,
+            sample_scale: scale,
+        };
+        assert!(!report(0.010, 1.0).under_resolved());
+        assert!(!report(0.019, 1.0).under_resolved());
+        assert!(report(0.021, 1.0).under_resolved());
+        assert!(report(0.21, 10.0).under_resolved());
+        // Scale-free: the same relative error at a different hull size.
+        assert!(report(0.0021, 0.1).under_resolved());
+        // A degenerate fit with nothing observed must not warn.
+        assert!(!report(0.5, 0.0).under_resolved());
+        assert_eq!(report(0.5, 0.0).relative_rms(), 0.0);
+        assert_eq!(report(0.5, 0.0).relative_max(), 0.0);
     }
 
     #[test]

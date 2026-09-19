@@ -635,15 +635,21 @@ impl Default for ImportOptions {
     fn default() -> Self {
         ImportOptions {
             waterline_z: 0.0,
-            stations: 121,
-            waterlines: 33,
-            // Real CAD hulls carry more shape than hand-typed offset tables;
-            // a denser net keeps low-Froude wave resistance converged.
+            stations: 301,
+            waterlines: 61,
+            // Real CAD hulls carry more shape than hand-typed offset tables,
+            // and a net too coarse to hold it does not fail loudly — it
+            // quietly smooths away the short-scale `∂f/∂x` that feeds the
+            // diverging end of the wave spectrum, biasing `R_w` at low Froude
+            // first (on a real hull the old 20x12 default overstated it by
+            // more than 3x at Fn 0.15). The banded normal equations make a
+            // net this size cost milliseconds, so resolve the geometry and
+            // let `FitReport::under_resolved` flag anything still short.
             fit: FitOptions {
                 degree_x: 3,
                 degree_z: 3,
-                n_ctrl_x: 20,
-                n_ctrl_z: 12,
+                n_ctrl_x: 80,
+                n_ctrl_z: 18,
                 ..FitOptions::default()
             },
             centerplane: None,

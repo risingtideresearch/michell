@@ -37,13 +37,16 @@ pub struct BodyOptions {
 impl Default for BodyOptions {
     fn default() -> Self {
         BodyOptions {
-            stations: 121,
-            waterlines: 33,
+            stations: 301,
+            waterlines: 61,
+            // Matches the one-shot import default: this is the net the wetted
+            // hull the physics actually sees is lofted onto, so a coarse one
+            // here undoes however finely the band itself was modelled.
             fit: FitOptions {
                 degree_x: 3,
                 degree_z: 3,
-                n_ctrl_x: 20,
-                n_ctrl_z: 12,
+                n_ctrl_x: 80,
+                n_ctrl_z: 18,
                 ..FitOptions::default()
             },
         }
