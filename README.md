@@ -453,8 +453,9 @@ All poses are hydrostatic (no speed-dependent squat).
 (see [Dynamic sinkage and trim](#dynamic-sinkage-and-trim) above): equilibrium
 is re-solved at every speed rather than once per point, adding `fz` (dynamic
 force, N) and `lift_pct` (as a fraction of the weight, %) columns; `sinkage`/
-`trim_deg`/`volume`/`lcb` become the dynamic-attitude values. Requires a
-`weight` axis. Real cost: the
+`trim_deg`/`volume`/`lcb` become the dynamic-attitude values. Requires float
+mode — a non-zero hull `load.mass`, or a `param: "mass"` axis on a hull or a
+point load. Real cost: the
 near-field quadrature is far more expensive than the wave integral it reuses
 parts of, and equilibrium calls it every Newton iteration at every speed —
 budget minutes, not seconds, per sweep point, and prefer a handful of speed
