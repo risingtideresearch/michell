@@ -6,14 +6,12 @@
 //! report progress through a [`Reporter`] and return the text they would
 //! otherwise have printed to stdout; every other command still prints directly.
 
-mod archive;
 mod formats;
 mod gridio;
 mod json;
 pub mod manifest;
 mod pdf;
 mod png;
-mod render;
 mod report;
 mod view;
 
@@ -68,7 +66,6 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         }
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
-        Some("render") => cmd_render(&args[1..]),
         Some("view") => view::cmd_view(&args[1..]),
         Some("loft") => {
             let out = loft(&args[1..], report)?;
@@ -184,10 +181,6 @@ PHYSICS OPTIONS
                         length L_v = COEFF*U*sqrt(d_T/g) (default COEFF=sqrt2,
                         the ballistic free-fall value) so the body closes.
                         Inert on a hull that closes aft
-  --heel DEG            (resistance) heel the whole fleet DEG degrees about the
-                        platform's longitudinal axis; adds the tilted-thickness
-                        wave-making (|DEG| < 90). Viscous resistance is
-                        unchanged: no waterline re-clip, no yaw side-force
 
 WAVE FIELD (spectrum, wake)
   Both take one speed: --speed U (m/s; knots with --knots) or --froude F.
@@ -211,16 +204,6 @@ WAVE FIELD (spectrum, wake)
   The pattern is the far-field free-wave part of the linear solution: it is
   physical astern of each hull, not on or ahead of it.
 
-  render: a 3D shot of the fleet sitting in its wake (software-rendered).
-    -o OUT.png          output (default render.png)
-    --region X0:X1:Y0:Y1   water extent [m] (default: as wake)
-    --size WxH          image pixels (default 1200x800)
-    --grid N            water mesh columns (default 700)
-    --camera AZ:EL[:D]  degrees off dead astern (positive to starboard),
-                        elevation degrees, distance m (default 35:18, auto)
-    --z-scale S         vertical exaggeration of the water (default 1)
-    --freeboard F       topsides height above waterline [m] (default T/2)
-    --zmax M            tint saturation elevation [m] (default: 99.5th pct)
   Same caveat as wake (paled where not astern of every hull); hulls sit at
   the static waterline, without dynamic sinkage or trim.
 
@@ -1022,8 +1005,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
 
     let viscous_opts = p.viscous_options()?;
     let form_factor = viscous_opts.form_factor;
-    let heel_deg = p.f64_flag("heel")?.unwrap_or(0.0);
-    let heel = heel_deg.to_radians();
     let mut wave_opts = WaveOptions::default();
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
@@ -1033,12 +1014,8 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     let mut rows = Vec::new();
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let r = if heel != 0.0 {
-            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, &viscous_opts, heel)
-        } else {
-            michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
-        }
-        .map_err(|e| format!("at U = {u} m/s: {e}"))?;
+        let r = michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
+            .map_err(|e| format!("at U = {u} m/s: {e}"))?;
         rows.push((u, cond, r));
     }
 
@@ -1067,7 +1044,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         out.push_str("],");
         out.push_str(&format!(
             "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},\
-             \"roughness\":{},\"heel_deg\":{},",
+             \"roughness\":{},",
             fluid.density,
             fluid.kinematic_viscosity,
             form_factor,
@@ -1076,7 +1053,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
                 michell::Roughness::DeltaCf(c) => format!("{{\"delta_cf\":{c}}}"),
                 michell::Roughness::SandGrain(k) => format!("{{\"sand_grain_m\":{k}}}"),
             },
-            heel_deg
         ));
         out.push_str("\"points\":[");
         for (i, (u, cond, r)) in rows.iter().enumerate() {
@@ -1138,12 +1114,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     );
     if let Some(note) = roughness_regime_note(rows.iter().flat_map(|(_, _, r)| r.viscous.iter())) {
         println!("{note}");
-    }
-    if heel != 0.0 {
-        println!(
-            "heeled {heel_deg:.1} deg about the platform axis (tilted-thickness \
-             wave-making only; no waterline re-clip, no yaw side-force)"
-        );
     }
     let u_label = if knots { "U[kn]" } else { "U[m/s]" };
     if multi {
@@ -2057,176 +2027,6 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
         println!("faded ahead of x = {x_lo:.2} m (aft-most stern): not physical there");
     }
     println!("color scale: +-{vmax:.4} m; wrote {out_path}");
-    Ok(())
-}
-
-fn cmd_render(args: &[String]) -> Result<(), String> {
-    let p = parse_args(args)?;
-    if p.positional.is_empty() {
-        return Err("usage: michell render <hull>... --speed U [-o render.png] [options]".into());
-    }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
-    let u = single_speed(&p, l_ref)?;
-    let cond = p.conditions(u)?;
-
-    // Fleet extents in fleet coordinates.
-    let mut x_lo = f64::INFINITY;
-    let mut x_hi = f64::NEG_INFINITY;
-    let mut y_abs = 0.0f64;
-    for m in &loaded {
-        let (h0, h1) = m.hull.surface().x_domain();
-        x_lo = x_lo.min(h0 + m.placement.x);
-        x_hi = x_hi.max(h1 + m.placement.x);
-        y_abs = y_abs.max(m.placement.y.abs());
-    }
-
-    let [x0, x1, y0, y1] = match p.flag("region") {
-        Some(s) => parse_region(s)?,
-        None => {
-            let x1 = x_hi + 0.35 * l_ref;
-            let x0 = x_lo - 3.0 * l_ref;
-            let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
-            [x0, x1, -yh, yh]
-        }
-    };
-    let (gx, gy) = {
-        let gx = match p.flag("grid") {
-            Some(s) => s
-                .parse::<usize>()
-                .map_err(|_| format!("--grid: cannot parse count {s:?}"))?,
-            None => 700,
-        };
-        let gy = ((gx as f64) * (y1 - y0) / (x1 - x0)).round() as usize;
-        (gx.max(2), gy.clamp(64, 1200))
-    };
-    let (iw, ih) = match p.flag("size") {
-        Some(s) => parse_pair(s)?,
-        None => (1200, 800),
-    };
-    if iw < 16 || ih < 16 {
-        return Err("--size: image must be at least 16x16 pixels".into());
-    }
-
-    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
-    let grid = spec
-        .elevation_grid(x0, x1, y0, y1, gx, gy)
-        .map_err(|e| format!("{e}"))?;
-
-    let vmax = match p.f64_flag("zmax")? {
-        Some(v) if v > 0.0 => v,
-        Some(v) => return Err(format!("--zmax must be positive, got {v}")),
-        None => {
-            let mut abs: Vec<f64> = grid.zeta.iter().map(|v| v.abs()).collect();
-            abs.sort_by(|a, b| a.total_cmp(b));
-            abs[((abs.len() - 1) as f64 * 0.995) as usize].max(1e-12)
-        }
-    };
-    let z_scale = match p.f64_flag("z-scale")? {
-        Some(s) if s > 0.0 => s,
-        Some(s) => return Err(format!("--z-scale must be positive, got {s}")),
-        None => 1.0,
-    };
-
-    let mut scene = render::Scene::default();
-    let fade = render::PhysFade {
-        x_phys: x_lo,
-        feather: 0.5 * l_ref,
-    };
-    render::add_water(&mut scene, &grid, z_scale, vmax, fade);
-    render::add_skirt(&mut scene, &grid, z_scale, vmax, fade);
-    for m in &loaded {
-        let fb = match p.f64_flag("freeboard")? {
-            Some(f) if f >= 0.0 => f,
-            Some(f) => return Err(format!("--freeboard must be non-negative, got {f}")),
-            // Slender hulls (amas) have tiny drafts; keep a visible sheer.
-            None => (0.5 * m.hull.draft()).max(0.02 * m.hull.length()),
-        };
-        render::add_hull(
-            &mut scene,
-            m.hull.surface(),
-            m.placement.x,
-            m.placement.y,
-            fb,
-        );
-    }
-
-    // Camera: degrees off dead astern (positive toward +y), elevation, and
-    // an optional distance in metres (default frames the fleet).
-    let (az, el, dist) = match p.flag("camera") {
-        Some(s) => {
-            let parts: Vec<&str> = s.split(':').collect();
-            if parts.len() < 2 || parts.len() > 3 {
-                return Err(format!("--camera {s:?}: expected AZ:EL[:DIST]"));
-            }
-            let mut nums = [0.0f64; 3];
-            for (slot, v) in nums.iter_mut().zip(&parts) {
-                *slot = v
-                    .trim()
-                    .parse::<f64>()
-                    .map_err(|_| format!("--camera: cannot parse number {v:?}"))?;
-            }
-            let dist = if parts.len() == 3 {
-                Some(nums[2])
-            } else {
-                None
-            };
-            (nums[0], nums[1], dist)
-        }
-        None => (35.0, 18.0, None),
-    };
-    let l_fleet = x_hi - x_lo;
-    let dist = dist.unwrap_or(2.1 * (l_fleet + y_abs));
-    let target = [0.5 * (x_lo + x_hi), 0.0, 0.0];
-    let (azr, elr) = (az.to_radians(), el.to_radians());
-    let eye = render::add(
-        target,
-        [
-            -dist * azr.cos() * elr.cos(),
-            dist * azr.sin() * elr.cos(),
-            dist * elr.sin(),
-        ],
-    );
-    let cam = render::Camera {
-        eye,
-        target,
-        fov_deg: 32.0,
-    };
-    let light = render::Light {
-        dir: render::normalize([0.4, -0.4, 0.83]),
-        ambient: 0.45,
-        diffuse: 0.6,
-    };
-
-    let rgb = render::render(&scene, &cam, &light, iw, ih);
-    let out_path = p
-        .flag("output")
-        .cloned()
-        .unwrap_or_else(|| "render.png".to_string());
-    if !out_path.ends_with(".png") {
-        return Err(format!("render output {out_path:?}: expected a .png path"));
-    }
-    std::fs::write(&out_path, png::encode_rgb(iw, ih, &rgb))
-        .map_err(|e| format!("cannot write {out_path}: {e}"))?;
-    println!(
-        "render: {iw}x{ih} px, water {gx}x{gy} over x {x0:.2}..{x1:.2} m, y {y0:.2}..{y1:.2} m \
-         at U = {u:.3} m/s (Fn {:.3})\ncamera {az:.0} deg off astern, {el:.0} deg up, {dist:.1} m; \
-         tint +-{vmax:.4} m{}",
-        cond.froude_number(l_ref),
-        if z_scale != 1.0 {
-            format!(", water z x{z_scale}")
-        } else {
-            String::new()
-        }
-    );
-    println!(
-        "free-wave surface: physical astern of each hull; paled ahead of x = {x_lo:.2} m; \
-         hulls at static waterline (no sinkage/trim); wrote {out_path}"
-    );
     Ok(())
 }
 

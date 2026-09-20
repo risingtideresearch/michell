@@ -68,7 +68,6 @@
 
 pub mod body;
 mod bspline;
-pub mod centerplane;
 mod conditions;
 mod error;
 pub mod fit;
@@ -78,9 +77,6 @@ pub mod grid;
 mod hull;
 pub mod hulls;
 pub mod iges;
-pub mod inclined;
-pub mod lifting;
-pub mod lifting3d;
 mod michell;
 mod moments;
 pub mod parallel;
@@ -100,11 +96,9 @@ pub use friction::{
 pub use grid::SampleGrid;
 pub use hull::{Hull, Transom};
 pub use michell::{
-    asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
-    inner_integrals_with, multihull_heel_wave_resistance, multihull_wave_resistance,
-    multihull_wave_resistance_lifting, multihull_wave_resistance_with, wave_resistance,
-    wave_resistance_with, LiftingGrid, Placement, TransomClosure, WaveOptions, WaveResistance,
-    BALLISTIC_COEFF,
+    inner_integrals, inner_integrals_with, multihull_wave_resistance,
+    multihull_wave_resistance_with, wave_resistance, wave_resistance_with, Placement,
+    TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF,
 };
 pub use moments::C64;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
@@ -187,26 +181,6 @@ pub fn multihull_resistance_with(
     let mut solo_wave_total = 0.0;
     for m in members {
         solo_wave_total += multihull_wave_resistance_with(&[*m], cond, wave_opts)?.resistance;
-    }
-    multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
-}
-
-/// Multihull resistance for a fleet **heeled** by `heel` radians about the
-/// platform's longitudinal axis: the wave part uses
-/// [`multihull_heel_wave_resistance`], the viscous part is unchanged (the model
-/// does not re-clip to the heeled waterline — see that function). `heel = 0`
-/// reproduces [`multihull_resistance_with`].
-pub fn multihull_resistance_heeled(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    wave_opts: &WaveOptions,
-    viscous_opts: &ViscousOptions,
-    heel: f64,
-) -> Result<MultihullResistance> {
-    let wave = multihull_heel_wave_resistance(members, cond, heel, wave_opts)?;
-    let mut solo_wave_total = 0.0;
-    for m in members {
-        solo_wave_total += multihull_heel_wave_resistance(&[*m], cond, heel, wave_opts)?.resistance;
     }
     multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
 }

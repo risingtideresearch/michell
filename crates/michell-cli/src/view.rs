@@ -28,9 +28,8 @@ use crate::formats::resolved_fit;
 use crate::formats::{body_options, load_body};
 use crate::{load_fleet, parse_args, Member};
 use michell::body::{Body, BodyOptions};
-use michell::float::{heel_poses, solve_equilibrium_heeled, LoadCase};
+use michell::float::{solve_equilibrium_bodies, LoadCase};
 use michell::iges::{source_fleet, HullPose, ImportOptions, Platform};
-use michell::inclined::InclinedGrid;
 use michell::{Conditions, FreeWaveSpectrum, Hull, Placement};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -98,14 +97,8 @@ struct ViewState {
     /// estimate the combined figure uses, so their ratio (the interference
     /// factor) is consistent and → 1 as hulls separate.
     solo_wave_total: f64,
-    /// Platform heel angle [rad], + = starboard (+y) side down.
-    heel: f64,
     /// Immersion offset applied to the ama (outrigger) hulls [m], + = deeper.
     ama_dz: f64,
-    /// Vertical centre of gravity above the design floatplane [m] (for GZ).
-    vcg: f64,
-    /// Righting arm GZ [m] at the current heel/vcg (0 when not re-floatable).
-    gz: f64,
 }
 
 pub fn cmd_view(args: &[String]) -> Result<(), String> {
@@ -220,10 +213,7 @@ pub fn cmd_view(args: &[String]) -> Result<(), String> {
         viscous_total: 0.0,
         wetted_surface: 0.0,
         solo_wave_total: 0.0,
-        heel: 0.0,
         ama_dz: 0.0,
-        vcg: 0.0,
-        gz: 0.0,
     };
     recompute_fields(&mut state)?;
 
@@ -618,24 +608,17 @@ fn sample_field(f: &Field, x: f64, y: f64) -> f64 {
     a * (1.0 - ty) + b * ty
 }
 
-/// Re-float the whole assembly (bodies only) at a new total mass, heel angle,
+/// Re-float the whole assembly (bodies only) at a new total mass
 /// and ama-immersion offset; rebuild the wetted hulls and their transverse
-/// positions, compute the righting arm, then recompute fields.
+/// positions, then recompute fields.
 ///
-/// Heel is modelled as a rigid platform rotation that shifts each demihull
-/// transversely and in immersion (see [`michell::float::heel_poses`]) — the
-/// dominant multihull mechanism (an ama digs in as the other lifts) — while
-/// each half-breadth hull stays upright about its own centreplane, so the
-/// wave-field superposition still holds. The hull-local tilt a half-breadth
-/// model can't represent is restored to first order in the GZ figure.
-fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Result<(), String> {
+fn solve_state(state: &mut ViewState, mass: f64, ama_dz: f64) -> Result<(), String> {
     let opts = state.body_opts;
     let density = state.cond.fluid.density;
-    let vcg = state.vcg;
 
-    // Solve the heeled/loaded equilibrium and situate each body at it, holding
-    // the borrow of `state.hulls` only until we have owned results.
-    let (gz, situated): (f64, Vec<(usize, Option<Hull>, Placement)>) = {
+    // Solve the loaded equilibrium and situate each body at it, holding the
+    // borrow of `state.hulls` only until we have owned results.
+    let situated: Vec<(usize, Option<Hull>, Placement)> = {
         let idx: Vec<usize> = (0..state.hulls.len())
             .filter(|&i| state.hulls[i].body.is_some())
             .collect();
@@ -646,7 +629,7 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
             .iter()
             .map(|&i| state.hulls[i].body.as_ref().unwrap())
             .collect();
-        // Base poses: amas carry the immersion offset; then heel the platform.
+        // Base poses: amas carry the immersion offset.
         let base: Vec<HullPose> = idx
             .iter()
             .map(|&i| HullPose {
@@ -654,19 +637,13 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
                 ..HullPose::default()
             })
             .collect();
-        // Hydrostatics, trim, and the righting arm come from the true inclined
-        // cut; heel is applied inside the solve, not as a pose reposition.
-        let eq = solve_equilibrium_heeled(
+        let eq = solve_equilibrium_bodies(
             &bodies,
             0.0,
             &base,
             &LoadCase { mass, lcg: None },
             density,
-            heel,
-            vcg,
-            0.0, // CG on the platform centreline in the interactive viewer.
             &opts,
-            InclinedGrid::default(),
         )
         .map_err(|e| format!("{e}"))?;
         let platform = Platform {
@@ -674,27 +651,22 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
             trim: eq.trim,
             pivot_x: 0.0,
         };
-        let gz = eq.gz;
-        // Wetted geometry for display: the rigid heel reposition, situated at
-        // the solved attitude (the same geometry the resistance path uses).
-        let heeled = heel_poses(&bodies, &base, heel).map_err(|e| format!("{e}"))?;
         let mut situated = Vec::with_capacity(idx.len());
         for (k, &i) in idx.iter().enumerate() {
             match bodies[k]
-                .situate(0.0, &heeled[k], &platform, &opts)
+                .situate(0.0, &base[k], &platform, &opts)
                 .map_err(|e| format!("{e}"))?
             {
                 Some(sb) => situated.push((i, Some(sb.hull), sb.placement)),
                 None => situated.push((i, None, Placement { x: 0.0, y: 0.0 })),
             }
         }
-        (gz, situated)
+        situated
     };
 
     for (i, hull, placement) in situated {
         match hull {
             Some(h) => {
-                // Heel repositions the hull transversely, so its home moves too.
                 state.hulls[i].home = placement;
                 set_hull_geometry(&mut state.hulls[i], h);
                 state.hulls[i].dry = false;
@@ -703,17 +675,8 @@ fn solve_state(state: &mut ViewState, mass: f64, heel: f64, ama_dz: f64) -> Resu
         }
     }
     state.mass = mass;
-    state.heel = heel;
     state.ama_dz = ama_dz;
-    state.gz = gz;
     recompute_fields(state)
-}
-
-/// Righting arm GZ [m] at a new vcg without re-floating. `GZ = TCB − vcg·sinφ`
-/// and only the `vcg` term changes when the attitude is fixed, so the stored
-/// arm (`state.gz`, evaluated at `state.vcg`) is adjusted linearly — exact.
-fn compute_gz(state: &ViewState, heel: f64, vcg: f64) -> f64 {
-    state.gz + (state.vcg - vcg) * heel.sin()
 }
 
 /// Replace a view hull's wetted geometry (and its waterline beam profile for
@@ -853,34 +816,16 @@ fn route(path: &str, query: &str, state: &Mutex<ViewState>) -> Result<Resp, Stri
                 body: state_json(&s).into_bytes(),
             })
         }
-        // Re-float the platform: mass [kg], heel [deg], amaDz [m] (each
-        // defaults to the current value if omitted).
+        // Re-float the platform: mass [kg], amaDz [m] (each defaults to the
+        // current value if omitted).
         "/api/solve" => {
             let mut s = state.lock().unwrap();
             let mass = num_param(query, "mass", s.mass)?;
-            let heel_deg = num_param(query, "heel", s.heel.to_degrees())?;
             let ama_dz = num_param(query, "amaDz", s.ama_dz)?;
             if !(mass.is_finite() && mass > 0.0) {
                 return Err("mass must be positive".into());
             }
-            if !(heel_deg.is_finite() && heel_deg.abs() < 89.0) {
-                return Err("heel must be within ±89 degrees".into());
-            }
-            solve_state(&mut s, mass, heel_deg.to_radians(), ama_dz)?;
-            Ok(Resp {
-                ctype: "application/json",
-                body: state_json(&s).into_bytes(),
-            })
-        }
-        // Vertical CG [m]; only affects the righting arm, so no re-float.
-        "/api/vcg" => {
-            let mut s = state.lock().unwrap();
-            let v = num_param(query, "v", s.vcg)?;
-            if !v.is_finite() {
-                return Err("vcg must be finite".into());
-            }
-            s.gz = compute_gz(&s, s.heel, v); // uses the old vcg still in `s`
-            s.vcg = v;
+            solve_state(&mut s, mass, ama_dz)?;
             Ok(Resp {
                 ctype: "application/json",
                 body: state_json(&s).into_bytes(),
@@ -978,12 +923,11 @@ fn state_json(s: &ViewState) -> String {
     let mut out = String::new();
     let refloatable = s.hulls.iter().any(|h| h.body.is_some());
     let has_amas = s.hulls.iter().any(|h| h.is_ama);
-    let rm = s.mass * s.cond.gravity * s.gz; // righting moment [N·m]
     out.push_str(&format!(
         "{{\"view\":{{\"x0\":{x0},\"x1\":{x1},\"y0\":{y0},\"y1\":{y1}}},\
          \"speed\":{},\"froude\":{},\"transverseWavelength\":{},\"vmax\":{},\
          \"mass\":{},\"designMass\":{},\"lRef\":{},\"margin\":{},\
-         \"heelDeg\":{},\"amaDz\":{},\"vcg\":{},\"gz\":{},\"rm\":{},\
+         \"amaDz\":{},\
          \"refloatable\":{},\"hasAmas\":{},\
          \"fadeToward\":[240,239,236],\"fadeFraction\":0.55,\"hulls\":[",
         s.cond.speed,
@@ -994,11 +938,7 @@ fn state_json(s: &ViewState) -> String {
         s.design_mass,
         s.l_ref,
         s.margin,
-        jnum(s.heel.to_degrees()),
         jnum(s.ama_dz),
-        jnum(s.vcg),
-        jnum(s.gz),
-        jnum(rm),
         refloatable,
         has_amas,
     ));

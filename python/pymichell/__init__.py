@@ -27,7 +27,6 @@ Quick start::
 """
 
 from .bspline import BSplineSurface, load_hull, wigley
-from .sweep import Row, Spectrum, Sweep, read_sweep
 from .wave import (
     Conditions,
     FRESHWATER_DENSITY,
@@ -44,10 +43,6 @@ __all__ = [
     "Conditions",
     "WaveField",
     "wave_field",
-    "read_sweep",
-    "Sweep",
-    "Row",
-    "Spectrum",
     "SEAWATER_DENSITY",
     "FRESHWATER_DENSITY",
     "STANDARD_GRAVITY",

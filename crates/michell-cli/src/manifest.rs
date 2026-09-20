@@ -2,20 +2,16 @@
 //! bodies, with every varying quantity (speed, load, waterline, hull poses)
 //! expressed as a sweep axis. See the README for the schema.
 
-use crate::archive::{
-    Archive, Rows, SpecSample, KIND_HULLFILE, KIND_MANIFEST, KIND_META, KIND_ROWS,
-};
 use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
 use crate::json::{parse as parse_json, Json};
 use michell::body::{Body, BodyOptions};
 use michell::float::{
-    fleet_cg, solve_equilibrium_bodies_dynamic, solve_equilibrium_heeled, FleetState,
-    HeeledEquilibrium, HullLoad, LoadCase, PointLoad,
+    fleet_cg, solve_equilibrium_bodies, solve_equilibrium_bodies_dynamic, FleetState, HullLoad,
+    LoadCase, PointLoad,
 };
 use michell::iges::{HullPose, Platform};
-use michell::inclined::InclinedGrid;
 use michell::squat::{dynamic_load_closure, SquatOptions};
-use michell::{Conditions, FreeWaveSpectrum, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
+use michell::{Conditions, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 
 /// One knot in m/s.
 pub(crate) const KNOT: f64 = 1852.0 / 3600.0;
@@ -87,138 +83,6 @@ pub(crate) struct MHull {
     point_ids: Vec<String>,
 }
 
-/// Configuration for the heel roll-up metrics (active in vcg/equilibrium mode).
-/// Heel is no longer a sweep axis; instead each row carries the resistance rise
-/// at a few fixed angles plus GZ-curve summaries.
-pub(crate) struct HeelCfg {
-    /// Heel angles (deg) at which to report the fractional resistance rise.
-    res_angles: Vec<f64>,
-    /// GZ-curve scan step (deg).
-    gz_step: f64,
-    /// GZ-curve scan cap (deg) — the search for the angle of vanishing
-    /// stability stops here (also bounded below 90° by the inclined solver).
-    gz_max: f64,
-}
-
-impl Default for HeelCfg {
-    fn default() -> Self {
-        HeelCfg {
-            res_angles: vec![5.0, 10.0],
-            gz_step: 2.5,
-            gz_max: 90.0,
-        }
-    }
-}
-
-/// Summaries rolled up from a hull's GZ (righting-arm) curve.
-#[derive(Clone, Copy)]
-struct GzStats {
-    /// Heel angle of peak righting moment [deg].
-    peak_deg: f64,
-    /// Peak righting moment [N·m].
-    rm_peak: f64,
-    /// Area under the GZ curve to the vanishing angle [m·rad].
-    area: f64,
-    /// Angle of vanishing stability (first GZ zero-crossing) [deg].
-    vanish_deg: f64,
-}
-
-/// Per-point heel roll-up: the GZ summary, the heeled equilibria solved at the
-/// resistance angles, and the raw GZ curve `(heel_rad, gz_m)` samples (retained
-/// for the binary archive; empty outside equilibrium mode).
-type HeelRollup = (
-    Option<GzStats>,
-    Vec<Option<HeeledEquilibrium>>,
-    Vec<(f64, f64)>,
-);
-
-/// Reduce a sampled GZ curve to its summary metrics. `samples` are
-/// `(heel_rad, gz_m)` pairs, ascending in heel and starting at `(0, 0)`, at a
-/// uniform step. `weight_times_g` [N] converts GZ to righting moment.
-///
-/// Returns the stats and a `capped` flag that is `true` when the curve never
-/// crossed zero within the samples (so `vanish_deg` is the scan cap, not a real
-/// angle of vanishing stability). The area is integrated (trapezoid, in
-/// radians) only up to the interpolated zero-crossing.
-fn gz_curve_stats(samples: &[(f64, f64)], weight_times_g: f64) -> (GzStats, bool) {
-    // Locate the first positive→negative crossing and its interpolated angle.
-    let mut vanish_rad = samples.last().map(|s| s.0).unwrap_or(0.0);
-    let mut cross_idx = None; // index i such that the crossing is in [i, i+1]
-    let mut capped = true;
-    for i in 0..samples.len().saturating_sub(1) {
-        let (x0, y0) = samples[i];
-        let (x1, y1) = samples[i + 1];
-        if y0 >= 0.0 && y1 < 0.0 {
-            let t = y0 / (y0 - y1); // y0 - y1 > 0 here
-            vanish_rad = x0 + t * (x1 - x0);
-            cross_idx = Some(i);
-            capped = false;
-            break;
-        }
-    }
-
-    // Area under the curve up to the vanishing angle (trapezoid, m·rad).
-    let last = cross_idx.map(|i| i + 1).unwrap_or(samples.len());
-    let mut area = 0.0;
-    for w in samples[..last].windows(2) {
-        area += 0.5 * (w[0].1 + w[1].1) * (w[1].0 - w[0].0);
-    }
-    if let Some(i) = cross_idx {
-        // Final wedge from the last positive sample to (vanish_rad, 0).
-        let (x0, y0) = samples[i];
-        area += 0.5 * y0 * (vanish_rad - x0);
-    }
-
-    // Peak righting moment: argmax GZ over the pre-vanishing samples, with a
-    // parabolic refinement when the max is interior and the neighbours dip.
-    let scan = &samples[..last.max(1)];
-    let mut pk = 0usize;
-    for (i, &(_, y)) in scan.iter().enumerate() {
-        if y > scan[pk].1 {
-            pk = i;
-        }
-    }
-    let (mut peak_rad, mut peak_gz) = scan[pk];
-    if pk > 0 && pk + 1 < scan.len() {
-        let (xm, ym) = scan[pk - 1];
-        let (x0, y0) = scan[pk];
-        let (xp, yp) = scan[pk + 1];
-        let denom = ym - 2.0 * y0 + yp;
-        let h = 0.5 * ((x0 - xm) + (xp - x0)); // uniform step
-        if denom < 0.0 {
-            let delta = 0.5 * (ym - yp) / denom; // vertex offset in units of h
-            if delta.abs() <= 1.0 {
-                peak_rad = x0 + delta * h;
-                peak_gz = y0 - 0.25 * (ym - yp) * delta;
-            }
-        }
-    }
-
-    (
-        GzStats {
-            peak_deg: peak_rad.to_degrees(),
-            rm_peak: weight_times_g * peak_gz,
-            area,
-            vanish_deg: vanish_rad.to_degrees(),
-        },
-        capped,
-    )
-}
-
-/// Format an angle for a column name: `5` not `5.0`, but `7.5` kept.
-fn fmt_num(v: f64) -> String {
-    if v.fract().abs() < 1e-9 {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
-    }
-}
-
-/// Run a JSON sweep manifest. Progress and informational lines flow through
-/// `report` (the CLI echoes them to stderr); the returned string is the CSV/JSON
-/// the CLI prints to stdout, or empty when the manifest names an `output.file`
-/// (written here directly).
-
 /// Fluid/gravity settings resolved from `options`/`fluid`, bundled so a
 /// per-speed `Conditions` can be rebuilt at any call site. A closure would do
 /// inside one function, but the parsed manifest has to cross a function
@@ -232,11 +96,6 @@ pub(crate) struct FluidCfg {
 }
 
 impl FluidCfg {
-    /// The fluid's name as the manifest gave it, for metadata output.
-    pub(crate) fn name(&self) -> &str {
-        &self.fluid_name
-    }
-
     pub(crate) fn make_cond(&self, speed: f64) -> Result<Conditions, String> {
         let mut c = match self.fluid_name.as_str() {
             "seawater" => Conditions::seawater(speed),
@@ -260,10 +119,6 @@ impl FluidCfg {
 /// second parser drifting away from this one.
 pub(crate) struct ParsedManifest {
     pub(crate) doc: Json,
-    /// The manifest's own source text, stored verbatim in the binary archive.
-    pub(crate) text: String,
-    /// Each hull file read while parsing, kept for the archive.
-    pub(crate) hull_files: Vec<(String, Vec<u8>)>,
     pub(crate) dir: std::path::PathBuf,
     pub(crate) hulls: Vec<MHull>,
     pub(crate) axes: Vec<Axis>,
@@ -278,7 +133,6 @@ pub(crate) struct ParsedManifest {
     pub(crate) density: f64,
     pub(crate) bopts: BodyOptions,
     pub(crate) l_ref: f64,
-    pub(crate) heel_cfg: HeelCfg,
     pub(crate) fluid: FluidCfg,
 }
 
@@ -346,6 +200,10 @@ pub(crate) fn point_state(hulls: &[MHull], axes: &[Axis], vals: &[f64]) -> Point
     }
 }
 
+/// Run a JSON sweep manifest. Progress and informational lines flow through
+/// `report` (the CLI echoes them to stderr); the returned string is the CSV/JSON
+/// the CLI prints to stdout, or empty when the manifest names an `output.file`
+/// (written here directly).
 pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, String> {
     let ParsedManifest {
         doc,
@@ -363,10 +221,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         density,
         bopts,
         l_ref,
-        heel_cfg,
         fluid,
-        text,
-        hull_files,
     } = parse_manifest(manifest_path, report)?;
 
     if let Some(name) = doc.get("name").and_then(Json::as_str) {
@@ -393,46 +248,15 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         ),
         None => ("csv".to_string(), None),
     };
-    if format != "csv" && format != "json" && format != "binary" {
-        return Err(format!(
-            "output format {format:?}: expected csv, json, or binary"
-        ));
+    if format != "csv" && format != "json" {
+        return Err(format!("output format {format:?}: expected csv or json"));
     }
-    let binary = format == "binary";
-    // Spectrum sampling for the binary archive (uniform over the significant
-    // angular range, matching `michell spectrum`). Ignored for csv/json.
-    let spec_points: usize = doc
-        .get("output")
-        .and_then(|o| o.get("spectrum"))
-        .and_then(|s| s.get("points"))
-        .and_then(Json::as_f64)
-        .map(|v| (v as usize).max(9))
-        .unwrap_or(721);
     // Derived fleet-CG columns (equilibrium mode): the mass-weighted CG that
     // the solve and roll-up ride on, so it is visible as the hulls/loads move.
     let cg_cols: Vec<String> = if float_mode {
         ["mass", "lcg", "vcg", "tcg"]
             .iter()
             .map(|s| s.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-    // Heel roll-up columns (equilibrium mode only): per-point GZ summaries
-    // and a per-(point×speed) resistance rise at each configured angle.
-    let gz_cols: Vec<String> = if float_mode {
-        ["gz_peak_deg", "rm_peak", "gz_area", "gz_vanish_deg"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let rise_cols: Vec<String> = if float_mode {
-        heel_cfg
-            .res_angles
-            .iter()
-            .map(|a| format!("rt_rise_{}deg", fmt_num(*a)))
             .collect()
     } else {
         Vec::new()
@@ -453,7 +277,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 .map(|s| s.to_string()),
         )
         .chain(cg_cols.iter().cloned())
-        .chain(gz_cols.iter().cloned())
         .chain(dyn_cols.iter().cloned())
         .chain(
             [
@@ -472,7 +295,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             .iter()
             .map(|s| s.to_string()),
         )
-        .chain(rise_cols.iter().cloned())
         .collect();
     let mut out = String::new();
     if format == "json" {
@@ -482,28 +304,21 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         out.push('\n');
     }
     let mut first_row = true;
-    let mut rows = binary.then(|| Rows::new(axes.len(), header.len() - axes.len()));
 
     let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
-    // Section-integration resolution for the heeled inclined-waterplane
-    // hydrostatics (volume balance, trim, and GZ).
-    let incl_grid = InclinedGrid::default();
     // Grid order: the last axis varies fastest (odometer order).
     let mut strides = vec![1usize; axes.len()];
     for i in (0..axes.len().saturating_sub(1)).rev() {
         strides[i] = strides[i + 1] * axes[i + 1].values.len();
     }
 
-    /// One output row: its numbers and, for the binary archive, the spectrum
-    /// sample `(wavenumber, transverse wavelength, samples)`.
+    /// One output row.
     struct RowOut {
         nums: Vec<f64>,
-        spectrum: Option<(f64, f64, Vec<SpecSample>)>,
     }
-    /// One evaluated grid point: axis values, GZ-curve samples, rows per speed.
+    /// One evaluated grid point: its rows, one per speed. The axis values
+    /// are already the leading columns of each row.
     struct PointOut {
-        vals: Vec<f64>,
-        gz_samples: Vec<(f64, f64)>,
         rows: Vec<RowOut>,
     }
 
@@ -511,7 +326,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
     // speeds — is immutable, so points are independent and evaluate in any
     // order, on any thread. Informational lines go through `say`, which the
     // main thread relays to `report` as they arrive.
-    let eval_point = |point: usize, say: &dyn Fn(String)| -> Result<PointOut, String> {
+    let eval_point = |point: usize, _say: &dyn Fn(String)| -> Result<PointOut, String> {
         let vals: Vec<f64> = axes
             .iter()
             .enumerate()
@@ -527,19 +342,16 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         // the swept masses.
         let cg = fleet_cg(&bodies, &loads, &poses);
 
-        // Upright equilibrium. Heel is no longer a sweep axis — it is rolled up
-        // into the per-row metrics below — so this solve (and the resistance
-        // columns) are always upright. In float mode the fleet solves flotation
-        // to the derived weight; otherwise it situates at a fixed cut. `gz0` is
-        // the upright righting arm (nonzero only for a laterally asymmetric CG).
-        let (state, sinkage, trim_deg, volume, lcb, gz0) = if float_mode {
+        // Upright equilibrium: the fleet solves flotation to the derived
+        // weight in float mode, or situates at a fixed cut otherwise.
+        let (state, sinkage, trim_deg, volume, lcb) = if float_mode {
             if cg.mass <= 0.0 {
                 return Err(format!(
                     "point {}: fleet carries no mass (all hull and point masses are zero)",
                     point + 1
                 ));
             }
-            let eq = solve_equilibrium_heeled(
+            let eq = solve_equilibrium_bodies(
                 &bodies,
                 0.0,
                 &poses,
@@ -548,11 +360,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     lcg: Some(cg.lcg),
                 },
                 density,
-                0.0,
-                cg.vcg,
-                cg.tcg,
                 &bopts,
-                incl_grid,
             )
             .map_err(|e| format!("point {}: {e}", point + 1))?;
             (
@@ -561,7 +369,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 eq.trim.to_degrees(),
                 eq.volume,
                 eq.lcb,
-                eq.gz,
             )
         } else {
             let mut members = Vec::new();
@@ -598,96 +405,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 0.0,
                 volume,
                 lcb,
-                0.0,
             )
-        };
-
-        // Heel roll-up metrics (equilibrium mode only). GZ is speed-independent,
-        // so its curve — and the heeled equilibria used for the resistance rise
-        // — are solved once per point here, riding on the derived fleet CG.
-        let (gz_stats, heeled, gz_samples): HeelRollup = if float_mode {
-            let load = LoadCase {
-                mass: cg.mass,
-                lcg: Some(cg.lcg),
-            };
-            let solve_at = |deg: f64| {
-                solve_equilibrium_heeled(
-                    &bodies,
-                    0.0,
-                    &poses,
-                    &load,
-                    density,
-                    deg.to_radians(),
-                    cg.vcg,
-                    cg.tcg,
-                    &bopts,
-                    incl_grid,
-                )
-            };
-            // Scan the GZ curve from the upright arm (`gz0`; zero for a symmetric
-            // CG, nonzero when the load is laterally offset) until it crosses
-            // zero (the angle of vanishing stability) or hits the cap. The
-            // inclined solver is only valid below 90°, so the cap is bounded.
-            let cap = heel_cfg.gz_max.min(89.5);
-            let mut samples = vec![(0.0f64, gz0)];
-            let mut deg = heel_cfg.gz_step;
-            let mut stopped_early = false;
-            while deg <= cap + 1e-9 {
-                match solve_at(deg) {
-                    Ok(eq) => {
-                        let vanished = eq.gz < 0.0;
-                        samples.push((deg.to_radians(), eq.gz));
-                        if vanished {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        say(format!(
-                            "point {}: GZ scan stopped at {deg}°: {e}",
-                            point + 1
-                        ));
-                        stopped_early = true;
-                        break;
-                    }
-                }
-                deg += heel_cfg.gz_step;
-            }
-            let (stats, capped) = gz_curve_stats(&samples, cg.mass * gravity);
-            if capped {
-                // `capped` means GZ never crossed zero within the samples, so
-                // `gz_vanish_deg`/`gz_area` only reach the last scanned angle —
-                // whether the scan hit the cap or stopped early on a
-                // non-converged solve. Report the real last angle either way.
-                let last_deg = samples.last().map(|s| s.0.to_degrees()).unwrap_or(0.0);
-                let why = if stopped_early {
-                    "the heeled solve stopped converging"
-                } else {
-                    "GZ was still positive at the scan cap"
-                };
-                say(format!(
-                    "point {}: {why} — gz_vanish_deg/gz_area truncated at {last_deg:.1}°",
-                    point + 1
-                ));
-            }
-            // Heeled equilibria at the resistance angles (flotation only; the
-            // wave rise per speed is computed from each fleet in the loop).
-            let heeled = heel_cfg
-                .res_angles
-                .iter()
-                .map(|&a| match solve_at(a) {
-                    Ok(eq) => Some(eq),
-                    Err(e) => {
-                        say(format!(
-                            "point {}: heeled solve at {a}° failed: {e}",
-                            point + 1
-                        ));
-                        None
-                    }
-                })
-                .collect();
-            (Some(stats), heeled, samples)
-        } else {
-            (None, Vec::new(), Vec::new())
         };
 
         let members: Vec<(&Hull, Placement)> = state.members.iter().map(|(h, p)| (h, *p)).collect();
@@ -761,34 +479,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     r.ct,
                 )
             };
-            // Fractional total-resistance rise at each heel angle, relative to
-            // the upright total at this speed. Uses the asymmetric heel wave
-            // kernel on the heeled-flotation fleet. NaN if the fleet is dry, the
-            // upright total is non-positive, or the heeled solve failed.
-            let mut rises: Vec<f64> = Vec::with_capacity(heeled.len());
-            for (he, &angle) in heeled.iter().zip(&heel_cfg.res_angles) {
-                let rise = match he {
-                    Some(eq) if rt > 0.0 => {
-                        let hm: Vec<(&Hull, Placement)> =
-                            eq.fleet.members.iter().map(|(h, p)| (h, *p)).collect();
-                        if hm.is_empty() {
-                            f64::NAN
-                        } else {
-                            let rh = michell::multihull_resistance_heeled(
-                                &hm,
-                                &cond,
-                                &wave_opts,
-                                &viscous,
-                                angle.to_radians(),
-                            )
-                            .map_err(|e| format!("point {} U={u} heel {angle}°: {e}", point + 1))?;
-                            rh.total / rt - 1.0
-                        }
-                    }
-                    _ => f64::NAN,
-                };
-                rises.push(rise);
-            }
             let froude = u / (gravity * l_ref).sqrt();
             let nums: Vec<f64> = vals
                 .iter()
@@ -797,12 +487,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 .chain(
                     float_mode
                         .then_some([cg.mass, cg.lcg, cg.vcg, cg.tcg])
-                        .into_iter()
-                        .flatten(),
-                )
-                .chain(
-                    gz_stats
-                        .map(|s| [s.peak_deg, s.rm_peak, s.area, s.vanish_deg])
                         .into_iter()
                         .flatten(),
                 )
@@ -826,23 +510,10 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     cw,
                     ct,
                 ])
-                .chain(rises)
                 .collect();
-            let spectrum = if binary {
-                Some(
-                    sample_spectrum(&members_u, &cond, spec_points)
-                        .map_err(|e| format!("point {} U={u} spectrum: {e}", point + 1))?,
-                )
-            } else {
-                None
-            };
-            rows_out.push(RowOut { nums, spectrum });
+            rows_out.push(RowOut { nums });
         }
-        Ok(PointOut {
-            vals,
-            gz_samples,
-            rows: rows_out,
-        })
+        Ok(PointOut { rows: rows_out })
     };
 
     // Fan the points out across the cores: workers pull the next point off a
@@ -909,19 +580,10 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
     });
     results.sort_by_key(|(point, _)| *point);
     for (_, r) in results {
-        let PointOut {
-            vals,
-            gz_samples,
-            rows: point_rows,
-        } = r?;
+        let PointOut { rows: point_rows } = r?;
         for row in point_rows {
             let nums = row.nums;
-            if let Some(rows) = rows.as_mut() {
-                let (nu, twl, samples) = row
-                    .spectrum
-                    .expect("binary output rows carry a spectrum sample");
-                rows.push(&vals, &nums[axes.len()..], &gz_samples, nu, twl, &samples);
-            } else if format == "json" {
+            if format == "json" {
                 if !first_row {
                     out.push(',');
                 }
@@ -945,55 +607,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         out.push(']');
     }
 
-    if let Some(rows) = rows {
-        // Assemble the self-contained binary archive.
-        let mut ar = Archive::default();
-        let manifest_name = std::path::Path::new(manifest_path)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("manifest.json");
-        ar.add(KIND_MANIFEST, manifest_name, text.into_bytes());
-        for (file, raw) in hull_files {
-            ar.add(KIND_HULLFILE, &file, raw);
-        }
-        ar.add(
-            KIND_META,
-            "meta.json",
-            build_meta(
-                doc.get("name").and_then(Json::as_str),
-                fluid.name(),
-                gravity,
-                density,
-                l_ref,
-                &speeds,
-                &axes,
-                &header[axes.len()..],
-                spec_points,
-                &heel_cfg,
-                float_mode,
-            )
-            .into_bytes(),
-        );
-        ar.add(KIND_ROWS, "rows", rows.into_blob());
-        let bytes = ar.into_bytes();
-
-        // Binary must go to a file, never stdout. Default to the manifest stem.
-        let f = out_file.unwrap_or_else(|| {
-            let stem = std::path::Path::new(manifest_path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("sweep");
-            format!("{stem}.msw")
-        });
-        let path = dir.join(&f);
-        std::fs::write(&path, &bytes).map_err(|e| format!("cannot write {f}: {e}"))?;
-        report(
-            &format!("wrote {} ({} bytes)", path.display(), bytes.len()),
-            None,
-        );
-        return Ok(String::new());
-    }
-
     match out_file {
         Some(f) => {
             let path = dir.join(&f);
@@ -1002,190 +615,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             Ok(String::new())
         }
         None => Ok(out),
-    }
-}
-
-/// Build the `META` blob: a JSON object naming the row columns and recording
-/// study-level scalars, so a reader can interpret `ROWS` without hard-coding
-/// the schema.
-#[allow(clippy::too_many_arguments)]
-fn build_meta(
-    name: Option<&str>,
-    fluid: &str,
-    gravity: f64,
-    density: f64,
-    l_ref: f64,
-    speeds: &[f64],
-    axes: &[Axis],
-    metric_labels: &[String],
-    spectrum_points: usize,
-    heel: &HeelCfg,
-    float_mode: bool,
-) -> String {
-    let arr = |xs: &[String]| -> String {
-        let items: Vec<String> = xs.iter().map(|s| json_str(s)).collect();
-        format!("[{}]", items.join(","))
-    };
-    let nums = |xs: &[f64]| -> String {
-        let items: Vec<String> = xs.iter().map(|v| format!("{v}")).collect();
-        format!("[{}]", items.join(","))
-    };
-    let axis_labels: Vec<String> = axes.iter().map(|a| a.label.clone()).collect();
-    let mut s = String::from("{");
-    s.push_str("\"format\":\"michell-sweep v1\"");
-    if let Some(n) = name {
-        s.push_str(&format!(",\"name\":{}", json_str(n)));
-    }
-    s.push_str(&format!(",\"fluid\":{}", json_str(fluid)));
-    s.push_str(&format!(",\"gravity\":{gravity}"));
-    s.push_str(&format!(",\"density\":{density}"));
-    s.push_str(&format!(",\"l_ref\":{l_ref}"));
-    s.push_str(&format!(",\"float_mode\":{float_mode}"));
-    s.push_str(&format!(",\"speeds_ms\":{}", nums(speeds)));
-    s.push_str(&format!(",\"axis_labels\":{}", arr(&axis_labels)));
-    s.push_str(&format!(",\"metric_labels\":{}", arr(metric_labels)));
-    s.push_str(&format!(",\"spectrum_points\":{spectrum_points}"));
-    s.push_str(&format!(
-        ",\"gz_scan\":{{\"step_deg\":{},\"max_deg\":{}}}",
-        heel.gz_step, heel.gz_max
-    ));
-    s.push_str(
-        ",\"row_layout\":\"per row: f64[axis_labels.len] params, \
-         f64[metric_labels.len] metrics, u32 gz_n, (f64 heel_rad, f64 gz_m)*gz_n, \
-         f64 wavenumber, f64 transverse_wavelength, u32 spec_n, \
-         (f64 theta, f64 amp_re, f64 amp_im, f64 drw_dtheta)*spec_n\"",
-    );
-    s.push('}');
-    s
-}
-
-/// Minimal JSON string escaping (quotes and backslashes; control chars are not
-/// expected in labels).
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Sample the free-wave spectrum uniformly over its significant angular range
-/// (the same detection `michell spectrum` uses), returning the wavenumber, the
-/// transverse wavelength, and `n` samples. Empty when the fleet is dry.
-fn sample_spectrum(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    n: usize,
-) -> Result<(f64, f64, Vec<SpecSample>), String> {
-    if members.is_empty() {
-        return Ok((0.0, 0.0, Vec::new()));
-    }
-    let mut spec = FreeWaveSpectrum::new(members, cond).map_err(|e| format!("{e}"))?;
-    let nu = spec.wavenumber();
-    let twl = spec.transverse_wavelength();
-
-    // Significant range: where dRw/dθ still matters (peak-relative threshold).
-    let lim = 89.5f64.to_radians();
-    let scan = 4096;
-    let mut peak = 0.0f64;
-    for i in 0..=scan {
-        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
-        peak = peak.max(spec.resistance_density(theta));
-    }
-    let mut theta_max = 0.0f64;
-    for i in 0..=scan {
-        let theta = -lim + 2.0 * lim * i as f64 / scan as f64;
-        if spec.resistance_density(theta) > 1e-5 * peak {
-            theta_max = theta_max.max(theta.abs());
-        }
-    }
-    let theta_max = (theta_max * 1.05).min(lim).max(1e-3);
-
-    let h = 2.0 * theta_max / (n - 1) as f64;
-    let mut samples = Vec::with_capacity(n);
-    for i in 0..n {
-        let theta = -theta_max + h * i as f64;
-        let a = spec.amplitude(theta);
-        let d = spec.resistance_density(theta);
-        samples.push(SpecSample {
-            theta,
-            amp_re: a.re,
-            amp_im: a.im,
-            drw_dtheta: d,
-        });
-    }
-    Ok((nu, twl, samples))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn approx(a: f64, b: f64, tol: f64) {
-        assert!((a - b).abs() < tol, "expected {b}, got {a}");
-    }
-
-    #[test]
-    fn fmt_num_trims_integers() {
-        assert_eq!(fmt_num(5.0), "5");
-        assert_eq!(fmt_num(10.0), "10");
-        assert_eq!(fmt_num(7.5), "7.5");
-    }
-
-    #[test]
-    fn gz_stats_triangle_curve() {
-        // Symmetric triangle peaking at 0.5 rad, back to 0 at 1.0 rad, then
-        // negative. Vanishing angle = 1.0 rad; area to there = 0.5 m·rad.
-        let s = [
-            (0.0, 0.0),
-            (0.25, 0.5),
-            (0.5, 1.0),
-            (0.75, 0.5),
-            (1.0, 0.0),
-            (1.25, -0.5),
-        ];
-        let (st, capped) = gz_curve_stats(&s, 2.0); // W·g = 2 N
-        assert!(!capped);
-        approx(st.vanish_deg, 1.0_f64.to_degrees(), 1e-6);
-        approx(st.area, 0.5, 1e-9);
-        approx(st.peak_deg, 0.5_f64.to_degrees(), 1e-6); // symmetric → sample apex
-        approx(st.rm_peak, 2.0 * 1.0, 1e-9);
-    }
-
-    #[test]
-    fn gz_stats_interpolates_zero_crossing() {
-        // Crossing lands between samples: gz 0.2 → -0.2 over 0.4→0.6 rad ⇒ 0.5 rad.
-        let s = [(0.0, 0.0), (0.2, 0.4), (0.4, 0.2), (0.6, -0.2)];
-        let (st, capped) = gz_curve_stats(&s, 1.0);
-        assert!(!capped);
-        approx(st.vanish_deg, 0.5_f64.to_degrees(), 1e-9);
-    }
-
-    #[test]
-    fn gz_stats_capped_when_never_vanishes() {
-        // Monotonic-ish, always positive within the samples.
-        let s = [(0.0, 0.0), (0.3, 0.3), (0.6, 0.5), (0.9, 0.6)];
-        let (st, capped) = gz_curve_stats(&s, 1.0);
-        assert!(capped);
-        approx(st.vanish_deg, 0.9_f64.to_degrees(), 1e-9); // last sample = cap
-        assert!(st.area > 0.0);
-    }
-
-    #[test]
-    fn gz_stats_parabolic_peak_refines_off_sample() {
-        // Peak between samples: parabola apex should land near 0.55 rad, above
-        // the nearest sample value.
-        let s = [(0.0, 0.0), (0.4, 0.8), (0.6, 0.9), (0.8, 0.7), (1.0, -0.1)];
-        let (st, _) = gz_curve_stats(&s, 1.0);
-        let peak_rad = st.peak_deg.to_radians();
-        assert!(peak_rad > 0.4 && peak_rad < 0.8, "peak_rad = {peak_rad}");
-        assert!(st.rm_peak >= 0.9, "rm_peak = {}", st.rm_peak);
     }
 }
 
@@ -1245,7 +674,6 @@ pub(crate) fn parse_manifest(
     let mut gravity = STANDARD_GRAVITY;
     let mut rho_override = None;
     let mut nu_override = None;
-    let mut heel_cfg = HeelCfg::default();
     let mut dynamic_mode = false;
     let mut squat_opts = SquatOptions::default();
     if let Some(o) = doc.get("options") {
@@ -1297,36 +725,6 @@ pub(crate) fn parse_manifest(
         if let Some(v) = o.get("squat_tol").and_then(Json::as_f64) {
             squat_opts.rel_tol = v;
         }
-        if let Some(h) = o.get("heel") {
-            if let Some(a) = h.get("resistance_angles").and_then(Json::as_arr) {
-                heel_cfg.res_angles = a
-                    .iter()
-                    .map(|v| {
-                        v.as_f64()
-                            .ok_or("options.heel.resistance_angles must be numbers")
-                    })
-                    .collect::<Result<_, _>>()?;
-            }
-            if let Some(v) = h.get("gz_step").and_then(Json::as_f64) {
-                heel_cfg.gz_step = v;
-            }
-            if let Some(v) = h.get("gz_max").and_then(Json::as_f64) {
-                heel_cfg.gz_max = v;
-            }
-        }
-    }
-    for &a in &heel_cfg.res_angles {
-        if !a.is_finite() || a.abs() >= 90.0 {
-            return Err(format!(
-                "options.heel.resistance_angles: {a} must be finite and within ±90 degrees"
-            ));
-        }
-    }
-    if heel_cfg.gz_step <= 0.0 || !heel_cfg.gz_step.is_finite() {
-        return Err("options.heel.gz_step must be a positive number".into());
-    }
-    if heel_cfg.gz_max <= 0.0 || !heel_cfg.gz_max.is_finite() {
-        return Err("options.heel.gz_max must be a positive number".into());
     }
     squat_opts.wave.transom = wave_opts.transom;
     let bopts: BodyOptions = body_options(&settings);
@@ -1691,8 +1089,6 @@ pub(crate) fn parse_manifest(
 
     Ok(ParsedManifest {
         doc,
-        text,
-        hull_files,
         dir,
         hulls,
         axes,
@@ -1707,7 +1103,6 @@ pub(crate) fn parse_manifest(
         density,
         bopts,
         l_ref,
-        heel_cfg,
         fluid,
     })
 }

@@ -482,15 +482,6 @@ impl Hull {
         self.a_surface.is_some()
     }
 
-    /// `∂f_a/∂x` at `(x, z)` in the hull's own coordinates, evaluated from the
-    /// antisymmetric surface. Returns 0 for a symmetric hull. This is the
-    /// camber-slope forcing of the centreplane lifting solve.
-    pub(crate) fn eval_fx_a(&self, x: f64, z: f64) -> f64 {
-        self.a_surface
-            .as_ref()
-            .map_or(0.0, |s| s.eval_deriv(x, z, 1, 0))
-    }
-
     /// Half-extent of the hull about its x-midpoint (bandwidth of the
     /// oscillatory inner integral).
     pub(crate) fn x_half_extent(&self) -> f64 {
