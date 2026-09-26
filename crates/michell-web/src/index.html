@@ -343,6 +343,10 @@ async function computeFlow() {
   q.set("closure", kind);
   if (kind !== "off") q.set("param", String(param));
   q.set("attitude", $("attitude").value);
+  // Start from the last solved attitude of this hull and load: speeds move
+  // in small steps, and the solver then skips its coarse search.
+  const w = flowData && flowData.forces;
+  if (w && w.solved && flowData.key === flowKey()) q.set("warm", `${w.sinkage},${w.trim_rad}`);
   for (const id of ["mass", "lcg"]) { const v = $(id).value.trim(); if (v) q.set(id, v); }
   $("flowgo").disabled = true;
   $("flowout").innerHTML = `<p class="hint">${$("attitude").value === "dynamic" ? "Floating the hull at" : "Computing the flow at"} Fn ${Number($("froude").value).toFixed(2)}…</p>`;
@@ -356,6 +360,7 @@ async function computeFlow() {
       $("layers").querySelector("button[data-layer=area]").classList.remove("on");
       drawArea();
     }
+    data.key = flowKey();
     flowData = data;
     scene3d.flow(data);
     renderFlow();
@@ -364,6 +369,10 @@ async function computeFlow() {
   } finally {
     if (seq === flowSeq) $("flowgo").disabled = false;
   }
+}
+// What a warm start must share with the flow it starts from.
+function flowKey() {
+  return [file && file.name, ...FIELDS.map((id) => $(id).value), $("attitude").value, $("mass").value, $("lcg").value, $("closure").value, $("param").value].join("|");
 }
 $("flowgo").onclick = computeFlow;
 $("froude").addEventListener("change", () => flowData && computeFlow());

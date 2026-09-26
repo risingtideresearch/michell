@@ -153,6 +153,9 @@ pub struct FlowRequest {
     /// LCB, so the hull floats at its design waterline at rest.
     pub mass: Option<f64>,
     pub lcg: Option<f64>,
+    /// A previous solution `(sinkage [m], trim [rad])` to start the
+    /// equilibrium from — the last speed's, as the slider moves.
+    pub warm: Option<(f64, f64)>,
 }
 
 impl FlowRequest {
@@ -193,6 +196,15 @@ impl FlowRequest {
         if mass.is_some_and(|m| !(m > 0.0)) {
             return Err("mass must be positive".into());
         }
+        let warm = match get("warm").filter(|v| !v.is_empty()) {
+            None => None,
+            Some(v) => {
+                let (a, b) = v.split_once(',').ok_or("warm: expected sinkage,trim")?;
+                let p = |t: &str| t.trim().parse::<f64>().map_err(|_| format!("warm: bad number {t:?}"));
+                let (s, t) = (p(a)?, p(b)?);
+                (s.is_finite() && t.is_finite() && t.abs() < 0.3).then_some((s, t))
+            }
+        };
         Ok(FlowRequest {
             cut: LoftRequest::from_query(pairs)?,
             froude,
@@ -201,6 +213,7 @@ impl FlowRequest {
             dynamic,
             mass,
             lcg: num("lcg")?,
+            warm,
         })
     }
 }
@@ -261,7 +274,7 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
             cond.gravity,
             &cut.opts,
             michell::sectional::dynamic_load_closure(&cond, lcg, &squat),
-            None,
+            req.warm,
         )
         .map_err(|e| {
             let hint = if e.to_string().contains("waterplane") {
@@ -324,6 +337,7 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
             "lift_fraction": lift,
             "sinkage": sinkage,
             "trim_deg": trim.to_degrees(),
+            "trim_rad": trim,
             "iterations": iterations,
             "solved": true,
         }),
