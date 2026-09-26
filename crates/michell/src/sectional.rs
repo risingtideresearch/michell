@@ -913,6 +913,32 @@ impl SectionalHull {
         (at_st, curve)
     }
 
+    /// The x-derivative of the interpolated depth integral, `∂Z/∂x(x; κ)`,
+    /// sampled `per_span` times per x-span as `(x, ∂Z/∂x)` — the source
+    /// strength the kernel integrates (the Michell amplitude is its Fourier
+    /// transform along x).
+    pub fn depth_integral_slope_curve(&self, kappa: f64, per_span: usize) -> Vec<(f64, f64)> {
+        let mut zc = SectionalContracted::default();
+        self.contract(kappa, &mut zc);
+        let p = self.p;
+        let mut curve = Vec::new();
+        for (s, sx) in self.spans.iter().enumerate() {
+            for k in 0..=per_span {
+                if k == per_span && s + 1 < self.spans.len() {
+                    continue;
+                }
+                let t = sx.len * k as f64 / per_span as f64;
+                let v = if zc.any {
+                    (0..p).rev().fold(0.0, |acc, a| acc * t + zc.g_fx[s * p + a])
+                } else {
+                    0.0
+                };
+                curve.push((sx.start + t, v));
+            }
+        }
+        curve
+    }
+
     /// Number of stations.
     pub fn stations(&self) -> usize {
         self.n

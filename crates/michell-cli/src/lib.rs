@@ -15,6 +15,7 @@ mod pdf;
 mod png;
 mod render;
 mod report;
+mod scene;
 mod view;
 
 use formats::{load_hulls, parse_pair, parse_range, resolved_fit, write_hull_file};
@@ -69,6 +70,7 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         }
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
+        Some("field") => cmd_field(&args[1..]),
         Some("render") => cmd_render(&args[1..]),
         Some("view") => view::cmd_view(&args[1..]),
         Some("loft") => {
@@ -95,6 +97,7 @@ USAGE
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
+  michell field <iges>... --speed U -o scene.json [options]   3-D scene: sections, closure, wave field
   michell view <hull>... --speed U [--port N] [options]       interactive fleet viewer
   michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
   michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
@@ -2054,6 +2057,142 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
             }
         );
     }
+    Ok(())
+}
+
+/// `michell field`: a viewer-neutral 3-D scene of IGES hulls cut into
+/// sections at one speed (see [`scene`]).
+fn cmd_field(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err(
+            "usage: michell field <iges>[@x=DX,y=Y]... --speed U | --froude F -o scene.json \
+             [--waterline Z --transom SPEC --region X0,X1,Y0,Y1 --size NX,NY --stations N --rays M]"
+                .into(),
+        );
+    }
+    let out_path = p
+        .flag("o")
+        .or_else(|| p.flag("output"))
+        .ok_or("michell field needs -o scene.json")?
+        .clone();
+    let settings = p.load_settings()?;
+    let (stations, rays) = p.section_resolution()?;
+    let opts = michell::iges::SectionalOptions {
+        waterline_z: settings.waterline_z,
+        centerplane: settings.centerplane,
+        stations,
+        rays,
+        ..Default::default()
+    };
+    // Each file's source fleet (kept: it tessellates the CAD for display)
+    // and its hulls cut into sections.
+    let mut sources: Vec<(String, michell::iges::SourceFleet)> = Vec::new();
+    let mut cut: Vec<(usize, usize, michell::iges::SectionalImport, Placement, String)> = Vec::new();
+    for spec in &p.positional {
+        let (path, sp) = parse_hull_spec(spec)?;
+        let si = match sources.iter().position(|(q, _)| *q == path) {
+            Some(i) => i,
+            None => {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("cannot read {path}: {e}"))?;
+                let src = michell::iges::source_fleet(&text, settings.waterline_z)
+                    .map_err(|e| format!("{path}: {e}"))?;
+                sources.push((path.clone(), src));
+                sources.len() - 1
+            }
+        };
+        let src = &sources[si].1;
+        for i in 0..src.len() {
+            match src.situate_sectional(
+                i,
+                settings.waterline_z,
+                &michell::iges::HullPose::default(),
+                &michell::iges::Platform::default(),
+                &opts,
+            ) {
+                Ok(Some(h)) => {
+                    let placement = Placement {
+                        x: h.placement.x + sp.dx,
+                        y: sp.y_abs.unwrap_or(h.placement.y + sp.dy),
+                    };
+                    let name = if src.len() > 1 {
+                        format!("{path}#{}", i + 1)
+                    } else {
+                        path.clone()
+                    };
+                    cut.push((si, i, h, placement, name));
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("{path}: hull {} not sectioned, skipped: {e}", i + 1),
+            }
+        }
+    }
+    if cut.is_empty() {
+        return Err("no hull could be cut into sections".into());
+    }
+    let l_ref = cut.iter().map(|c| c.2.hull.length()).fold(0.0f64, f64::max);
+    let u = single_speed(&p, l_ref)?;
+    let cond = p.conditions(u)?;
+    let closure = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
+
+    let (mut x_lo, mut x_hi, mut y_abs) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for c in &cut {
+        let (a, b) = c.2.report.x_range;
+        x_lo = x_lo.min(a + c.3.x);
+        x_hi = x_hi.max(b + c.3.x);
+        y_abs = y_abs.max(c.3.y.abs());
+    }
+    let [x0, x1, y0, y1] = match p.flag("region") {
+        Some(s) => parse_region(s)?,
+        None => {
+            let x1 = x_hi + 0.35 * l_ref;
+            let x0 = x_lo - 3.0 * l_ref;
+            let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
+            [x0, x1, -yh, yh]
+        }
+    };
+    let (nx, ny) = match p.flag("size") {
+        Some(s) => parse_pair(s)?,
+        None => {
+            let nx = 400usize;
+            let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round() as usize;
+            (nx, ny.clamp(32, 600))
+        }
+    };
+    if nx < 2 || ny < 2 {
+        return Err("--size: need at least 2x2 grid points".into());
+    }
+    let hulls: Vec<scene::SceneHull> = cut
+        .iter()
+        .map(|(si, i, h, pl, name)| scene::SceneHull {
+            name: name.clone(),
+            import: h,
+            placement: *pl,
+            source: &sources[*si].1,
+            index: *i,
+            waterline_z: settings.waterline_z,
+        })
+        .collect();
+    let surface = scene::Surface {
+        x0,
+        x1,
+        y0,
+        y1,
+        nx,
+        ny,
+    };
+    let t = std::time::Instant::now();
+    let text = scene::build(&hulls, &cond, closure, &surface, l_ref)?;
+    std::fs::write(&out_path, text).map_err(|e| format!("cannot write {out_path}: {e}"))?;
+    eprintln!(
+        "wrote {out_path}: {} hull(s) at U = {:.3} m/s (Fn {:.3}), free surface {nx}x{ny} over \
+         x {x0:.2}..{x1:.2}, y {y0:.2}..{y1:.2} m ({:.1} s)",
+        hulls.len(),
+        u,
+        u / (cond.gravity * l_ref).sqrt(),
+        t.elapsed().as_secs_f64()
+    );
     Ok(())
 }
 

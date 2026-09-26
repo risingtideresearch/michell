@@ -2032,6 +2032,37 @@ impl SourceFleet {
         )
     }
 
+    /// A hull's tessellation at a pose, in the water frame: `x` forward, `y`
+    /// transverse, `z` **up** from the effective waterline — vertices and
+    /// triangles, the whole hull (above water too), for display.
+    pub fn posed_tessellation(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Result<(Vec<[f64; 3]>, Vec<[u32; 3]>)> {
+        if idx >= self.hulls.len() {
+            return Err(Error::InvalidInput(format!(
+                "hull index {idx} out of range ({} hulls)",
+                self.hulls.len()
+            )));
+        }
+        let map = PoseMap::new(&self.hulls[idx], waterline_z, pose, platform);
+        let wl = waterline_z + platform.sinkage;
+        let tess = &self.meshes[idx];
+        let verts = tess
+            .verts
+            .iter()
+            .map(|&p| {
+                let mut q = p;
+                map.apply(&mut q);
+                [q[0], q[1], q[2] - wl]
+            })
+            .collect();
+        Ok((verts, tess.tris.clone()))
+    }
+
     /// [`SourceFleet::situate_sectional`], warm-started from (and updating)
     /// `state` — the cheap way to re-pose.
     pub fn situate_sectional_warm(

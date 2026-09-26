@@ -82,7 +82,7 @@ impl TransomClosure {
     /// Hollow length [m] for a transom of immersion `depth` at `ν = g/U²`.
     /// `None` switches the closure off; a non-positive length collapses to the
     /// bare step, which the amplitude handles as the `L_v → 0` limit.
-    pub(crate) fn hollow_length(self, depth: f64, nu: f64) -> Option<f64> {
+    pub fn hollow_length(self, depth: f64, nu: f64) -> Option<f64> {
         match self {
             TransomClosure::None => None,
             // L_v = c·U·√(d_T/g) = c·√(d_T/ν), since ν = g/U².
