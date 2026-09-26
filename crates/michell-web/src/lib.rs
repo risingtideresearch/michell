@@ -1,19 +1,19 @@
 //! `michell-web` — a browser front end for the `michell` tools.
 //!
 //! Upload a hull and see it the way the physics sees it: cut into sections.
-//! IGES hulls are cut straight from their CAD patches
-//! ([`michell::iges::import_sectional`]); exact B-spline `.hull` files are
-//! converted with [`SectionalHull::from_hull`]. The page is sent each
+//! IGES and STL hulls are cut straight from their patches or triangles, and
+//! exact B-spline `.hull` files from their exact surfaces — the same loader
+//! the CLI uses ([`michell_cli::fleet`]). The page is sent each
 //! station's section curve (what the depth integral integrates), the CAD
 //! ray hits it was interpolated from, the
 //! depth-integral curve the kernel interpolates along x, the hydrostatics,
 //! and the transom with what the closure needs to draw its virtual appendage
 //! at any speed.
 
-use michell::iges::{import_sectional, SectionalImport, SectionalOptions};
-use michell::sectional::{DepthQuadrature, SectionalHull};
+use michell::iges::{HullPose, Platform, SectionalImport};
+use michell::sectional::SectionalHull;
 use michell::Placement;
-use michell_cli::{load_hulls_from_bytes, LoadSettings};
+use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
 use serde_json::{json, Value};
 
 /// Largest upload accepted [bytes]. Big enough for a finely tessellated STL.
@@ -30,6 +30,9 @@ pub struct LoftRequest {
     pub stations: Option<usize>,
     /// Rays across each section (IGES).
     pub rays: Option<usize>,
+    /// Scale to metres (STL, which carries no units): mm, m, in, ... or a
+    /// number.
+    pub units: Option<f64>,
 }
 
 impl LoftRequest {
@@ -56,6 +59,7 @@ impl LoftRequest {
                 "centerplane" => r.centerplane = Some(num(k, v)?),
                 "stations" => r.stations = Some(count(k, v, 8)?),
                 "rays" => r.rays = Some(count(k, v, 5)?),
+                "units" => r.units = Some(michell_cli::parse_units(v.trim())?),
                 _ => {}
             }
         }
@@ -67,42 +71,37 @@ impl LoftRequest {
 /// draws.
 pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
     let t0 = std::time::Instant::now();
-    let d = SectionalOptions::default();
-    let opts = SectionalOptions {
+    let d = LoadSettings::default();
+    let settings = LoadSettings {
         waterline_z: req.waterline.unwrap_or(0.0),
         centerplane: req.centerplane,
         stations: req.stations.unwrap_or(d.stations),
         rays: req.rays.unwrap_or(d.rays),
-        ..d
+        units: req.units,
     };
+    let file = open_source_bytes(name, bytes, &settings)?;
+    let opts = settings.sectional(file.waterline_z);
     let mut notes = Vec::new();
-    let hulls: Vec<Value> = if is_iges(name, &bytes) {
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let fleet = import_sectional(&text, &opts).map_err(|e| e.to_string())?;
-        for (i, why) in &fleet.failed {
-            notes.push(format!("hull {} not sectioned: {why}", i + 1));
+    let mut hulls = Vec::new();
+    for i in 0..file.source.len() {
+        match file.source.situate_sectional(
+            i,
+            file.waterline_z,
+            &HullPose::default(),
+            &Platform::default(),
+            &opts,
+        ) {
+            Ok(Some(h)) => hulls.push(sectioned_json(&h, file.kind)),
+            Ok(None) => notes.push(format!("hull {} is dry at this waterline", i + 1)),
+            Err(e) => notes.push(format!("hull {} not sectioned: {e}", i + 1)),
         }
-        fleet.hulls.iter().map(iges_hull_json).collect()
-    } else if is_native_hull(&bytes) {
-        load_hulls_from_bytes(name, bytes, &LoadSettings::default())?
-            .iter()
-            .map(|l| {
-                let sec = SectionalHull::from_hull(&l.hull, &DepthQuadrature::default())
-                    .map_err(|e| e.to_string())?;
-                let lines = vec![
-                    "source: exact B-spline control net, sectioned at its Greville stations"
-                        .to_string(),
-                ];
-                Ok(hull_json(&sec, l.placement, None, lines))
-            })
-            .collect::<Result<_, String>>()?
-    } else {
-        return Err(
-            "the viewer shows hulls cut into sections: upload an IGES file or a \
-             michell-hull .hull file (STL sections are not built yet)"
-                .into(),
-        );
-    };
+    }
+    if hulls.is_empty() {
+        return Err(notes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "no hull found".into()));
+    }
     Ok(json!({
         "name": name,
         "seconds": t0.elapsed().as_secs_f64(),
@@ -111,33 +110,21 @@ pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, Stri
     }))
 }
 
-/// IGES by extension or by the section letter in column 73.
-fn is_iges(name: &str, bytes: &[u8]) -> bool {
-    let lower = name.to_ascii_lowercase();
-    if lower.ends_with(".igs") || lower.ends_with(".iges") {
-        return true;
-    }
-    let first = bytes.split(|&b| b == b'\n').next().unwrap_or(&[]);
-    first.len() >= 73 && matches!(first[72], b'S' | b'G')
-}
-
-fn is_native_hull(bytes: &[u8]) -> bool {
-    std::str::from_utf8(bytes)
-        .ok()
-        .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
-        .is_some_and(|l| l.trim_start().starts_with("michell-hull"))
-}
-
-fn iges_hull_json(imp: &SectionalImport) -> Value {
+fn sectioned_json(imp: &SectionalImport, kind: Kind) -> Value {
     let r = &imp.report;
     let sides = if r.two_sided {
         format!("both sides averaged about y = {:.4} m", r.centerplane)
     } else {
         format!("one side about y = {:.4} m", r.centerplane)
     };
+    let what = match kind {
+        Kind::Iges => format!("IGES, {} patches", r.patches),
+        Kind::Stl => format!("STL, {} triangles", r.patches),
+        Kind::Spline => "exact B-spline control net".to_string(),
+    };
     let mut lines = vec![format!(
-        "source: IGES, {} patches, cut at {} stations over x {:.4}..{:.4} m ({sides})",
-        r.patches, r.stations, r.x_range.0, r.x_range.1
+        "source: {what}, cut at {} stations over x {:.4}..{:.4} m ({sides})",
+        r.stations, r.x_range.0, r.x_range.1
     )];
     if r.dropped_stations > 0 {
         lines.push(format!(
@@ -308,14 +295,16 @@ mod tests {
         .unwrap();
         let h = &v["hulls"][0];
         let vol = h["displaced_volume"].as_f64().unwrap();
-        assert!((vol - hull.displaced_volume()).abs() < 1e-9 * vol, "{vol}");
+        // The Wigley's exact volume, 4/9 L B T.
+        let exact = 4.0 / 9.0 * 10.0 * 0.625;
+        assert!((vol - exact).abs() < 1e-8 * exact, "{vol}");
         assert!(h["transom"].is_null());
         assert!(!h["stations"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn rejects_what_it_cannot_section() {
+    fn an_stl_needs_its_units() {
         let e = loft("x.stl", vec![0; 200], &LoftRequest::default()).unwrap_err();
-        assert!(e.contains("sections"), "{e}");
+        assert!(e.contains("units"), "{e}");
     }
 }

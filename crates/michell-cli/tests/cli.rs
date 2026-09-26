@@ -43,6 +43,26 @@ fn run_err(cmd: &mut Command) -> String {
 }
 
 /// A wigley control net to hang the viscous tests off.
+/// The exact Wigley cut into sections at its Greville stations, and its
+/// resistance, as the library computes it.
+fn sectional_wigley() -> michell::sectional::SectionalHull {
+    let w = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    michell::sectional::SectionalHull::from_hull(&w, &Default::default()).unwrap()
+}
+
+fn library_resistance(
+    members: &[(&michell::sectional::SectionalHull, michell::Placement)],
+    cond: &michell::Conditions,
+) -> michell::MultihullResistance {
+    michell::sectional::multihull_resistance(
+        members,
+        cond,
+        &michell::WaveOptions::default(),
+        &michell::ViscousOptions::default(),
+    )
+    .unwrap()
+}
+
 fn wigley_hull(name: &str) -> PathBuf {
     let path = tmp(name);
     run_ok(bin().args([
@@ -181,10 +201,11 @@ fn wigley_roundtrip_matches_library() {
 
     // info reports the exact geometry.
     let info = run_ok(bin().args(["info", hull_path.to_str().unwrap(), "--json"]));
-    let reference = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    assert!((json_num(&info, "length") - 10.0).abs() < 1e-12);
-    assert!((json_num(&info, "draft") - 0.625).abs() < 1e-12);
-    assert!((json_num(&info, "displaced_volume") - reference.displaced_volume()).abs() < 1e-10);
+    let reference = sectional_wigley();
+    assert!((json_num(&info, "length") - 10.0).abs() < 1e-9);
+    assert!((json_num(&info, "draft") - 0.625).abs() < 1e-9);
+    let vol = reference.displaced_volume();
+    assert!((json_num(&info, "displaced_volume") - vol).abs() < 1e-8 * vol);
 
     // resistance --json at a single speed matches the library exactly.
     let out = run_ok(bin().args([
@@ -196,16 +217,36 @@ fn wigley_roundtrip_matches_library() {
         "freshwater",
         "--json",
     ]));
+    // The CLI cuts the spline's exact surfaces at its own stations; the
+    // library reference samples it at the Greville stations.
     let cond = michell::Conditions::freshwater(3.0);
-    let want = michell::resistance(&reference, &cond).unwrap();
+    let want = library_resistance(&[(&reference, michell::Placement::default())], &cond);
     let rw = json_num(&out, "rw");
     let rv = json_num(&out, "rv");
     assert!(
-        (rw - want.wave.resistance).abs() < 1e-9 * want.wave.resistance,
+        (rw - want.wave.resistance).abs() < 1e-6 * want.wave.resistance,
         "rw {rw} vs {}",
         want.wave.resistance
     );
-    assert!((rv - want.viscous.resistance).abs() < 1e-9 * want.viscous.resistance);
+    // Viscous: the wetted surface is the one the CLI reports, within its
+    // strip construction of the exact Wigley shell 2∬√(1 + f_x² + f_z²).
+    let (n, (l, b, t)) = (800, (10.0f64, 1.0f64, 0.625f64));
+    let mut exact = 0.0;
+    for i in 0..n {
+        for j in 0..n {
+            let (u, v) = ((i as f64 + 0.5) / n as f64, (j as f64 + 0.5) / n as f64);
+            let (x, z) = (-l / 2.0 + l * u, t * v);
+            let fx = b / 2.0 * (-8.0 * x / (l * l)) * (1.0 - (z / t).powi(2));
+            let fz = b / 2.0 * (1.0 - (2.0 * x / l).powi(2)) * (-2.0 * z / (t * t));
+            exact += 2.0 * (1.0 + fx * fx + fz * fz).sqrt() * (l / n as f64) * (t / n as f64);
+        }
+    }
+    let s_cli = json_num(&info, "wetted_surface");
+    assert!((s_cli - exact).abs() < 2e-3 * exact, "S {s_cli} vs {exact}");
+    let rv_want = michell::viscous_resistance_for(10.0, s_cli, &cond, &Default::default())
+        .unwrap()
+        .resistance;
+    assert!((rv - rv_want).abs() < 1e-9 * rv_want, "rv {rv} vs {rv_want}");
     // Effective power P_E = R_t * U.
     let pe = json_num(&out, "effective_power");
     let total = json_num(&out, "total");
@@ -236,55 +277,13 @@ fn froude_range_produces_table() {
 }
 
 #[test]
-fn offsets_loft_and_resistance() {
-    // Wigley offsets table, 41 stations x 9 waterlines.
-    let (l, b, t) = (10.0f64, 1.0f64, 0.625f64);
-    let mut text = String::from("michell-offsets v1\n# Wigley test table\nwaterlines");
-    let mz = 9;
-    for j in 0..mz {
-        text.push_str(&format!(" {}", t * j as f64 / (mz - 1) as f64));
-    }
-    text.push('\n');
-    for i in 0..41 {
-        let x = -l / 2.0 + l * i as f64 / 40.0;
-        text.push_str(&format!("station {x}"));
-        for j in 0..mz {
-            let z = t * j as f64 / (mz - 1) as f64;
-            let y = b / 2.0 * (1.0 - (2.0 * x / l).powi(2)) * (1.0 - (z / t).powi(2));
-            text.push_str(&format!(" {y}"));
-        }
-        text.push('\n');
-    }
+fn offsets_and_loft_are_rejected() {
     let off_path = tmp("wigley.offsets");
-    std::fs::write(&off_path, text).unwrap();
-
-    // Loft to a control net file.
-    let net_path = tmp("lofted.hull");
-    let loft_out = run_ok(bin().args([
-        "loft",
-        off_path.to_str().unwrap(),
-        "-o",
-        net_path.to_str().unwrap(),
-    ]));
-    assert!(loft_out.contains("max residual"), "{loft_out}");
-
-    // The lofted hull reproduces Wigley resistance (data is exactly
-    // representable by the cubic loft).
-    let out = run_ok(bin().args([
-        "resistance",
-        net_path.to_str().unwrap(),
-        "--speeds",
-        "3.0",
-        "--json",
-    ]));
-    let reference = michell::hulls::wigley(l, b, t).unwrap();
-    let want = michell::resistance(&reference, &michell::Conditions::seawater(3.0)).unwrap();
-    let rw = json_num(&out, "rw");
-    assert!(
-        (rw - want.wave.resistance).abs() < 1e-6 * want.wave.resistance,
-        "rw {rw} vs {}",
-        want.wave.resistance
-    );
+    std::fs::write(&off_path, "michell-offsets v1\nwaterlines 0 0.5\nstation 0 1 0\n").unwrap();
+    let err = run_err(bin().args(["info", off_path.to_str().unwrap()]));
+    assert!(err.contains("no longer read"), "{err}");
+    let err = run_err(bin().args(["loft", off_path.to_str().unwrap(), "-o", "x"]));
+    assert!(err.contains("was removed"), "{err}");
 }
 
 #[test]
@@ -316,22 +315,21 @@ fn catamaran_fleet_matches_library() {
     let spec_a = format!("{}@y=1.0", hull_path.to_str().unwrap());
     let spec_b = format!("{}@y=-1.0", hull_path.to_str().unwrap());
     let out = run_ok(bin().args(["resistance", &spec_a, &spec_b, "--speeds", "3.0", "--json"]));
-    let hull = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let hull = sectional_wigley();
     let members = [
         (&hull, michell::Placement { x: 0.0, y: 1.0 }),
         (&hull, michell::Placement { x: 0.0, y: -1.0 }),
     ];
-    let want =
-        michell::multihull_resistance(&members, &michell::Conditions::seawater(3.0)).unwrap();
+    let want = library_resistance(&members, &michell::Conditions::seawater(3.0));
     let rw = json_num(&out, "rw");
     let iff = json_num(&out, "interference");
     assert!(
-        (rw - want.wave.resistance).abs() < 1e-9 * want.wave.resistance,
+        (rw - want.wave.resistance).abs() < 1e-6 * want.wave.resistance,
         "rw {rw} vs {}",
         want.wave.resistance
     );
     assert!(
-        (iff - want.interference).abs() < 1e-9,
+        (iff - want.interference).abs() < 1e-6,
         "IF {iff} vs {}",
         want.interference
     );
@@ -470,10 +468,10 @@ fn sweep_equilibrium_hits_target_displacements() {
         "weight=1000:2000:1000",
         "--speeds",
         "3.0",
-        "--samples",
-        "41x13",
-        "--fit-control",
-        "8x6",
+        "--stations",
+        "41",
+        "--rays",
+        "17",
     ]));
     let vols = csv_col(&out, "volume");
     assert_eq!(vols.len(), 2, "{out}");
@@ -506,10 +504,10 @@ fn sweep_raw_waterline_and_trim_axes() {
         "sweep_shell2:trim=-2:2:2",
         "--speeds",
         "3.0",
-        "--samples",
-        "41x13",
-        "--fit-control",
-        "8x6",
+        "--stations",
+        "41",
+        "--rays",
+        "17",
     ]));
     // 2 waterlines x 3 trims x 1 speed = 6 rows.
     let vols = csv_col(&out, "volume");
@@ -523,56 +521,38 @@ fn sweep_raw_waterline_and_trim_axes() {
 }
 
 #[test]
-fn loft_decomposes_and_manifest_sweeps() {
+fn manifest_sweeps_iges_hulls() {
     // Trimaran: shells at y = 0, +7, -7 in one IGES file.
     let iges_path = tmp("tri.iges");
     std::fs::write(&iges_path, wigley_shells_iges(&[0.0, 7.0, -7.0])).unwrap();
 
-    // Decompose to semantic full-band bodies.
-    let prefix = tmp("tri");
-    let out = run_ok(bin().args([
-        "loft",
+    // The file's hulls, ordered by transverse position.
+    let info = run_ok(bin().args([
+        "info",
         iges_path.to_str().unwrap(),
         "--waterline",
         "0.7",
-        "-o",
-        prefix.to_str().unwrap(),
-        "--samples",
-        "61x21",
-        "--fit-control",
-        "9x7",
-        "--fit-degree",
-        "2x2",
+        "--json",
     ]));
-    for name in ["port", "center", "starboard"] {
-        let f = tmp(&format!("tri-{name}.hull"));
-        assert!(f.exists(), "missing {f:?}\n{out}");
-        let text = std::fs::read_to_string(&f).unwrap();
-        assert!(text.contains("\nwaterline "), "no waterline key in {name}");
-        assert!(
-            text.contains("\ncenterplane "),
-            "no centerplane key in {name}"
-        );
+    let ys: Vec<f64> = info
+        .split("\"y\":")
+        .skip(1)
+        .map(|t| t.split(['}', ',']).next().unwrap().parse().unwrap())
+        .collect();
+    assert_eq!(ys.len(), 3, "{info}");
+    for (y, want) in ys.iter().zip([-7.0, 0.0, 7.0]) {
+        assert!((y - want).abs() < 1e-3, "centerplanes {ys:?}");
     }
-    // Ports and starboards at the right sides.
-    let port = std::fs::read_to_string(tmp("tri-port.hull")).unwrap();
-    let cp: f64 = port
-        .lines()
-        .find_map(|l| l.strip_prefix("centerplane "))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert!((cp + 7.0).abs() < 1e-3, "port centerplane {cp}");
 
-    // Manifest: equilibrium weight sweep x ama spread.
+    // Manifest: equilibrium weight sweep x ama spread, each hull picked out
+    // of the one file.
     let manifest = r#"{
   "name": "cli test study",
   "fluid": "seawater",
   "hulls": [
-    { "id": "vaka",  "file": "tri-center.hull", "load": { "mass": 3000, "lcg": 5.0 } },
-    { "id": "ama_s", "file": "tri-starboard.hull" },
-    { "id": "ama_p", "file": "tri-port.hull" }
+    { "id": "vaka",  "file": "tri.iges", "hull": 1, "load": { "mass": 3000, "lcg": 5.0 } },
+    { "id": "ama_s", "file": "tri.iges", "hull": 2 },
+    { "id": "ama_p", "file": "tri.iges", "hull": 0 }
   ],
   "sweep": [
     { "target": "speed", "unit": "ms", "value": 3.0 },
@@ -580,7 +560,7 @@ fn loft_decomposes_and_manifest_sweeps() {
     { "target": ["ama_s", "ama_p"], "param": "spread", "values": [0, 0.5] }
   ],
   "output": { "format": "csv", "file": "study.csv" },
-  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+  "options": { "waterline": 0.7, "stations": 41, "rays": 17 }
 }"#;
     let man_path = tmp("study.json");
     std::fs::write(&man_path, manifest).unwrap();
@@ -605,6 +585,12 @@ fn loft_decomposes_and_manifest_sweeps() {
     );
     let rws = csv_col(&csv, "rw");
     assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
+
+    // A multihull file needs its hull picked.
+    let bad = manifest.replace(r#", "hull": 1"#, "");
+    std::fs::write(&man_path, bad).unwrap();
+    let err = run_err(bin().args(["sweep", man_path.to_str().unwrap()]));
+    assert!(err.contains("pick one with"), "{err}");
 }
 
 /// Heel was removed. Old inputs that still ask for it — the `--heel` flag, a
@@ -625,36 +611,22 @@ fn heel_inputs_are_rejected() {
 
     let iges_path = tmp("noheel.iges");
     std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
-    run_ok(bin().args([
-        "loft",
-        iges_path.to_str().unwrap(),
-        "--waterline",
-        "0.5",
-        "-o",
-        tmp("noheel").to_str().unwrap(),
-        "--samples",
-        "61x21",
-        "--fit-control",
-        "9x7",
-        "--fit-degree",
-        "2x2",
-    ]));
     let cases = [
         (
-            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 } }"#,
+            r#"{ "id": "vaka", "file": "noheel.iges", "load": { "mass": 1500 } }"#,
             r#"{ "target": "speed", "unit": "ms", "value": 3.0 }"#,
             r#", "heel": { "gz_step": 5 }"#,
             "heel was removed",
         ),
         (
-            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 },
+            r#"{ "id": "vaka", "file": "noheel.iges", "load": { "mass": 1500 },
                  "points": [ { "id": "crew", "mass": 80, "dy": 0.5 } ] }"#,
             r#"{ "target": "speed", "unit": "ms", "value": 3.0 }"#,
             "",
             "\"dy\" was removed",
         ),
         (
-            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 },
+            r#"{ "id": "vaka", "file": "noheel.iges", "load": { "mass": 1500 },
                  "points": [ { "id": "crew", "mass": 80 } ] }"#,
             r#"{ "target": "speed", "unit": "ms", "value": 3.0 },
                { "target": "crew", "param": "dy", "values": [0.0, 0.5] }"#,
@@ -666,7 +638,7 @@ fn heel_inputs_are_rejected() {
         let manifest = format!(
             r#"{{ "name": "no heel", "fluid": "seawater", "hulls": [ {hull} ],
   "sweep": [ {sweep} ], "output": {{ "format": "csv", "file": "noheel.csv" }},
-  "options": {{ "samples": "61x17"{opts} }} }}"#
+  "options": {{ "waterline": 0.5{opts} }} }}"#
         );
         let man_path = tmp(&format!("noheel{k}.json"));
         std::fs::write(&man_path, manifest).unwrap();
@@ -717,29 +689,15 @@ fn parse_msw(bytes: &[u8]) -> Vec<Blob> {
 fn manifest_binary_archive_bundles_everything() {
     let iges_path = tmp("bin_arc.iges");
     std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
-    run_ok(bin().args([
-        "loft",
-        iges_path.to_str().unwrap(),
-        "--waterline",
-        "0.5",
-        "-o",
-        tmp("bin_arc").to_str().unwrap(),
-        "--samples",
-        "61x21",
-        "--fit-control",
-        "9x7",
-        "--fit-degree",
-        "2x2",
-    ]));
-    let hull_bytes = std::fs::read(tmp("bin_arc.hull")).unwrap();
+    let hull_bytes = std::fs::read(&iges_path).unwrap();
 
     let manifest = r#"{
   "name": "binary archive test",
   "fluid": "seawater",
-  "hulls": [ { "id": "vaka", "file": "bin_arc.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
+  "hulls": [ { "id": "vaka", "file": "bin_arc.iges", "load": { "mass": 1500, "vcg": 0.0 } } ],
   "sweep": [ { "target": "speed", "unit": "ms", "values": [2.5, 3.5] } ],
   "output": { "format": "binary", "file": "study.msw", "spectrum": { "points": 129 } },
-  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+  "options": { "waterline": 0.5, "stations": 41, "rays": 17 }
 }"#;
     let man_path = tmp("bin_arc.json");
     std::fs::write(&man_path, manifest).unwrap();
@@ -755,7 +713,7 @@ fn manifest_binary_archive_bundles_everything() {
 
     // Hull file bundled byte-for-byte.
     let hull = blobs.iter().find(|b| b.kind == 2).expect("hull blob");
-    assert_eq!(hull.name, "bin_arc.hull");
+    assert_eq!(hull.name, "bin_arc.iges");
     assert_eq!(hull.data, hull_bytes);
 
     // Meta names the columns.
@@ -800,26 +758,12 @@ fn manifest_binary_archive_bundles_everything() {
 fn manifest_point_load_moves_derived_cg() {
     let iges_path = tmp("ptload.iges");
     std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
-    run_ok(bin().args([
-        "loft",
-        iges_path.to_str().unwrap(),
-        "--waterline",
-        "0.5",
-        "-o",
-        tmp("ptload").to_str().unwrap(),
-        "--samples",
-        "61x21",
-        "--fit-control",
-        "9x7",
-        "--fit-degree",
-        "2x2",
-    ]));
 
     let manifest = r#"{
   "name": "point load cg",
   "fluid": "seawater",
   "hulls": [
-    { "id": "vaka", "file": "ptload.hull",
+    { "id": "vaka", "file": "ptload.iges",
       "load": { "mass": 1000, "vcg": 0.5 },
       "points": [ { "id": "keel", "mass": 500, "dz": 1.0 } ] }
   ],
@@ -828,7 +772,7 @@ fn manifest_point_load_moves_derived_cg() {
     { "target": "keel", "param": "dz", "values": [0.0, 2.0] }
   ],
   "output": { "format": "csv", "file": "ptload.csv" },
-  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
+  "options": { "waterline": 0.5, "stations": 41, "rays": 17 }
 }"#;
     let man_path = tmp("ptload.json");
     std::fs::write(&man_path, manifest).unwrap();
@@ -882,7 +826,7 @@ fn wigley_stl(nx: usize, nz: usize) -> String {
 }
 
 #[test]
-fn stl_resistance_and_loft() {
+fn stl_resistance() {
     let stl_path = tmp("wigley_mesh.stl");
     std::fs::write(&stl_path, wigley_stl(120, 40)).unwrap();
 
@@ -908,99 +852,19 @@ fn stl_resistance_and_loft() {
         "seawater",
         "--json",
     ]));
-    let reference = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    let want = michell::resistance(&reference, &michell::Conditions::seawater(3.0)).unwrap();
+    let reference = sectional_wigley();
+    let want = library_resistance(
+        &[(&reference, michell::Placement::default())],
+        &michell::Conditions::seawater(3.0),
+    );
     let rw = json_num(&out, "rw");
     assert!(
         (rw - want.wave.resistance).abs() < 0.02 * want.wave.resistance,
         "rw {rw} vs {}",
         want.wave.resistance
     );
-
-    // Loft to a full-band body and use it.
-    let body_path = tmp("wigley_mesh_body");
-    run_ok(bin().args([
-        "loft",
-        stl_path.to_str().unwrap(),
-        "--units",
-        "m",
-        "--waterline",
-        "0.7",
-        "-o",
-        body_path.to_str().unwrap(),
-        "--samples",
-        "121x49",
-        "--fit-control",
-        "16x12",
-    ]));
-    let body_file = tmp("wigley_mesh_body.hull");
-    let text = std::fs::read_to_string(&body_file).unwrap();
-    assert!(text.contains("\nwaterline "), "not a body file");
-    let out = run_ok(bin().args([
-        "resistance",
-        body_file.to_str().unwrap(),
-        "--speeds",
-        "3.0",
-        "--json",
-    ]));
-    let rw_body = json_num(&out, "rw");
-    assert!(
-        (rw_body - want.wave.resistance).abs() < 0.03 * want.wave.resistance,
-        "body rw {rw_body} vs {}",
-        want.wave.resistance
-    );
 }
 
-#[test]
-fn dump_grid_roundtrips_through_grid_json() {
-    let iges_path = tmp("dump_shell.iges");
-    std::fs::write(&iges_path, wigley_shell_iges()).unwrap();
-    let grid_path = tmp("dump.grid.json");
-
-    // Import the IGES, dumping the sampled grid IR alongside.
-    let direct = run_ok(bin().args([
-        "info",
-        iges_path.to_str().unwrap(),
-        "--waterline",
-        "0.7",
-        "--samples",
-        "41x13",
-        "--fit-control",
-        "8x6",
-        "--dump-grid",
-        grid_path.to_str().unwrap(),
-        "--json",
-    ]));
-
-    // The dumped grid must carry the derivative channels.
-    let grid_text = std::fs::read_to_string(&grid_path).unwrap();
-    assert!(
-        grid_text.contains("\"michell\": \"sample-grid\""),
-        "{grid_text}"
-    );
-    assert!(
-        grid_text.contains("\"dfdx\""),
-        "no dfdx channel:\n{grid_text}"
-    );
-    assert!(grid_text.contains("\"dfdz\""));
-    assert!(grid_text.contains("\"weights\""));
-
-    // Re-lofting the dumped grid with the same fit reproduces the hull.
-    let reloaded = run_ok(bin().args([
-        "info",
-        grid_path.to_str().unwrap(),
-        "--fit-control",
-        "8x6",
-        "--json",
-    ]));
-    for key in ["length", "draft", "wetted_surface", "displaced_volume"] {
-        let (a, b) = (json_num(&direct, key), json_num(&reloaded, key));
-        assert!(
-            (a - b).abs() <= 1e-9 * a.abs().max(1e-9),
-            "{key}: {a} vs {b}"
-        );
-    }
-}
 
 #[test]
 fn errors_are_clean() {
@@ -1036,11 +900,11 @@ fn spectrum_cross_checks_resistance() {
         "3",
         "--json",
     ]));
-    let reference = michell::wave_resistance(
-        &michell::hulls::wigley(10.0, 1.0, 0.625).unwrap(),
+    let reference = library_resistance(
+        &[(&sectional_wigley(), michell::Placement::default())],
         &michell::Conditions::seawater(3.0),
     )
-    .unwrap()
+    .wave
     .resistance;
     let rw_michell = json_num(&out, "rw_michell");
     let rw_spectrum = json_num(&out, "rw_spectrum");
