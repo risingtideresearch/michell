@@ -93,23 +93,19 @@ USAGE
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
-  michell field <iges>... --speed U -o scene.json [options]   3-D scene: sections, closure, wave field
-  michell view <hull>... --speed U [--port N] [options]       interactive fleet viewer
-  michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
+  michell field <hull>... --speed U -o scene.json [options]   3-D scene: sections, closure, wave field
   michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
   michell wigley [-o OUT.hull] [--length L --beam B --draft T]
 
 HULL INPUTS (sniffed by header / extension)
-  *.hull            canonical B-spline control net (exact); with a
-                    `waterline` key, a re-situatable full-band body
-  offsets table     `michell-offsets v1` station x waterline half-beams (lofted)
-  *.grid.json       derivative-augmented sample grid (the IR written by
-                    --dump-grid), lofted on load
-  *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted, with
-                    surface slopes recovered from the CAD geometry)
-  *.stl             triangle mesh, binary or ASCII (ray-sampled and lofted);
-                    requires --units; quality tracks the export's chord
-                    tolerance — use fine tessellations
+  Every hull is cut into sections (stations along x, each integrated along
+  rays from its top centreplane point) straight from its source geometry,
+  and re-cut at every pose a sweep or equilibrium solve visits.
+  *.igs, *.iges     NURBS surfaces (types 128/143/141), clustered into hulls
+  *.stl             triangle mesh, binary or ASCII; requires --units
+  *.hull            B-spline half-breadth control net, as its exact surfaces;
+                    with a `waterline` key, a full-band body floating at
+                    that depth below its band top
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
@@ -142,25 +138,17 @@ SPEED SELECTION (resistance, squat)
   --froude A[:B:STEP]   length Froude numbers instead of speeds
   --knots               interpret and display speeds in knots
 
-IMPORT / LOFT OPTIONS (offsets and IGES inputs)
-  --waterline Z         IGES: design waterline height in the file frame,
-                        metres after unit conversion (z up; default 0)
-  --centerplane Y       IGES: transverse position of the hull centerplane
+IMPORT OPTIONS
+  --waterline Z         IGES/STL: design waterline height in the file frame,
+                        metres after unit conversion (z up; default 0). A
+                        .hull floats at its own design waterline
+  --centerplane Y       transverse position of the hull centerplane
                         (default: auto-detect; full shells fold about their
                         midplane, half hulls measure from y = 0)
   --units U             STL: scale to metres (mm|cm|m|in|ft or a number);
                         required for STL, which has no units field
-  --samples NxM         IGES/STL: sample grid, stations x waterlines
-                        (default 121x33)
-  --fit-degree PxQ      spline degrees for the loft (default 3x3)
-  --fit-control NxM     loft control net (default: 12x8 offsets, 20x12 IGES)
-  --fit-deriv-weight W  relative weight of sampled surface slopes in the
-                        loft (default 1; 0 fits values only)
-  --fit-fairing L       fairing weight of the loft: penalise surface bending
-                        energy by L against the mean squared residual
-                        (default 0, plain least squares)
-  --dump-grid PATH      write the sampled grid(s) as *.grid.json before
-                        lofting (multihull files get -0, -1, ... suffixes)
+  --stations N          stations along each hull (default 121, cosine-spaced)
+  --rays M              rays across each section (default 33)
 
 PHYSICS OPTIONS
   --fluid NAME          seawater | freshwater, at 15 C (default seawater)
@@ -218,22 +206,19 @@ WAVE FIELD (spectrum, wake)
     --camera AZ:EL[:D]  degrees off dead astern (positive to starboard),
                         elevation degrees, distance m (default 35:18, auto)
     --z-scale S         vertical exaggeration of the water (default 1)
-    --freeboard F       topsides height above waterline [m] (default T/2)
     --zmax M            tint saturation elevation [m] (default: 99.5th pct)
-  Same caveat as wake (paled where not astern of every hull); hulls sit at
-  the static waterline, without dynamic sinkage or trim.
+  Same caveat as wake (paled where not astern of every hull); hulls are drawn
+  from their source geometry at the static waterline, without dynamic
+  sinkage or trim.
 
 SWEEPS
-  michell sweep study.json      preferred: a JSON manifest referencing
-                                full-band .hull bodies (from `michell loft`),
-                                with speed/waterline axes, per-hull load
+  michell sweep study.json      preferred: a JSON manifest referencing hull
+                                files (IGES/STL/.hull; `hull: N` picks one
+                                of a multihull file's hulls), with
+                                speed/waterline axes, per-hull load
                                 (mass/lcg/vcg), point loads (mass at an
                                 offset from a hull), pose axes, and a derived
                                 fleet CG — see the README for the schema
-  michell loft boat.igs --waterline Z -o boat
-                                decompose an IGES multihull into full-band
-                                body files (boat-port.hull, ...); --wetted
-                                keeps the old single-hull wetted output
 
 PLACE (reconstruct CAD geometry from a studied configuration)
   michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7,dz=0.05 -o boat.igs
@@ -257,7 +242,7 @@ PLACE (reconstruct CAD geometry from a studied configuration)
   Bounded (143/141) source patches are exported as full base surfaces with
   their parameter range restricted to the bounded box.
 
-SWEEPS (flag form, IGES inputs; hulls modelled in position)
+SWEEPS (flag form; hulls modelled in position)
   michell sweep boat.igs --speeds 3:8:1 [axes...]         long-form CSV/JSON
   --axis waterline=A:B:S        raw waterline sweep
   --axis SEL:PARAM=A[:B:S]      design-pose sweep; SEL = file stem, or
