@@ -165,8 +165,22 @@
 
   <section>
     <h2>Flow</h2>
+    <div class="fields" style="margin-bottom:10px">
+      <label class="wide">Attitude
+        <select id="attitude">
+          <option value="dynamic">Dynamic equilibrium (sinkage &amp; trim at speed)</option>
+          <option value="design">Design waterline</option>
+        </select>
+      </label>
+      <label>Mass [kg]
+        <input id="mass" type="number" step="any" min="0" placeholder="design">
+      </label>
+      <label>LCG x [m]
+        <input id="lcg" type="number" step="any" placeholder="at LCB">
+      </label>
+    </div>
     <button class="primary" id="flowgo" disabled style="width:100%">Compute flow at this speed</button>
-    <p class="hint">Thin-ship near field at the design attitude: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. Recomputes when you release the Froude slider. A monohull takes several seconds.</p>
+    <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. With a dynamic attitude the hull is first floated at speed — the load defaults to its design displacement at its LCB — and re-cut there. Recomputes when you release the Froude slider; a monohull takes about ten seconds.</p>
     <div id="flowout"></div>
   </section>
 
@@ -192,6 +206,7 @@
       <button data-layer="closure" class="on">Closure</button>
       <button data-layer="water" class="on">Waterplane</button>
       <button data-layer="area" class="on">Z(x)</button>
+      <button data-layer="hull" class="on" hidden>Hull</button>
       <button data-layer="pressure" class="on" hidden>Pressure</button>
       <button data-layer="waves" class="on" hidden>Free surface</button>
     </div>
@@ -327,8 +342,10 @@ async function computeFlow() {
   const { kind, param } = closureSpec();
   q.set("closure", kind);
   if (kind !== "off") q.set("param", String(param));
+  q.set("attitude", $("attitude").value);
+  for (const id of ["mass", "lcg"]) { const v = $(id).value.trim(); if (v) q.set(id, v); }
   $("flowgo").disabled = true;
-  $("flowout").innerHTML = `<p class="hint">Computing the flow at Fn ${Number($("froude").value).toFixed(2)}…</p>`;
+  $("flowout").innerHTML = `<p class="hint">${$("attitude").value === "dynamic" ? "Floating the hull at" : "Computing the flow at"} Fn ${Number($("froude").value).toFixed(2)}…</p>`;
   try {
     const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file });
     const data = await r.json();
@@ -352,6 +369,7 @@ $("flowgo").onclick = computeFlow;
 $("froude").addEventListener("change", () => flowData && computeFlow());
 $("closure").addEventListener("change", () => flowData && computeFlow());
 $("param").addEventListener("change", () => flowData && computeFlow());
+for (const id of ["attitude", "mass", "lcg"]) $(id).addEventListener("change", () => flowData && computeFlow());
 $("froude").addEventListener("input", () => renderFlow());
 
 function renderFlow() {
@@ -369,11 +387,21 @@ function renderFlow() {
       <dt>Effective power</dt><dd>${fmt(f.pe / 1000, 3)} kW</dd>
       ${hulls.length > 1 ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
       <dt>Dynamic lift</dt><dd>${fmt(f.fz, 1)} N (${fmt(100 * f.lift_fraction, 2)}% of weight)</dd>
-      <dt>Sinkage (1st order)</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
-      <dt>Trim (1st order)</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
+      <dt>Sinkage${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
+      <dt>Trim${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
+      <dt>Load</dt><dd>${fmt(f.mass, 1)} kg at x ${fmt(f.lcg, 3)} m</dd>
       <dt>Transverse wave</dt><dd>${fmt(d.transverse_wavelength, 2)} m</dd>
     </dl>
-    <p class="hint">Computed in ${d.seconds.toFixed(1)} s, at the design attitude (no sinkage or trim applied).</p>`;
+    <p class="hint">Computed in ${d.seconds.toFixed(1)} s, ${f.solved
+      ? `at the dynamic equilibrium (${f.iterations} Newton iterations); resistance and flow are for the hull at that attitude. Stations, keel and closure layers stay at the design waterline.`
+      : "at the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}</p>`;
+}
+
+// Base64 to an ArrayBuffer (the server's little-endian typed arrays).
+function b64(s) {
+  const bin = atob(s), out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out.buffer;
 }
 
 // Diverging colour for t in [−1, 1]: blue (negative), white, red (positive).
@@ -423,6 +451,9 @@ const scene3d = (() => {
   const host = $("view");
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(devicePixelRatio);
+  renderer.localClippingEnabled = true;
+  // Keeps what is above the water (scene y ≥ 0).
+  const aboveWater = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   host.prepend(renderer.domElement);
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
@@ -435,7 +466,7 @@ const scene3d = (() => {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "pressure", "waves"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "hull", "pressure", "waves"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   layers.rays.visible = false;
@@ -590,9 +621,9 @@ const scene3d = (() => {
     const has = !!d;
     for (const id of ["lgcp", "lgzeta"]) $(id).style.display = has ? "block" : "none";
     $("wavegroup").hidden = !has;
-    for (const b of $("layers").querySelectorAll("button[data-layer=pressure],button[data-layer=waves]")) b.hidden = !has;
+    for (const b of $("layers").querySelectorAll("button[data-layer=pressure],button[data-layer=waves],button[data-layer=hull]")) b.hidden = !has;
     $("views").querySelector("button[data-view=wake]").hidden = !has;
-    if (!has) { wakeBounds = null; if (view === "wake") pick("iso"); return; }
+    if (!has) { wakeBounds = null; bounds = hullBounds; if (view === "wake") pick("iso"); else setView(view, true); return; }
     const cpMax = range99(d.hulls.flatMap((p) => p.cp));
     $("cplo").textContent = `−${cpMax.toPrecision(2)}`; $("cphi").textContent = `+${cpMax.toPrecision(2)}`;
     d.hulls.forEach((p, k) => {
@@ -614,9 +645,26 @@ const scene3d = (() => {
         layers.pressure.add(m); probes.push(m);
       }
     });
-    // The pressure replaces the see-through surface and the station lines
-    // while it is shown.
-    for (const name of ["surface", "stations"]) {
+    // The whole hull at the attitude, topsides included: the source's
+    // tessellation, cut at the water while the pressure is shown below it.
+    const hb = new THREE.Box3();
+    for (const p of d.hulls) {
+      const v = new Float32Array(b64(p.mesh.vertices)), t = new Uint32Array(b64(p.mesh.triangles));
+      const pos = new Float32Array(v.length);
+      for (let i = 0; i < v.length; i += 3) { pos[i] = v[i]; pos[i + 1] = v[i + 2]; pos[i + 2] = v[i + 1]; }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geo.setIndex(new THREE.BufferAttribute(t, 1));
+      geo.computeVertexNormals();
+      geo.computeBoundingBox();
+      hb.union(geo.boundingBox);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xe9e5db, roughness: 0.7, side: THREE.DoubleSide });
+      layers.hull.add(new THREE.Mesh(geo, mat));
+    }
+    clipHull();
+    // The pressure replaces the see-through surface, and the design-attitude
+    // layers step aside while it is shown.
+    for (const name of ["surface", "stations", "keel", "closure"]) {
       layers[name].visible = false;
       $("layers").querySelector(`button[data-layer=${name}]`).classList.remove("on");
     }
@@ -651,8 +699,14 @@ const scene3d = (() => {
     $("layers").querySelector("button[data-layer=water]").classList.remove("on");
     // The Wake view frames the whole pattern; the others stay on the hull.
     const first = !wakeBounds;
-    wakeBounds = hullBounds.clone().union(new THREE.Box3(new THREE.Vector3(g.x0, -0.01, g.y0), new THREE.Vector3(g.x1, 0.01, g.y1)));
+    bounds = hullBounds.clone().union(hb);
+    wakeBounds = bounds.clone().union(new THREE.Box3(new THREE.Vector3(g.x0, -0.01, g.y0), new THREE.Vector3(g.x1, 0.01, g.y1)));
     if (first) pick("wake"); else render();
+  }
+  // The hull's underwater part is the pressure mesh's job while that shows.
+  function clipHull() {
+    for (const m of layers.hull.children) m.material.clippingPlanes = layers.pressure.visible ? [aboveWater] : [];
+    render();
   }
   function setWaveScale(k) { waveScale = k; if (waveMesh) waveMesh.scale.y = k; render(); }
 
@@ -736,7 +790,9 @@ const scene3d = (() => {
 
   function toggle(name, on) {
     if (name === "area") { areaOn = on; drawArea(); return; }
-    layers[name].visible = on; render();
+    layers[name].visible = on;
+    if (name === "pressure") clipHull();
+    render();
   }
   return { load, closure, flow, setView, setStretch, setWaveScale, toggle };
 })();
