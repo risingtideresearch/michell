@@ -675,6 +675,37 @@ fn variant_json(v: &Variant, s: &Samples) -> Value {
     })
 }
 
+/// `n` points spaced evenly along a polyline's length (an empty one
+/// collapses to a point on the waterline).
+fn by_girth(outline: &[(f64, f64)], n: usize) -> Vec<(f64, f64)> {
+    if outline.len() < 2 {
+        return vec![outline.first().copied().unwrap_or((0.0, 0.0)); n];
+    }
+    let mut cum = vec![0.0];
+    for w in outline.windows(2) {
+        let d = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        cum.push(cum.last().unwrap() + d);
+    }
+    let total = *cum.last().unwrap();
+    let mut out = Vec::with_capacity(n);
+    let mut seg = 0;
+    for k in 0..n {
+        let s = total * k as f64 / (n - 1) as f64;
+        while seg + 2 < cum.len() && cum[seg + 1] < s {
+            seg += 1;
+        }
+        let span = cum[seg + 1] - cum[seg];
+        let t = if span > 0.0 {
+            ((s - cum[seg]) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (a, b) = (outline[seg], outline[seg + 1]);
+        out.push((a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1)));
+    }
+    out
+}
+
 /// The sectional import as a comparison variant, drawn as the physics uses
 /// it: each station at its depth-quadrature nodes (the curve the integral
 /// sees), the CAD ray hits those were interpolated from, a see-through
@@ -686,12 +717,16 @@ pub fn sectional_variant(imp: &michell::iges::SectionalImport, seconds: f64) -> 
     let hull = &imp.hull;
     let stations: Vec<(f64, Vec<(f64, f64)>)> =
         hull.sections().map(|(x, o)| (x, o.to_vec())).collect();
-    let nodes = stations.iter().map(|(_, o)| o.len()).max().unwrap_or(0);
+    // The see-through surface joins stations at equal fractions of each
+    // section's girth. Joining quadrature node k to node k would not do:
+    // each station's nodes are spread in its own proportions, so where
+    // sections change shape quickly (a fine entry, a blade under a stem) node
+    // k of one lies near the keel and of the next near the waterline, and the
+    // surface folds.
+    let nodes = 64;
     let (mut x, mut z, mut y) = (Vec::new(), Vec::new(), Vec::new());
     for (xs, outline) in &stations {
-        for k in 0..nodes {
-            // An empty end station collapses to a point on the waterline.
-            let (hb, depth) = outline.get(k).copied().unwrap_or((0.0, 0.0));
+        for (hb, depth) in by_girth(outline, nodes) {
             x.push(*xs);
             z.push(depth);
             y.push(hb);

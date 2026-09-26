@@ -2256,7 +2256,12 @@ impl<'a> Station<'a> {
                             tb = tm;
                         }
                     }
-                    let q = at(0.5 * (ta + tb));
+                    let t = 0.5 * (ta + tb);
+                    let (u, v) = (a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+                    if is_end_cap(&p.surf, u, v) {
+                        continue;
+                    }
+                    let q = p.surf.point(u, v);
                     edges.push((q[1], q[2]));
                 }
             }
@@ -2295,36 +2300,46 @@ impl<'a> Station<'a> {
 
     /// Distance from `(y_c, z0)` along the ray at angle `θ` below the
     /// horizontal, toward side `sd = ±1`, to the boundary of the hull's
-    /// section — defined, as the lofted importer defines it, by the
-    /// **outermost fold**: at each depth the section reaches as far from the
-    /// centreplane as the farthest shell there. Internal geometry (a floor, a
-    /// beam, a bulkhead the ray crosses first) is inside that and ignored:
-    /// the reach is the farthest hit that lies on the outer fold at its own
-    /// depth. Straight down the centreplane (`θ = π/2`) it is the deepest hit
-    /// — the keel. More than one distinct hit counts as ambiguous.
+    /// section — the region defined, as the lofted importer defines it, by
+    /// the **outermost fold**: at each depth the section reaches as far from
+    /// the centreplane as the farthest shell there. The reach is where the ray
+    /// first *leaves* that region: at each hit in turn, the ray's point
+    /// midway to the next hit is tested against the fold at its depth. Past
+    /// internal geometry (a floor, a beam, a bulkhead) the ray is still inside
+    /// the fold and goes on; past a boundary with water beyond it — a raked
+    /// stem face with nothing but patch slivers below it, say — it is not,
+    /// and stops, even where the boundary is no wider than the fold at its
+    /// own depth. (Taking instead the farthest hit that lies on the fold, as
+    /// if the region were star-shaped, carried rays through such a stem face
+    /// to the slivers and hung a spike off every section under it.) More than
+    /// one distinct hit counts as ambiguous.
     fn reach(&self, sd: f64, z0: f64, theta: f64, ambiguous: &mut usize) -> Option<f64> {
         let hits = self.hits(sd, z0, theta);
         if hits.len() > 1 {
             *ambiguous += 1;
         }
-        let (st, ct) = theta.sin_cos();
-        if hits.len() <= 1 || ct < 1e-12 {
+        if hits.len() <= 1 {
             return hits.last().map(|h| h.0);
         }
-        let tol = 1e-6 * self.scale;
-        for &(r, _) in hits.iter().rev() {
+        let (st, ct) = theta.sin_cos();
+        let tol = 1e-9 * self.scale;
+        for w in hits.windows(2) {
+            let r = 0.5 * (w[0].0 + w[1].0);
             let (yb, z) = (r * ct, z0 + r * st);
-            // The fold's outermost reach at this depth.
+            // The fold's outermost reach at this depth: the ray is inside
+            // the section there only if some shell lies farther out.
             let outer = self.hits(sd, z, 0.0).last().map_or(0.0, |h| h.0);
-            if yb >= outer - tol {
-                return Some(r);
+            if yb + tol >= outer {
+                return Some(w[0].0);
             }
         }
         hits.last().map(|h| h.0)
     }
 
     /// Newton for the ray's hit on one patch from `(u, v)`: the reach and
-    /// where it landed, if it converged ahead of the origin.
+    /// where it landed, if it converged ahead of the origin — `Some(None)`
+    /// when it landed on an end cap (see [`is_end_cap`]), which is no hit.
+    #[allow(clippy::option_option)]
     fn solve_on(
         &self,
         pi: usize,
@@ -2333,7 +2348,7 @@ impl<'a> Station<'a> {
         sd: f64,
         z0: f64,
         theta: f64,
-    ) -> Option<(f64, (usize, f64, f64))> {
+    ) -> Option<Option<(f64, (usize, f64, f64))>> {
         let (st, ct) = theta.sin_cos();
         let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
         let off = |y: f64, z: f64| sd * (y - y_c) * st - (z - z0) * ct;
@@ -2347,8 +2362,11 @@ impl<'a> Station<'a> {
                 ],
             )
         })?;
+        if is_end_cap(&p.surf, uv.0, uv.1) {
+            return Some(None);
+        }
         let r = sd * (s[1] - y_c) * ct + (s[2] - z0) * st;
-        (r > 1e-12 * scale).then_some((r, (pi, uv.0, uv.1)))
+        (r > 1e-12 * scale).then_some(Some((r, (pi, uv.0, uv.1))))
     }
 
     /// Every distinct distance along the ray from `(y_c, z0)` at angle `θ`
@@ -2383,7 +2401,11 @@ impl<'a> Station<'a> {
             match self.solve_on(a.patch, u, v, sd, z0, theta) {
                 // A polish lands within a facet's chord of where the mesh
                 // said; one that went much farther found some other hit.
-                Some((rr, at)) if (rr - r).abs() <= 0.02 * self.scale => hits.push((rr, Some(at))),
+                Some(Some((rr, at))) if (rr - r).abs() <= 0.02 * self.scale => {
+                    hits.push((rr, Some(at)))
+                }
+                // Onto an end cap: not a hit.
+                Some(None) => {}
                 _ => return self.search_hits(sd, z0, theta),
             }
         }
@@ -2450,7 +2472,7 @@ impl<'a> Station<'a> {
                 });
                 if let Some((s, (su, sv))) = solved {
                     let r = along(s[1], s[2]);
-                    if r > min_reach {
+                    if r > min_reach && !is_end_cap(&p.surf, su, sv) {
                         hits.push((r, Some((pi, su, sv))));
                     }
                 }
@@ -2537,8 +2559,10 @@ impl<'a> Station<'a> {
                 };
                 let (u, v) = (a.u + s * (b.u - a.u), a.v + s * (b.v - a.v));
                 if let Some(p) = self.patches.get(a.patch) {
-                    if let Some(q) = newton_in_domain(&p.surf, u, v, tol, system) {
-                        take(q[2]);
+                    if let Some((q, (qu, qv))) = newton_in_domain_uv(&p.surf, u, v, tol, system) {
+                        if !is_end_cap(&p.surf, qu, qv) {
+                            take(q[2]);
+                        }
                     }
                 }
             }
@@ -2556,8 +2580,10 @@ impl<'a> Station<'a> {
                 .collect();
             seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, u, v) in seeds.iter().take(4) {
-                if let Some(s) = newton_in_domain(&p.surf, u, v, tol, system) {
-                    take(s[2]);
+                if let Some((s, (su, sv))) = newton_in_domain_uv(&p.surf, u, v, tol, system) {
+                    if !is_end_cap(&p.surf, su, sv) {
+                        take(s[2]);
+                    }
                 }
             }
         }
@@ -2696,6 +2722,10 @@ impl<'t> PosedMesh<'t> {
         let mut out = Vec::new();
         for &ti in &self.buckets[b] {
             let t = self.tess.tris[ti as usize];
+            let [p0, p1, p2] = t.map(|k| self.verts[k as usize]);
+            if normal_is_cap(cross3(sub3(p1, p0), sub3(p2, p0))) {
+                continue;
+            }
             let mut ends = [None, None];
             let mut n = 0;
             for (a, c) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
@@ -2726,23 +2756,46 @@ impl<'t> PosedMesh<'t> {
     }
 }
 
+/// A surface within ~18° of parallel to the station planes — facing fore or
+/// aft, like a transom face or a flat stem face — is an **end cap**, not
+/// part of the shell a section is cut from. A station plane meets it, if at
+/// all, along an ill-conditioned line (the whole face lies in the plane of an
+/// upright transom; a trimmed one crosses it at a grazing angle), and taking
+/// that line as section boundary turns the end section into a degenerate
+/// sliver — so the hull would close over one span, as if a transom wall were
+/// there, the moment it trims. Sections are cut from the side and bottom
+/// shell alone; where that shell stops, the hull ends with its full end
+/// section, open, at any trim.
+const END_CAP_NX: f64 = 0.95;
+
+fn normal_is_cap(n: [f64; 3]) -> bool {
+    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+    len > 0.0 && n[0].abs() > END_CAP_NX * len
+}
+
+fn is_end_cap(surf: &NurbsSurface3, u: f64, v: f64) -> bool {
+    let (_, du, dv) = surf.eval1(u, v);
+    normal_is_cap(cross3(du, dv))
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
 /// 2-D Newton on a patch for `F(S(u,v)) = 0`, with `F` and its Jacobian with
 /// respect to `(u, v)` supplied from the point and partials. Steps are cut
 /// back along their own direction to stay inside the parameter domain —
 /// clamping each coordinate separately bends the step off course, and
 /// cannot settle on a solution that lies on the domain's edge. Returns the
-/// converged point.
-fn newton_in_domain(
-    surf: &NurbsSurface3,
-    u: f64,
-    v: f64,
-    tol: f64,
-    f: impl Fn([f64; 3], [f64; 3], [f64; 3]) -> ([f64; 2], [[f64; 2]; 2]),
-) -> Option<[f64; 3]> {
-    newton_in_domain_uv(surf, u, v, tol, f).map(|(s, _)| s)
-}
-
-/// [`newton_in_domain`], also returning the converged parameters.
+/// converged point and its parameters.
 fn newton_in_domain_uv(
     surf: &NurbsSurface3,
     mut u: f64,
@@ -2897,7 +2950,11 @@ fn sample_station(
             beam = beam.max(r * t.cos());
         }
     }
-    if !(beam > 1e-12 * scale && depth > 1e-12 * scale) {
+    // A section with no depth or no beam to speak of (a hull's very tip) is
+    // no section: its fan, scaled to nothing in one direction, would sweep
+    // along the other and pick up whatever lies there. Its area is nil either
+    // way; an end station without one is empty, which is what it is.
+    if !(beam > 1e-6 * scale && depth > 1e-6 * scale) {
         return None;
     }
     let mut radii = Vec::with_capacity(thetas.len());
@@ -3512,6 +3569,59 @@ mod tests {
         assert!((after[0] - (before[0] + 1.0)).abs() < 1e-12);
         assert!((after[1] - (before[1] - 0.5)).abs() < 1e-12);
         assert!((after[2] - (before[2] - 0.3)).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod sectional_ends {
+    use super::*;
+
+    fn e12() -> SourceFleet {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
+        source_fleet(&text, -0.95).unwrap()
+    }
+
+    /// e12's transom is a flat face its side skins run on past. Trimmed bow
+    /// up, the face tilts across the aft station plane; read as section
+    /// boundary it collapsed the end section to a sliver, closing the hull
+    /// over one span (the near-field force doubled from trim 0 to +0.02°).
+    /// Faces are end caps, not shell: the aft station keeps the full
+    /// transom section at every trim.
+    #[test]
+    fn a_trimmed_transom_keeps_its_section() {
+        let fleet = e12();
+        let idx = (0..fleet.len())
+            .max_by_key(|&i| fleet.hulls[i].len())
+            .unwrap();
+        let so = SectionalOptions {
+            waterline_z: -0.95,
+            stations: 61,
+            rays: 17,
+            ..Default::default()
+        };
+        let mut last_vol = 0.0;
+        for trim_deg in [-0.1f64, 0.0, 0.02, 0.05, 0.1] {
+            let plat = Platform {
+                sinkage: 0.012,
+                trim: trim_deg.to_radians(),
+                pivot_x: 4.5,
+            };
+            let h = fleet
+                .situate_sectional(idx, -0.95, &HullPose::default(), &plat, &so)
+                .unwrap()
+                .unwrap();
+            let (st, _) = h.hull.depth_integral_curve(0.0, 1);
+            assert!(
+                st[0].1 > 0.9 * st[1].1,
+                "trim {trim_deg}°: end section {:.3e} against its neighbour's {:.3e}",
+                st[0].1,
+                st[1].1
+            );
+            let vol = h.hull.displaced_volume();
+            assert!(vol > last_vol, "bow-up trim sinks this stern deeper: {vol}");
+            last_vol = vol;
+        }
     }
 }
 
