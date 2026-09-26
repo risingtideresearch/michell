@@ -17,7 +17,7 @@ pub(crate) struct Span {
 /// A transom whose area is under this fraction of the hull's maximum section
 /// area is not reported: it is hydrodynamically negligible and, on a lofted
 /// hull, indistinguishable from the fit's own wiggle at a closing stern.
-const TRANSOM_AREA_REL: f64 = 1e-3;
+pub(crate) const TRANSOM_AREA_REL: f64 = 1e-3;
 
 /// The aft-end section of a hull whose half-breadth does not close there — a
 /// **transom**.

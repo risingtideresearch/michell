@@ -1942,6 +1942,9 @@ pub struct SectionalReport {
     /// Largest port/starboard disagreement of a ray's reach [m], for a
     /// two-sided shell (the sides are averaged: the symmetric thickness).
     pub max_asymmetry: f64,
+    /// The transom the aft end presents, if immersed (see
+    /// [`SectionalHull::transom`]).
+    pub transom: Option<crate::hull::Transom>,
 }
 
 /// One hull imported by sections.
@@ -2161,6 +2164,7 @@ fn sectional_cluster(
     knots.extend_from_slice(&kept_x[2..n - 2]);
     knots.extend(std::iter::repeat_n(kept_x[n - 1], p + 1));
     let hull = SectionalHull::new(p, knots, &kept_x, sections)?;
+    let transom = hull.transom().cloned();
     state.frame = Some(FrameMemo {
         y_c,
         two_sided: frame.two_sided,
@@ -2183,6 +2187,7 @@ fn sectional_cluster(
             dropped_stations: dropped,
             ambiguous_rays: ambiguous,
             max_asymmetry: max_asym,
+            transom,
         },
         sections: outlines,
     })

@@ -653,6 +653,17 @@ fn summarize_sectional(m: &SectionalMember) -> HullSummary {
             r.dropped_stations, r.max_asymmetry
         ));
     }
+    if let Some(t) = &r.transom {
+        // Closed by --transom (a virtual appendage), as on a lofted hull.
+        lines.push(format!(
+            "transom: immersed at x {:.4} m, {:.1}% of max section, equivalent \
+             depth {:.4} m, waterline half-beam {:.4} m",
+            t.x,
+            100.0 * t.area / m.hull.max_section_area().max(f64::MIN_POSITIVE),
+            t.depth,
+            t.half_beam
+        ));
+    }
     HullSummary {
         path: m.path.clone(),
         placement: m.placement,
@@ -1116,12 +1127,6 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
             );
         }
     }
-    if sectional && !matches!(opts.wave.transom, michell::TransomClosure::None) {
-        eprintln!(
-            "note: the sectional path does not carry the transom closure yet; \
-             an immersed transom is left open (as --transom off)"
-        );
-    }
     println!(
         "fleet: {} hull(s){}, L(ref) {:.3} m, Aw {:.3} m^2, LCF {:.3} m, I_L {:.3} m^4, vol {:.3} m^3; pivot {:.3} m",
         hydro.len(),
@@ -1241,12 +1246,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
 
     if sectional && heel != 0.0 {
         return Err("--heel is not yet supported with --sections".into());
-    }
-    if sectional && !matches!(wave_opts.transom, michell::TransomClosure::None) {
-        eprintln!(
-            "note: the sectional path does not carry the transom closure yet; \
-             an immersed transom is left open (as --transom off)"
-        );
     }
     let mut rows = Vec::new();
     for &u in &speeds {

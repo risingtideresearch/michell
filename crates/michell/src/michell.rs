@@ -108,7 +108,7 @@ impl TransomClosure {
     /// Hollow length [m] for a transom of immersion `depth` at `ν = g/U²`.
     /// `None` switches the closure off; a non-positive length collapses to the
     /// bare step, which the amplitude handles as the `L_v → 0` limit.
-    fn hollow_length(self, depth: f64, nu: f64) -> Option<f64> {
+    pub(crate) fn hollow_length(self, depth: f64, nu: f64) -> Option<f64> {
         match self {
             TransomClosure::None => None,
             // L_v = c·U·√(d_T/g) = c·√(d_T/ν), since ν = g/U².
@@ -143,7 +143,7 @@ impl Default for WaveOptions {
 /// `∫_0^1 φ'(s) e^{iKs} ds` for the smoothstep hollow `φ = (1−s)²(1+2s)`,
 /// whose derivative is `6s² − 6s`. At `K = 0` this is `φ(1) − φ(0) = −1`,
 /// the bare-step limit.
-fn hollow_shape_moment(k: f64, scratch: &mut Vec<C64>) -> C64 {
+pub(crate) fn hollow_shape_moment(k: f64, scratch: &mut Vec<C64>) -> C64 {
     osc_moments(k, 1.0, 2, scratch);
     scratch[2].scale(6.0) - scratch[1].scale(6.0)
 }
