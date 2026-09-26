@@ -59,10 +59,19 @@ pub struct SectionNodes {
     waterline: f64,
     /// Depth of the section's lowest point.
     depth: f64,
-    /// `(half-beam, depth)` at each quadrature node, in node order: the
-    /// section exactly as the depth integral sees it.
+    /// `(half-beam, depth)` at each quadrature node, in node order: where
+    /// the depth integral evaluates the section.
     outline: Vec<(f64, f64)>,
+    /// The section curve the quadrature integrates, sampled densely and
+    /// evenly from the waterline (or the section's top) round to the keel —
+    /// for drawing it and for measuring its girth, where joining the
+    /// quadrature nodes (graded toward the waterline, sparse at the keel)
+    /// would cut corners.
+    curve: Vec<(f64, f64)>,
 }
+
+/// Points per section in [`SectionNodes::curve`].
+const CURVE_POINTS: usize = 129;
 
 #[derive(Debug, Clone)]
 enum Nodes {
@@ -131,11 +140,19 @@ impl SectionNodes {
             }
         }
         outline.push((half_beam(depth), depth));
+        // Evenly in depth, with every break (a chine, a knot line) on it.
+        let mut zs: Vec<f64> = (0..CURVE_POINTS)
+            .map(|k| depth * k as f64 / (CURVE_POINTS - 1) as f64)
+            .chain(breaks.iter().copied().filter(|&b| b > 0.0 && b < depth))
+            .collect();
+        zs.sort_by(f64::total_cmp);
+        let curve = zs.iter().map(|&z| (half_beam(z), z)).collect();
         SectionNodes {
             nodes: Nodes::Depth { z, w },
             waterline: half_beam(0.0),
             depth,
             outline,
+            curve,
         }
     }
 
@@ -177,11 +194,20 @@ impl SectionNodes {
             }
         }
         outline.push(at(half_pi, radius(half_pi)));
+        // Evenly in the scaled ray angle: evenly round a section of any
+        // proportions.
+        let curve = (0..CURVE_POINTS)
+            .map(|k| {
+                let th = half_pi * k as f64 / (CURVE_POINTS - 1) as f64;
+                at(th, radius(th))
+            })
+            .collect();
         SectionNodes {
             nodes: Nodes::Polar { z0, sin, r, w },
             waterline: if z0 == 0.0 { beam * radius(0.0) } else { 0.0 },
             depth: z0 + depth * radius(half_pi),
             outline,
+            curve,
         }
     }
 
@@ -195,6 +221,7 @@ impl SectionNodes {
             waterline: 0.0,
             depth: 0.0,
             outline: Vec::new(),
+            curve: Vec::new(),
         }
     }
 
@@ -203,6 +230,12 @@ impl SectionNodes {
     /// depth integral integrates, for display.
     pub fn outline(&self) -> &[(f64, f64)] {
         &self.outline
+    }
+
+    /// The section curve the quadrature integrates, sampled densely and
+    /// evenly, `(half-beam, depth)` from the waterline (or top) to the keel.
+    pub fn curve(&self) -> &[(f64, f64)] {
+        &self.curve
     }
 
     /// `Z(κ)`.
@@ -556,7 +589,7 @@ impl SectionalHull {
         let mut area = 0.0;
         for i in 0..self.xs.len().saturating_sub(1) {
             let (xa, xb) = (self.xs[i], self.xs[i + 1]);
-            let (oa, ob) = (self.sections[i].outline(), self.sections[i + 1].outline());
+            let (oa, ob) = (self.sections[i].curve(), self.sections[i + 1].curve());
             let n = oa.len().max(ob.len());
             if n < 2 {
                 continue;
@@ -830,6 +863,15 @@ impl SectionalHull {
             .iter()
             .copied()
             .zip(self.sections.iter().map(|s| s.outline()))
+    }
+
+    /// The stations: each one's x and its section curve, sampled densely
+    /// (see [`SectionNodes::curve`]).
+    pub fn curves(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {
+        self.xs
+            .iter()
+            .copied()
+            .zip(self.sections.iter().map(|s| s.curve()))
     }
 
     /// Each station's depth integral `Z(xᵢ; κ)`, and the interpolant the
@@ -1457,7 +1499,7 @@ mod tests {
 
     /// Hydrostatics from sections against the exact Wigley's: the
     /// waterplane and buoyancy come from the interpolants exactly; the
-    /// wetted surface from strips between station outlines converges to the
+    /// wetted surface from strips between station curves converges to the
     /// graph's true area.
     #[test]
     fn sectional_hydrostatics_match_the_exact_hull() {

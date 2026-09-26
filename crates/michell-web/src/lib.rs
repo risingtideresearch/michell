@@ -4,8 +4,8 @@
 //! IGES hulls are cut straight from their CAD patches
 //! ([`michell::iges::import_sectional`]); exact B-spline `.hull` files are
 //! converted with [`SectionalHull::from_hull`]. The page is sent each
-//! station at its depth-quadrature nodes (what the depth integral
-//! integrates), the CAD ray hits those were interpolated from, the
+//! station's section curve (what the depth integral integrates), the CAD
+//! ray hits it was interpolated from, the
 //! depth-integral curve the kernel interpolates along x, the hydrostatics,
 //! and the transom with what the closure needs to draw its virtual appendage
 //! at any speed.
@@ -161,8 +161,10 @@ fn hull_json(
     rays: Option<&Vec<(f64, Vec<(f64, f64)>)>>,
     lines: Vec<String>,
 ) -> Value {
+    // Each station as the curve the quadrature integrates (not a polyline
+    // through its quadrature nodes, which are graded toward the waterline).
     let stations: Vec<(f64, Vec<(f64, f64)>)> =
-        hull.sections().map(|(x, o)| (x, o.to_vec())).collect();
+        hull.curves().map(|(x, o)| (x, o.to_vec())).collect();
     // A see-through surface between stations, for orientation only (the
     // kernel interpolates each station's depth integral along x, not a
     // surface): rows joined at equal fractions of girth, so neighbouring
