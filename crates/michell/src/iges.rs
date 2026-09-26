@@ -1787,7 +1787,7 @@ fn sectional_cluster(
     // microscopic transom, visible at low speed, where the amplitude is a
     // small residue of bow–stern cancellation.
     let (lo, hi) = (frame.x_min, frame.x_max);
-    let xs: Vec<f64> = (0..ns)
+    let mut xs: Vec<f64> = (0..ns)
         .map(|i| {
             let c = (std::f64::consts::PI * i as f64 / (ns - 1) as f64).cos();
             lo + (hi - lo) * (1.0 - c) / 2.0
@@ -1800,7 +1800,7 @@ fn sectional_cluster(
     let mut outlines = Vec::with_capacity(ns);
     // Stations are independent: sample them across cores, then assemble in
     // order (the result does not depend on the thread count).
-    let sampled_all = crate::parallel::map_indexed(
+    let mut sampled_all = crate::parallel::map_indexed(
         ns,
         || (),
         |_, i| {
@@ -1809,6 +1809,50 @@ fn sectional_cluster(
             (s, amb)
         },
     );
+    // An end station that samples nothing, or only a sliver, next to a real
+    // section is not a pointed tip but a cliff: the end search found shell
+    // there (a trimmed transom leans, leaving hull only in a thin wedge near
+    // the water) that no full section can be sampled from, and Z(x) would
+    // drop to nothing over one span — a spurious, near-infinite ∂f/∂x. Pull
+    // the end in to the last x whose section still carries half of its
+    // neighbour's (the transom itself). A pointed end's neighbour carries
+    // next to no section, so it keeps its empty tip (see above).
+    let bd = |s: &Option<(f64, f64, f64, Vec<f64>, f64)>| s.as_ref().map_or(0.0, |s| s.1 * s.2);
+    let bd_max = sampled_all.iter().map(|(s, _)| bd(s)).fold(0.0f64, f64::max);
+    for (end, dir) in [(0usize, 1isize), (ns - 1, -1)] {
+        // The first station inward that samples: stations between it and
+        // the end are part of the same cliff (and are dropped below).
+        let Some(next) = (1..ns / 4)
+            .map(|k| (end as isize + dir * k as isize) as usize)
+            .find(|&j| sampled_all[j].0.is_some())
+        else {
+            continue;
+        };
+        let bd_next = bd(&sampled_all[next].0);
+        if bd_next <= 1e-3 * bd_max || bd(&sampled_all[end].0) >= 0.5 * bd_next {
+            continue;
+        }
+        let (mut inside, mut outside) = (xs[next], xs[end]);
+        let mut found = None;
+        for _ in 0..60 {
+            if (outside - inside).abs() <= 1e-12 * (hi - lo) {
+                break;
+            }
+            let mid = 0.5 * (inside + outside);
+            let mut amb = 0;
+            match sample_section(patches, mesh, mid, y_c, sides, &thetas, scale, &mut amb) {
+                Some(s) if s.1 * s.2 >= 0.5 * bd_next => {
+                    inside = mid;
+                    found = Some((s, amb));
+                }
+                _ => outside = mid,
+            }
+        }
+        if let Some((s, amb)) = found {
+            xs[end] = inside;
+            sampled_all[end] = (Some(s), amb);
+        }
+    }
     for (i, (&x, (sampled, amb))) in xs.iter().zip(sampled_all).enumerate() {
         ambiguous += amb;
         let end = i == 0 || i + 1 == ns;
@@ -3362,6 +3406,58 @@ mod sectional_ends {
     fn e12() -> Option<SourceFleet> {
         let text = crate::cad_fixture("e12.igs")?;
         Some(source_fleet(&text, -0.95).unwrap())
+    }
+
+    /// Steeply trimmed at speed (Fn 0.68 floats e12 about 1.5° bow up), the
+    /// leaning transom leaves only a wedge of hull aft of its full section,
+    /// and the bow's plumb stem a thin wide sliver forward. Whether an end
+    /// station caught those or nothing once decided whether the hull ended
+    /// on a transom — the lift jumped 6× between neighbouring trims, and
+    /// the dynamic equilibrium never converged. The ends are now pulled in
+    /// to the full sections, and the end steps are always in the force, so
+    /// the lift moves smoothly with trim.
+    #[test]
+    fn a_steeply_trimmed_cut_keeps_its_ends_and_a_smooth_lift() {
+        let Some(src) = e12() else {
+            return;
+        };
+        let opts = SectionalOptions {
+            waterline_z: -0.95,
+            ..Default::default()
+        };
+        let design = src
+            .situate_sectional(0, -0.95, &HullPose::default(), &Platform::default(), &opts)
+            .unwrap()
+            .unwrap()
+            .hull;
+        let cond =
+            crate::Conditions::seawater(0.68 * (9.81f64 * design.length()).sqrt());
+        let mut last: Option<f64> = None;
+        for k in 0..=5 {
+            let trim = (1.0 + 0.2 * k as f64).to_radians();
+            let pf = Platform {
+                sinkage: 0.0,
+                trim,
+                pivot_x: design.lcb_x(),
+            };
+            let h = src
+                .situate_sectional(0, -0.95, &HullPose::default(), &pf, &opts)
+                .unwrap()
+                .unwrap();
+            assert!(h.hull.transom().is_some(), "trim {k}: transom lost");
+            let f = crate::sectional::multihull_dynamic_force(
+                &[(&h.hull, h.placement)],
+                &cond,
+                design.lcb_x(),
+                &Default::default(),
+            )
+            .unwrap()
+            .force_up;
+            if let Some(prev) = last {
+                assert!((f / prev - 1.0).abs() < 0.1, "lift {prev} -> {f} at step {k}");
+            }
+            last = Some(f);
+        }
     }
 
     /// e12's transom is a flat face its side skins run on past. Trimmed bow

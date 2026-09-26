@@ -416,6 +416,8 @@ pub struct SectionalContracted {
     /// The aft end station's depth integral: the transom section's
     /// z-factor for the closure.
     z_t: f64,
+    /// The fore end station's depth integral: a blunt bow's step.
+    z_b: f64,
 }
 
 impl SectionalHull {
@@ -700,6 +702,7 @@ impl SectionalHull {
         let mut v: Vec<f64> = self.sections.iter().map(|s| s.integrate(kappa)).collect();
         out.any = v.iter().any(|&x| x != 0.0);
         out.z_t = v.first().copied().unwrap_or(0.0);
+        out.z_b = v.last().copied().unwrap_or(0.0);
         out.g_f.resize(self.spans.len() * (self.p + 1), 0.0);
         out.g_fx.resize(self.spans.len() * self.p, 0.0);
         if !out.any {
@@ -747,7 +750,19 @@ impl SectionalHull {
             }
             f = f + phase * sum;
         }
-        f + closing
+        f + closing + self.bow_source(kx, scratch.z_b)
+    }
+
+    /// The fore end's step in the sources (kernel convention): a hull that
+    /// ends forward on a finite section — a plumb stem face, or the thin
+    /// wide sliver it leaves when trimmed bow-up — has `f` drop to 0 there,
+    /// so `∂f/∂x` carries `−f_b δ(x − x_b)`. The face is real hull, so
+    /// unlike a transom it is never left open. Zero for a pointed bow.
+    fn bow_source(&self, kx: f64, z_b: f64) -> C64 {
+        let Some(&x_b) = self.xs.last() else {
+            return C64::ZERO;
+        };
+        C64::ZERO - C64::cis(kx * (x_b - self.x_center)).scale(z_b)
     }
 
     /// The transom appendage's free-wave amplitude (kernel convention): the
@@ -776,19 +791,39 @@ impl SectionalHull {
         nu: f64,
         closure: TransomClosure,
         z_t: f64,
+        z_b: f64,
         t: &mut SquatTransforms,
     ) {
+        let (Some(&x_a), Some(&x_b)) = (self.xs.first(), self.xs.last()) else {
+            return;
+        };
+        // The weights: the hull ends where its end stations are, on whatever
+        // section they carry — a transom aft, a plumb stem or its trimmed
+        // sliver forward, nothing at a pointed end. Taking the steps from the
+        // end stations themselves (not only a detected transom) keeps the
+        // force continuous as an end section shrinks to nothing.
+        let wl = |s: &SectionNodes| s.waterline;
+        let (wl_a, wl_b) = (
+            self.sections.first().map_or(0.0, wl),
+            self.sections.last().map_or(0.0, wl),
+        );
+        let dx_a = x_a - self.x_center;
+        let phase_a = C64::cis(kx * dx_a);
+        add_transom_step(phase_a, dx_a, z_t, wl_a, t);
+        let dx_b = x_b - self.x_center;
+        add_transom_step(C64::cis(kx * dx_b), dx_b, -z_b, -wl_b, t);
+        // The sources: the bow's step always (the stem face is hull), the
+        // transom's closing appendage when the closure applies.
+        t.q_src = t.q_src + self.bow_source(kx, z_b);
         let Some(tr) = &self.transom else {
             return;
         };
-        let dx_t = tr.x - self.x_center;
-        let phase = C64::cis(kx * dx_t);
-        add_transom_step(phase, dx_t, z_t, tr.half_beam, t);
         let Some(lv) = closure.hollow_length(tr.depth, nu) else {
             return;
         };
         let mut m = Vec::with_capacity(4);
         osc_moments(-kx * lv, 1.0, 3, &mut m);
+        let phase = C64::cis(kx * (tr.x - self.x_center));
         t.q_src = t.q_src + appendage_source(phase, &m).scale(z_t);
     }
 
@@ -845,7 +880,7 @@ impl SectionalHull {
             t.p_wl = t.p_wl + phase * pw_s;
         }
         t.q_src = t.q;
-        self.add_transom_transforms(kx, nu, closure, zc.z_t, &mut t);
+        self.add_transom_transforms(kx, nu, closure, zc.z_t, zc.z_b, &mut t);
         let conj = |v: C64| C64::new(v.re, -v.im);
         t.q_src = conj(t.q_src);
         t.q = conj(t.q);
@@ -889,6 +924,7 @@ impl SectionalHull {
                 q = q - (phase * shape_dx).scale(zc.z_t);
             }
         }
+        q = q + self.bow_source(kx, zc.z_b);
         C64::new(q.re, -q.im)
     }
 
