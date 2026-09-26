@@ -299,7 +299,7 @@ struct Parsed {
     switches: Vec<String>,
 }
 
-const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--wetted"];
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--wetted", "--sections"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {
@@ -376,6 +376,24 @@ impl Parsed {
                 None => michell::Roughness::None,
             },
         })
+    }
+
+    /// `--stations N` and `--rays M` for a sectional import (defaults as
+    /// [`michell::iges::SectionalOptions`]).
+    fn section_resolution(&self) -> Result<(usize, usize), String> {
+        let d = michell::iges::SectionalOptions::default();
+        let count = |name: &str, default: usize, min: usize| -> Result<usize, String> {
+            match self.flag(name) {
+                None => Ok(default),
+                Some(v) => match v.trim().parse::<usize>() {
+                    Ok(n) if n >= min => Ok(n),
+                    _ => Err(format!(
+                        "--{name} {v:?}: expected a count of at least {min}"
+                    )),
+                },
+            }
+        };
+        Ok((count("stations", d.stations, 8)?, count("rays", d.rays, 5)?))
     }
 
     fn load_settings(&self) -> Result<LoadSettings, String> {
@@ -519,6 +537,131 @@ fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Vec<Member>, 
         }
     }
     Ok(members)
+}
+
+/// One hull cut into sections straight from CAD (`--sections`).
+struct SectionalMember {
+    path: String,
+    hull: michell::sectional::SectionalHull,
+    placement: Placement,
+    report: michell::iges::SectionalReport,
+}
+
+/// The sectional counterpart of [`load_fleet`]: every hull of each IGES spec
+/// cut into sections at the load settings' waterline and centreplane, each at
+/// its detected placement plus the spec's offset. Hulls that cannot be
+/// sectioned are reported and skipped (a sliver of appendage geometry, say);
+/// a file with none that can is an error.
+fn load_sectional_fleet(
+    specs: &[String],
+    settings: &LoadSettings,
+    stations: usize,
+    rays: usize,
+) -> Result<Vec<SectionalMember>, String> {
+    let opts = michell::iges::SectionalOptions {
+        waterline_z: settings.waterline_z,
+        centerplane: settings.centerplane,
+        stations,
+        rays,
+        ..Default::default()
+    };
+    let mut cache: HashMap<String, michell::iges::SectionalFleet> = HashMap::new();
+    let mut members = Vec::new();
+    for spec in specs {
+        let (path, sp) = parse_hull_spec(spec)?;
+        if !cache.contains_key(&path) {
+            let text =
+                std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+            let lower = path.to_ascii_lowercase();
+            let first = text.lines().next().unwrap_or("");
+            let iges = lower.ends_with(".igs")
+                || lower.ends_with(".iges")
+                || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G');
+            if !iges {
+                return Err(format!(
+                    "{path}: --sections cuts sections from CAD patches and needs an IGES file"
+                ));
+            }
+            let fleet = michell::iges::import_sectional(&text, &opts)
+                .map_err(|e| format!("{path}: sectional import failed: {e}"))?;
+            for (i, why) in &fleet.failed {
+                eprintln!("{path}: hull {} not sectioned, skipped: {why}", i + 1);
+            }
+            cache.insert(path.clone(), fleet);
+        }
+        let fleet = &cache[&path];
+        if sp.y_abs.is_some() && fleet.hulls.len() > 1 {
+            return Err(format!(
+                "{spec:?}: absolute y placement is ambiguous for a file with {} hulls; \
+                 use dy=SHIFT instead",
+                fleet.hulls.len()
+            ));
+        }
+        for h in &fleet.hulls {
+            members.push(SectionalMember {
+                path: path.clone(),
+                hull: h.hull.clone(),
+                placement: Placement {
+                    x: h.placement.x + sp.dx,
+                    y: sp.y_abs.unwrap_or(h.placement.y + sp.dy),
+                },
+                report: h.report.clone(),
+            });
+        }
+    }
+    Ok(members)
+}
+
+/// What the resistance and squat reports print about each hull, from either
+/// representation.
+struct HullSummary {
+    path: String,
+    placement: Placement,
+    length: f64,
+    draft: f64,
+    wetted_surface: f64,
+    volume: f64,
+    lines: Vec<String>,
+}
+
+fn summarize_lofted(m: &Member) -> HullSummary {
+    HullSummary {
+        path: m.path.clone(),
+        placement: m.placement,
+        length: m.hull.length(),
+        draft: m.hull.draft(),
+        wetted_surface: m.hull.wetted_surface(),
+        volume: m.hull.displaced_volume(),
+        lines: describe_source(&m.source),
+    }
+}
+
+fn summarize_sectional(m: &SectionalMember) -> HullSummary {
+    let r = &m.report;
+    let sides = if r.two_sided {
+        format!("both sides averaged about y = {:.4} m", r.centerplane)
+    } else {
+        format!("one side about y = {:.4} m", r.centerplane)
+    };
+    let mut lines = vec![format!(
+        "source: IGES sections ({} stations over x {:.4}..{:.4} m, {sides})",
+        r.stations, r.x_range.0, r.x_range.1
+    )];
+    if r.dropped_stations > 0 || r.max_asymmetry > 1e-3 * r.draft.max(1e-9) {
+        lines.push(format!(
+            "sections: {} interior stations dropped, port/starboard differ by up to {:.3e} m",
+            r.dropped_stations, r.max_asymmetry
+        ));
+    }
+    HullSummary {
+        path: m.path.clone(),
+        placement: m.placement,
+        length: m.hull.length(),
+        draft: m.hull.draft(),
+        wetted_surface: m.hull.wetted_surface(),
+        volume: m.hull.displaced_volume(),
+        lines,
+    }
 }
 
 /// Slope-channel residual summary, when the loft fit any.
@@ -881,12 +1024,47 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
             "usage: michell squat <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
         );
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    let sectional = p.switch("--sections");
+    let (loaded, cut) = if sectional {
+        let (st, rays) = p.section_resolution()?;
+        (
+            Vec::new(),
+            load_sectional_fleet(&p.positional, &p.load_settings()?, st, rays)?,
+        )
+    } else {
+        (load_fleet(&p.positional, &p.load_settings()?)?, Vec::new())
+    };
     let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
+    let cut_members: Vec<(&michell::sectional::SectionalHull, Placement)> =
+        cut.iter().map(|m| (&m.hull, m.placement)).collect();
+    // Per hull: (length, waterplane area, its first and second moments about
+    // x = 0, volume), from either representation.
+    let hydro: Vec<(f64, f64, f64, f64, f64, Placement)> = if sectional {
+        cut_members
+            .iter()
+            .map(|(h, pl)| {
+                let w = (
+                    h.waterplane_area(),
+                    h.waterplane_moment(),
+                    h.waterplane_second_moment(),
+                );
+                (h.length(), w.0, w.1, w.2, h.displaced_volume(), *pl)
+            })
+            .collect()
+    } else {
+        members
+            .iter()
+            .map(|(h, pl)| {
+                let w = (
+                    h.waterplane_area(),
+                    h.waterplane_moment(),
+                    h.waterplane_second_moment(),
+                );
+                (h.length(), w.0, w.1, w.2, h.displaced_volume(), *pl)
+            })
+            .collect()
+    };
+    let l_ref = hydro.iter().map(|h| h.0).fold(0.0f64, f64::max);
     let knots = p.switch("--knots");
     let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
     let speeds: Vec<f64> = match (p.flag("speeds"), p.flag("froude")) {
@@ -914,13 +1092,11 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     // Fleet waterplane in fleet coordinates: area, first and second moments,
     // and the LCF, which is the default pivot and the axis I_L is taken about.
     let (mut aw, mut mw, mut iw, mut vol) = (0.0, 0.0, 0.0, 0.0);
-    for (h, pl) in &members {
-        let a = h.waterplane_area();
-        let m = h.waterplane_moment() + pl.x * a;
+    for &(_, a, m1, m2, v, pl) in &hydro {
         aw += a;
-        mw += m;
-        iw += h.waterplane_second_moment() + 2.0 * pl.x * h.waterplane_moment() + pl.x * pl.x * a;
-        vol += h.displaced_volume();
+        mw += m1 + pl.x * a;
+        iw += m2 + 2.0 * pl.x * m1 + pl.x * pl.x * a;
+        vol += v;
     }
     if aw <= 0.0 {
         return Err("fleet has no waterplane".into());
@@ -940,9 +1116,16 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
             );
         }
     }
+    if sectional && !matches!(opts.wave.transom, michell::TransomClosure::None) {
+        eprintln!(
+            "note: the sectional path does not carry the transom closure yet; \
+             an immersed transom is left open (as --transom off)"
+        );
+    }
     println!(
-        "fleet: {} hull(s), L(ref) {:.3} m, Aw {:.3} m^2, LCF {:.3} m, I_L {:.3} m^4, vol {:.3} m^3; pivot {:.3} m",
-        members.len(),
+        "fleet: {} hull(s){}, L(ref) {:.3} m, Aw {:.3} m^2, LCF {:.3} m, I_L {:.3} m^4, vol {:.3} m^3; pivot {:.3} m",
+        hydro.len(),
+        if sectional { " cut into sections" } else { "" },
         l_ref,
         aw,
         lcf,
@@ -964,8 +1147,12 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     );
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let d = michell::squat::multihull_dynamic_force(&members, &cond, pivot, &opts)
-            .map_err(|e| format!("{e}"))?;
+        let d = if sectional {
+            michell::sectional::multihull_dynamic_force(&cut_members, &cond, pivot, &opts)
+        } else {
+            michell::squat::multihull_dynamic_force(&members, &cond, pivot, &opts)
+        }
+        .map_err(|e| format!("{e}"))?;
         let rho = cond.fluid.density;
         let s_eq = -d.force_up / (rho * g * aw);
         let trim_eq = (d.moment_bow_up / (rho * g * i_l)).to_degrees();
@@ -997,16 +1184,31 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             "usage: michell resistance <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
         );
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
+    // Either lofted hulls, or (`--sections`) hulls cut into sections
+    // straight from CAD.
+    let sectional = p.switch("--sections");
+    let (loaded, cut) = if sectional {
+        let (st, rays) = p.section_resolution()?;
+        (
+            Vec::new(),
+            load_sectional_fleet(&p.positional, &p.load_settings()?, st, rays)?,
+        )
+    } else {
+        (load_fleet(&p.positional, &p.load_settings()?)?, Vec::new())
+    };
+    let summary: Vec<HullSummary> = if sectional {
+        cut.iter().map(summarize_sectional).collect()
+    } else {
+        loaded.iter().map(summarize_lofted).collect()
+    };
     let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let multi = members.len() > 1;
+    let cut_members: Vec<(&michell::sectional::SectionalHull, Placement)> =
+        cut.iter().map(|m| (&m.hull, m.placement)).collect();
+    let multi = summary.len() > 1;
     // Reference length for Froude number: the longest hull.
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
-    let total_s: f64 = members.iter().map(|(h, _)| h.wetted_surface()).sum();
-    let total_v: f64 = members.iter().map(|(h, _)| h.displaced_volume()).sum();
+    let l_ref = summary.iter().map(|h| h.length).fold(0.0f64, f64::max);
+    let total_s: f64 = summary.iter().map(|h| h.wetted_surface).sum();
+    let total_v: f64 = summary.iter().map(|h| h.volume).sum();
 
     let knots = p.switch("--knots");
     let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
@@ -1037,10 +1239,21 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     }
     wave_opts.transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
 
+    if sectional && heel != 0.0 {
+        return Err("--heel is not yet supported with --sections".into());
+    }
+    if sectional && !matches!(wave_opts.transom, michell::TransomClosure::None) {
+        eprintln!(
+            "note: the sectional path does not carry the transom closure yet; \
+             an immersed transom is left open (as --transom off)"
+        );
+    }
     let mut rows = Vec::new();
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let r = if heel != 0.0 {
+        let r = if sectional {
+            michell::sectional::multihull_resistance(&cut_members, &cond, &wave_opts, &viscous_opts)
+        } else if heel != 0.0 {
             michell::multihull_resistance_heeled(&members, &cond, &wave_opts, &viscous_opts, heel)
         } else {
             michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
@@ -1055,20 +1268,14 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             .map(|(_, c, _)| c.fluid)
             .unwrap_or(Fluid::SEAWATER_15C);
         let mut out = String::from("{\"hulls\":[");
-        for (i, m) in loaded.iter().enumerate() {
+        for (i, m) in summary.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push_str(&format!(
                 "{{\"path\":{:?},\"placement\":{{\"x\":{},\"y\":{}}},\"length\":{},\
                  \"draft\":{},\"wetted_surface\":{},\"displaced_volume\":{}}}",
-                m.path,
-                m.placement.x,
-                m.placement.y,
-                m.hull.length(),
-                m.hull.draft(),
-                m.hull.wetted_surface(),
-                m.hull.displaced_volume()
+                m.path, m.placement.x, m.placement.y, m.length, m.draft, m.wetted_surface, m.volume
             ));
         }
         out.push_str("],");
@@ -1121,18 +1328,18 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     }
 
     let mut seen: Vec<&str> = Vec::new();
-    for m in &loaded {
+    for m in &summary {
         if seen.contains(&m.path.as_str()) {
             continue;
         }
         seen.push(&m.path);
         println!("hull: {}", m.path);
-        for line in describe_source(&m.source) {
+        for line in &m.lines {
             println!("{line}");
         }
     }
     if multi {
-        let placements: Vec<String> = loaded
+        let placements: Vec<String> = summary
             .iter()
             .map(|m| format!("{}@x={},y={}", m.path, m.placement.x, m.placement.y))
             .collect();

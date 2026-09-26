@@ -24,9 +24,12 @@ use crate::body::{Body, BodyOptions};
 use crate::conditions::STANDARD_GRAVITY;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::iges::{HullPose, ImportOptions, Platform, SourceFleet};
+use crate::iges::{
+    HullPose, ImportOptions, Platform, SectionalOptions, SectionalState, SourceFleet,
+};
 use crate::inclined::{fleet_inclined, InclinedGrid};
 use crate::michell::Placement;
+use crate::sectional::SectionalHull;
 
 /// What the platform must carry.
 #[derive(Debug, Clone, Copy)]
@@ -155,10 +158,54 @@ pub fn fleet_cg(bodies: &[&Body], loads: &[HullLoad], poses: &[HullPose]) -> Fle
     }
 }
 
+/// What the equilibrium solver reads from a wetted hull: its buoyancy and
+/// its waterplane (in the hull's own x coordinates). Both representations
+/// provide it — a lofted [`Hull`] and a [`SectionalHull`] cut from CAD — so
+/// the same Newton core floats either.
+pub trait Floating {
+    fn displaced_volume(&self) -> f64;
+    fn lcb_x(&self) -> f64;
+    fn waterplane_area(&self) -> f64;
+    fn waterplane_moment(&self) -> f64;
+    fn waterplane_second_moment(&self) -> f64;
+    fn draft(&self) -> f64;
+    fn length(&self) -> f64;
+}
+
+macro_rules! floating {
+    ($t:ty) => {
+        impl Floating for $t {
+            fn displaced_volume(&self) -> f64 {
+                <$t>::displaced_volume(self)
+            }
+            fn lcb_x(&self) -> f64 {
+                <$t>::lcb_x(self)
+            }
+            fn waterplane_area(&self) -> f64 {
+                <$t>::waterplane_area(self)
+            }
+            fn waterplane_moment(&self) -> f64 {
+                <$t>::waterplane_moment(self)
+            }
+            fn waterplane_second_moment(&self) -> f64 {
+                <$t>::waterplane_second_moment(self)
+            }
+            fn draft(&self) -> f64 {
+                <$t>::draft(self)
+            }
+            fn length(&self) -> f64 {
+                <$t>::length(self)
+            }
+        }
+    };
+}
+floating!(Hull);
+floating!(SectionalHull);
+
 /// The wetted fleet at some state: what the solver (and resistance) consume.
 #[derive(Debug)]
-pub struct FleetState {
-    pub members: Vec<(Hull, Placement)>,
+pub struct FleetState<M = Hull> {
+    pub members: Vec<(M, Placement)>,
     /// Number of source hulls entirely above the water.
     pub dry: usize,
     /// Total wetted samples that fell above the members' modelled bands
@@ -172,14 +219,14 @@ pub struct FleetState {
 
 /// A solved floating condition.
 #[derive(Debug)]
-pub struct Equilibrium {
+pub struct Equilibrium<M = Hull> {
     /// Solved additional immersion of the platform [m] (relative to the base
     /// waterline; negative = riding higher).
     pub sinkage: f64,
     /// Solved platform pitch [rad]; positive raises the +x end.
     pub trim: f64,
     /// The fleet situated at the solution, at full requested resolution.
-    pub fleet: FleetState,
+    pub fleet: FleetState<M>,
     /// Achieved displaced volume [m³].
     pub volume: f64,
     /// Achieved longitudinal centre of buoyancy [m].
@@ -203,7 +250,7 @@ struct Totals {
     draft: f64,
 }
 
-fn totals(fleet: &FleetState) -> Totals {
+fn totals<M: Floating>(fleet: &FleetState<M>) -> Totals {
     let mut t = Totals {
         volume: 0.0,
         moment_x: 0.0,
@@ -242,14 +289,14 @@ pub struct DynamicLoad {
 /// A solved floating condition at speed: the hydrostatics of [`Equilibrium`]
 /// balanced against a [`DynamicLoad`] (see [`solve_equilibrium_dynamic_with`]).
 #[derive(Debug)]
-pub struct DynamicEquilibrium {
+pub struct DynamicEquilibrium<M = Hull> {
     /// Solved additional immersion of the platform [m] (relative to the base
     /// waterline; negative = riding higher).
     pub sinkage: f64,
     /// Solved platform pitch [rad]; positive raises the +x end.
     pub trim: f64,
     /// The fleet situated at the solution, at full requested resolution.
-    pub fleet: FleetState,
+    pub fleet: FleetState<M>,
     /// Achieved displaced volume [m³] — the hydrostatic displacement alone,
     /// which differs from `mass / density` by the dynamic force's share.
     pub volume: f64,
@@ -273,10 +320,10 @@ pub struct DynamicEquilibrium {
 
 /// What the Newton core hands back, before it is packaged as an
 /// [`Equilibrium`] or a [`DynamicEquilibrium`].
-struct Solved {
+struct Solved<M> {
     sinkage: f64,
     trim: f64,
-    fleet: FleetState,
+    fleet: FleetState<M>,
     totals: Totals,
     lcb: f64,
     /// Zero when the solve carried no dynamic closure.
@@ -297,7 +344,7 @@ fn forced(x: f64, f: Option<f64>) -> f64 {
 }
 
 /// The caller's dynamic-load closure, as the Newton core borrows it.
-type DynamicFn<'a> = &'a mut dyn FnMut(&FleetState) -> Result<DynamicLoad>;
+type DynamicFn<'a, M> = &'a mut dyn FnMut(&FleetState<M>) -> Result<DynamicLoad>;
 
 /// The Newton core shared by [`solve_equilibrium_with`] and
 /// [`solve_equilibrium_dynamic_with`]. With `dynamic`, every iteration adds
@@ -309,14 +356,14 @@ type DynamicFn<'a> = &'a mut dyn FnMut(&FleetState) -> Result<DynamicLoad>;
 /// iteration, on the fleet already situated for that iteration, and never on
 /// a dry fleet. `warm_start` seeds `(sinkage, trim)` and skips the coarse
 /// phase.
-fn equilibrium_core(
-    mut situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
-    mut dynamic: Option<DynamicFn<'_>>,
+fn equilibrium_core<M: Floating>(
+    mut situate: impl FnMut(f64, f64, bool) -> Result<FleetState<M>>,
+    mut dynamic: Option<DynamicFn<'_, M>>,
     load: &LoadCase,
     density: f64,
     gravity: f64,
     warm_start: Option<(f64, f64)>,
-) -> Result<Solved> {
+) -> Result<Solved<M>> {
     if !(load.mass.is_finite() && load.mass > 0.0) {
         return Err(Error::InvalidConditions(format!(
             "load mass must be finite and positive, got {}",
@@ -666,11 +713,11 @@ fn equilibrium_core(
 
 /// Generic equilibrium core. `situate(sinkage, trim, coarse)` produces the
 /// fleet at a platform state (coarse = reduced sampling for iterations).
-pub fn solve_equilibrium_with(
-    situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
+pub fn solve_equilibrium_with<M: Floating>(
+    situate: impl FnMut(f64, f64, bool) -> Result<FleetState<M>>,
     load: &LoadCase,
     density: f64,
-) -> Result<Equilibrium> {
+) -> Result<Equilibrium<M>> {
     // Gravity cancels from a purely hydrostatic balance; any value serves.
     let sol = equilibrium_core(situate, None, load, density, STANDARD_GRAVITY, None)?;
     Ok(Equilibrium {
@@ -706,14 +753,14 @@ pub fn solve_equilibrium_with(
 /// against the waterplane Jacobian, so a load that varies strongly with
 /// attitude simply takes more iterations. A force past ~30 % of the weight
 /// is solved like any other and shows up in `lift_fraction`.
-pub fn solve_equilibrium_dynamic_with(
-    situate: impl FnMut(f64, f64, bool) -> Result<FleetState>,
-    mut dynamic: impl FnMut(&FleetState) -> Result<DynamicLoad>,
+pub fn solve_equilibrium_dynamic_with<M: Floating>(
+    situate: impl FnMut(f64, f64, bool) -> Result<FleetState<M>>,
+    mut dynamic: impl FnMut(&FleetState<M>) -> Result<DynamicLoad>,
     load: &LoadCase,
     density: f64,
     gravity: f64,
     warm_start: Option<(f64, f64)>,
-) -> Result<DynamicEquilibrium> {
+) -> Result<DynamicEquilibrium<M>> {
     let sol = equilibrium_core(
         situate,
         Some(&mut dynamic),
@@ -933,6 +980,92 @@ pub fn solve_equilibrium_bodies_dynamic(
     )
 }
 
+/// The `situate` closure for hulls cut into sections straight from CAD: each
+/// of `hulls` (a source-fleet index and its design pose) re-cut at the
+/// platform state, warm-started from its last cut. The coarse phase of the
+/// solve runs on half the stations and rays.
+pub fn sectional_situator<'a>(
+    source: &'a SourceFleet,
+    waterline_z: f64,
+    hulls: &'a [(usize, HullPose)],
+    pivot_x: f64,
+    opts: &'a SectionalOptions,
+) -> impl FnMut(f64, f64, bool) -> Result<FleetState<SectionalHull>> + 'a {
+    let coarse_opts = SectionalOptions {
+        stations: (opts.stations / 2).max(31),
+        rays: (opts.rays / 2).max(17),
+        ..*opts
+    };
+    let mut states = vec![(SectionalState::default(), SectionalState::default()); hulls.len()];
+    move |s, tau, coarse| {
+        let platform = Platform {
+            sinkage: s,
+            trim: tau,
+            pivot_x,
+        };
+        let o = if coarse { &coarse_opts } else { opts };
+        let mut members = Vec::new();
+        let mut dry = 0usize;
+        for ((idx, pose), st) in hulls.iter().zip(states.iter_mut()) {
+            let state = if coarse { &mut st.0 } else { &mut st.1 };
+            match source.situate_sectional_warm(*idx, waterline_z, pose, &platform, o, state)? {
+                Some(h) => members.push((h.hull, h.placement)),
+                None => dry += 1,
+            }
+        }
+        Ok(FleetState {
+            members,
+            dry,
+            band_exceeded: 0,
+            band_overshoot: 0.0,
+        })
+    }
+}
+
+/// Equilibrium of CAD hulls cut into sections (see [`sectional_situator`]).
+pub fn solve_equilibrium_sectional(
+    source: &SourceFleet,
+    waterline_z: f64,
+    hulls: &[(usize, HullPose)],
+    load: &LoadCase,
+    density: f64,
+    opts: &SectionalOptions,
+) -> Result<Equilibrium<SectionalHull>> {
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    solve_equilibrium_with(
+        sectional_situator(source, waterline_z, hulls, pivot_x, opts),
+        load,
+        density,
+    )
+}
+
+/// [`solve_equilibrium_sectional`] at speed, against the caller's
+/// [`DynamicLoad`] (for thin-ship sinkage and trim,
+/// [`crate::sectional::dynamic_load_closure`]); see
+/// [`solve_equilibrium_dynamic_with`] for the balance and `warm_start`.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_equilibrium_sectional_dynamic(
+    source: &SourceFleet,
+    waterline_z: f64,
+    hulls: &[(usize, HullPose)],
+    load: &LoadCase,
+    density: f64,
+    gravity: f64,
+    opts: &SectionalOptions,
+    dynamic: impl FnMut(&FleetState<SectionalHull>) -> Result<DynamicLoad>,
+    warm_start: Option<(f64, f64)>,
+) -> Result<DynamicEquilibrium<SectionalHull>> {
+    let pivot_x = load.lcg.unwrap_or(0.0);
+    solve_equilibrium_dynamic_with(
+        sectional_situator(source, waterline_z, hulls, pivot_x, opts),
+        dynamic,
+        load,
+        density,
+        gravity,
+        warm_start,
+    )
+}
+
 /// A solved heeled floating condition with a true inclined-waterplane righting
 /// arm (see [`crate::inclined`]).
 #[derive(Debug)]
@@ -1063,4 +1196,163 @@ pub fn solve_equilibrium_heeled(
         lcb_residual: eq.lcb_residual,
         band_exceeded: f.band_exceeded,
     })
+}
+
+#[cfg(test)]
+mod sectional_tests {
+    use super::*;
+    use crate::conditions::Conditions;
+    use crate::michell::{TransomClosure, WaveOptions};
+    use crate::squat::SquatOptions;
+
+    fn e12() -> (SourceFleet, f64, usize) {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
+        let wl = -0.95;
+        let src = crate::iges::source_fleet(&text, wl).unwrap();
+        let idx = (0..src.len()).next().unwrap();
+        (src, wl, idx)
+    }
+
+    /// Loaded to its own displacement and LCB at the design waterline, a
+    /// sectional hull floats there; 5% heavier, it sinks by about the extra
+    /// volume over the waterplane area.
+    #[test]
+    fn sectional_equilibrium_recovers_the_design_waterline() {
+        let (src, wl, idx) = e12();
+        let opts = SectionalOptions {
+            waterline_z: wl,
+            ..Default::default()
+        };
+        let design = src
+            .situate_sectional(idx, wl, &HullPose::default(), &Platform::default(), &opts)
+            .unwrap()
+            .unwrap()
+            .hull;
+        let rho = 1025.0;
+        let hulls = [(idx, HullPose::default())];
+        let load = LoadCase {
+            mass: rho * design.displaced_volume(),
+            lcg: Some(design.lcb_x()),
+        };
+        let eq = solve_equilibrium_sectional(&src, wl, &hulls, &load, rho, &opts).unwrap();
+        assert!(eq.sinkage.abs() < 1e-5, "sinkage {}", eq.sinkage);
+        assert!(eq.trim.abs() < 1e-5, "trim {}", eq.trim);
+        let heavy = LoadCase {
+            mass: 1.05 * load.mass,
+            ..load
+        };
+        let eq = solve_equilibrium_sectional(&src, wl, &hulls, &heavy, rho, &opts).unwrap();
+        let expect = 0.05 * design.displaced_volume() / design.waterplane_area();
+        assert!(
+            (eq.sinkage - expect).abs() < 0.1 * expect,
+            "sinkage {} vs ~{expect}",
+            eq.sinkage
+        );
+        assert!(eq.volume_residual < 1e-6, "{}", eq.volume_residual);
+    }
+
+    /// Dynamic sinkage and trim at speed, sectional against lofted, with
+    /// wall-clock. A report, not a check.
+    #[test]
+    #[ignore = "comparison report"]
+    fn sectional_dynamic_equilibrium_report() {
+        let (src, wl, idx) = e12();
+        let rho = 1025.0;
+        let sopts = SectionalOptions {
+            waterline_z: wl,
+            ..Default::default()
+        };
+        let design = src
+            .situate_sectional(idx, wl, &HullPose::default(), &Platform::default(), &sopts)
+            .unwrap()
+            .unwrap()
+            .hull;
+        let load = LoadCase {
+            mass: rho * design.displaced_volume(),
+            lcg: Some(design.lcb_x()),
+        };
+        let squat = SquatOptions {
+            wave: WaveOptions {
+                transom: TransomClosure::None,
+                ..WaveOptions::default()
+            },
+            ..SquatOptions::default()
+        };
+        let hulls = [(idx, HullPose::default())];
+        let iopts = ImportOptions {
+            waterline_z: wl,
+            ..ImportOptions::default()
+        };
+        for fnum in [0.3, 0.5] {
+            let cond = Conditions::seawater(fnum * (9.81 * design.length()).sqrt());
+            let t = std::time::Instant::now();
+            let eq = solve_equilibrium_sectional_dynamic(
+                &src,
+                wl,
+                &hulls,
+                &load,
+                rho,
+                cond.gravity,
+                &sopts,
+                crate::sectional::dynamic_load_closure(&cond, design.lcb_x(), &squat),
+                None,
+            );
+            let t_sec = t.elapsed().as_secs_f64();
+            let eq = match eq {
+                Ok(eq) => eq,
+                Err(e) => {
+                    eprintln!("e12 Fn {fnum}: sectional solve failed after {t_sec:.1} s: {e}");
+                    continue;
+                }
+            };
+            let t = std::time::Instant::now();
+            let pivot = design.lcb_x();
+            let mut coarse = iopts;
+            coarse.stations = 151;
+            coarse.waterlines = 31;
+            let eql = solve_equilibrium_dynamic_with(
+                |s, tau, c| {
+                    let fl = src.situate(
+                        wl,
+                        &[HullPose::default()],
+                        &Platform {
+                            sinkage: s,
+                            trim: tau,
+                            pivot_x: pivot,
+                        },
+                        if c { &coarse } else { &iopts },
+                    )?;
+                    Ok(FleetState {
+                        dry: fl.dry.len(),
+                        band_exceeded: 0,
+                        band_overshoot: 0.0,
+                        members: fl
+                            .members
+                            .into_iter()
+                            .map(|m| (m.hull, m.placement))
+                            .collect(),
+                    })
+                },
+                crate::squat::dynamic_load_closure(&cond, pivot, &squat),
+                &load,
+                rho,
+                cond.gravity,
+                None,
+            )
+            .unwrap();
+            let t_loft = t.elapsed().as_secs_f64();
+            eprintln!(
+                "e12 Fn {fnum}: sectional sinkage {:.2} mm trim {:.3}° lift {:+.2}% ({} it, {t_sec:.1} s) | lofted sinkage {:.2} mm trim {:.3}° lift {:+.2}% ({} it, {t_loft:.1} s)",
+                1e3 * eq.sinkage,
+                eq.trim.to_degrees(),
+                100.0 * eq.lift_fraction,
+                eq.iterations,
+                1e3 * eql.sinkage,
+                eql.trim.to_degrees(),
+                100.0 * eql.lift_fraction,
+                eql.iterations
+            );
+        }
+    }
 }

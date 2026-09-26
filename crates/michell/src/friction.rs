@@ -191,9 +191,21 @@ pub fn viscous_resistance_with_options(
     cond: &Conditions,
     opts: &ViscousOptions,
 ) -> Result<ViscousResistance> {
+    viscous_resistance_for(hull.length(), hull.wetted_surface(), cond, opts)
+}
+
+/// [`viscous_resistance_with_options`] from the two things it reads: the
+/// Reynolds length [m] and the wetted surface [m²] — for any hull
+/// representation.
+pub fn viscous_resistance_for(
+    length: f64,
+    wetted_surface: f64,
+    cond: &Conditions,
+    opts: &ViscousOptions,
+) -> Result<ViscousResistance> {
     cond.validate()?;
     opts.validate()?;
-    let re = cond.speed * hull.length() / cond.fluid.kinematic_viscosity;
+    let re = cond.speed * length / cond.fluid.kinematic_viscosity;
     if re <= 1e3 {
         return Err(Error::InvalidConditions(format!(
             "Reynolds number {re:.3e} is outside the ITTC-57 line's sensible range"
@@ -204,7 +216,7 @@ pub fn viscous_resistance_with_options(
         Roughness::None => (0.0, None),
         Roughness::DeltaCf(c) => (c, None),
         Roughness::SandGrain(k_s) => (
-            roughness_delta_cf(k_s, hull.length(), re),
+            roughness_delta_cf(k_s, length, re),
             Some(self::roughness_reynolds(
                 k_s,
                 cond.speed,
@@ -213,7 +225,7 @@ pub fn viscous_resistance_with_options(
             )),
         ),
     };
-    let s = hull.wetted_surface();
+    let s = wetted_surface;
     let cv = (1.0 + opts.form_factor) * cf + roughness_cf;
     let resistance = cv * 0.5 * cond.fluid.density * cond.speed * cond.speed * s;
     Ok(ViscousResistance {

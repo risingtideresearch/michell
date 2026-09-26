@@ -32,7 +32,10 @@
 use crate::bspline::{ders_basis, find_span};
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
+use crate::float::{DynamicLoad, FleetState};
+use crate::friction::{viscous_resistance_for, ViscousOptions, ViscousResistance};
 use crate::hull::{Hull, Span};
+use crate::michell::Placement;
 use crate::michell::{
     run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms, WaveOptions,
     WaveResistance,
@@ -40,6 +43,7 @@ use crate::michell::{
 use crate::moments::{osc_moments, C64};
 use crate::quadrature::gauss_legendre;
 use crate::squat::{integrate_force, DynamicForce, Fleet, Member, SquatOptions};
+use crate::MultihullResistance;
 use std::f64::consts::PI;
 
 /// Below this, `e^{−κz}` cannot matter against the shallowest node's weight
@@ -308,6 +312,9 @@ pub struct SectionalHull {
     draft: f64,
     volume: f64,
     xs: Vec<f64>,
+    lcb_x: f64,
+    waterplane: [f64; 3],
+    wetted_surface: f64,
 }
 
 /// A sectional hull's depth integrals at one `κ`, in each x-span's local
@@ -388,28 +395,29 @@ impl SectionalHull {
             draft: 0.0,
             volume: 0.0,
             xs: xs.to_vec(),
+            lcb_x: 0.0,
+            waterplane: [0.0; 3],
+            wetted_surface: 0.0,
         };
         hull.draft = hull.sections.iter().map(|s| s.depth).fold(0.0, f64::max);
-        // Displaced volume 2∬ f = 2∫ Z(x; 0) dx, from the interpolant.
+        // Displaced volume 2∬ f = 2∫ Z(x; 0) dx and its x-moment, exactly
+        // from the interpolant of the section areas.
         let mut z0 = SectionalContracted::default();
         hull.contract(0.0, &mut z0);
-        hull.volume = 2.0
-            * hull
-                .spans
-                .iter()
-                .enumerate()
-                .map(|(s, sx)| {
-                    (0..=p)
-                        .map(|a| {
-                            z0.g_f[s * (p + 1) + a] * sx.len.powi(a as i32 + 1) / (a + 1) as f64
-                        })
-                        .sum::<f64>()
-                })
-                .sum::<f64>();
+        hull.volume = 2.0 * hull.x_moment(&z0.g_f, 0);
+        hull.lcb_x = if hull.volume > 0.0 {
+            2.0 * hull.x_moment(&z0.g_f, 1) / hull.volume
+        } else {
+            0.0
+        };
         let wl: Vec<f64> = hull.sections.iter().map(|s| s.waterline).collect();
         let (f, fx) = hull.to_power_basis(wl);
         hull.wl_f = f;
         hull.wl_fx = fx;
+        // Waterplane: A_w = ∫ 2 f(x, 0) dx and its first and second moments
+        // about x = 0, from the waterline interpolant.
+        hull.waterplane = [0, 1, 2].map(|k| 2.0 * hull.x_moment(&hull.wl_f, k));
+        hull.wetted_surface = hull.strip_area();
         Ok(hull)
     }
 
@@ -430,6 +438,76 @@ impl SectionalHull {
             .map(|&x| SectionNodes::from_depth_function(depth, s.knots_z(), |z| s.eval(x, z), opts))
             .collect();
         SectionalHull::new(p, kx.to_vec(), &xs, sections)
+    }
+
+    /// `∫ x^k g(x) dx` over the hull for `g` given in each span's local power
+    /// basis (`[s·(p+1) + a]`, local coordinate `t = x − start`): exact, by
+    /// expanding `(start + t)^k` binomially.
+    fn x_moment(&self, g: &[f64], k: usize) -> f64 {
+        let p = self.p;
+        let binom = |n: usize, r: usize| -> f64 {
+            (0..r).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+        };
+        self.spans
+            .iter()
+            .enumerate()
+            .map(|(s, sx)| {
+                let mut total = 0.0;
+                for a in 0..=p {
+                    let c = g[s * (p + 1) + a];
+                    for j in 0..=k {
+                        // ∫_0^len start^(k−j) t^(j+a) dt
+                        let e = j + a + 1;
+                        total +=
+                            c * binom(k, j) * sx.start.powi((k - j) as i32) * sx.len.powi(e as i32)
+                                / e as f64;
+                    }
+                }
+                total
+            })
+            .sum()
+    }
+
+    /// Wetted surface of both sides [m²]: the shell between neighbouring
+    /// stations as a strip of triangles joining their outlines node for
+    /// node, which carries the slope along x a projected area would miss.
+    /// An end station without a section closes its strip to a point.
+    fn strip_area(&self) -> f64 {
+        let tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            let w = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
+            0.5 * (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt()
+        };
+        let mut area = 0.0;
+        for i in 0..self.xs.len().saturating_sub(1) {
+            let (xa, xb) = (self.xs[i], self.xs[i + 1]);
+            let (oa, ob) = (self.sections[i].outline(), self.sections[i + 1].outline());
+            let n = oa.len().max(ob.len());
+            if n < 2 {
+                continue;
+            }
+            // Node k of an outline, stretched over n nodes (a point if empty).
+            let at = |o: &[(f64, f64)], x: f64, k: usize| -> [f64; 3] {
+                if o.is_empty() {
+                    return [x, 0.0, 0.0];
+                }
+                let j = (k * (o.len() - 1)) / (n - 1);
+                [x, o[j].0, o[j].1]
+            };
+            for k in 0..n - 1 {
+                let (a0, a1) = (at(oa, xa, k), at(oa, xa, k + 1));
+                let (b0, b1) = (at(ob, xb, k), at(ob, xb, k + 1));
+                area += tri(a0, b0, b1) + tri(a0, b1, a1);
+            }
+        }
+        2.0 * area
     }
 
     /// B-spline interpolant of per-station values, as power coefficients of
@@ -562,6 +640,37 @@ impl SectionalHull {
         self.volume
     }
 
+    /// Longitudinal centre of buoyancy [m], in the hull's x coordinates.
+    pub fn lcb_x(&self) -> f64 {
+        self.lcb_x
+    }
+
+    /// Waterplane area `∫ 2 f(x, 0) dx` [m²].
+    pub fn waterplane_area(&self) -> f64 {
+        self.waterplane[0]
+    }
+
+    /// First moment of the waterplane about x = 0 [m³].
+    pub fn waterplane_moment(&self) -> f64 {
+        self.waterplane[1]
+    }
+
+    /// Second moment of the waterplane about x = 0 [m⁴].
+    pub fn waterplane_second_moment(&self) -> f64 {
+        self.waterplane[2]
+    }
+
+    /// Wetted surface of both sides [m²] (see [`SectionalHull`]'s strip
+    /// construction): the shell itself, not its centreplane projection.
+    pub fn wetted_surface(&self) -> f64 {
+        self.wetted_surface
+    }
+
+    /// Centre of the x domain, the phase reference of the transforms [m].
+    pub fn x_center(&self) -> f64 {
+        self.x_center
+    }
+
     /// The stations: each one's x and its section at the quadrature nodes
     /// (see [`SectionNodes::outline`]).
     pub fn sections(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {
@@ -641,11 +750,13 @@ impl NearFieldKernel for SectionalKernel<'_> {
 }
 
 /// The sectional hull as a wave-resistance member, for the shared outer
-/// quadrature.
+/// quadrature, with its placement phase offsets.
 #[derive(Clone)]
 struct SectionalMember<'h> {
     hull: &'h SectionalHull,
     scratch: SectionalContracted,
+    dx: f64,
+    dy: f64,
 }
 
 impl MemberWave for SectionalMember<'_> {
@@ -654,7 +765,7 @@ impl MemberWave for SectionalMember<'_> {
         (f, f)
     }
     fn offsets(&self) -> (f64, f64) {
-        (0.0, 0.0)
+        (self.dx, self.dy)
     }
 }
 
@@ -667,21 +778,90 @@ pub fn wave_resistance(
     cond: &Conditions,
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
+    multihull_wave_resistance(&[(hull, Placement::default())], cond, opts)
+}
+
+/// Wave resistance of a fleet of sectional hulls, placements and interference
+/// included exactly as for lofted hulls (each member's amplitude carries its
+/// placement phase; see [`crate::multihull_wave_resistance_with`]).
+pub fn multihull_wave_resistance(
+    members: &[(&SectionalHull, Placement)],
+    cond: &Conditions,
+    opts: &WaveOptions,
+) -> Result<WaveResistance> {
     cond.validate()?;
+    if members.is_empty() {
+        return Err(Error::InvalidConditions("empty fleet".into()));
+    }
     let (u, g) = (cond.speed, cond.gravity);
     let nu = g / (u * u);
+    let n = members.len() as f64;
+    let cx_ref = members.iter().map(|(h, p)| h.x_center + p.x).sum::<f64>() / n;
+    let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
     let params = OuterParams {
         nu,
-        x_half: 0.5 * hull.length,
-        y_half: 0.0,
-        t_max: hull.draft,
+        x_half: members
+            .iter()
+            .map(|(h, p)| (h.x_center + p.x - cx_ref).abs() + 0.5 * h.length)
+            .fold(0.0, f64::max),
+        y_half: members
+            .iter()
+            .map(|(_, p)| (p.y - y_ref).abs())
+            .fold(0.0, f64::max),
+        t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
     };
     let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
-    let member = SectionalMember {
-        hull,
-        scratch: SectionalContracted::default(),
-    };
-    Ok(run_outer(&params, opts, coeff, vec![member]))
+    let mem = members
+        .iter()
+        .map(|(h, p)| SectionalMember {
+            hull: h,
+            scratch: SectionalContracted::default(),
+            dx: h.x_center + p.x - cx_ref,
+            dy: p.y - y_ref,
+        })
+        .collect();
+    Ok(run_outer(&params, opts, coeff, mem))
+}
+
+/// Wave + viscous resistance of a fleet of sectional hulls, broken down as
+/// [`crate::multihull_resistance_with`] does for lofted ones. The viscous
+/// part uses each hull's own shell area ([`SectionalHull::wetted_surface`]).
+pub fn multihull_resistance(
+    members: &[(&SectionalHull, Placement)],
+    cond: &Conditions,
+    wave_opts: &WaveOptions,
+    viscous_opts: &ViscousOptions,
+) -> Result<MultihullResistance> {
+    let wave = multihull_wave_resistance(members, cond, wave_opts)?;
+    let mut solo_wave_total = 0.0;
+    for m in members {
+        solo_wave_total += multihull_wave_resistance(&[*m], cond, wave_opts)?.resistance;
+    }
+    let viscous: Vec<ViscousResistance> = members
+        .iter()
+        .map(|(h, _)| viscous_resistance_for(h.length, h.wetted_surface, cond, viscous_opts))
+        .collect::<Result<_>>()?;
+    let viscous_total: f64 = viscous.iter().map(|v| v.resistance).sum();
+    let wetted_surface: f64 = members.iter().map(|(h, _)| h.wetted_surface).sum();
+    let total = wave.resistance + viscous_total;
+    let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * wetted_surface;
+    Ok(MultihullResistance {
+        wave,
+        viscous,
+        viscous_total,
+        total,
+        effective_power: total * cond.speed,
+        wetted_surface,
+        cw: wave.resistance / q,
+        cv: viscous_total / q,
+        ct: total / q,
+        solo_wave_total,
+        interference: if solo_wave_total > f64::MIN_POSITIVE {
+            wave.resistance / solo_wave_total
+        } else {
+            1.0
+        },
+    })
 }
 
 /// Near-field vertical force and pitch moment on a single sectional hull
@@ -693,27 +873,61 @@ pub fn dynamic_force(
     x_ref: f64,
     opts: &SquatOptions,
 ) -> Result<DynamicForce> {
+    multihull_dynamic_force(&[(hull, Placement::default())], cond, x_ref, opts)
+}
+
+/// Near-field force and moment on a fleet of sectional hulls, demihull
+/// interaction included (see [`crate::squat::multihull_dynamic_force`]).
+pub fn multihull_dynamic_force(
+    members: &[(&SectionalHull, Placement)],
+    cond: &Conditions,
+    x_ref: f64,
+    opts: &SquatOptions,
+) -> Result<DynamicForce> {
     cond.validate()?;
+    if members.is_empty() {
+        return Err(Error::InvalidGeometry("empty fleet".into()));
+    }
     let nu = cond.gravity / (cond.speed * cond.speed);
     let fleet = Fleet {
-        members: vec![Member {
-            inner: SectionalKernel(hull),
-            cx: hull.x_center,
-            y: 0.0,
-        }],
+        members: members
+            .iter()
+            .map(|(h, p)| Member {
+                inner: SectionalKernel(h),
+                cx: h.x_center + p.x,
+                y: p.y,
+            })
+            .collect(),
         nu,
         x_ref,
-        scratch: vec![SquatTransforms::default()],
-        zc_tmp: vec![SectionalContracted::default()],
+        scratch: vec![SquatTransforms::default(); members.len()],
+        zc_tmp: vec![SectionalContracted::default(); members.len()],
     };
-    Ok(integrate_force(
-        fleet,
-        cond,
-        hull.length,
-        hull.draft,
-        hull.volume,
-        opts,
-    ))
+    let l_max = members.iter().map(|(h, _)| h.length).fold(0.0, f64::max);
+    let t_max = members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max);
+    let volume = members.iter().map(|(h, _)| h.volume).sum();
+    Ok(integrate_force(fleet, cond, l_max, t_max, volume, opts))
+}
+
+/// The dynamic load a sectional fleet carries at speed, as the equilibrium
+/// solver's closure (see [`crate::squat::dynamic_load_closure`]).
+pub fn dynamic_load_closure<'a>(
+    cond: &'a Conditions,
+    x_ref: f64,
+    opts: &'a SquatOptions,
+) -> impl FnMut(&FleetState<SectionalHull>) -> Result<DynamicLoad> + 'a {
+    move |fleet: &FleetState<SectionalHull>| {
+        if fleet.members.is_empty() {
+            return Ok(DynamicLoad::default());
+        }
+        let members: Vec<(&SectionalHull, Placement)> =
+            fleet.members.iter().map(|(h, p)| (h, *p)).collect();
+        let d = multihull_dynamic_force(&members, cond, x_ref, opts)?;
+        Ok(DynamicLoad {
+            force_up: d.force_up,
+            moment_bow_up: d.moment_bow_up,
+        })
+    }
 }
 
 /// LU of a banded matrix without pivoting — B-spline collocation matrices
@@ -1069,5 +1283,36 @@ mod tests {
                 .resistance;
             assert!((a - b).abs() / b < 2e-3, "Fn {fnum}: {a} vs {b}");
         }
+    }
+
+    /// Hydrostatics from sections against the exact Wigley's: the
+    /// waterplane and buoyancy come from the interpolants exactly; the
+    /// wetted surface from strips between station outlines converges to the
+    /// graph's true area.
+    #[test]
+    fn sectional_hydrostatics_match_the_exact_hull() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let surfs = crate::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
+        let text = crate::iges::write(&surfs, "wigley").unwrap();
+        let sec = crate::iges::import_sectional(&text, &crate::iges::SectionalOptions::default())
+            .unwrap()
+            .hulls
+            .remove(0)
+            .hull;
+        let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-300);
+        let area = rel(sec.waterplane_area(), hull.waterplane_area());
+        let m2 = rel(
+            sec.waterplane_second_moment(),
+            hull.waterplane_second_moment(),
+        );
+        let m1 = (sec.waterplane_moment() - hull.waterplane_moment()).abs();
+        let lcb = (sec.lcb_x() - hull.lcb_x()).abs();
+        let s = rel(sec.wetted_surface(), hull.wetted_surface());
+        eprintln!("A_w {area:.1e}, I {m2:.1e}, M {m1:.1e}, lcb {lcb:.1e}, S {s:.1e}");
+        assert!(
+            area < 1e-9 && m2 < 1e-9 && m1 < 1e-9 && lcb < 1e-9,
+            "{area} {m2} {m1} {lcb}"
+        );
+        assert!(s < 1e-3, "wetted surface {s:.1e}");
     }
 }

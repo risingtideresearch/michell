@@ -95,8 +95,8 @@ pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
 pub use friction::{
     ittc57_cf, roughness_delta_cf, roughness_reynolds, schlichting_rough_cf, viscous_resistance,
-    viscous_resistance_with, viscous_resistance_with_options, Roughness, ViscousOptions,
-    ViscousResistance,
+    viscous_resistance_for, viscous_resistance_with, viscous_resistance_with_options, Roughness,
+    ViscousOptions, ViscousResistance,
 };
 pub use grid::SampleGrid;
 pub use hull::{Hull, Transom};
