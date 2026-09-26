@@ -1,0 +1,142 @@
+//! Geometry that sectional hulls are cut from: a parsed, clustered file kept
+//! in its own (CAD) frame so each hull can be re-posed and re-cut as often as
+//! a sweep or an equilibrium solve needs.
+//!
+//! [`crate::iges::SourceFleet`] (IGES patches, or a B-spline `.hull` as its
+//! exact surfaces) is one; anything else that can cut a posed hull into
+//! sections plugs into the solver and the CLI through [`HullSource`].
+
+use crate::error::Result;
+use crate::iges::{HullPose, Platform, SectionalImport, SectionalOptions, SectionalState, SourceFleet};
+
+/// A file's hulls, re-cuttable into sections at any pose.
+pub trait HullSource: Send + Sync {
+    /// Number of hulls in the file.
+    fn len(&self) -> usize;
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The hull's x mid in the file frame: the default pivot of its design
+    /// trim ([`HullPose::pivot_x`]).
+    fn x_mid(&self, idx: usize) -> f64;
+
+    /// Cut hull `idx` into sections at the design pose and platform state,
+    /// warm-started from (and updating) `state`; `Ok(None)` when it is dry.
+    fn situate_sectional_warm(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+        state: &mut SectionalState,
+    ) -> Result<Option<SectionalImport>>;
+
+    /// [`HullSource::situate_sectional_warm`] from a cold start.
+    fn situate_sectional(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+    ) -> Result<Option<SectionalImport>> {
+        let mut state = SectionalState::default();
+        self.situate_sectional_warm(idx, waterline_z, pose, platform, opts, &mut state)
+    }
+
+    /// The whole hull (above water too) as triangles at a pose, for display:
+    /// `x` forward, `y` transverse, `z` up from the effective waterline.
+    fn posed_tessellation(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Result<(Vec<[f64; 3]>, Vec<[u32; 3]>)>;
+}
+
+impl HullSource for SourceFleet {
+    fn len(&self) -> usize {
+        SourceFleet::len(self)
+    }
+
+    fn x_mid(&self, idx: usize) -> f64 {
+        SourceFleet::x_mid(self, idx)
+    }
+
+    fn situate_sectional_warm(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+        state: &mut SectionalState,
+    ) -> Result<Option<SectionalImport>> {
+        SourceFleet::situate_sectional_warm(self, idx, waterline_z, pose, platform, opts, state)
+    }
+
+    fn posed_tessellation(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Result<(Vec<[f64; 3]>, Vec<[u32; 3]>)> {
+        SourceFleet::posed_tessellation(self, idx, waterline_z, pose, platform)
+    }
+}
+
+/// One hull of a fleet under study: which file, which hull in it, where its
+/// design waterline is, and how it is mounted.
+#[derive(Clone, Copy)]
+pub struct SourceHull<'a> {
+    pub source: &'a dyn HullSource,
+    pub index: usize,
+    /// CAD height of the design waterline in the source's frame.
+    pub waterline_z: f64,
+    pub pose: HullPose,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sectional::{wave_resistance, SectionalHull};
+    use crate::{Conditions, WaveOptions};
+
+    /// A `.hull` spline re-cut from its exact surfaces agrees with the
+    /// direct conversion, and re-poses: 5 cm deeper displaces more.
+    #[test]
+    fn a_spline_hull_recuts_from_its_surfaces() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let direct = SectionalHull::from_hull(&hull, &Default::default()).unwrap();
+        let src = SourceFleet::from_halfbreadth(hull.surface(), 0.0, 0.0).unwrap();
+        let opts = SectionalOptions::default();
+        let cut = src
+            .situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &opts)
+            .unwrap()
+            .unwrap();
+        let cond = Conditions::seawater(0.35 * (9.81f64 * 10.0).sqrt());
+        let w = WaveOptions::default();
+        let (a, b) = (
+            wave_resistance(&direct, &cond, &w).unwrap().resistance,
+            wave_resistance(&cut.hull, &cond, &w).unwrap().resistance,
+        );
+        let vol = (direct.displaced_volume(), cut.hull.displaced_volume());
+        eprintln!("Rw direct {a} cut {b}; volume {vol:?}; y {}", cut.placement.y);
+        assert!((a - b).abs() < 1e-3 * a, "Rw {a} vs {b}");
+        assert!((vol.0 - vol.1).abs() < 1e-5 * vol.0, "{vol:?}");
+        let deeper = HullPose {
+            dz: 0.05,
+            ..Default::default()
+        };
+        let d = src
+            .situate_sectional(0, 0.0, &deeper, &Platform::default(), &opts)
+            .unwrap()
+            .unwrap();
+        assert!(d.hull.displaced_volume() > vol.0);
+    }
+}

@@ -856,6 +856,32 @@ impl SectionalHull {
         self.x_center
     }
 
+    /// The x domain: the end stations [m].
+    pub fn x_range(&self) -> (f64, f64) {
+        (
+            self.spans.first().map_or(0.0, |s| s.start),
+            self.spans.last().map_or(0.0, |s| s.start + s.len),
+        )
+    }
+
+    /// Waterline half-beam `f(x, 0)` [m] as the kernel interpolates it; 0
+    /// outside the hull.
+    pub fn waterline_half_beam(&self, x: f64) -> f64 {
+        let p = self.p;
+        let Some(s) = self
+            .spans
+            .iter()
+            .position(|sp| x >= sp.start && x <= sp.start + sp.len)
+        else {
+            return 0.0;
+        };
+        let t = x - self.spans[s].start;
+        (0..=p)
+            .rev()
+            .fold(0.0, |acc, a| acc * t + self.wl_f[s * (p + 1) + a])
+            .max(0.0)
+    }
+
     /// The stations: each one's x and its section at the quadrature nodes
     /// (see [`SectionNodes::outline`]).
     pub fn sections(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {

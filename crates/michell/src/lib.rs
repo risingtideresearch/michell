@@ -71,6 +71,7 @@ mod moments;
 pub mod parallel;
 mod quadrature;
 pub mod sectional;
+pub mod source;
 pub mod spectrum;
 pub mod squat;
 pub mod stl;

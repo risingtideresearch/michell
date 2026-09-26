@@ -791,7 +791,17 @@ pub struct SourceFleet {
 /// membership stays fixed).
 pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet> {
     let file = validated_file(text)?;
-    let patches = presample_surfaces(&file.surfaces, reference_waterline);
+    source_fleet_from_surfaces(file.surfaces, file.units_scale, reference_waterline)
+}
+
+/// [`source_fleet`] from surfaces already in hand (CAD frame, z up, metres),
+/// e.g. a B-spline hull's exact [`halfbreadth_surfaces`].
+pub fn source_fleet_from_surfaces(
+    surfaces: Vec<NurbsSurface3>,
+    units_scale: f64,
+    reference_waterline: f64,
+) -> Result<SourceFleet> {
+    let patches = presample_surfaces(&surfaces, reference_waterline);
     let mut global_wet: Option<[f64; 6]> = None;
     for p in &patches {
         if let Some(b) = p.wet_box {
@@ -902,16 +912,37 @@ pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet>
 
     let hulls: Vec<Vec<NurbsSurface3>> = clusters
         .iter()
-        .map(|idxs| idxs.iter().map(|&i| file.surfaces[i].clone()).collect())
+        .map(|idxs| idxs.iter().map(|&i| surfaces[i].clone()).collect())
         .collect();
     Ok(SourceFleet {
-        units_scale: file.units_scale,
+        units_scale,
         meshes: hulls.iter().map(|h| Tessellation::new(h)).collect(),
         hulls,
     })
 }
 
 impl SourceFleet {
+    /// A B-spline half-breadth surface `y = f(x, z')` as source geometry:
+    /// its exact mirrored pair of surfaces about `centerplane`, with the
+    /// spline's top (z' = 0) at CAD height `top_z`. A wetted `.hull` has its
+    /// top at the waterline (`top_z` 0); a full-band body's top is its band
+    /// top, `top_z` = its waterline depth — either way the design waterline
+    /// lands at CAD height 0, and the hull re-poses like any CAD hull.
+    pub fn from_halfbreadth(
+        surface: &BSplineSurface,
+        centerplane: f64,
+        top_z: f64,
+    ) -> Result<SourceFleet> {
+        let surfaces = halfbreadth_surfaces(surface, centerplane, top_z).to_vec();
+        source_fleet_from_surfaces(surfaces, 1.0, 0.0)
+    }
+
+    /// The x mid of a hull's control net: the default pivot of its design
+    /// trim ([`HullPose::pivot_x`]).
+    pub fn x_mid(&self, idx: usize) -> f64 {
+        ctrl_x_mid(&self.hulls[idx])
+    }
+
     /// Number of hulls detected.
     pub fn len(&self) -> usize {
         self.hulls.len()

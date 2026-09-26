@@ -1,8 +1,6 @@
-//! Hull file formats and input sniffing.
+//! Hull file formats and argument parsing helpers.
 //!
-//! Two line-oriented text formats (SI units, `#` comments):
-//!
-//! **`.hull` — canonical control net** (what the core consumes):
+//! **`.hull` — B-spline half-breadth control net** (SI units, `#` comments):
 //! ```text
 //! michell-hull v1
 //! degree-x 2
@@ -13,107 +11,14 @@
 //! row 1 1 0
 //! row 0 0 0
 //! ```
-//!
-//! **offsets — station × waterline half-beam table** (lofted on load):
-//! ```text
-//! michell-offsets v1
-//! waterlines 0 0.125 0.25 0.375 0.5 0.625
-//! station -5.0   0 0 0 0 0 0
-//! station -4.0   0.36 0.34 0.30 0.24 0.15 0
-//! ...
-//! ```
-//!
-//! IGES files (`.igs`/`.iges`, or sniffed by the section letter in column
-//! 73) are imported via `michell::iges`.
-//!
-//! **`*.grid.json` — derivative-augmented sample grid** (see
-//! [`crate::gridio`]): the intermediate representation every sampled source
-//! reduces to, written by `--dump-grid` and lofted on load.
+//! An optional `waterline D` key marks a full-band body: its top is a band
+//! top, with the design waterline `D` below it; `centerplane Y` places it.
+//! Loaded hulls are converted to their exact surfaces and cut into sections
+//! ([`crate::fleet`]).
 
-use crate::gridio;
-use michell::body::{Body, BodyOptions};
-use michell::fit::{fit_grid, FitOptions, FitReport};
-use michell::iges::{self, HullPose, ImportOptions, ImportReport, Platform};
-use michell::stl;
 use michell::Roughness;
-use michell::{BSplineSurface, Hull, Placement, SampleGrid};
+use michell::{BSplineSurface, Hull};
 
-/// Where a hull came from, with any conversion diagnostics.
-#[derive(Clone)]
-pub enum Source {
-    /// Native wetted control-net file: exact, no fit involved.
-    Native,
-    /// A full-band body file, situated at its design waterline.
-    Body(FitReport),
-    /// Lofted from an offsets table.
-    Offsets(FitReport),
-    /// Lofted from a sample-grid JSON file.
-    Grid(FitReport),
-    /// Imported from IGES.
-    Iges(ImportReport),
-    /// Sampled from an STL mesh.
-    Stl(ImportReport),
-}
-
-/// Import/loft settings shared by every command that reads a hull.
-pub struct LoadSettings {
-    pub waterline_z: f64,
-    pub centerplane: Option<f64>,
-    pub samples: (usize, usize),
-    pub fit: FitOptions,
-    /// True when the user set fit options explicitly (otherwise offsets
-    /// lofting adapts the control count to the grid).
-    pub fit_explicit: bool,
-    /// Scale to metres for unitless formats (STL).
-    pub units: Option<f64>,
-    /// Write the sample grid(s) a load produced to this path (`-N` suffixed
-    /// before `.grid.json` when a file contains several hulls).
-    pub dump_grid: Option<String>,
-}
-
-impl Default for LoadSettings {
-    fn default() -> Self {
-        LoadSettings {
-            waterline_z: 0.0,
-            centerplane: None,
-            samples: (301, 61),
-            fit: FitOptions::default(),
-            fit_explicit: false,
-            units: None,
-            dump_grid: None,
-        }
-    }
-}
-
-/// Write dumped grids: one file, or `-N` suffixed files for a multihull.
-pub fn dump_grids(
-    settings: &LoadSettings,
-    grids: &[(&SampleGrid, Option<f64>)],
-) -> Result<(), String> {
-    let Some(spec) = &settings.dump_grid else {
-        return Ok(());
-    };
-    for (i, (grid, centerplane)) in grids.iter().enumerate() {
-        let path = numbered_grid_path(spec, i, grids.len());
-        std::fs::write(&path, gridio::write_grid_json(grid, *centerplane))
-            .map_err(|e| format!("cannot write {path}: {e}"))?;
-        eprintln!("wrote {path}");
-    }
-    Ok(())
-}
-
-fn numbered_grid_path(spec: &str, i: usize, n: usize) -> String {
-    if n == 1 {
-        return spec.to_string();
-    }
-    match spec.strip_suffix(".grid.json") {
-        Some(stem) => format!("{stem}-{i}.grid.json"),
-        None => format!("{spec}-{i}"),
-    }
-}
-
-/// Parse a length with an optional unit suffix, to metres. A bare number is
-/// metres, so `1e-4`, `0.1mm` and `100um` are the same roughness height.
 pub fn parse_length(s: &str) -> Result<f64, String> {
     let t = s.trim();
     let (num, scale) = [
@@ -182,212 +87,6 @@ pub fn looks_binary_stl(bytes: &[u8]) -> bool {
         let n = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]) as usize;
         bytes.len() == 84 + 50 * n
     }
-}
-
-/// Load every hull contained in a file. Native control nets and offsets
-/// tables hold one hull at the default placement; an IGES file may contain a
-/// whole multihull, each member carrying its detected placement.
-pub fn load_hulls(
-    path: &str,
-    settings: &LoadSettings,
-) -> Result<Vec<(Hull, Placement, Source)>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    Ok(load_hulls_from_bytes(path, bytes, settings)?
-        .into_iter()
-        .map(|l| (l.hull, l.placement, l.source))
-        .collect())
-}
-
-/// One hull as [`load_hulls_from_bytes`] produced it.
-pub struct LoadedHull {
-    pub hull: Hull,
-    pub placement: Placement,
-    pub source: Source,
-    /// The sample grid the hull was lofted from (in the hull's own frame),
-    /// or `None` for an exact control net, which involves no sampling.
-    pub grid: Option<SampleGrid>,
-}
-
-/// [`load_hulls`] on a file's contents already in memory. `path` is used only
-/// to sniff the format by extension and to name the file in messages.
-pub fn load_hulls_from_bytes(
-    path: &str,
-    bytes: Vec<u8>,
-    settings: &LoadSettings,
-) -> Result<Vec<LoadedHull>, String> {
-    let lower = path.to_ascii_lowercase();
-
-    // STL: by extension or binary layout (binary STL is not UTF-8).
-    let is_text = std::str::from_utf8(&bytes).is_ok();
-    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || !is_text {
-        let scale = settings.units.ok_or_else(|| {
-            format!(
-                "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
-                 (or a scale to metres)"
-            )
-        })?;
-        let mf = stl::mesh_fleet(&bytes, scale, settings.waterline_z)
-            .map_err(|e| format!("STL import failed: {e}"))?;
-        let opts = ImportOptions {
-            waterline_z: settings.waterline_z,
-            stations: settings.samples.0,
-            waterlines: settings.samples.1,
-            fit: resolved_fit(settings, ImportOptions::default().fit),
-            centerplane: settings.centerplane,
-        };
-        let poses = vec![HullPose::default(); mf.len()];
-        let fl = mf
-            .situate(settings.waterline_z, &poses, &Platform::default(), &opts)
-            .map_err(|e| format!("STL import failed: {e}"))?;
-        let grids: Vec<(&SampleGrid, Option<f64>)> = fl
-            .members
-            .iter()
-            .map(|m| (&m.grid, Some(m.placement.y)))
-            .collect();
-        dump_grids(settings, &grids)?;
-        return Ok(fl
-            .members
-            .into_iter()
-            .map(|m| LoadedHull {
-                hull: m.hull,
-                placement: m.placement,
-                source: Source::Stl(m.report),
-                grid: Some(m.grid),
-            })
-            .collect());
-    }
-
-    let text = String::from_utf8(bytes).expect("checked utf8");
-    // Sample-grid JSON: the IR written by --dump-grid, lofted on load.
-    if text.trim_start().starts_with('{') {
-        let (grid, centerplane) =
-            gridio::parse_grid_json(&text).map_err(|e| format!("{path}: {e}"))?;
-        let mut fit = settings.fit;
-        if !settings.fit_explicit {
-            // Adapt the default control count to the grid so small grids
-            // still loft.
-            fit.n_ctrl_x = fit
-                .n_ctrl_x
-                .min(grid.stations().len().saturating_sub(2))
-                .max(fit.degree_x + 1);
-            fit.n_ctrl_z = fit
-                .n_ctrl_z
-                .min(grid.waterlines().len().saturating_sub(2))
-                .max(fit.degree_z + 1);
-        }
-        dump_grids(settings, &[(&grid, centerplane)])?;
-        let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
-        return Ok(vec![LoadedHull {
-            hull,
-            placement: Placement {
-                x: 0.0,
-                y: centerplane.unwrap_or(0.0),
-            },
-            source: Source::Grid(report),
-            grid: Some(grid),
-        }]);
-    }
-    let first = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim_end();
-    if first.starts_with("michell-hull") {
-        let data = parse_hull_data(&text)?;
-        let y = data.centerplane.unwrap_or(0.0);
-        return match data.waterline {
-            // Full-band body: situate at its design waterline.
-            Some(wl) => {
-                let body = Body::new(data.surface, wl, y).map_err(|e| format!("{e}"))?;
-                let bopts = body_options(settings);
-                let situated = body
-                    .situate(0.0, &HullPose::default(), &Platform::default(), &bopts)
-                    .map_err(|e| format!("{e}"))?
-                    .ok_or_else(|| format!("{path}: body is dry at its design waterline"))?;
-                dump_grids(settings, &[(&situated.grid, Some(situated.placement.y))])?;
-                Ok(vec![LoadedHull {
-                    hull: situated.hull,
-                    placement: situated.placement,
-                    source: Source::Body(situated.fit),
-                    grid: Some(situated.grid),
-                }])
-            }
-            None => {
-                if settings.dump_grid.is_some() {
-                    return Err(format!(
-                        "{path} is an exact control net; there is no sampled \
-                         grid to dump"
-                    ));
-                }
-                let hull = Hull::new(data.surface).map_err(|e| format!("{e}"))?;
-                Ok(vec![LoadedHull {
-                    hull,
-                    placement: Placement { x: 0.0, y },
-                    source: Source::Native,
-                    grid: None,
-                }])
-            }
-        };
-    }
-    if first.starts_with("michell-offsets") {
-        let (st, wl, y) = parse_offsets_file(&text)?;
-        let mut fit = settings.fit;
-        if !settings.fit_explicit {
-            // Adapt the default control count to the grid so small tables
-            // still loft.
-            fit.n_ctrl_x = fit
-                .n_ctrl_x
-                .min(st.len().saturating_sub(2))
-                .max(fit.degree_x + 1);
-            fit.n_ctrl_z = fit
-                .n_ctrl_z
-                .min(wl.len().saturating_sub(2))
-                .max(fit.degree_z + 1);
-        }
-        let grid = SampleGrid::new(st, wl, y).map_err(|e| format!("{path}: {e}"))?;
-        dump_grids(settings, &[(&grid, None)])?;
-        let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
-        return Ok(vec![LoadedHull {
-            hull,
-            placement: Placement::default(),
-            source: Source::Offsets(report),
-            grid: Some(grid),
-        }]);
-    }
-    let looks_iges = lower.ends_with(".igs")
-        || lower.ends_with(".iges")
-        || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G');
-    if looks_iges {
-        let opts = ImportOptions {
-            waterline_z: settings.waterline_z,
-            stations: settings.samples.0,
-            waterlines: settings.samples.1,
-            // Unless set explicitly, use the denser IGES default net rather
-            // than the offsets-table default.
-            fit: resolved_fit(settings, ImportOptions::default().fit),
-            centerplane: settings.centerplane,
-        };
-        let fleet =
-            iges::import_fleet(&text, &opts).map_err(|e| format!("IGES import failed: {e}"))?;
-        let grids: Vec<(&SampleGrid, Option<f64>)> = fleet
-            .iter()
-            .map(|m| (&m.grid, Some(m.placement.y)))
-            .collect();
-        dump_grids(settings, &grids)?;
-        return Ok(fleet
-            .into_iter()
-            .map(|m| LoadedHull {
-                hull: m.hull,
-                placement: m.placement,
-                source: Source::Iges(m.report),
-                grid: Some(m.grid),
-            })
-            .collect());
-    }
-    Err(format!(
-        "cannot determine the format of {path}: expected a `michell-hull v1` or \
-         `michell-offsets v1` header, a `*.grid.json` sample grid, or an IGES file"
-    ))
 }
 
 fn strip_comment(line: &str) -> &str {
@@ -480,59 +179,6 @@ pub fn parse_hull_data(text: &str) -> Result<HullFileData, String> {
     })
 }
 
-/// Load a full-band body from a `.hull` file (requires the `waterline` key).
-pub fn load_body(path: &str) -> Result<Body, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let data = parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?;
-    let wl = data.waterline.ok_or_else(|| {
-        format!(
-            "{path} is a wetted-only hull (no `waterline` key); re-run \
-             `michell loft` on the source geometry to produce a full-band body"
-        )
-    })?;
-    Body::new(data.surface, wl, data.centerplane.unwrap_or(0.0)).map_err(|e| format!("{path}: {e}"))
-}
-
-/// Body sampling options derived from the CLI load settings.
-/// Hold a *default* control net down to what the sample grid can support
-/// (the loft needs `n_ctrl + 2` samples per axis). Without this, a user who
-/// asks for a coarse `--samples` but leaves `--fit-control` alone gets an
-/// error from a net they never chose. An explicit `--fit-control` is left
-/// exactly as given, so an over-ambitious net still reports the real problem.
-pub fn clamp_fit_to_samples(fit: FitOptions, samples: (usize, usize)) -> FitOptions {
-    FitOptions {
-        n_ctrl_x: fit.n_ctrl_x.min(samples.0.saturating_sub(2)),
-        n_ctrl_z: fit.n_ctrl_z.min(samples.1.saturating_sub(2)),
-        ..fit
-    }
-}
-
-/// The fit a load should use: the user's if they set one, otherwise the
-/// default held down to the sample grid.
-pub fn resolved_fit(settings: &LoadSettings, default: FitOptions) -> FitOptions {
-    if settings.fit_explicit {
-        settings.fit
-    } else {
-        // The default net, but the channel weights the user asked for.
-        clamp_fit_to_samples(
-            FitOptions {
-                derivative_weight: settings.fit.derivative_weight,
-                fairing: settings.fit.fairing,
-                ..default
-            },
-            settings.samples,
-        )
-    }
-}
-
-pub fn body_options(settings: &LoadSettings) -> BodyOptions {
-    BodyOptions {
-        stations: settings.samples.0,
-        waterlines: settings.samples.1,
-        fit: resolved_fit(settings, BodyOptions::default().fit),
-    }
-}
-
 fn parse_f64(s: &str) -> Result<f64, String> {
     s.trim()
         .parse::<f64>()
@@ -547,12 +193,6 @@ fn parse_usize(s: &str) -> Result<usize, String> {
 
 pub fn write_hull_file(hull: &Hull) -> String {
     write_spline_file(hull.surface(), None, None)
-}
-
-/// Write a full-band body file (`waterline` = design WL depth below the band
-/// top, `centerplane` = transverse position).
-pub fn write_body_file(surface: &BSplineSurface, waterline: f64, centerplane: f64) -> String {
-    write_spline_file(surface, Some(waterline), Some(centerplane))
 }
 
 fn write_spline_file(
@@ -585,57 +225,6 @@ fn write_spline_file(
         ));
     }
     out
-}
-
-/// Stations, waterlines, and half-beams (row-major, stations-major).
-pub type OffsetsTable = (Vec<f64>, Vec<f64>, Vec<f64>);
-
-pub fn parse_offsets_file(text: &str) -> Result<OffsetsTable, String> {
-    let mut waterlines: Option<Vec<f64>> = None;
-    let mut stations: Vec<f64> = Vec::new();
-    let mut grid: Vec<f64> = Vec::new();
-    let mut saw_header = false;
-    for (ln, raw) in text.lines().enumerate() {
-        let line = strip_comment(raw).trim();
-        if line.is_empty() {
-            continue;
-        }
-        let at = |msg: String| format!("line {}: {msg}", ln + 1);
-        let (key, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        match key {
-            "michell-offsets" => {
-                if rest.trim() != "v1" {
-                    return Err(at(format!("unsupported version {:?}", rest.trim())));
-                }
-                saw_header = true;
-            }
-            "waterlines" => waterlines = Some(parse_floats(rest, "waterlines").map_err(&at)?),
-            "station" => {
-                let vals = parse_floats(rest, "station").map_err(&at)?;
-                let Some(wl) = &waterlines else {
-                    return Err(at("`waterlines` must come before `station` lines".into()));
-                };
-                if vals.len() != wl.len() + 1 {
-                    return Err(at(format!(
-                        "expected x plus {} half-beams, got {} values",
-                        wl.len(),
-                        vals.len()
-                    )));
-                }
-                stations.push(vals[0]);
-                grid.extend_from_slice(&vals[1..]);
-            }
-            other => return Err(at(format!("unknown key {other:?}"))),
-        }
-    }
-    if !saw_header {
-        return Err("missing `michell-offsets v1` header".into());
-    }
-    let wl = waterlines.ok_or("missing `waterlines` line")?;
-    if stations.len() < 2 {
-        return Err("need at least two `station` lines".into());
-    }
-    Ok((stations, wl, grid))
 }
 
 /// Parse `a`, or an inclusive range `a:b:step`.

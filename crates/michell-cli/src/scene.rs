@@ -22,8 +22,9 @@
 //! and, for a closed transom, the virtual appendage. For the fleet: the
 //! far-field free-wave elevation ζ(x, y) as a height-field mesh.
 
-use michell::iges::{HullPose, Platform, SectionalImport, SourceFleet};
+use michell::iges::{HullPose, Platform};
 use michell::sectional::SectionalHull;
+use michell::source::HullSource;
 use michell::{Conditions, FreeWaveSpectrum, Placement, TransomClosure};
 use std::fmt::Write as _;
 
@@ -41,10 +42,12 @@ struct Object {
 /// Everything a scene needs about one hull.
 pub(crate) struct SceneHull<'a> {
     pub name: String,
-    pub import: &'a SectionalImport,
+    pub hull: &'a SectionalHull,
     pub placement: Placement,
-    /// Where the hull came from, for its CAD tessellation.
-    pub source: &'a SourceFleet,
+    /// The fleet's shift from where the hull was cut (the spec's `@dx,dy`).
+    pub shift: Placement,
+    /// Where the hull came from, for its tessellation.
+    pub source: &'a dyn HullSource,
     pub index: usize,
     pub waterline_z: f64,
 }
@@ -70,25 +73,24 @@ pub(crate) fn build(
     let mut objects = Vec::new();
     for h in hulls {
         let pl = h.placement;
-        let hull = &h.import.hull;
+        let hull = h.hull;
         // The CAD hull itself, posed, whole.
         let (verts, tris) = h
             .source
             .posed_tessellation(h.index, h.waterline_z, &HullPose::default(), &Platform::default())
             .map_err(|e| e.to_string())?;
-        let dy = pl.y - h.import.placement.y;
         let verts: Vec<[f64; 3]> = verts
             .iter()
-            .map(|p| [p[0] + pl.x, p[1] + dy, p[2]])
+            .map(|p| [p[0] + h.shift.x, p[1] + h.shift.y, p[2]])
             .collect();
         let height = verts.iter().map(|p| p[2]).collect();
         objects.push(Object {
-            name: format!("{} hull (CAD)", h.name),
+            name: format!("{} hull", h.name),
             kind: "mesh",
             cells: tris.iter().map(|t| t.iter().map(|&i| i as usize).collect()).collect(),
             vertices: verts,
             quantities: vec![("height above waterline [m]".into(), height)],
-            note: Some("the posed CAD tessellation (display only; the physics uses the stations)".into()),
+            note: Some("the posed source tessellation (display only; the physics uses the stations)".into()),
         });
         objects.push(stations(h, hull, pl, nu));
         if let Some(app) = appendage(h, hull, pl, nu, closure) {
@@ -223,7 +225,7 @@ fn free_surface(
     s: &Surface,
 ) -> Result<Object, String> {
     let members: Vec<(&SectionalHull, Placement)> =
-        hulls.iter().map(|h| (&h.import.hull, h.placement)).collect();
+        hulls.iter().map(|h| (h.hull, h.placement)).collect();
     let mut spec =
         FreeWaveSpectrum::new_sectional(&members, cond, closure).map_err(|e| e.to_string())?;
     let g = spec

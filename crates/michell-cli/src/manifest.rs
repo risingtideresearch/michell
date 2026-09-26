@@ -1,20 +1,24 @@
-//! JSON sweep manifests: a study definition referencing full-band `.hull`
-//! bodies, with every varying quantity (speed, load, waterline, hull poses)
-//! expressed as a sweep axis. See the README for the schema.
+//! JSON sweep manifests: a study definition referencing hull geometry (IGES
+//! files, or `.hull` control nets), with every varying quantity (speed, load,
+//! waterline, hull poses) expressed as a sweep axis. Every point re-poses the
+//! source geometry and cuts it into sections afresh. See the README for the
+//! schema.
 
 use crate::archive::{
     Archive, Rows, SpecSample, KIND_HULLFILE, KIND_MANIFEST, KIND_META, KIND_ROWS,
 };
-use crate::formats::{body_options, load_body, parse_pair, LoadSettings};
+use crate::fleet::{open_source, LoadSettings, SourceFile};
 use crate::json::{parse as parse_json, Json};
-use michell::body::{Body, BodyOptions};
 use michell::float::{
-    fleet_cg, solve_equilibrium_bodies, solve_equilibrium_bodies_dynamic, FleetState, HullLoad,
-    LoadCase, PointLoad,
+    fleet_cg, solve_equilibrium_sectional, solve_equilibrium_sectional_dynamic, FleetState,
+    HullLoad, LoadCase, PointLoad,
 };
-use michell::iges::{HullPose, Platform};
-use michell::squat::{dynamic_load_closure, SquatOptions};
-use michell::{Conditions, FreeWaveSpectrum, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
+use michell::iges::{HullPose, Platform, SectionalOptions};
+use michell::sectional::{dynamic_load_closure, SectionalHull};
+use michell::source::SourceHull;
+use michell::squat::SquatOptions;
+use michell::{Conditions, FreeWaveSpectrum, Placement, WaveOptions, STANDARD_GRAVITY};
+use std::sync::Arc;
 
 /// One knot in m/s.
 pub(crate) const KNOT: f64 = 1852.0 / 3600.0;
@@ -77,8 +81,15 @@ pub(crate) struct Axis {
 }
 
 pub(crate) struct MHull {
-    id: String,
-    pub(crate) body: Body,
+    pub(crate) id: String,
+    /// The file the hull comes from (shared by every hull cut from it).
+    pub(crate) src: Arc<SourceFile>,
+    /// Which of the file's hulls.
+    pub(crate) index: usize,
+    /// Detected centreplane at the base pose, in the file frame.
+    pub(crate) centerplane: f64,
+    /// The hull's x mid: the default trim pivot and point-load origin.
+    pub(crate) midship: f64,
     pub(crate) base: HullPose,
     load: HullLoad,
     /// Ids of the point loads in `load.points`, in the same order.
@@ -147,7 +158,7 @@ pub(crate) struct ParsedManifest {
     pub(crate) viscous: michell::ViscousOptions,
     pub(crate) gravity: f64,
     pub(crate) density: f64,
-    pub(crate) bopts: BodyOptions,
+    pub(crate) sopts: SectionalOptions,
     pub(crate) l_ref: f64,
     pub(crate) fluid: FluidCfg,
 }
@@ -177,7 +188,7 @@ pub(crate) fn point_state(hulls: &[MHull], axes: &[Axis], vals: &[f64]) -> Point
                         PoseParam::Dy => pose.dy = hulls[hi].base.dy + v,
                         PoseParam::Dz => pose.dz = hulls[hi].base.dz + v,
                         PoseParam::Spread => {
-                            let side = hulls[hi].body.centerplane() + hulls[hi].base.dy;
+                            let side = hulls[hi].centerplane + hulls[hi].base.dy;
                             pose.dy = hulls[hi].base.dy + if side < 0.0 { -v } else { v };
                         }
                         PoseParam::TrimDeg => pose.trim = hulls[hi].base.trim + v.to_radians(),
@@ -215,6 +226,20 @@ pub(crate) fn point_state(hulls: &[MHull], axes: &[Axis], vals: &[f64]) -> Point
     }
 }
 
+/// The hulls at their poses, as the solver re-cuts them.
+pub(crate) fn source_hulls<'a>(hulls: &'a [MHull], poses: &[HullPose]) -> Vec<SourceHull<'a>> {
+    hulls
+        .iter()
+        .zip(poses)
+        .map(|(h, pose)| SourceHull {
+            source: h.src.source.as_ref(),
+            index: h.index,
+            waterline_z: h.src.waterline_z,
+            pose: *pose,
+        })
+        .collect()
+}
+
 pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, String> {
     let ParsedManifest {
         doc,
@@ -230,7 +255,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         viscous,
         gravity,
         density,
-        bopts,
+        sopts,
         l_ref,
         fluid,
         text,
@@ -306,7 +331,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         .chain(
             [
                 "dry",
-                "band_exceeded",
                 "speed",
                 "froude",
                 "rw",
@@ -331,7 +355,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
     let mut first_row = true;
     let mut rows = binary.then(|| Rows::new(axes.len(), header.len() - axes.len()));
 
-    let bodies: Vec<&Body> = hulls.iter().map(|h| &h.body).collect();
+    let midships: Vec<f64> = hulls.iter().map(|h| h.midship).collect();
     // Grid order: the last axis varies fastest (odometer order).
     let mut strides = vec![1usize; axes.len()];
     for i in (0..axes.len().saturating_sub(1)).rev() {
@@ -367,7 +391,8 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         // The fleet CG is always derived by summing the per-hull loads (and
         // point loads) carried through their poses — so it tracks dx/dz and
         // the swept masses.
-        let cg = fleet_cg(&bodies, &loads, &poses);
+        let cg = fleet_cg(&midships, &loads, &poses);
+        let posed = source_hulls(&hulls, &poses);
 
         // Upright equilibrium. In float mode the fleet solves flotation to the
         // derived weight; otherwise it situates at a fixed cut.
@@ -378,16 +403,14 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     point + 1
                 ));
             }
-            let eq = solve_equilibrium_bodies(
-                &bodies,
-                0.0,
-                &poses,
+            let eq = solve_equilibrium_sectional(
+                &posed,
                 &LoadCase {
                     mass: cg.mass,
                     lcg: Some(cg.lcg),
                 },
                 density,
-                &bopts,
+                &sopts,
             )
             .map_err(|e| format!("point {}: {e}", point + 1))?;
             (
@@ -400,22 +423,27 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         } else {
             let mut members = Vec::new();
             let mut dry = 0usize;
-            let mut band_exceeded = 0usize;
-            let mut band_overshoot = 0.0f64;
             let mut volume = 0.0;
             let mut moment = 0.0;
-            for (h, pose) in hulls.iter().zip(&poses) {
+            for h in &posed {
                 match h
-                    .body
-                    .situate(waterline, pose, &Platform::default(), &bopts)
+                    .source
+                    .situate_sectional(
+                        h.index,
+                        h.waterline_z + waterline,
+                        &h.pose,
+                        &Platform::default(),
+                        &SectionalOptions {
+                            waterline_z: h.waterline_z + waterline,
+                            ..sopts
+                        },
+                    )
                     .map_err(|e| format!("point {}: {e}", point + 1))?
                 {
-                    Some(sb) => {
-                        volume += sb.hull.displaced_volume();
-                        moment += (sb.hull.lcb_x() + sb.placement.x) * sb.hull.displaced_volume();
-                        band_exceeded += sb.band_exceeded;
-                        band_overshoot = band_overshoot.max(sb.band_overshoot);
-                        members.push((sb.hull, sb.placement));
+                    Some(sh) => {
+                        volume += sh.hull.displaced_volume();
+                        moment += (sh.hull.lcb_x() + sh.placement.x) * sh.hull.displaced_volume();
+                        members.push((sh.hull, sh.placement));
                     }
                     None => dry += 1,
                 }
@@ -425,8 +453,8 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 FleetState {
                     members,
                     dry,
-                    band_exceeded,
-                    band_overshoot,
+                    band_exceeded: 0,
+                    band_overshoot: 0.0,
                 },
                 0.0,
                 0.0,
@@ -435,7 +463,8 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             )
         };
 
-        let members: Vec<(&Hull, Placement)> = state.members.iter().map(|(h, p)| (h, *p)).collect();
+        let members: Vec<(&SectionalHull, Placement)> =
+            state.members.iter().map(|(h, p)| (h, *p)).collect();
 
         let mut rows_out: Vec<RowOut> = Vec::with_capacity(speeds.len());
         // Dynamic mode re-solves the equilibrium per speed (the near-field
@@ -445,17 +474,15 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
         for &u in &speeds {
             let cond = fluid.make_cond(u)?;
             let dyn_eq = if dynamic_mode {
-                let eq = solve_equilibrium_bodies_dynamic(
-                    &bodies,
-                    0.0,
-                    &poses,
+                let eq = solve_equilibrium_sectional_dynamic(
+                    &posed,
                     &LoadCase {
                         mass: cg.mass,
                         lcg: Some(cg.lcg),
                     },
                     density,
                     gravity,
-                    &bopts,
+                    &sopts,
                     dynamic_load_closure(&cond, cg.lcg, &squat_opts),
                     warm,
                 )
@@ -467,19 +494,18 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             };
             // The attitude (and wetted fleet) each row's resistance is taken
             // at: the dynamic equilibrium in dynamic mode, else the upright one.
-            let (members_u, sinkage_u, trim_u, volume_u, lcb_u, dry_u, band_u) = match &dyn_eq {
+            let (members_u, sinkage_u, trim_u, volume_u, lcb_u, dry_u) = match &dyn_eq {
                 Some(eq) => (
                     eq.fleet
                         .members
                         .iter()
                         .map(|(h, p)| (h, *p))
-                        .collect::<Vec<(&Hull, Placement)>>(),
+                        .collect::<Vec<(&SectionalHull, Placement)>>(),
                     eq.sinkage,
                     eq.trim.to_degrees(),
                     eq.volume,
                     eq.lcb,
                     eq.fleet.dry,
-                    eq.fleet.band_exceeded,
                 ),
                 None => (
                     members.clone(),
@@ -488,13 +514,12 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     volume,
                     lcb,
                     state.dry,
-                    state.band_exceeded,
                 ),
             };
             let (rw, rv, rt, pe, iff, cw, ct) = if members_u.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                let r = michell::multihull_resistance_with(&members_u, &cond, &wave_opts, &viscous)
+                let r = michell::sectional::multihull_resistance(&members_u, &cond, &wave_opts, &viscous)
                     .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
@@ -526,7 +551,6 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 )
                 .chain([
                     dry_u as f64,
-                    band_u as f64,
                     u,
                     froude,
                     rw,
@@ -540,7 +564,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 .collect();
             let spectrum = if binary {
                 Some(
-                    sample_spectrum(&members_u, &cond, spec_points)
+                    sample_spectrum(&members_u, &cond, wave_opts.transom, spec_points)
                         .map_err(|e| format!("point {} U={u} spectrum: {e}", point + 1))?,
                 )
             } else {
@@ -768,14 +792,16 @@ fn json_str(s: &str) -> String {
 /// (the same detection `michell spectrum` uses), returning the wavenumber, the
 /// transverse wavelength, and `n` samples. Empty when the fleet is dry.
 fn sample_spectrum(
-    members: &[(&Hull, Placement)],
+    members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
+    transom: michell::TransomClosure,
     n: usize,
 ) -> Result<(f64, f64, Vec<SpecSample>), String> {
     if members.is_empty() {
         return Ok((0.0, 0.0, Vec::new()));
     }
-    let mut spec = FreeWaveSpectrum::new(members, cond).map_err(|e| format!("{e}"))?;
+    let mut spec =
+        FreeWaveSpectrum::new_sectional(members, cond, transom).map_err(|e| format!("{e}"))?;
     let nu = spec.wavenumber();
     let twl = spec.transverse_wavelength();
 
@@ -871,20 +897,29 @@ pub(crate) fn parse_manifest(
     let mut dynamic_mode = false;
     let mut squat_opts = SquatOptions::default();
     if let Some(o) = doc.get("options") {
-        if let Some(v) = o.get("samples").and_then(Json::as_str) {
-            settings.samples = parse_pair(v)?;
+        for gone in ["samples", "fit_degree", "fit_control", "band"] {
+            if o.get(gone).is_some() {
+                return Err(format!(
+                    "options.{gone} was removed with lofting; hulls are cut into sections \
+                     (resolution: options.stations and options.rays)"
+                ));
+            }
         }
-        if let Some(v) = o.get("fit_degree").and_then(Json::as_str) {
-            let (px, pz) = parse_pair(v)?;
-            settings.fit.degree_x = px;
-            settings.fit.degree_z = pz;
-            settings.fit_explicit = true;
+        if let Some(v) = o.get("waterline").and_then(Json::as_f64) {
+            settings.waterline_z = v;
         }
-        if let Some(v) = o.get("fit_control").and_then(Json::as_str) {
-            let (nx, nz) = parse_pair(v)?;
-            settings.fit.n_ctrl_x = nx;
-            settings.fit.n_ctrl_z = nz;
-            settings.fit_explicit = true;
+        let count = |key: &str, min: usize| -> Result<Option<usize>, String> {
+            match o.get(key).and_then(Json::as_f64) {
+                None => Ok(None),
+                Some(v) if v >= min as f64 && v.fract() == 0.0 => Ok(Some(v as usize)),
+                Some(v) => Err(format!("options.{key} {v}: expected a count of at least {min}")),
+            }
+        };
+        if let Some(n) = count("stations", 8)? {
+            settings.stations = n;
+        }
+        if let Some(n) = count("rays", 5)? {
+            settings.rays = n;
         }
         if let Some(v) = o.get("rel_tol").and_then(Json::as_f64) {
             wave_opts.rel_tol = v;
@@ -928,7 +963,8 @@ pub(crate) fn parse_manifest(
         }
     }
     squat_opts.wave.transom = wave_opts.transom;
-    let bopts: BodyOptions = body_options(&settings);
+    // Each hull's waterline is its file's; this carries the resolution.
+    let sopts = settings.sectional(0.0);
     let fluid_name = doc
         .get("fluid")
         .and_then(Json::as_str)
@@ -950,6 +986,8 @@ pub(crate) fn parse_manifest(
     // Raw bytes of each distinct referenced hull file, kept for the binary
     // archive so a study is fully self-contained.
     let mut hull_files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut sources: Vec<(String, Arc<SourceFile>)> = Vec::new();
+    let mut l_ref = 0.0f64;
     for h in hull_specs {
         let id = h
             .get("id")
@@ -964,12 +1002,61 @@ pub(crate) fn parse_manifest(
             .and_then(Json::as_str)
             .ok_or_else(|| format!("hull {id:?} needs a \"file\""))?;
         let path = dir.join(file);
-        let body = load_body(path.to_str().unwrap_or(file))?;
-        if !hull_files.iter().any(|(f, _)| f == file) {
-            let raw = std::fs::read(&path)
-                .map_err(|e| format!("cannot re-read hull file {file}: {e}"))?;
-            hull_files.push((file.to_string(), raw));
+        let src = match sources.iter().find(|(f, _)| f == file) {
+            Some((_, s)) => s.clone(),
+            None => {
+                let s = Arc::new(open_source(path.to_str().unwrap_or(file), &settings)?);
+                sources.push((file.to_string(), s.clone()));
+                let raw = std::fs::read(&path)
+                    .map_err(|e| format!("cannot re-read hull file {file}: {e}"))?;
+                hull_files.push((file.to_string(), raw));
+                s
+            }
+        };
+        let n = src.source.len();
+        let index = match h.get("hull") {
+            None if n == 1 => 0,
+            None => {
+                return Err(format!(
+                    "hull {id:?}: {file} holds {n} hulls; pick one with \"hull\": 0..{} \
+                     (ordered by transverse position, most negative y first)",
+                    n - 1
+                ))
+            }
+            Some(v) => match v.as_f64() {
+                Some(i) if i >= 0.0 && i.fract() == 0.0 && (i as usize) < n => i as usize,
+                _ => {
+                    return Err(format!(
+                        "hull {id:?}: \"hull\" must be an index 0..{} into {file}",
+                        n - 1
+                    ))
+                }
+            },
+        };
+        if hulls
+            .iter()
+            .any(|x: &MHull| Arc::ptr_eq(&x.src, &src) && x.index == index)
+        {
+            return Err(format!(
+                "hull {id:?}: hull {index} of {file} is already in the fleet"
+            ));
         }
+        // Cut once at the design waterline: its centreplane (for `spread`)
+        // and its length (for Froude numbers).
+        let design = src
+            .source
+            .situate_sectional(
+                index,
+                src.waterline_z,
+                &HullPose::default(),
+                &Platform::default(),
+                &settings.sectional(src.waterline_z),
+            )
+            .map_err(|e| format!("hull {id:?}: {e}"))?
+            .ok_or_else(|| format!("hull {id:?}: dry at the design waterline"))?;
+        let centerplane = design.placement.y;
+        l_ref = l_ref.max(design.hull.length());
+        let midship = src.source.x_mid(index);
         let mut base = HullPose::default();
         if let Some(pz) = h.get("pose") {
             base.dx = pz.get("dx").and_then(Json::as_f64).unwrap_or(0.0);
@@ -993,8 +1080,6 @@ pub(crate) fn parse_manifest(
         // these across hulls (carried through each pose), never set directly.
         // An unspecified longitudinal CG defaults to the hull's midship (like
         // the pose pivot), so a load with no `lcg` trims to ~zero, not to x=0.
-        let (x0, x1) = body.surface().x_domain();
-        let midship = 0.5 * (x0 + x1);
         let mut load = HullLoad {
             mass: 0.0,
             lcg: midship,
@@ -1043,8 +1128,8 @@ pub(crate) fn parse_manifest(
         report(
             &format!(
                 "hull {id}: {file} (centerplane {:.4}, base y {:.4}, mass {:.1} kg + {} point(s) {:.1} kg)",
-                body.centerplane(),
-                body.centerplane() + base.dy,
+                centerplane,
+                centerplane + base.dy,
                 load.mass,
                 load.points.len(),
                 point_mass,
@@ -1053,7 +1138,10 @@ pub(crate) fn parse_manifest(
         );
         hulls.push(MHull {
             id,
-            body,
+            src,
+            index,
+            centerplane,
+            midship,
             base,
             load,
             point_ids,
@@ -1194,7 +1282,7 @@ pub(crate) fn parse_manifest(
                 }
                 "spread" => {
                     for &i in &idxs {
-                        let y = hulls[i].body.centerplane() + hulls[i].base.dy;
+                        let y = hulls[i].centerplane + hulls[i].base.dy;
                         if y.abs() < 1e-9 {
                             return Err(format!(
                                 "spread targets hull {:?} which sits on the centerline",
@@ -1262,17 +1350,6 @@ pub(crate) fn parse_manifest(
         );
     }
 
-    // Base situate: reference length for Froude numbers.
-    let mut l_ref = 0.0f64;
-    for h in &hulls {
-        if let Some(sb) = h
-            .body
-            .situate(0.0, &h.base, &Platform::default(), &bopts)
-            .map_err(|e| format!("hull {}: {e}", h.id))?
-        {
-            l_ref = l_ref.max(sb.hull.length());
-        }
-    }
     if l_ref <= 0.0 {
         return Err("no hull is wetted at the design waterline".into());
     }
@@ -1313,7 +1390,7 @@ pub(crate) fn parse_manifest(
         viscous,
         gravity,
         density,
-        bopts,
+        sopts,
         l_ref,
         fluid,
     })
