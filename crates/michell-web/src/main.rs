@@ -11,10 +11,17 @@
 //!   POST /api/flow?name=F&froude=Fn&closure=..&param=..&...
 //!                               body = the file's bytes; the near-field
 //!                               pressure, free surface and forces at that
-//!                               speed (see `michell_web::flow`)
+//!                               speed (see `michell_web::flow`). With
+//!                               `&progress=1` the answer streams as
+//!                               newline-delimited JSON: `{"progress": ..}`
+//!                               lines as the stages advance, then the
+//!                               result (or `{"error": ..}`) as the last
+//!                               line; a client that goes away stops it
 
-use michell_web::{flow, loft, FlowRequest, LoftRequest, MAX_UPLOAD};
-use std::io::Read;
+use michell_web::{
+    flow, flow_with_progress, loft, FlowRequest, LoftRequest, CANCELLED, MAX_UPLOAD,
+};
+use std::io::{Read, Write};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const PAGE: &str = include_str!("index.html");
@@ -54,6 +61,12 @@ fn handle(mut req: Request) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let pairs = parse_query(query);
+    if *req.method() == Method::Post
+        && path == "/api/flow"
+        && pairs.iter().any(|(k, v)| k == "progress" && v != "0")
+    {
+        return stream_flow(req, &pairs);
+    }
     let resp = match (req.method(), path) {
         (Method::Get, "/") => Response::from_string(PAGE)
             .with_header(header("Content-Type", "text/html; charset=utf-8")),
@@ -110,6 +123,85 @@ fn handle(mut req: Request) {
         _ => Response::from_string("not found").with_status_code(404),
     };
     let _ = req.respond(resp);
+}
+
+/// `/api/flow?progress=1`: the flow with its progress streamed as it runs.
+///
+/// The response is written straight to the connection, chunked, flushing
+/// after every line — tiny_http's own chunked writer buffers ~8 kB, which
+/// would hold the small progress lines back until the end. When a write
+/// fails (the page aborted the request, or went away), the progress
+/// callback says so and the flow stops at its next report.
+fn stream_flow(mut req: Request, pairs: &[(String, String)]) {
+    let name = pairs
+        .iter()
+        .find(|(k, _)| k == "name")
+        .map_or("upload", |(_, v)| v.as_str())
+        .to_string();
+    let body = read_body(&mut req);
+    let mut out = req.into_writer();
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n\
+                Cache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\
+                Connection: close\r\n\r\n";
+    let chunk = |out: &mut Box<dyn Write + Send>, line: &str| -> std::io::Result<()> {
+        let data = format!("{line}\n");
+        write!(out, "{:x}\r\n", data.len())?;
+        out.write_all(data.as_bytes())?;
+        out.write_all(b"\r\n")?;
+        out.flush()
+    };
+    if out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_err() {
+        return;
+    }
+    let t0 = std::time::Instant::now();
+    let mut gone = false;
+    let result = body.and_then(|bytes| {
+        let opts = FlowRequest::from_query(pairs)?;
+        flow_with_progress(&name, bytes, &opts, &mut |p| {
+            let line = serde_json::json!({ "progress": {
+                "stage": p.stage,
+                "step": p.step,
+                "steps": p.steps,
+                "detail": p.detail,
+                "fraction": p.fraction,
+                "seconds": t0.elapsed().as_secs_f64(),
+            }});
+            // A write to a connection the client has closed succeeds once
+            // (the kernel buffers it) and fails once the peer's reset is
+            // back: lead with a blank keep-alive line, so the report after
+            // an abort — not the one after that — finds out.
+            gone = chunk(&mut out, "").is_err()
+                || {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    chunk(&mut out, &line.to_string()).is_err()
+                };
+            !gone
+        })
+    });
+    let last = match result {
+        Ok(v) => {
+            eprintln!(
+                "flow {name}: ok ({:.2} s, streamed)",
+                v["seconds"].as_f64().unwrap_or(0.0)
+            );
+            v.to_string()
+        }
+        Err(e) if e == CANCELLED || gone => {
+            eprintln!(
+                "flow {name}: cancelled after {:.1} s (client gone)",
+                t0.elapsed().as_secs_f64()
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("flow {name}: {e}");
+            serde_json::json!({ "error": e }).to_string()
+        }
+    };
+    let _ = chunk(&mut out, &last).and_then(|_| {
+        out.write_all(b"0\r\n\r\n")?;
+        out.flush()
+    });
 }
 
 fn read_body(req: &mut Request) -> Result<Vec<u8>, String> {
