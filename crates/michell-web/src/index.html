@@ -217,18 +217,6 @@
       <button data-view="body">Body</button>
       <button data-view="wake" hidden>Wake</button>
     </div>
-    <div class="group" id="layers">
-      <button data-layer="surface" class="on">Surface</button>
-      <button data-layer="stations" class="on">Stations</button>
-      <button data-layer="keel" class="on">Keel</button>
-      <button data-layer="rays">CAD rays</button>
-      <button data-layer="closure" class="on">Closure</button>
-      <button data-layer="water" class="on">Waterplane</button>
-      <button data-layer="area" class="on">Z(x)</button>
-      <button data-layer="hull" class="on" hidden>Hull</button>
-      <button data-layer="pressure" class="on" hidden>Pressure</button>
-      <button data-layer="waves" class="on" hidden>Free surface</button>
-    </div>
   </div>
   <div id="readout3d"></div>
   <div class="legend" id="lgcp"><div id="cpname">Hull pressure C<sub>p</sub></div><div class="bar"></div><div class="ends"><span id="cplo"></span><span>0</span><span id="cphi"></span></div></div>
@@ -481,8 +469,6 @@ function view(id) {
   const c = cases.find((c) => c.id === id);
   if (!c || !c.data) return;
   if (!flowData) {
-    areaOn = false;
-    $("layers").querySelector("button[data-layer=area]").classList.remove("on");
     drawArea();
   }
   viewing = id;
@@ -623,7 +609,12 @@ const scene3d = (() => {
   const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "hull", "pressure", "waves"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
-  layers.rays.visible = false;
+  // What is shown: the sections before any case, the case's flow after.
+  const SHOWN = { cut: ["surface", "stations"], flow: ["hull", "pressure", "waves"] };
+  function show(which) {
+    for (const [name, g] of Object.entries(layers)) g.visible = SHOWN[which].includes(name);
+  }
+  show("cut");
   let bounds = null, hullBounds = null, wakeBounds = null, view = "iso", surfaces = [], probes = [];
 
   const clear = (g) => { for (const c of [...g.children]) { g.remove(c); c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); } };
@@ -774,7 +765,7 @@ const scene3d = (() => {
     probes = []; waveMesh = null;
     const has = !!d;
     for (const id of ["lgcp", "lgzeta"]) $(id).style.display = has ? "block" : "none";
-    for (const b of $("layers").querySelectorAll("button[data-layer=pressure],button[data-layer=waves],button[data-layer=hull]")) b.hidden = !has;
+    show(has ? "flow" : "cut");
     $("views").querySelector("button[data-view=wake]").hidden = !has;
     if (!has) { wakeBounds = null; bounds = hullBounds; if (view === "wake") pick("iso"); else setView(view, true); return; }
     const cpMax = range99(d.hulls.flatMap((p) => p.cp));
@@ -815,12 +806,6 @@ const scene3d = (() => {
       layers.hull.add(new THREE.Mesh(geo, mat));
     }
     clipHull();
-    // The pressure replaces the see-through surface, and the design-attitude
-    // layers step aside while it is shown.
-    for (const name of ["surface", "stations", "keel", "closure"]) {
-      layers[name].visible = false;
-      $("layers").querySelector(`button[data-layer=${name}]`).classList.remove("on");
-    }
 
     const g = d.surface, zmax = range99(g.zeta);
     const mm = (1000 * zmax) >= 100 ? (1000 * zmax).toFixed(0) : (1000 * zmax).toPrecision(2);
@@ -842,8 +827,6 @@ const scene3d = (() => {
     waveMesh = colored(pos, index, g.zeta, zmax, { what: "zeta" }, 0.72);
     waveMesh.renderOrder = 1;
     layers.waves.add(waveMesh); probes.push(waveMesh);
-    layers.water.visible = false;
-    $("layers").querySelector("button[data-layer=water]").classList.remove("on");
     // The Wake view frames the whole pattern; the others stay on the hull.
     const first = !wakeBounds;
     bounds = hullBounds.clone().union(hb);
@@ -933,17 +916,12 @@ const scene3d = (() => {
   });
   renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
-  function toggle(name, on) {
-    if (name === "area") { areaOn = on; drawArea(); return; }
-    layers[name].visible = on;
-    if (name === "pressure") clipHull();
-    render();
-  }
-  return { load, closure, flow, setView, toggle };
+
+  return { load, closure, flow, setView };
 })();
 
 // ---------------------------------------------------------------- area panel
-let areaOn = true;
+let areaOn = false;
 function drawArea() {
   const panel = $("area"), svg = $("areasvg");
   const h = hulls.find((h) => h.area);
@@ -978,9 +956,6 @@ function pick(name) {
   scene3d.setView(name);
 }
 for (const b of $("views").querySelectorAll("button")) b.onclick = () => pick(b.dataset.view);
-for (const b of $("layers").querySelectorAll("button")) {
-  b.onclick = () => { b.classList.toggle("on"); scene3d.toggle(b.dataset.layer, b.classList.contains("on")); };
-}
 updateClosure();
 </script>
 </body>
