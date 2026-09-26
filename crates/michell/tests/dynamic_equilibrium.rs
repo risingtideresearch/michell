@@ -4,10 +4,12 @@
 //! fore-aft symmetric Wigley hull with freeboard.
 
 use michell::float::{
+    DynamicModel,
     solve_equilibrium_dynamic_with, solve_equilibrium_sectional,
     solve_equilibrium_sectional_dynamic, DynamicEquilibrium, DynamicLoad, FleetState, LoadCase,
 };
 use michell::iges::{self, HullPose, NurbsSurface3, Platform, SectionalOptions, SourceFleet};
+use michell::sectional::SectionalHull;
 use michell::source::SourceHull;
 use michell::{Result, STANDARD_GRAVITY};
 
@@ -71,7 +73,7 @@ fn setup() -> (SourceFleet, f64) {
 fn solve_dynamic(
     src: &SourceFleet,
     load: &LoadCase,
-    dynamic: impl FnMut(&FleetState) -> Result<DynamicLoad>,
+    dynamic: impl DynamicModel<SectionalHull>,
     warm_start: Option<(f64, f64)>,
 ) -> DynamicEquilibrium {
     solve_equilibrium_sectional_dynamic(
@@ -102,7 +104,7 @@ fn zero_dynamic_load_reproduces_hydrostatic_solve_exactly() {
     for lcg in [None, Some(0.2)] {
         let load = LoadCase { mass, lcg };
         let eq = solve_equilibrium_sectional(&hulls(&src), &load, RHO, &opts).unwrap();
-        let dy = solve_dynamic(&src, &load, |_| Ok(DynamicLoad::default()), None);
+        let dy = solve_dynamic(&src, &load, |_: &FleetState| Ok(DynamicLoad::default()), None);
         assert_eq!(
             dy.sinkage.to_bits(),
             eq.sinkage.to_bits(),
@@ -157,7 +159,7 @@ fn constant_suction_adds_its_share_of_displacement() {
     let dy = solve_dynamic(
         &src,
         &load,
-        |_| {
+        |_: &FleetState| {
             calls += 1;
             Ok(DynamicLoad {
                 force_up: -0.05 * weight,
@@ -218,7 +220,7 @@ fn bow_up_moment_trims_bow_up_without_changing_volume() {
     let dy = solve_dynamic(
         &src,
         &load,
-        |_| {
+        |_: &FleetState| {
             Ok(DynamicLoad {
                 force_up: 0.0,
                 moment_bow_up: moment,
@@ -288,7 +290,7 @@ fn large_lift_is_solved_and_reported() {
     let dy = solve_dynamic(
         &src,
         &load,
-        |_| {
+        |_: &FleetState| {
             Ok(DynamicLoad {
                 force_up: 0.4 * weight,
                 moment_bow_up: 0.0,

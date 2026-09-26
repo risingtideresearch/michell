@@ -313,8 +313,62 @@ fn forced(x: f64, f: Option<f64>) -> f64 {
     }
 }
 
-/// The caller's dynamic-load closure, as the Newton core borrows it.
-type DynamicFn<'a, M> = &'a mut dyn FnMut(&FleetState<M>) -> Result<DynamicLoad>;
+/// A hydrodynamic load model for the dynamic solve: the load on a fleet at
+/// the state under test, and optionally a cheaper evaluation for the
+/// solver's finite-difference probes of its sensitivity. A probe's value
+/// need not be accurate, only consistent with itself between nearby states
+/// (the solver differences probes against a probe at the base state), so a
+/// coarse quadrature serves. Any `FnMut(&FleetState) -> Result<DynamicLoad>`
+/// is a model with no cheap probe.
+pub trait DynamicModel<M> {
+    fn load(&mut self, fleet: &FleetState<M>) -> Result<DynamicLoad>;
+
+    /// The cheap evaluation, or `None` to probe with [`DynamicModel::load`].
+    fn probe(&mut self, _fleet: &FleetState<M>) -> Option<Result<DynamicLoad>> {
+        None
+    }
+}
+
+impl<M, F: FnMut(&FleetState<M>) -> Result<DynamicLoad>> DynamicModel<M> for F {
+    fn load(&mut self, fleet: &FleetState<M>) -> Result<DynamicLoad> {
+        self(fleet)
+    }
+}
+
+/// The caller's dynamic-load model, as the Newton core borrows it.
+type DynamicFn<'a, M> = &'a mut dyn DynamicModel<M>;
+
+/// The dynamic load's sensitivity `[∂F/∂s, ∂M/∂s, ∂F/∂τ, ∂M/∂τ]` and where
+/// it was last taken, carried between iterations for secant updates.
+#[derive(Clone, Copy)]
+struct Secant {
+    jd: [f64; 4],
+    s: f64,
+    tau: f64,
+    dl: DynamicLoad,
+    /// The residual metric there.
+    metric: f64,
+    /// Iterations since the last finite-difference probe.
+    age: usize,
+}
+
+/// Broyden's rank-one update of `jd` for a step `(Δs, Δτ)` that changed the
+/// load by `(ΔF, ΔM)`, in the norm that measures `s` in units of `z_scale`
+/// (so neither axis dominates the correction).
+fn broyden(jd: [f64; 4], (ds, dt): (f64, f64), (df, dm): (f64, f64), z_scale: f64) -> [f64; 4] {
+    let w_s = 1.0 / (z_scale * z_scale);
+    let n2 = w_s * ds * ds + dt * dt;
+    if !(n2 > 0.0 && n2.is_finite()) {
+        return jd;
+    }
+    let (ef, em) = (df - (jd[0] * ds + jd[2] * dt), dm - (jd[1] * ds + jd[3] * dt));
+    [
+        jd[0] + ef * w_s * ds / n2,
+        jd[1] + em * w_s * ds / n2,
+        jd[2] + ef * dt / n2,
+        jd[3] + em * dt / n2,
+    ]
+}
 
 /// The Newton core shared by [`solve_equilibrium_with`] and
 /// [`solve_equilibrium_dynamic_with`]. With `dynamic`, every iteration adds
@@ -411,6 +465,7 @@ fn equilibrium_core<M: Floating>(
         // near-miss is accepted with its residuals reported rather than
         // failing the whole point.
         let mut best = (f64::INFINITY, s, tau);
+        let mut secant: Option<Secant> = None;
         for _ in 0..max_iters {
             iterations += 1;
             let fleet = situate(s, tau, coarse)?;
@@ -422,7 +477,7 @@ fn equilibrium_core<M: Floating>(
             let dl_base = match dynamic.as_mut() {
                 None => None,
                 Some(d) => {
-                    let dl = d(&fleet)?;
+                    let dl = d.load(&fleet)?;
                     if !(dl.force_up.is_finite() && dl.moment_bow_up.is_finite()) {
                         return Err(Error::InvalidConditions(format!(
                             "dynamic load must be finite, got {dl:?} at sinkage {s}, trim {tau}"
@@ -467,41 +522,94 @@ fn equilibrium_core<M: Floating>(
             // to a multi-metre "sinkage" and a trim past the 20° abort
             // limit, diverging outright where the plain analytic Jacobian
             // had always converged in under ten iterations.
-            let dyn_jac = if is_handoff_phase { dl_base } else { None }.map(|dl| {
-                let h_s = 0.02 * z_scale;
-                let h_tau = 0.01f64;
-                let mut probe = |ds: f64, dtau: f64| -> Result<Option<DynamicLoad>> {
-                    let f = situate(s + ds, tau + dtau, coarse)?;
-                    if f.members.is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(dynamic.as_mut().expect("dl_base implies a closure")(
-                            &f,
-                        )?))
+            // Where this state stands, before choosing how to take the slope.
+            let metric_now = {
+                let r1 = forced(t.volume - v_target, forcing.map(|f| f.0));
+                let lcb = t.moment_x / t.volume;
+                (r1.abs() / (tol_v * v_target)).max(match load.lcg {
+                    None => 0.0,
+                    Some(lcg) => {
+                        forced(lcb - lcg, forcing.map(|f| f.1 / t.volume)).abs() / (1e-4 * l_scale)
                     }
-                };
-                let mut one_sided = |h: f64, along_s: bool| -> Result<Option<(f64, f64)>> {
-                    let (fwd_ds, fwd_dt) = if along_s { (h, 0.0) } else { (0.0, h) };
-                    let sample = match probe(fwd_ds, fwd_dt)? {
-                        Some(v) => Some((h, v)),
-                        None => probe(-fwd_ds, -fwd_dt)?.map(|v| (-h, v)),
+                })
+            };
+            // The slope itself: a Broyden update of the last one while the
+            // residual keeps falling (one evaluation per iteration), else a
+            // fresh finite-difference probe — at most every few iterations.
+            // Probes use the model's cheap evaluation, differenced against
+            // a cheap evaluation at the base state, so their quadrature
+            // error cancels in the difference.
+            let jd: Option<[f64; 4]> = match (is_handoff_phase, dl_base) {
+                (true, Some(dl)) => {
+                    let reuse = secant.filter(|sc| sc.age < 4 && metric_now < sc.metric);
+                    let (jd, age) = match reuse {
+                        Some(sc) => (
+                            broyden(
+                                sc.jd,
+                                (s - sc.s, tau - sc.tau),
+                                (
+                                    dl.force_up - sc.dl.force_up,
+                                    dl.moment_bow_up - sc.dl.moment_bow_up,
+                                ),
+                                z_scale,
+                            ),
+                            sc.age + 1,
+                        ),
+                        None => {
+                            let h_s = 0.02 * z_scale;
+                            let h_tau = 0.01f64;
+                            let d = dynamic.as_mut().expect("dl_base implies a model");
+                            let (base, cheap) = match d.probe(&fleet) {
+                                Some(r) => (r?, true),
+                                None => (dl, false),
+                            };
+                            let mut probe = |ds: f64, dtau: f64| -> Result<Option<DynamicLoad>> {
+                                let f = situate(s + ds, tau + dtau, coarse)?;
+                                if f.members.is_empty() {
+                                    return Ok(None);
+                                }
+                                let d = dynamic.as_mut().expect("dl_base implies a model");
+                                Ok(Some(match (cheap, d.probe(&f)) {
+                                    (true, Some(r)) => r?,
+                                    _ => d.load(&f)?,
+                                }))
+                            };
+                            let mut one_sided = |h: f64, along_s: bool| -> Result<(f64, f64)> {
+                                let (fwd_ds, fwd_dt) = if along_s { (h, 0.0) } else { (0.0, h) };
+                                let sample = match probe(fwd_ds, fwd_dt)? {
+                                    Some(v) => Some((h, v)),
+                                    None => probe(-fwd_ds, -fwd_dt)?.map(|v| (-h, v)),
+                                };
+                                // A dry perturbed fleet on both sides leaves
+                                // this axis to the hydrostatic Jacobian alone.
+                                Ok(sample.map_or((0.0, 0.0), |(signed_h, v)| {
+                                    (
+                                        (v.force_up - base.force_up) / signed_h,
+                                        (v.moment_bow_up - base.moment_bow_up) / signed_h,
+                                    )
+                                }))
+                            };
+                            let (df_ds, dm_ds) = one_sided(h_s, true)?;
+                            // Trim isn't being solved without an lcg.
+                            let (df_dt, dm_dt) = match load.lcg {
+                                Some(_) => one_sided(h_tau, false)?,
+                                None => (0.0, 0.0),
+                            };
+                            ([df_ds, dm_ds, df_dt, dm_dt], 0)
+                        }
                     };
-                    Ok(sample.map(|(signed_h, v)| {
-                        (
-                            (v.force_up - dl.force_up) / signed_h,
-                            (v.moment_bow_up - dl.moment_bow_up) / signed_h,
-                        )
-                    }))
-                };
-                let ds_slope = one_sided(h_s, true)?;
-                // Trim isn't being solved without an lcg, so skip those evals.
-                let dt_slope = match load.lcg {
-                    Some(_) => one_sided(h_tau, false)?,
-                    None => None,
-                };
-                Ok::<_, Error>((ds_slope, dt_slope))
-            });
-            let dyn_jac = dyn_jac.transpose()?;
+                    secant = Some(Secant {
+                        jd,
+                        s,
+                        tau,
+                        dl,
+                        metric: metric_now,
+                        age,
+                    });
+                    Some(jd)
+                }
+                _ => None,
+            };
             let r1 = forced(t.volume - v_target, forcing.map(|f| f.0));
             let lcb = t.moment_x / t.volume;
             // The moment imbalance as an LCB shift: what the trim converges on.
@@ -515,17 +623,11 @@ fn equilibrium_core<M: Floating>(
             }
             // Fold the dynamic load's own sensitivity into the hydrostatic
             // Jacobian, in the same volume/volume-metre units `forced` already
-            // uses (i.e. scaled by `per_rho_g`). `None` (no closure, a zero
-            // load, or a dry perturbed fleet on that axis) leaves the pure
-            // hydrostatic term untouched, so a hydrostatic-only solve — and a
-            // dynamic one whose load has no local sensitivity to reach for —
-            // is completely unaffected.
-            let (dfz_ds, dm_ds_dyn) = dyn_jac
-                .and_then(|(ds_slope, _)| ds_slope)
-                .map_or((0.0, 0.0), |(dfz, dm)| (per_rho_g * dfz, per_rho_g * dm));
-            let (dfz_dt, dm_dt_dyn) = dyn_jac
-                .and_then(|(_, dt_slope)| dt_slope)
-                .map_or((0.0, 0.0), |(dfz, dm)| (per_rho_g * dfz, per_rho_g * dm));
+            // uses (i.e. scaled by `per_rho_g`). `None` (no model, or a
+            // non-handoff phase) leaves the pure hydrostatic term untouched,
+            // so a hydrostatic-only solve is completely unaffected.
+            let [dfz_ds, dm_ds_dyn, dfz_dt, dm_dt_dyn] =
+                jd.map_or([0.0; 4], |j| j.map(|v| per_rho_g * v));
             // d/ds and d/dτ of (V, M); rotation about (lcg, waterline), plus
             // the dynamic terms above.
             let dv_ds = t.wp_area + dfz_ds;
@@ -656,7 +758,7 @@ fn equilibrium_core<M: Floating>(
             // are the same. Only a near-miss fallback moves the state and
             // has to pay for one more evaluation.
             Some(((ls, lt, false), dl)) if ls == s && lt == tau => dl,
-            _ => d(&fleet)?,
+            _ => d.load(&fleet)?,
         },
     };
     let forcing = dynamic.is_some().then(|| to_forcing(dynamic_load));
@@ -725,7 +827,7 @@ pub fn solve_equilibrium_with<M: Floating>(
 /// is solved like any other and shows up in `lift_fraction`.
 pub fn solve_equilibrium_dynamic_with<M: Floating>(
     situate: impl FnMut(f64, f64, bool) -> Result<FleetState<M>>,
-    mut dynamic: impl FnMut(&FleetState<M>) -> Result<DynamicLoad>,
+    mut dynamic: impl DynamicModel<M>,
     load: &LoadCase,
     density: f64,
     gravity: f64,
@@ -818,7 +920,7 @@ pub fn solve_equilibrium_sectional_dynamic(
     density: f64,
     gravity: f64,
     opts: &SectionalOptions,
-    dynamic: impl FnMut(&FleetState<SectionalHull>) -> Result<DynamicLoad>,
+    dynamic: impl DynamicModel<SectionalHull>,
     warm_start: Option<(f64, f64)>,
 ) -> Result<DynamicEquilibrium<SectionalHull>> {
     let pivot_x = load.lcg.unwrap_or(0.0);
