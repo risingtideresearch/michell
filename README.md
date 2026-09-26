@@ -371,6 +371,50 @@ a proxy for what actually matters (error in `∂f/∂x`, not in `f`), so treat i
 as a floor on the problem, not a measure of it; where a grid carries observed
 slopes, `FitReport::fx_residual` is the sharper signal.
 
+**Resolution is not fairness, though.** The half-beam is identically zero
+below the keel, so `f(x, z)` is *creased* along the keel/profile line — and
+wherever that line runs diagonally across the (x, z) grid (the rockered
+forefoot and run of almost every hull), no knot line can follow it. Plain
+least squares then approximates the crease the way a Fourier series does a
+step: a Gibbs-like checkerboard of ridges at the knot spacing, spreading up
+the topsides from the keel, which a denser net only narrows. On the
+`ama.igs` and `e12.igs` imports the samples are fair (curvature changes sign
+~20 times over the whole 301×61 grid) and the plain loft is not (~1,200 and
+~1,500). `FitOptions::fairing` (`--fit-fairing λ`) adds the thin-plate
+bending energy `λ·∬(f_uu² + 2f_uv² + f_vv²)` over the domain normalised to
+the unit square — assembled exactly from 1-D Gram matrices of the basis
+derivatives, inside the band the data term already occupies, so it costs
+nothing — and makes the loft *round* the crease instead of ringing around
+it. At `λ = 1e-7` the ringing goes (inflections down ~4×, to about one per
+line where the section turns into the keel), the RMS residual is no worse,
+because fewer negative controls get floored, and ama's `R_w` falls 8% at Fn
+0.2 (the ridges were spurious short-scale `∂f/∂x`). Larger `λ` rounds the
+keel visibly; `1e-5` costs ~3% RMS. It defaults to `0` for now.
+
+**Sectional import (experimental).** A loft is a graph `y = f(x, z)` over
+the centreplane, and at a rockered keel that graph is creased along a line no
+knot can follow and closes like a square root on a round bilge — which is
+what the fairing, trimming and resolution notes above are all working
+around. `iges::import_sectional` (and `SourceFleet::situate_sectional`)
+skips the loft entirely: it cuts the CAD patches at stations and sweeps each
+section with rays from its top centreplane point, fanned in the section's own
+proportions, so the reach `R(θ)` is smooth right into the keel. Each
+station's depth integral `Z(κ) = ∬ e^{−κz} dA` is then an area integral in
+polar form whose radial part is closed form, and `sectional::SectionalHull`
+interpolates it along `x` and hands it to the same closed-form x-moments the
+lofted kernel uses — so the near-field quadrature keeps its
+once-per-`κ`/many-`k_x` structure (per `k_x` it costs the same; per `κ`
+about 2×). `sectional::wave_resistance` and `sectional::dynamic_force` run
+the existing integrals on it. Checks: a Wigley written out as patches and
+cut back into sections reproduces the exact hull's `R_w`, sinkage force and
+trim moment to ~1e-10 and its volume to 1e-11; on the `ama.igs` and
+`e12.igs` imports `R_w` settles to 3–4 digits by 121 stations × 33 rays,
+where the lofted hulls sit 2–15% away below Fn 0.4 in a direction that
+depends on fairing. Ends are found by bisection on where closed sections
+stop (a transom is kept as a section; bare skins aft of a recessed transom
+are not hull). Not yet carried: the transom closure, heel, and multihull
+placement.
+
 - **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
   the human-authorable path: a station × waterline table of half-beams
   (a value-only grid).
@@ -746,7 +790,7 @@ waterlines, half-beams, slope channels, weights — as `*.grid.json`
 (multihull files get `-0`, `-1`, ... suffixes), so you can inspect or diff
 exactly what the importer sampled, and re-loft it later without the source
 CAD file. `--fit-deriv-weight W` scales the slope observations (0 = fit
-values only).
+values only); `--fit-fairing λ` fairs the loft (see *Input front-ends*).
 
 **`.hull` format** (canonical, SI, `#` comments): `michell-hull v1`,
 `degree-x/z`, `knots-x/z`, then one `row` of control values per x index.
@@ -756,6 +800,30 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 `waterlines`, row-major `half_beams` (waterline index fastest), optional
 `dfdx`/`dfdz` (JSON `null` = unknown at that sample), optional `weights`,
 optional `centerplane`.
+
+## Web front end
+
+The `michell-web` crate is a browser UI over the same loaders, with the
+physics server-side so it has every core. It is at an early stage: for now it
+is a **loft viewer**. You drop in any file the CLI reads (`.hull`, offsets,
+`*.grid.json`, IGES, STL) and it shows the lofted wetted surface in 3D (profile /
+plan / body views, a beam-and-draft stretch for slender hulls), the control
+net at its Greville abscissae, and the samples the loft was fitted to,
+coloured by the loft's residual, with a fairing weight to try against it. Hydrostatics and the same import diagnostics
+`michell info` prints appear beside the view.
+
+For hulls that come from samples it also lofts two **experimental**
+representations of the same grid, to compare with the current one (flip with
+1–3, or stack all three with 4): a loft **trimmed** at a piecewise-linear keel
+line fitted to the samples (the (x, z) spline, fitted and integrated only
+above the keel), and a **keel-following** loft in `s = z/d(x)`, pinned to zero
+at the keel. Neither feeds the physics yet; they are there to judge which is
+worth building the kernel for.
+
+```text
+cargo run --release -p michell-web          # http://127.0.0.1:8080/
+michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)
+```
 
 ## API sketch
 

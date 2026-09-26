@@ -1,0 +1,16 @@
+[package]
+name = "michell-web"
+version = "0.1.0"
+edition = "2021"
+description = "Web front end for michell: upload a hull file, view the loft"
+license = "MIT"
+
+[[bin]]
+name = "michell-web"
+path = "src/main.rs"
+
+[dependencies]
+michell = { path = "../michell" }
+michell-cli = { path = "../michell-cli" }
+serde_json = "1"
+tiny_http = "0.12"
