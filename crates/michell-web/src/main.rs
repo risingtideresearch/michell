@@ -8,8 +8,12 @@
 //!   POST /api/loft?name=F&...   body = the file's bytes; returns the loft as
 //!                               JSON (see `michell_web::loft`), or
 //!                               `{"error": ...}` with status 400
+//!   POST /api/flow?name=F&froude=Fn&closure=..&param=..&...
+//!                               body = the file's bytes; the near-field
+//!                               pressure, free surface and forces at that
+//!                               speed (see `michell_web::flow`)
 
-use michell_web::{loft, LoftRequest, MAX_UPLOAD};
+use michell_web::{flow, loft, FlowRequest, LoftRequest, MAX_UPLOAD};
 use std::io::Read;
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -77,6 +81,30 @@ fn handle(mut req: Request) {
                     json_response(200, v.to_string())
                 }
                 Err(e) => json_response(400, serde_json::json!({ "error": e }).to_string()),
+            }
+        }
+        (Method::Post, "/api/flow") => {
+            let name = pairs
+                .iter()
+                .find(|(k, _)| k == "name")
+                .map_or("upload", |(_, v)| v.as_str())
+                .to_string();
+            let result = read_body(&mut req).and_then(|bytes| {
+                let opts = FlowRequest::from_query(&pairs)?;
+                flow(&name, bytes, &opts)
+            });
+            match result {
+                Ok(v) => {
+                    eprintln!(
+                        "flow {name}: ok ({:.2} s)",
+                        v["seconds"].as_f64().unwrap_or(0.0)
+                    );
+                    json_response(200, v.to_string())
+                }
+                Err(e) => {
+                    eprintln!("flow {name}: {e}");
+                    json_response(400, serde_json::json!({ "error": e }).to_string())
+                }
             }
         }
         _ => Response::from_string("not found").with_status_code(404),

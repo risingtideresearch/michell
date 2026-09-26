@@ -89,6 +89,14 @@
     font-size: 11px; display: none; }
   #area svg { width: 100%; height: 130px; display: block; }
   #area .key { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
+  .legend { position: absolute; right: 12px; bottom: 12px; width: 220px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+    font-size: 11px; display: none; }
+  .legend .bar { height: 10px; border-radius: 3px; margin: 4px 0 2px;
+    background: linear-gradient(90deg, #2166ac, #92c5de, #f7f7f7, #f4a582, #b2182b); }
+  .legend .ends { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #lgzeta { bottom: 70px; }
+  .stale { color: var(--warn); }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
 </style>
 <script type="importmap">
@@ -135,7 +143,7 @@
   </section>
 
   <section>
-    <h2>Transom closure</h2>
+    <h2>Speed &amp; transom closure</h2>
     <div class="fields">
       <label class="wide">Froude number <span id="fnv" style="color:var(--ink)"></span>
         <input id="froude" type="range" min="0.1" max="0.8" step="0.01" value="0.3">
@@ -155,6 +163,13 @@
     <div class="readout" id="closureout"></div>
   </section>
 
+  <section>
+    <h2>Flow</h2>
+    <button class="primary" id="flowgo" disabled style="width:100%">Compute flow at this speed</button>
+    <p class="hint">Thin-ship near field at the design attitude: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. Recomputes when you release the Froude slider. A monohull takes several seconds.</p>
+    <div id="flowout"></div>
+  </section>
+
   <div id="status"></div>
   <section id="results"></section>
 </aside>
@@ -167,6 +182,7 @@
       <button data-view="profile">Profile</button>
       <button data-view="plan">Plan</button>
       <button data-view="body">Body</button>
+      <button data-view="wake" hidden>Wake</button>
     </div>
     <div class="group" id="layers">
       <button data-layer="surface" class="on">Surface</button>
@@ -175,6 +191,15 @@
       <button data-layer="rays">CAD rays</button>
       <button data-layer="closure" class="on">Closure</button>
       <button data-layer="water" class="on">Waterplane</button>
+      <button data-layer="area" class="on">Z(x)</button>
+      <button data-layer="pressure" class="on" hidden>Pressure</button>
+      <button data-layer="waves" class="on" hidden>Free surface</button>
+    </div>
+    <div class="group" id="wavegroup" hidden>
+      <label title="Vertical exaggeration of the free surface">Waves
+        <input id="wavex" type="range" min="0" max="40" step="1" value="10">
+        <span id="wavexv" style="font-variant-numeric:tabular-nums;width:2.5em">10×</span>
+      </label>
     </div>
     <div class="group">
       <label title="Exaggerate beam and draft relative to length">Stretch
@@ -184,6 +209,8 @@
     </div>
   </div>
   <div id="readout3d"></div>
+  <div class="legend" id="lgcp"><div id="cpname">Hull pressure C<sub>p</sub></div><div class="bar"></div><div class="ends"><span id="cplo"></span><span>0</span><span id="cphi"></span></div></div>
+  <div class="legend" id="lgzeta"><div>Free-surface elevation ζ</div><div class="bar"></div><div class="ends"><span id="zlo"></span><span>0</span><span id="zhi"></span></div></div>
   <div id="area">
     <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots), its interpolant (line), and the closure's Z_T·φ(s) over the hollow (dashed), each scaled to its peak</span></div>
     <svg id="areasvg" viewBox="0 0 620 130" preserveAspectRatio="none"></svg>
@@ -197,7 +224,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
-let file = null, hulls = [];
+let file = null, hulls = [], flowData = null, flowSeq = 0;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
 // ---------------------------------------------------------------- upload
@@ -235,6 +262,10 @@ async function run() {
     hulls = data.hulls;
     renderResults(data.notes || []);
     scene3d.load(hulls);
+    flowData = null;
+    scene3d.flow(null);
+    $("flowout").innerHTML = "";
+    $("flowgo").disabled = false;
     updateClosure();
   } catch (e) {
     status(e.message, true);
@@ -285,6 +316,78 @@ function updateClosure() {
   drawArea();
 }
 
+// ---------------------------------------------------------------- flow
+// The near field at the slider's speed. Requests carry a sequence number so
+// a slow answer for an old speed never overwrites a newer one.
+async function computeFlow() {
+  if (!file || !hulls.length) return;
+  const seq = ++flowSeq;
+  const q = new URLSearchParams({ name: file.name, froude: $("froude").value });
+  for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
+  const { kind, param } = closureSpec();
+  q.set("closure", kind);
+  if (kind !== "off") q.set("param", String(param));
+  $("flowgo").disabled = true;
+  $("flowout").innerHTML = `<p class="hint">Computing the flow at Fn ${Number($("froude").value).toFixed(2)}…</p>`;
+  try {
+    const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file });
+    const data = await r.json();
+    if (seq !== flowSeq) return;
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    if (!flowData) {
+      areaOn = false;
+      $("layers").querySelector("button[data-layer=area]").classList.remove("on");
+      drawArea();
+    }
+    flowData = data;
+    scene3d.flow(data);
+    renderFlow();
+  } catch (e) {
+    if (seq === flowSeq) $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`;
+  } finally {
+    if (seq === flowSeq) $("flowgo").disabled = false;
+  }
+}
+$("flowgo").onclick = computeFlow;
+$("froude").addEventListener("change", () => flowData && computeFlow());
+$("closure").addEventListener("change", () => flowData && computeFlow());
+$("param").addEventListener("change", () => flowData && computeFlow());
+$("froude").addEventListener("input", () => renderFlow());
+
+function renderFlow() {
+  const d = flowData;
+  if (!d) return;
+  const f = d.forces;
+  const stale = Math.abs(Number($("froude").value) - d.froude) > 1e-9;
+  $("flowout").innerHTML = `
+    ${stale ? `<p class="hint stale">Showing Fn ${d.froude.toFixed(2)}; release the slider to recompute.</p>` : ""}
+    <dl style="margin-top:8px">
+      <dt>Speed</dt><dd>${fmt(d.speed, 2)} m/s · Fn ${d.froude.toFixed(2)}</dd>
+      <dt>Wave resistance R<sub>w</sub></dt><dd>${fmt(f.rw, 2)} N</dd>
+      <dt>Viscous R<sub>v</sub> (ITTC-57)</dt><dd>${fmt(f.rv, 2)} N</dd>
+      <dt>Total R<sub>t</sub></dt><dd>${fmt(f.rt, 2)} N</dd>
+      <dt>Effective power</dt><dd>${fmt(f.pe / 1000, 3)} kW</dd>
+      ${hulls.length > 1 ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
+      <dt>Dynamic lift</dt><dd>${fmt(f.fz, 1)} N (${fmt(100 * f.lift_fraction, 2)}% of weight)</dd>
+      <dt>Sinkage (1st order)</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
+      <dt>Trim (1st order)</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
+      <dt>Transverse wave</dt><dd>${fmt(d.transverse_wavelength, 2)} m</dd>
+    </dl>
+    <p class="hint">Computed in ${d.seconds.toFixed(1)} s, at the design attitude (no sinkage or trim applied).</p>`;
+}
+
+// Diverging colour for t in [−1, 1]: blue (negative), white, red (positive).
+const RAMP = [[0.129, 0.4, 0.675], [0.573, 0.773, 0.871], [0.969, 0.969, 0.969], [0.957, 0.647, 0.51], [0.698, 0.094, 0.169]];
+function diverging(t) {
+  const u = (Math.max(-1, Math.min(1, t)) + 1) * 2, i = Math.min(3, Math.floor(u)), f = u - i;
+  return RAMP[i].map((c, k) => c + f * (RAMP[i + 1][k] - c));
+}
+// A robust symmetric range: the 99th percentile of |v|.
+function range99(vals) {
+  const a = Float64Array.from(vals, Math.abs).sort();
+  return a.length ? Math.max(a[Math.floor(0.99 * (a.length - 1))], 1e-12) : 1;
+}
+
 // ---------------------------------------------------------------- results
 const fmt = (v, d = 3) => v == null ? "—" : Number(v).toFixed(d);
 const fmtBytes = (n) => n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} kB` : `${(n / (1 << 20)).toFixed(1)} MB`;
@@ -332,11 +435,11 @@ const scene3d = (() => {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "pressure", "waves"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   layers.rays.visible = false;
-  let bounds = null, stretch = 1, view = "iso", surfaces = [];
+  let bounds = null, hullBounds = null, wakeBounds = null, stretch = 1, view = "iso", surfaces = [], probes = [], waveScale = 10;
 
   const clear = (g) => { for (const c of [...g.children]) { g.remove(c); c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); } };
   const P = (h, x, z, y) => [x + h.placement.x, -z, h.placement.y + y];
@@ -412,6 +515,7 @@ const scene3d = (() => {
     // Room aft for a closure's hollow.
     if (hs.some((h) => h.transom)) box.min.x -= 0.1 * (box.max.x - box.min.x);
     bounds = box;
+    hullBounds = box.clone();
     clear(layers.water);
     const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
     const wgeo = new THREE.PlaneGeometry(size.x * 1.25, Math.max(size.z * 1.6, size.x * 0.25));
@@ -449,15 +553,118 @@ const scene3d = (() => {
     render();
   }
 
+  // Coloured mesh from positions (scene frame) and per-vertex values.
+  function colored(pos, index, vals, vmax, userData, opacity = 1) {
+    const col = new Float32Array(vals.length * 3);
+    vals.forEach((v, i) => col.set(diverging(v / vmax), 3 * i));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    geo.setIndex(index);
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide,
+      transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }));
+    mesh.userData = { vals, ...userData };
+    return mesh;
+  }
+
+  // Waterline half-beam of a hull at x (hull frame), from its stations.
+  function wlHalfBeam(h, x) {
+    const st = h.stations;
+    for (let i = 0; i + 1 < st.length; i++) {
+      const [xa, oa] = st[i], [xb, ob] = st[i + 1];
+      if (x >= xa && x <= xb) {
+        const ya = oa.length && oa[0][1] === 0 ? oa[0][0] : 0, yb = ob.length && ob[0][1] === 0 ? ob[0][0] : 0;
+        return ya + (yb - ya) * (x - xa) / (xb - xa || 1);
+      }
+    }
+    return -1;
+  }
+
+  // The near field: pressure on each hull, and the free surface as a
+  // height field with the hulls' waterplanes cut out.
+  let waveMesh = null;
+  function flow(d) {
+    clear(layers.pressure); clear(layers.waves);
+    probes = []; waveMesh = null;
+    const has = !!d;
+    for (const id of ["lgcp", "lgzeta"]) $(id).style.display = has ? "block" : "none";
+    $("wavegroup").hidden = !has;
+    for (const b of $("layers").querySelectorAll("button[data-layer=pressure],button[data-layer=waves]")) b.hidden = !has;
+    $("views").querySelector("button[data-view=wake]").hidden = !has;
+    if (!has) { wakeBounds = null; if (view === "wake") pick("iso"); return; }
+    const cpMax = range99(d.hulls.flatMap((p) => p.cp));
+    $("cplo").textContent = `−${cpMax.toPrecision(2)}`; $("cphi").textContent = `+${cpMax.toPrecision(2)}`;
+    d.hulls.forEach((p, k) => {
+      const nx = p.x.length, nz = p.depth.length;
+      for (const side of [1, -1]) {
+        const pos = new Float32Array(nx * nz * 3);
+        for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+          const n = i * nz + j;
+          pos.set([p.x[i], -p.depth[j], p.y + side * p.half_beam[n]], 3 * n);
+        }
+        const index = [];
+        for (let i = 0; i + 1 < nx; i++) for (let j = 0; j + 1 < nz; j++) {
+          const a = i * nz + j, b = a + nz;
+          // Rows below the keel collapse onto the centreplane: not hull.
+          if (!(p.half_beam[a] || p.half_beam[b] || p.half_beam[a + 1] || p.half_beam[b + 1])) continue;
+          index.push(a, b, b + 1, a, b + 1, a + 1);
+        }
+        const m = colored(pos, index, p.cp, cpMax, { what: "cp", hull: k });
+        layers.pressure.add(m); probes.push(m);
+      }
+    });
+    // The pressure replaces the see-through surface and the station lines
+    // while it is shown.
+    for (const name of ["surface", "stations"]) {
+      layers[name].visible = false;
+      $("layers").querySelector(`button[data-layer=${name}]`).classList.remove("on");
+    }
+
+    const g = d.surface, zmax = range99(g.zeta);
+    // First flow: exaggerate so the largest crest is about half the draft.
+    if (!wakeBounds) {
+      const draft = Math.max(...hulls.map((h) => h.draft));
+      waveScale = Math.max(1, Math.min(40, Math.round(0.5 * draft / zmax)));
+      $("wavex").value = waveScale; $("wavexv").textContent = `${waveScale}×`;
+    }
+    $("zlo").textContent = `−${(1000 * zmax).toPrecision(2)} mm`; $("zhi").textContent = `+${(1000 * zmax).toPrecision(2)} mm`;
+    const pos = new Float32Array(g.nx * g.ny * 3), inside = new Uint8Array(g.nx * g.ny);
+    for (let iy = 0; iy < g.ny; iy++) for (let ix = 0; ix < g.nx; ix++) {
+      const n = iy * g.nx + ix;
+      const x = g.x0 + (g.x1 - g.x0) * ix / (g.nx - 1), y = g.y0 + (g.y1 - g.y0) * iy / (g.ny - 1);
+      pos.set([x, g.zeta[n], y], 3 * n);
+      inside[n] = hulls.some((h) => { const b = wlHalfBeam(h, x - h.placement.x); return b >= 0 && Math.abs(y - h.placement.y) < b; }) ? 1 : 0;
+    }
+    const index = [];
+    for (let iy = 0; iy + 1 < g.ny; iy++) for (let ix = 0; ix + 1 < g.nx; ix++) {
+      const a = iy * g.nx + ix, b = a + 1, c = a + g.nx + 1, e = a + g.nx;
+      if (inside[a] || inside[b] || inside[c] || inside[e]) continue;
+      index.push(a, c, b, a, e, c);
+    }
+    // See-through, so the hull's pressure shows beneath it.
+    waveMesh = colored(pos, index, g.zeta, zmax, { what: "zeta" }, 0.72);
+    waveMesh.renderOrder = 1;
+    waveMesh.scale.y = waveScale;
+    layers.waves.add(waveMesh); probes.push(waveMesh);
+    layers.water.visible = false;
+    $("layers").querySelector("button[data-layer=water]").classList.remove("on");
+    // The Wake view frames the whole pattern; the others stay on the hull.
+    const first = !wakeBounds;
+    wakeBounds = hullBounds.clone().union(new THREE.Box3(new THREE.Vector3(g.x0, -0.01, g.y0), new THREE.Vector3(g.x1, 0.01, g.y1)));
+    if (first) pick("wake"); else render();
+  }
+  function setWaveScale(k) { waveScale = k; if (waveMesh) waveMesh.scale.y = k; render(); }
+
   function setStretch(k) { stretch = k; model.scale.set(1, k, k); setView(view, true); }
 
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
     if (!bounds) return render();
-    const box = bounds.clone().applyMatrix4(new THREE.Matrix4().makeScale(1, stretch, stretch));
+    const box = (name === "wake" && wakeBounds ? wakeBounds : bounds).clone().applyMatrix4(new THREE.Matrix4().makeScale(1, stretch, stretch));
     const mid = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
-    const dirs = { iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1), plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0) };
+    const dirs = { wake: new THREE.Vector3(0.9, 0.7, 0.9), iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1), plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0) };
     const dir = keepDir ? camera.position.clone().sub(controls.target).normalize() : dirs[name].clone().normalize();
     const r = size.length();
     controls.target.copy(mid);
@@ -498,27 +705,48 @@ const scene3d = (() => {
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   renderer.domElement.addEventListener("pointermove", (e) => {
     const out = $("readout3d");
-    if (!layers.surface.visible || !surfaces.length) { out.style.display = "none"; return; }
+    const targets = [...(layers.surface.visible ? surfaces : []),
+      ...probes.filter((m) => layers[m.userData.what === "cp" ? "pressure" : "waves"].visible)];
+    if (!targets.length) { out.style.display = "none"; return; }
     const r = renderer.domElement.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects(surfaces, false)[0];
+    const hit = ray.intersectObjects(targets, false)[0];
     if (!hit) { out.style.display = "none"; return; }
+    const ud = hit.object.userData;
+    if (ud.what) {
+      // Barycentric interpolation of the mesh's values at the hit.
+      const f = hit.face, bc = new THREE.Vector3();
+      const P = hit.object.geometry.attributes.position, A = new THREE.Vector3(), B = new THREE.Vector3(), C = new THREE.Vector3();
+      A.fromBufferAttribute(P, f.a); B.fromBufferAttribute(P, f.b); C.fromBufferAttribute(P, f.c);
+      THREE.Triangle.getBarycoord(hit.object.worldToLocal(hit.point.clone()), A, B, C, bc);
+      const v = bc.x * ud.vals[f.a] + bc.y * ud.vals[f.b] + bc.z * ud.vals[f.c];
+      const q = hit.object.worldToLocal(hit.point.clone());
+      out.textContent = ud.what === "cp"
+        ? `x ${q.x.toFixed(3)} m   depth ${(-q.y).toFixed(3)} m   Cp ${v.toFixed(4)}`
+        : `x ${q.x.toFixed(2)} m   y ${q.z.toFixed(2)} m   ζ ${(1000 * v).toFixed(2)} mm`;
+      out.style.display = "block";
+      return;
+    }
     const p = model.worldToLocal(hit.point.clone()), { h } = hit.object.userData;
     out.textContent = `x ${(p.x - h.placement.x).toFixed(3)} m   z ${(-p.y).toFixed(3)} m   half-beam ${Math.abs(p.z - h.placement.y).toFixed(4)} m`;
     out.style.display = "block";
   });
   renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
-  function toggle(name, on) { layers[name].visible = on; render(); }
-  return { load, closure, setView, setStretch, toggle };
+  function toggle(name, on) {
+    if (name === "area") { areaOn = on; drawArea(); return; }
+    layers[name].visible = on; render();
+  }
+  return { load, closure, flow, setView, setStretch, setWaveScale, toggle };
 })();
 
 // ---------------------------------------------------------------- area panel
+let areaOn = true;
 function drawArea() {
   const panel = $("area"), svg = $("areasvg");
   const h = hulls.find((h) => h.area);
-  if (!h) { panel.style.display = "none"; return; }
+  if (!h || !areaOn) { panel.style.display = "none"; return; }
   panel.style.display = "block";
   const t = h.transom, lv = t ? hollowLength(t.depth) : null;
   const xs = h.area.flatMap((a) => a.curve.map((p) => p[0]));
@@ -544,12 +772,15 @@ function drawArea() {
 }
 
 // ---------------------------------------------------------------- controls
-for (const b of $("views").querySelectorAll("button")) {
-  b.onclick = () => { $("views").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); scene3d.setView(b.dataset.view); };
+function pick(name) {
+  $("views").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x.dataset.view === name));
+  scene3d.setView(name);
 }
+for (const b of $("views").querySelectorAll("button")) b.onclick = () => pick(b.dataset.view);
 for (const b of $("layers").querySelectorAll("button")) {
   b.onclick = () => { b.classList.toggle("on"); scene3d.toggle(b.dataset.layer, b.classList.contains("on")); };
 }
+$("wavex").oninput = (e) => { const k = Number(e.target.value); $("wavexv").textContent = `${k}×`; scene3d.setWaveScale(k); };
 $("stretch").oninput = (e) => { const k = Number(e.target.value); $("stretchv").textContent = `${k}×`; scene3d.setStretch(k); };
 updateClosure();
 </script>

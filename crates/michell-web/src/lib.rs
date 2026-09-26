@@ -11,7 +11,7 @@
 
 use michell::iges::{HullPose, Platform, SectionalImport};
 use michell::sectional::SectionalHull;
-use michell::Placement;
+use michell::{Conditions, Placement, TransomClosure, WaveOptions, STANDARD_GRAVITY};
 use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
 use serde_json::{json, Value};
 
@@ -70,6 +70,24 @@ impl LoftRequest {
 /// draws.
 pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
     let t0 = std::time::Instant::now();
+    let cut = cut(name, bytes, req)?;
+    let hulls: Vec<Value> = cut.hulls.iter().map(|h| sectioned_json(h, cut.kind)).collect();
+    Ok(json!({
+        "name": name,
+        "seconds": t0.elapsed().as_secs_f64(),
+        "notes": cut.notes,
+        "hulls": hulls,
+    }))
+}
+
+/// An upload cut into sections at its design pose.
+struct Cut {
+    kind: Kind,
+    hulls: Vec<SectionalImport>,
+    notes: Vec<String>,
+}
+
+fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
     let d = LoadSettings::default();
     let settings = LoadSettings {
         waterline_z: req.waterline.unwrap_or(0.0),
@@ -90,7 +108,7 @@ pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, Stri
             &Platform::default(),
             &opts,
         ) {
-            Ok(Some(h)) => hulls.push(sectioned_json(&h, file.kind)),
+            Ok(Some(h)) => hulls.push(h),
             Ok(None) => notes.push(format!("hull {} is dry at this waterline", i + 1)),
             Err(e) => notes.push(format!("hull {} not sectioned: {e}", i + 1)),
         }
@@ -101,12 +119,181 @@ pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, Stri
             .cloned()
             .unwrap_or_else(|| "no hull found".into()));
     }
+    Ok(Cut {
+        kind: file.kind,
+        hulls,
+        notes,
+    })
+}
+
+/// The flow request: a speed and the transom closure, on top of the cut.
+pub struct FlowRequest {
+    pub cut: LoftRequest,
+    /// Length Froude number on the longest hull.
+    pub froude: f64,
+    pub closure: TransomClosure,
+    /// Free-surface grid columns (rows follow the aspect).
+    pub grid: usize,
+}
+
+impl FlowRequest {
+    /// `froude`, `closure` (`ballistic` | `fixed` | `off`) with `param` (the
+    /// ballistic coefficient or the fixed hollow length), `grid`, and the
+    /// cut's own keys.
+    pub fn from_query(pairs: &[(String, String)]) -> Result<FlowRequest, String> {
+        let get = |k: &str| pairs.iter().find(|(q, _)| q == k).map(|(_, v)| v.trim());
+        let num = |k: &str| -> Result<Option<f64>, String> {
+            get(k)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.parse::<f64>().map_err(|_| format!("{k}: expected a number, got {v:?}")))
+                .transpose()
+        };
+        let froude = num("froude")?.ok_or("froude is required")?;
+        if !(froude > 0.0 && froude < 5.0) {
+            return Err(format!("froude {froude}: expected 0 < Fn < 5"));
+        }
+        let param = num("param")?;
+        let closure = match get("closure").unwrap_or("ballistic") {
+            "off" | "none" => TransomClosure::None,
+            "fixed" => TransomClosure::Fixed {
+                length: param.unwrap_or(0.3).max(0.0),
+            },
+            "ballistic" => match param {
+                Some(c) => TransomClosure::Ballistic { coeff: c.max(0.0) },
+                None => TransomClosure::default(),
+            },
+            other => return Err(format!("closure {other:?}: expected ballistic, fixed or off")),
+        };
+        let grid = num("grid")?.map_or(320, |g| (g as usize).clamp(40, 800));
+        Ok(FlowRequest {
+            cut: LoftRequest::from_query(pairs)?,
+            froude,
+            closure,
+            grid,
+        })
+    }
+}
+
+/// The steady flow at one speed: each hull's near-field pressure, the free
+/// surface around the fleet (local field and waves), and the forces.
+pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, String> {
+    use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
+    let t0 = std::time::Instant::now();
+    let cut = cut(name, bytes, &req.cut)?;
+    let members: Vec<(&SectionalHull, Placement)> =
+        cut.hulls.iter().map(|h| (&h.hull, h.placement)).collect();
+    let l_ref = members.iter().map(|(h, _)| h.length()).fold(0.0f64, f64::max);
+    let cond = Conditions::seawater(req.froude * (STANDARD_GRAVITY * l_ref).sqrt());
+    let wave = WaveOptions {
+        transom: req.closure,
+        ..WaveOptions::default()
+    };
+    let nf = NearFieldOptions {
+        closure: req.closure,
+        ..NearFieldOptions::default()
+    };
+
+    let pressures = hull_pressure(&members, &cond, &nf).map_err(|e| e.to_string())?;
+    let t_pressure = t0.elapsed().as_secs_f64();
+
+    // The free surface: from ahead of the bows to ~1.5 lengths astern.
+    let (mut xa, mut xb, mut yh) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for (h, pl) in &members {
+        let (a, b) = h.x_range();
+        xa = xa.min(a + pl.x);
+        xb = xb.max(b + pl.x);
+        yh = yh.max(pl.y.abs() + 0.5 * michell_cli::fleet::max_beam(h));
+    }
+    let (x0, x1) = (xa - 1.5 * l_ref, xb + 0.4 * l_ref);
+    let yh = (yh + 0.45 * l_ref).max(0.3 * (x1 - x0));
+    let nx = req.grid;
+    let ny = ((nx as f64) * 2.0 * yh / (x1 - x0)).round().clamp(16.0, 400.0) as usize;
+    let g = free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny).map_err(|e| e.to_string())?;
+    let t_surface = t0.elapsed().as_secs_f64() - t_pressure;
+
+    let res = michell::sectional::multihull_resistance(
+        &members,
+        &cond,
+        &wave,
+        &michell::ViscousOptions::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    // Dynamic force at the design attitude, about the fleet's LCF, and the
+    // first-order sinkage and trim it implies.
+    let (mut aw, mut mw, mut iw) = (0.0, 0.0, 0.0);
+    for (h, pl) in &members {
+        let a = h.waterplane_area();
+        aw += a;
+        mw += h.waterplane_moment() + pl.x * a;
+        iw += h.waterplane_second_moment()
+            + 2.0 * pl.x * h.waterplane_moment()
+            + pl.x * pl.x * a;
+    }
+    let lcf = mw / aw.max(f64::MIN_POSITIVE);
+    let i_l = iw - mw * mw / aw.max(f64::MIN_POSITIVE);
+    let squat = michell::squat::SquatOptions {
+        wave,
+        ..Default::default()
+    };
+    let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcf, &squat)
+        .map_err(|e| e.to_string())?;
+    let rho = cond.fluid.density;
+
+    let hulls: Vec<Value> = pressures
+        .iter()
+        .map(|p| {
+            json!({
+                "x": round(&p.x),
+                "depth": round(&p.depth),
+                "half_beam": round(&p.half_beam),
+                "cp": round(&p.cp),
+                "y": p.y,
+                "force_up": p.force_up,
+            })
+        })
+        .collect();
     Ok(json!({
-        "name": name,
+        "froude": req.froude,
+        "speed": cond.speed,
+        "transverse_wavelength": 2.0 * std::f64::consts::PI * cond.speed * cond.speed / cond.gravity,
         "seconds": t0.elapsed().as_secs_f64(),
-        "notes": notes,
+        "timing": { "pressure": t_pressure, "surface": t_surface },
         "hulls": hulls,
+        "surface": {
+            "x0": g.x0, "x1": g.x1, "y0": g.y0, "y1": g.y1, "nx": g.nx, "ny": g.ny,
+            "zeta": round(&g.zeta),
+        },
+        "forces": {
+            "rw": res.wave.resistance,
+            "rv": res.viscous_total,
+            "rt": res.total,
+            "pe": res.effective_power,
+            "cw": res.cw,
+            "ct": res.ct,
+            "interference": res.interference,
+            "fz": d.force_up,
+            "moment": d.moment_bow_up,
+            "lift_fraction": d.lift_fraction,
+            "sinkage": -d.force_up / (rho * cond.gravity * aw),
+            "trim_deg": (d.moment_bow_up / (rho * cond.gravity * i_l)).to_degrees(),
+            "lcf": lcf,
+        },
     }))
+}
+
+/// Values rounded to 6 significant figures: a third of the JSON.
+fn round(v: &[f64]) -> Vec<Value> {
+    v.iter()
+        .map(|&x| {
+            if x == 0.0 || !x.is_finite() {
+                json!(0.0)
+            } else {
+                let e = 5 - x.abs().log10().floor() as i32;
+                let k = 10f64.powi(e);
+                json!((x * k).round() / k)
+            }
+        })
+        .collect()
 }
 
 fn sectioned_json(imp: &SectionalImport, kind: Kind) -> Value {
@@ -269,6 +456,27 @@ mod tests {
         assert!((vol - exact).abs() < 1e-6 * exact, "{vol}");
         assert!(h["transom"].is_null());
         assert!(!h["stations"].as_array().unwrap().is_empty());
+    }
+
+    /// The flow at one speed: pressure per hull, the surface grid asked for,
+    /// and a dynamic lift that sinks the hull.
+    #[test]
+    fn a_wigley_flow_has_pressure_waves_and_lift() {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60")]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let req = FlowRequest::from_query(&pairs).unwrap();
+        let v = flow("w.igs", text.into_bytes(), &req).unwrap();
+        let h = &v["hulls"][0];
+        let (nx, nz) = (h["x"].as_array().unwrap().len(), h["depth"].as_array().unwrap().len());
+        assert_eq!(h["cp"].as_array().unwrap().len(), nx * nz);
+        assert_eq!(v["surface"]["nx"], 60);
+        let f = &v["forces"];
+        assert!(f["fz"].as_f64().unwrap() < 0.0 && f["sinkage"].as_f64().unwrap() > 0.0, "{f}");
+        assert!(f["rw"].as_f64().unwrap() > 0.0);
     }
 
     #[test]
