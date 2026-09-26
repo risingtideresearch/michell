@@ -68,6 +68,7 @@ pub mod hulls;
 pub mod iges;
 mod michell;
 mod moments;
+pub mod nearfield;
 pub mod parallel;
 mod quadrature;
 pub mod sectional;

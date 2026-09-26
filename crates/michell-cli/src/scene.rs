@@ -98,6 +98,7 @@ pub(crate) fn build(
         }
     }
     objects.push(free_surface(hulls, cond, closure, surface)?);
+    near_field(&mut objects, hulls, cond, closure)?;
 
     let mut out = String::from("{\"michell\":\"scene\",\"version\":1,\"meta\":{");
     let _ = write!(
@@ -265,6 +266,125 @@ fn free_surface(
 
 /// Seven significant figures: far below what any viewer resolves, and a
 /// third of the size of full round-trip precision.
+/// The near field: the pressure coefficient on each hull (a mesh between its
+/// stations, both sides) and the free surface around the fleet with its
+/// local field, abreast of and ahead of the hulls too.
+fn near_field(
+    objects: &mut Vec<Object>,
+    hulls: &[SceneHull],
+    cond: &Conditions,
+    closure: TransomClosure,
+) -> Result<(), String> {
+    use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
+    let members: Vec<(&SectionalHull, Placement)> =
+        hulls.iter().map(|h| (h.hull, h.placement)).collect();
+    let opts = NearFieldOptions {
+        closure,
+        ..Default::default()
+    };
+    let t = std::time::Instant::now();
+    let pressures = hull_pressure(&members, cond, &opts).map_err(|e| e.to_string())?;
+    let t_hull = t.elapsed().as_secs_f64();
+    for (h, hp) in hulls.iter().zip(&pressures) {
+        let nz1 = hp.depth.len();
+        let (mut vertices, mut cells, mut cp) = (Vec::new(), Vec::new(), Vec::new());
+        for side in [1.0, -1.0] {
+            let base = vertices.len();
+            for (ix, &x) in hp.x.iter().enumerate() {
+                for j in 0..nz1 {
+                    let k = ix * nz1 + j;
+                    vertices.push([x, hp.y + side * hp.half_beam[k], -hp.depth[j]]);
+                    cp.push(hp.cp[k]);
+                }
+            }
+            for ix in 0..hp.x.len().saturating_sub(1) {
+                for j in 0..nz1 - 1 {
+                    let a = ix * nz1 + j;
+                    let quad = [a, a + nz1, a + nz1 + 1, a + 1];
+                    // Below every station's keel the sheet has no beam.
+                    if quad.iter().all(|&q| hp.half_beam[q] <= 0.0) {
+                        continue;
+                    }
+                    cells.push(vec![base + quad[0], base + quad[1], base + quad[2]]);
+                    cells.push(vec![base + quad[0], base + quad[2], base + quad[3]]);
+                }
+            }
+        }
+        objects.push(Object {
+            name: format!("{} pressure", h.name),
+            kind: "mesh",
+            vertices,
+            cells,
+            quantities: vec![("pressure coefficient Cp".into(), cp)],
+            note: Some(format!(
+                "linearised near-field pressure p = rho U phi_x on the centreplane, drawn \
+                 on the hull; its vertical force {:.1} N (+ up)",
+                hp.force_up
+            )),
+        });
+    }
+
+    // The free surface around the fleet: a hull length ahead, abreast,
+    // and a hull length and a half astern.
+    let l = members.iter().map(|(h, _)| h.length()).fold(0.0, f64::max);
+    let (mut x_lo, mut x_hi, mut y_lo, mut y_hi) = (
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (hl, pl) in &members {
+        let (a, b) = hl.x_range();
+        x_lo = x_lo.min(a + pl.x);
+        x_hi = x_hi.max(b + pl.x);
+        y_lo = y_lo.min(pl.y);
+        y_hi = y_hi.max(pl.y);
+    }
+    let (x0, x1) = (x_lo - 1.5 * l, x_hi + 0.6 * l);
+    let (y0, y1) = (y_lo - 0.7 * l, y_hi + 0.7 * l);
+    let nx = 260usize;
+    let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round().clamp(32.0, 400.0) as usize;
+    let t = std::time::Instant::now();
+    let g = free_surface(&members, cond, &opts, x0, x1, y0, y1, nx, ny)
+        .map_err(|e| e.to_string())?;
+    let t_fs = t.elapsed().as_secs_f64();
+    let mut vertices = Vec::with_capacity(g.nx * g.ny);
+    let mut zeta = Vec::with_capacity(g.nx * g.ny);
+    for iy in 0..g.ny {
+        for ix in 0..g.nx {
+            let (x, y) = (g.x(ix), g.y(iy));
+            // Inside a waterplane the field is not the sea's: flatten it.
+            let inside = members.iter().any(|(hl, pl)| {
+                (y - pl.y).abs() < hl.waterline_half_beam(x - pl.x)
+            });
+            let v = if inside { 0.0 } else { g.get(ix, iy) };
+            vertices.push([x, y, v]);
+            zeta.push(v);
+        }
+    }
+    let mut cells = Vec::new();
+    for iy in 0..g.ny - 1 {
+        for ix in 0..g.nx - 1 {
+            let a = iy * g.nx + ix;
+            cells.push(vec![a, a + 1, a + g.nx + 1]);
+            cells.push(vec![a, a + g.nx + 1, a + g.nx]);
+        }
+    }
+    objects.push(Object {
+        name: "near-field free surface".into(),
+        kind: "mesh",
+        vertices,
+        cells,
+        quantities: vec![("wave elevation zeta [m]".into(), zeta)],
+        note: Some(format!(
+            "linear free-surface elevation with its local (non-wave) part, valid \
+             ahead, abreast and astern; flattened inside the waterplanes (hulls \
+             {t_hull:.1}s, surface {t_fs:.1}s)"
+        )),
+    });
+    Ok(())
+}
+
 fn num(v: f64) -> String {
     if v == 0.0 {
         "0".into()
