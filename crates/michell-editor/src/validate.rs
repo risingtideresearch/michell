@@ -218,39 +218,6 @@ pub fn validate(m: &Manifest) -> Vec<Issue> {
         ));
     }
 
-    // Heel roll-up options.
-    if m.options.heel.enabled {
-        for a in m
-            .options
-            .heel
-            .resistance_angles
-            .split([',', ' '])
-            .filter(|t| !t.trim().is_empty())
-        {
-            match a.trim().parse::<f64>() {
-                Ok(v) if v.is_finite() && v.abs() < 90.0 => {}
-                _ => out.push(err(format!(
-                    "options.heel.resistance_angles: {a:?} must be within ±90°"
-                ))),
-            }
-        }
-        for (name, f) in [
-            ("gz_step", &m.options.heel.gz_step),
-            ("gz_max", &m.options.heel.gz_max),
-        ] {
-            if !f.trim().is_empty() && !f.trim().parse::<f64>().map(|v| v > 0.0).unwrap_or(false) {
-                out.push(err(format!(
-                    "options.heel.{name} must be a positive number"
-                )));
-            }
-        }
-        if !float_mode {
-            out.push(warn(
-                "heel metrics only appear when the fleet carries mass (equilibrium mode)",
-            ));
-        }
-    }
-
     // Row-count ceiling (the CLI rejects sweeps over 100_000 rows).
     let points: Option<usize> = m
         .axes

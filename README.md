@@ -19,9 +19,8 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
 
 ## Geometry contract
 
-The hull is, by default, port/starboard symmetric, given by its half-beam
-`y = f(x, z) ≥ 0` as a B-spline surface (asymmetric hulls — port ≠ starboard —
-are supported too; see [Asymmetric hulls](#asymmetric-hulls) below):
+The hull is port/starboard symmetric, given by its half-beam
+`y = f(x, z) ≥ 0` as a B-spline surface:
 
 - `x` runs along the hull (arbitrary origin), **`z` runs vertically downward**
   from the undisturbed waterline; domain `z ∈ [0, T]`. SI units throughout.
@@ -93,8 +92,7 @@ at longitudinal offset `Δx_j` and transverse position `y_j` contributes
 wave interference is exact within the theory (for a catamaran this reduces to
 the classical `4cos²(½νsλ√(λ²−1))` factor). Viscous resistance sums per
 member. `multihull_resistance` also reports the interference factor
-(combined R_w / Σ standalone R_w). Demihulls may individually be asymmetric
-(see below); their dipole systems superpose with the source systems.
+(combined R_w / Σ standalone R_w).
 
 Performance: a full 21-speed Wigley resistance curve at the default 1e-5
 tolerance runs in ~20 ms (release build). The outer quadrature and the
@@ -105,91 +103,6 @@ of the thread count. The worker budget is per thread (`michell::parallel`),
 so a caller that already runs jobs in parallel can hand each job a share of
 the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
 environment disables threading altogether.
-
-### Asymmetric hulls
-
-A hull whose two sides differ — starboard `y = +f₊(x, z)`, port `y = −f₋(x, z)`
-— is built with `Hull::new_asymmetric(port, starboard)`. It is split into a
-**symmetric thickness** part `f_sym = (f₊ + f₋)/2` and an **antisymmetric
-camber** part `f_a = (f₊ − f₋)/2` on a shared parametrisation (the two surfaces
-must share degrees and knot vectors; only their control nets differ):
-
-```
-R_w = R_source(f_sym) + R_dipole(f_a)
-```
-
-The thickness part is the classical Michell **source** system. The camber part
-adds a centreplane **y-dipole** (normal-doublet) system: the same inner
-integral over `∂f_a/∂x`, weighted by the transverse wavenumber factor
-`√(λ²−1)`. Because the source amplitude is even in the wave angle θ and the
-dipole amplitude is odd, their cross term integrates to zero over the Kelvin
-fan — the two resistances add with no interference, and a symmetric hull
-(`f_a ≡ 0`) reproduces classical Michell to full floating-point precision.
-
-Two dipole *magnitudes* are available (the *structure* — weight, θ-parity,
-additive separation — is exact either way):
-
-- **Strip closure** (`multihull_resistance`, `wave_resistance`): the crude
-  prescribed `μ = 2U f_a`. Fast, closed-form, read qualitatively.
-- **Lifting solve** (`asymmetric_wave_resistance_lifting`): *solves* the
-  centreplane lifting-surface problem (3D horseshoe vortex lattice, free-surface
-  rigid-wall image) for the doublet density `μ(x, z)`, then forms the same
-  dipole from the solved `μ`. This is the physically grounded magnitude; it
-  shares the strip closure's normalisation exactly (the strip result is what it
-  reduces to when `μ = 2U f_a`), and the two agree to an O(1), speed-dependent
-  factor — for a 2-D flat plate `μ_lift/μ_strip = π/2`.
-
-> **Why the camber part needs a solve.** A doublet sheet's density is fixed by
-> the *mean* of the two-sided normal velocities, a hypersingular (non-local)
-> integral of the density — unlike the source strength, which the boundary
-> condition fixes pointwise. The rigorous density solves a hypersingular
-> Fredholm equation of the first kind (Kaklis & Papanikolaou; 21st Symp. Naval
-> Hydrodynamics, App. A); the vortex-lattice solve is its discretisation. The
-> symmetric/source path is unaffected.
-
-### Heeled hulls
-
-A hull heeled by `φ` about its longitudinal axis is asymmetric relative to the
-horizontal free surface — but its keel swings off the earth-vertical
-centreplane, so it *cannot* be written as port/starboard half-beams there (the
-starboard offset goes negative near the keel). Thin-ship theory instead keeps
-the sources on the ship's **own tilted centreplane**: a strip at ship-depth `z`
-sits at earth depth `z·cosφ` and transverse offset `−z·sinφ`, which turns the
-vertical decay complex,
-
-```
-κ = νλ²·cosφ + i·νλ√(λ²−1)·sinφ,
-```
-
-the imaginary part being the transverse-wavenumber phase of the tilt — the same
-dipole coupling as an asymmetric hull, here arising from geometry rather than
-camber. `heel_wave_resistance(hull, cond, φ, opts)` evaluates this; the upright
-kernel is left untouched (the complex-`κ` moment is a separate routine), so
-`φ = 0` reproduces `wave_resistance` exactly, the result is even in `φ`, and
-heel raises the wave resistance ∝ `sin²φ` at small angles.
-
-This captures the asymmetric **wave-making** of the tilted thickness
-distribution (the leading heel effect). It does not re-clip the hull to the
-heeled waterline (the emerging/submerging wedges), nor include the lifting
-side-force of a heeled-and-yawed hull — that is a separate forcing into the
-centreplane lifting solve.
-
-A **heeled multihull** — a rigid platform (catamaran/trimaran) heeled by `φ`
-about its own longitudinal axis — is `multihull_heel_wave_resistance(members,
-cond, φ, opts)`. A rigid heel rotates every demihull's centreplane by the same
-`φ`, so the single angle drives each member's complex-`κ` kernel; rotating about
-the distant platform axis decomposes into a rotation about each demihull's own
-axis (the kernel) plus a rigid translation of the centreplane, whose transverse
-part is the member's offset `y_j` — carried by the usual placement phase. So a
-caller who first repositions the demihulls to the heeled attitude
-(`float::heel_poses`, which also supplies the immersion) and passes the same `φ`
-here gets both the per-hull tilt and the demihull interference. Unlike the
-single hull the result is **not** even in `φ` (an arrangement that is not
-mirror-symmetric heels differently to port and starboard), so both Kelvin
-half-systems are carried explicitly; a symmetric fleet at `φ = 0` reproduces
-`multihull_wave_resistance_with` exactly. `heel_wave_resistance` is the
-single-hull case. The same scope limits apply (no waterline re-clip, no yaw
-side-force).
 
 ### Transom sterns
 
@@ -212,8 +125,8 @@ F_v = −e^{iνλx_T} · ∫ f_T(z) e^{−κz} dz · ∫₀¹ φ'(s) e^{−iνλ
 The transom section `f_T` is a piecewise polynomial on the hull's own z-spans,
 so the first factor is the *same* per-span z-moments the hull uses and the
 second is a three-term oscillatory moment — the closure is exact too, at the
-cost of one dot product per λ. It composes with the heeled (complex-`κ`) kernel
-unchanged, and `L_v → 0` reproduces the bare step analytically.
+cost of one dot product per λ, and `L_v → 0` reproduces the bare step
+analytically.
 
 The hollow length defaults to the **ballistic** estimate `L_v = √2·U·√(d_T/g)`
 — water leaving the transom horizontally at `U` falls the transom depth `d_T`
@@ -279,11 +192,9 @@ directly; `options.dynamic: true` in a sweep manifest re-solves equilibrium at
 **every speed** (attitude now depends on `U`), warm-started from the previous
 speed's solution.
 
-Two things to know before using it. It does not yet compose with heel (the
-closure evaluates the fleet upright) or with the transom closure's own
-appendage moment contribution beyond what the hollow's transforms already
-carry — both are scoped out for now, and a manifest sweep rejects the
-combination rather than silently ignoring it. And thin-ship theory overstates
+Two things to know before using it. It does not yet compose with the transom
+closure's own appendage moment contribution beyond what the hollow's
+transforms already carry — that is scoped out for now. And thin-ship theory overstates
 sinkage/trim by the same 20–40% it overstates wave resistance by, at the same
 Fn 0.3–0.4 range, against surface-panel (Neumann–Michell) linear theory; the
 linearisation itself expires once the dynamic force is a real share of the
@@ -412,7 +323,7 @@ trim moment to ~1e-10 and its volume to 1e-11; on the `ama.igs` and
 where the lofted hulls sit 2–15% away below Fn 0.4 in a direction that
 depends on fairing. Ends are found by bisection on where closed sections
 stop (a transom is kept as a section; bare skins aft of a recessed transom
-are not hull). Not yet carried: the transom closure, heel, and multihull
+are not hull). Not yet carried: the transom closure and multihull
 placement.
 
 - **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
@@ -500,15 +411,11 @@ and parallel, and the browser recomposites the fleet by translate-and-sum as
 you drag — no physics re-run, so dragging is instant. Re-running the solver is
 reserved for the explicit controls (each an on-release action with a spinner):
 **speed** rebuilds the per-hull fields (ν changes; a fraction of a second,
-parallelised across hulls and row-bands), while **displacement**, **heel**, and
+parallelised across hulls and row-bands), while **displacement** and
 **ama immersion** re-float the assembly (full-band bodies; an IGES fleet is
-decomposed to bodies once on load) and re-loft the wetted hulls. Heel is a rigid
-platform rotation — the demihulls change immersion and shift transversely (an
-ama digs in as the other lifts clear, going dry) while each half-breadth hull
-stays upright about its own centreplane, so the superposition still holds. Wave
-and total resistance, the interference factor, effective power, and — with a
-**vcg** control — the righting arm GZ and moment update live (GZ is the true
-inclined-waterplane cut of the heeled fleet, form stability included). Same physicality caveat as `wake`: the field is faded ahead
+decomposed to bodies once on load) and re-loft the wetted hulls. Wave and total
+resistance, the interference factor, and effective power update live. Same
+physicality caveat as `wake`: the field is faded ahead
 of the aft-most stern. The server is dependency-free, in the spirit of the rest
 of the crate. Build with `--release`; a debug build runs the integrals ~40×
 slower and the viewer warns about it.
@@ -520,7 +427,7 @@ Each hull carries its own **load** — `mass` [kg] and a centre of gravity
 (`lcg` longitudinal, `vcg` metres above the design floatplane) in the hull's
 own frame — plus any number of discrete **point loads** (`points`: batteries,
 crew, ballast), each a `mass` at an offset from the hull's centerpoint
-(`dx` forward, `dy` to +y, `dz` **down**). The **fleet CG is never set
+(`dx` forward, `dz` **down**). The **fleet CG is never set
 directly**: it is always the mass-weighted sum of every hull load and point
 load, carried through each hull's pose, so mounting a hull moves its weight
 with it (`dx`/`dz` translate each CG, design `trim` rotates it) and the
@@ -533,7 +440,7 @@ iteration whose Jacobian comes from the waterplane properties, so
 counterfactuals like "what if this hull were heavier / its CG further forward"
 are swept at physically consistent attitudes. Every such record carries the
 solved state, displacement, LCB, the **derived** fleet CG (`mass`, `lcg`,
-`vcg`, `tcg`), the righting arm, dry-hull count, and the resistance breakdown.
+`vcg`), dry-hull count, and the resistance breakdown.
 All poses are hydrostatic (no speed-dependent squat).
 
 ```json
@@ -574,7 +481,7 @@ All poses are hydrostatic (no speed-dependent squat).
 is re-solved at every speed rather than once per point, adding `fz` (dynamic
 force, N) and `lift_pct` (as a fraction of the weight, %) columns; `sinkage`/
 `trim_deg`/`volume`/`lcb` become the dynamic-attitude values. Requires a
-`weight` axis, and cannot combine with a `heel` or `vcg` axis. Real cost: the
+`weight` axis, and cannot combine with a `vcg` axis. Real cost: the
 near-field quadrature is far more expensive than the wave integral it reuses
 parts of, and equilibrium calls it every Newton iteration at every speed —
 budget minutes, not seconds, per sweep point, and prefer a handful of speed
@@ -635,71 +542,24 @@ of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
 the +x end), `scale` (uniform size factor, `> 0`; grows or shrinks the hull in
 place — length, beam, and draft all scale together — about its design waterline
 and centre, so `1.0` leaves it unchanged and displacement goes as the cube),
-and load: `mass`, `lcg`, `vcg`; for a **point load**, `mass`, `dx`, `dy`, `dz`
+and load: `mass`, `lcg`, `vcg`; for a **point load**, `mass`, `dx`, `dz`
 (relative to the hull centerpoint). A target list moves several targets as one
 coupled axis (e.g. sweep both amas' `mass` together, or two symmetric ballast
 points), but must be all hulls or all points. A `scale` in a hull's base `pose`
 sets its built size. Hull files load relative to the manifest. A flag-based
 sweep over raw IGES (`--axis`, `--float`) remains for one-liners.
 
-**Heel metrics**: heel is *not* a sweep axis — it would multiply the row count
-with a whole GZ curve per point. Instead, whenever the fleet carries mass
-(equilibrium mode), every row rolls the heel behaviour up into a few columns,
-alongside the derived fleet CG (`mass`, `lcg`, `vcg`, `tcg`):
-
-- `gz_peak_deg` — heel angle of peak righting moment [deg]
-- `rm_peak` — peak righting moment [N·m]
-- `gz_area` — area under the GZ curve to the angle of vanishing stability
-  [m·rad] (the dynamic-stability measure)
-- `gz_vanish_deg` — angle of vanishing stability, the first GZ zero-crossing
-  [deg]
-- `rt_rise_<A>deg` — the fractional rise in **total** resistance at `A°` of
-  heel relative to upright, one column per configured angle (per speed)
-
-The GZ curve is scanned by re-solving the heeled equilibrium at each angle
-(displacement held, buoyancy transferring between hulls) and taking the **true
-inclined-waterplane cut** of the fleet — each section clipped by the tilted free
-surface (see the `inclined` module) — so both inter-hull buoyancy transfer *and*
-each hull's own form stability are integrated exactly, up to the deck-edge knee
-where topsides down-flood. The arm is `GZ = TCB − vcg·sinφ − tcg·cosφ` on the
-derived fleet CG, so a **laterally asymmetric load** (heavier ama, offset
-ballast) carries a non-zero `tcg` and a real static heel — the GZ curve starts
-off-zero (`gz(0) ≠ 0`). The resistance rise re-solves flotation at each heel
-angle and evaluates the tilted-centreplane wave kernel
-(`multihull_resistance_heeled`), so it reflects the heel's own wave-making, not
-just the reposition. The upright rows (`rw`/`rv`/`rt`/…) are unchanged.
-
-Tune the roll-up under `options.heel` (all optional):
-
-```json
-  "options": {
-    "heel": {
-      "resistance_angles": [5, 10],
-      "gz_step": 2.5,
-      "gz_max": 90
-    }
-  },
-  "hulls": [
-    { "id": "port", "file": "boat-port.hull", "load": { "mass": 1100, "vcg": 1.1 } },
-    { "id": "stbd", "file": "boat-starboard.hull", "load": { "mass": 1100, "vcg": 1.1 } }
-  ],
-  "sweep": [
-    { "target": "speed", "unit": "knots", "value": 8 }
-  ]
-```
-
-`resistance_angles` defaults to `[5, 10]`; `gz_step` (deg, default 2.5) sets the
-scan resolution and `gz_max` (deg, default 90, bounded below 90° by the inclined
-solver) caps the search for the vanishing angle. If GZ is still positive at the
-cap, `gz_vanish_deg`/`gz_area` are reported at the cap and a note is logged.
+**Heel was removed.** michell no longer models heel or GZ stability. A manifest
+that still carries an `options.heel` block, or a point load with a `dy`
+offset (base value or swept axis), fails with a message saying so rather than
+being silently ignored; delete those keys. `vcg` and a point's `dz` stay: under
+a design-pose trim a raised CG shifts the derived LCG.
 
 **Output formats**: `output.format` is `csv` (default), `json`, or `binary`.
 The `csv`/`json` forms carry the row columns only. The `binary` form writes a
 single self-contained `.msw` archive that bundles the whole study — the
 manifest, the referenced hull files verbatim, and, **per row**, the swept
-parameter values, the scalar metrics, the **full GZ curve** (the same
-righting-arm scan the summary columns are reduced from, as `(heel, GZ)` pairs
-to the vanishing angle), and the **free-wave spectrum** `A(θ)` (with its
+parameter values, the scalar metrics, and the **free-wave spectrum** `A(θ)` (with its
 `dR_w/dθ` density). Because the spectrum is the exact quantity `R_w` integrates,
 storing it is essentially free at compute time, and a stored sweep is enough to
 regenerate a wake elevation field at any resolution without re-running:
@@ -712,8 +572,8 @@ regenerate a wake elevation field at any resolution without re-running:
   }
 ```
 
-`spectrum.points` (default 721) sets the θ-sampling of the stored spectrum; the
-GZ-curve resolution follows `options.heel.gz_step`. If `file` is omitted the
+`spectrum.points` (default 721) sets the θ-sampling of the stored spectrum. If
+`file` is omitted the
 archive is written next to the manifest as `<stem>.msw`. The container is a
 hand-rolled, little-endian, length-prefixed blob stream (magic `MSWP`, a `META`
 JSON naming the columns, then a `ROWS` blob) — see
@@ -850,14 +710,6 @@ michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)
 - `float::solve_equilibrium[_bodies|_with]` — hydrostatic sinkage/pitch
   balance for a mass + LCG load case, over IGES fleets, body assemblies, or
   any custom situate closure.
-- `float::solve_equilibrium_heeled` — the same balance at a prescribed heel,
-  reporting the righting arm `gz` from the **true inclined-waterplane cut**
-  (`inclined` module): form stability integrated exactly, not metacentric.
-- `inclined::{body_inclined_hydro, fleet_inclined, fleet_righting_arm}` —
-  displaced volume, centre of buoyancy, and GZ of a heeled body/fleet by
-  clipping each section polygon against the tilted free surface.
-- `float::heel_poses` — the rigid platform heel reposition (used to build the
-  wetted geometry at heel, e.g. for resistance).
 - `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
 - `FreeWaveSpectrum::new(&members, &cond)` — far-field spectrum of a fleet:
   `amplitude(θ)`, `resistance_density(θ)` (dR_w/dθ), and Kelvin-wake
@@ -884,8 +736,4 @@ michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)
 - J. Dambrine, M. Pierre, G. Rousseaux, *A theoretical and numerical
   determination of optimal ship forms based on Michell's wave resistance*,
   ESAIM: COCV (2016), arXiv:1410.2800.
-- P. D. Kaklis & A. Papanikolaou et al., *Hydrodynamic optimization of
-  fast-displacement catamarans*, 21st Symposium on Naval Hydrodynamics (1997),
-  Appendix A — thin-ship theory for asymmetric demihulls via centreplane
-  source + normal-dipole distributions (the asymmetric-hull extension here).
 - ITTC — Recommended Procedures: *1957 ITTC Performance Prediction Method*.

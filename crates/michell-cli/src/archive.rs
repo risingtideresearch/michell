@@ -2,15 +2,15 @@
 //!
 //! A single-file container bundling everything needed to reproduce and
 //! post-process a study: the manifest, the referenced hull files, and, for
-//! every output row, the swept parameter values, the scalar metrics, the full
-//! righting-arm (GZ) curve, and the free-wave spectrum A(θ). Zero-dependency —
+//! every output row, the swept parameter values, the scalar metrics, and the
+//! free-wave spectrum A(θ). Zero-dependency —
 //! the format is a hand-rolled, little-endian, length-prefixed blob stream, so
 //! a reader needs nothing but `struct.unpack`/`DataView`.
 //!
 //! ```text
 //! Header
 //!   magic    4 bytes  "MSWP"
-//!   version  u32      = 1
+//!   version  u32      = 2
 //! Blob stream (repeats to EOF)
 //!   kind     u32      1=MANIFEST 2=HULLFILE 3=META 4=ROWS
 //!   name_len u32
@@ -30,15 +30,15 @@
 //!   per row:
 //!     f64 * n_axes                              swept parameter values
 //!     f64 * n_metrics                           scalar metrics (see META)
-//!     gz_n      u32
-//!     (f64 heel_rad, f64 gz_m) * gz_n           righting-arm curve
 //!     f64 spec_wavenumber                       ν = g/U²
 //!     f64 spec_transverse_wavelength
 //!     spec_n    u32
 //!     (f64 theta, f64 amp_re, f64 amp_im, f64 drw_dtheta) * spec_n
 //! ```
 //!
-//! All multi-byte integers and floats are little-endian.
+//! All multi-byte integers and floats are little-endian. Version 1 carried a
+//! righting-arm curve (`u32 gz_n` then `(f64 heel_rad, f64 gz_m) * gz_n`)
+//! between the metrics and the spectrum; it went with heel in version 2.
 
 pub const KIND_MANIFEST: u32 = 1;
 pub const KIND_HULLFILE: u32 = 2;
@@ -46,7 +46,7 @@ pub const KIND_META: u32 = 3;
 pub const KIND_ROWS: u32 = 4;
 
 const MAGIC: &[u8; 4] = b"MSWP";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// One sample of the free-wave spectrum at a propagation angle θ.
 pub struct SpecSample {
@@ -74,14 +74,12 @@ impl Rows {
         }
     }
 
-    /// Append a row. `gz_curve` is `(heel_rad, gz_m)` pairs (empty when GZ is
-    /// undefined, i.e. no weight+vcg loading); `wavenumber` /
-    /// `transverse_wavelength` describe the spectrum whose samples follow.
+    /// Append a row. `wavenumber` / `transverse_wavelength` describe the
+    /// spectrum whose samples follow.
     pub fn push(
         &mut self,
         params: &[f64],
         metrics: &[f64],
-        gz_curve: &[(f64, f64)],
         wavenumber: f64,
         transverse_wavelength: f64,
         spectrum: &[SpecSample],
@@ -93,11 +91,6 @@ impl Rows {
         }
         for &v in metrics {
             put_f64(&mut self.body, v);
-        }
-        put_u32(&mut self.body, gz_curve.len() as u32);
-        for &(heel, gz) in gz_curve {
-            put_f64(&mut self.body, heel);
-            put_f64(&mut self.body, gz);
         }
         put_f64(&mut self.body, wavenumber);
         put_f64(&mut self.body, transverse_wavelength);
@@ -221,7 +214,6 @@ mod tests {
         rows.push(
             &[1.0, 2.0],
             &[10.0, 20.0, 30.0],
-            &[(0.0, 0.0), (0.1, 0.5)],
             0.5,
             12.5,
             &[
@@ -239,7 +231,7 @@ mod tests {
                 },
             ],
         );
-        rows.push(&[3.0, 4.0], &[11.0, 21.0, 31.0], &[], 0.6, 10.0, &[]);
+        rows.push(&[3.0, 4.0], &[11.0, 21.0, 31.0], 0.6, 10.0, &[]);
 
         let mut ar = Archive::default();
         ar.add(KIND_MANIFEST, "study.json", b"{\"a\":1}".to_vec());
@@ -274,12 +266,6 @@ mod tests {
         for want in [10.0, 20.0, 30.0] {
             assert_eq!(get_f64(rowbytes, &mut p), want);
         }
-        let gz_n = get_u32(rowbytes, &mut p);
-        assert_eq!(gz_n, 2);
-        for _ in 0..gz_n {
-            get_f64(rowbytes, &mut p);
-            get_f64(rowbytes, &mut p);
-        }
         assert_eq!(get_f64(rowbytes, &mut p), 0.5); // wavenumber
         assert_eq!(get_f64(rowbytes, &mut p), 12.5); // transverse wavelength
         let spec_n = get_u32(rowbytes, &mut p);
@@ -290,13 +276,12 @@ mod tests {
             }
         }
 
-        // Row 1: empty gz curve and spectrum.
+        // Row 1: empty spectrum.
         assert_eq!(get_f64(rowbytes, &mut p), 3.0);
         assert_eq!(get_f64(rowbytes, &mut p), 4.0);
         for want in [11.0, 21.0, 31.0] {
             assert_eq!(get_f64(rowbytes, &mut p), want);
         }
-        assert_eq!(get_u32(rowbytes, &mut p), 0); // gz_n
         get_f64(rowbytes, &mut p);
         get_f64(rowbytes, &mut p);
         assert_eq!(get_u32(rowbytes, &mut p), 0); // spec_n

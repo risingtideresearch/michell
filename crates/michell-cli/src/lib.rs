@@ -188,10 +188,6 @@ PHYSICS OPTIONS
                         length L_v = COEFF*U*sqrt(d_T/g) (default COEFF=sqrt2,
                         the ballistic free-fall value) so the body closes.
                         Inert on a hull that closes aft
-  --heel DEG            (resistance) heel the whole fleet DEG degrees about the
-                        platform's longitudinal axis; adds the tilted-thickness
-                        wave-making (|DEG| < 90). Viscous resistance is
-                        unchanged: no waterline re-clip, no yaw side-force
 
 WAVE FIELD (spectrum, wake)
   Both take one speed: --speed U (m/s; knots with --knots) or --froude F.
@@ -234,10 +230,7 @@ SWEEPS
                                 with speed/waterline axes, per-hull load
                                 (mass/lcg/vcg), point loads (mass at an
                                 offset from a hull), pose axes, and a derived
-                                fleet CG — see the README for the schema; when
-                                the fleet carries mass each row also rolls up
-                                the heel behaviour (GZ-curve summaries + a
-                                per-angle resistance rise)
+                                fleet CG — see the README for the schema
   michell loft boat.igs --waterline Z -o boat
                                 decompose an IGES multihull into full-band
                                 body files (boat-port.hull, ...); --wetted
@@ -1184,6 +1177,9 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
 
 fn cmd_resistance(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
+    if p.flag("heel").is_some() {
+        return Err("--heel was removed: michell no longer models heel".into());
+    }
     if p.positional.is_empty() {
         return Err(
             "usage: michell resistance <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
@@ -1236,24 +1232,17 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
 
     let viscous_opts = p.viscous_options()?;
     let form_factor = viscous_opts.form_factor;
-    let heel_deg = p.f64_flag("heel")?.unwrap_or(0.0);
-    let heel = heel_deg.to_radians();
     let mut wave_opts = WaveOptions::default();
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
     }
     wave_opts.transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
 
-    if sectional && heel != 0.0 {
-        return Err("--heel is not yet supported with --sections".into());
-    }
     let mut rows = Vec::new();
     for &u in &speeds {
         let cond = p.conditions(u)?;
         let r = if sectional {
             michell::sectional::multihull_resistance(&cut_members, &cond, &wave_opts, &viscous_opts)
-        } else if heel != 0.0 {
-            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, &viscous_opts, heel)
         } else {
             michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
         }
@@ -1280,7 +1269,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         out.push_str("],");
         out.push_str(&format!(
             "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},\
-             \"roughness\":{},\"heel_deg\":{},",
+             \"roughness\":{},",
             fluid.density,
             fluid.kinematic_viscosity,
             form_factor,
@@ -1289,7 +1278,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
                 michell::Roughness::DeltaCf(c) => format!("{{\"delta_cf\":{c}}}"),
                 michell::Roughness::SandGrain(k) => format!("{{\"sand_grain_m\":{k}}}"),
             },
-            heel_deg
         ));
         out.push_str("\"points\":[");
         for (i, (u, cond, r)) in rows.iter().enumerate() {
@@ -1351,12 +1339,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     );
     if let Some(note) = roughness_regime_note(rows.iter().flat_map(|(_, _, r)| r.viscous.iter())) {
         println!("{note}");
-    }
-    if heel != 0.0 {
-        println!(
-            "heeled {heel_deg:.1} deg about the platform axis (tilted-thickness \
-             wave-making only; no waterline re-clip, no yaw side-force)"
-        );
     }
     let u_label = if knots { "U[kn]" } else { "U[m/s]" };
     if multi {

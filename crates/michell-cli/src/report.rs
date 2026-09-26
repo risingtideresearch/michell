@@ -57,7 +57,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
         return Err(
             "michell report currently supports dynamic-mode manifests only \
              (options.dynamic: true — a weight axis with per-speed \
-             sinkage/trim); for a non-dynamic or heeled sweep use `michell \
+             sinkage/trim); for a non-dynamic sweep use `michell \
              sweep` for the CSV/JSON table instead"
                 .into(),
         );

@@ -607,25 +607,31 @@ fn loft_decomposes_and_manifest_sweeps() {
     assert!(rws.iter().all(|r| r.is_finite() && *r > 0.0), "{rws:?}");
 }
 
-/// Heel is rolled up into per-row metrics rather than being a sweep axis: GZ
-/// curve summaries (peak-moment angle, peak moment, area to the vanishing
-/// angle, vanishing angle) plus a fractional total-resistance rise at each
-/// configured angle. A centered Wigley monohull with G on the design
-/// floatplane (vcg 0) has a small positive GM, so its GZ curve rises, peaks,
-/// and vanishes within range; heeling it also raises total resistance through
-/// the tilted-hull wave kernel (with only the upright kernel it would be flat).
+/// Heel was removed. Old inputs that still ask for it — the `--heel` flag, a
+/// manifest `options.heel` block, a point load's transverse `dy` (base value or
+/// swept axis) — fail loudly rather than being silently ignored.
 #[test]
-fn manifest_heel_rollup_metrics() {
-    let iges_path = tmp("mono.iges");
+fn heel_inputs_are_rejected() {
+    let hull = wigley_hull("noheel.hull");
+    let err = run_err(bin().args([
+        "resistance",
+        hull.to_str().unwrap(),
+        "--speed",
+        "3",
+        "--heel",
+        "10",
+    ]));
+    assert!(err.contains("--heel was removed"), "{err}");
+
+    let iges_path = tmp("noheel.iges");
     std::fs::write(&iges_path, wigley_shells_iges(&[0.0])).unwrap();
-    let prefix = tmp("mono");
     run_ok(bin().args([
         "loft",
         iges_path.to_str().unwrap(),
         "--waterline",
         "0.5",
         "-o",
-        prefix.to_str().unwrap(),
+        tmp("noheel").to_str().unwrap(),
         "--samples",
         "61x21",
         "--fit-control",
@@ -633,56 +639,40 @@ fn manifest_heel_rollup_metrics() {
         "--fit-degree",
         "2x2",
     ]));
-    let body = tmp("mono.hull");
-    assert!(body.exists(), "single-hull loft should write {body:?}");
-
-    let manifest = r#"{
-  "name": "heel rollup",
-  "fluid": "seawater",
-  "hulls": [ { "id": "vaka", "file": "mono.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
-  "sweep": [
-    { "target": "speed", "unit": "ms", "value": 3.0 }
-  ],
-  "output": { "format": "csv", "file": "rollup.csv" },
-  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2",
-               "heel": { "resistance_angles": [12, 24], "gz_step": 2.5, "gz_max": 70 } }
-}"#;
-    let man_path = tmp("rollup.json");
-    std::fs::write(&man_path, manifest).unwrap();
-    run_ok(bin().args(["sweep", man_path.to_str().unwrap()]));
-
-    let csv = std::fs::read_to_string(tmp("rollup.csv")).unwrap();
-    // Single row: one speed x one weight x one vcg, heel rolled up.
-    let area = csv_col(&csv, "gz_area");
-    assert_eq!(area.len(), 1, "{csv}");
-    let peak = csv_col(&csv, "gz_peak_deg")[0];
-    let rm_peak = csv_col(&csv, "rm_peak")[0];
-    let vanish = csv_col(&csv, "gz_vanish_deg")[0];
-    // Stable hull: a peaked, vanishing GZ curve.
-    assert!(area[0] > 0.0, "gz_area = {}", area[0]);
-    assert!(rm_peak > 0.0, "rm_peak = {rm_peak}");
-    assert!(peak > 0.0 && peak < vanish, "peak {peak} vanish {vanish}");
-    assert!(
-        vanish < 70.0,
-        "vanishing angle should be a real crossing, not the scan cap: {vanish}"
-    );
-    // The old per-heel gz/rm columns are replaced by the summaries.
-    let header = csv.lines().next().unwrap();
-    assert!(
-        !header.split(',').any(|c| c == "gz" || c == "rm"),
-        "old gz/rm columns should be gone: {header}"
-    );
-
-    // Resistance rise: finite, positive, and growing with heel (tilt kernel;
-    // the upright kernel would leave it essentially flat).
-    let r12 = csv_col(&csv, "rt_rise_12deg")[0];
-    let r24 = csv_col(&csv, "rt_rise_24deg")[0];
-    assert!(
-        r12.is_finite() && r24.is_finite(),
-        "rises finite: {r12} {r24}"
-    );
-    assert!(r12 > 0.0, "rise@12deg = {r12}");
-    assert!(r24 > r12, "rise should grow with heel: {r24} vs {r12}");
+    let cases = [
+        (
+            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 } }"#,
+            r#"{ "target": "speed", "unit": "ms", "value": 3.0 }"#,
+            r#", "heel": { "gz_step": 5 }"#,
+            "heel was removed",
+        ),
+        (
+            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 },
+                 "points": [ { "id": "crew", "mass": 80, "dy": 0.5 } ] }"#,
+            r#"{ "target": "speed", "unit": "ms", "value": 3.0 }"#,
+            "",
+            "\"dy\" was removed",
+        ),
+        (
+            r#"{ "id": "vaka", "file": "noheel.hull", "load": { "mass": 1500 },
+                 "points": [ { "id": "crew", "mass": 80 } ] }"#,
+            r#"{ "target": "speed", "unit": "ms", "value": 3.0 },
+               { "target": "crew", "param": "dy", "values": [0.0, 0.5] }"#,
+            "",
+            "\"dy\" was removed",
+        ),
+    ];
+    for (k, (hull, sweep, opts, want)) in cases.iter().enumerate() {
+        let manifest = format!(
+            r#"{{ "name": "no heel", "fluid": "seawater", "hulls": [ {hull} ],
+  "sweep": [ {sweep} ], "output": {{ "format": "csv", "file": "noheel.csv" }},
+  "options": {{ "samples": "61x17"{opts} }} }}"#
+        );
+        let man_path = tmp(&format!("noheel{k}.json"));
+        std::fs::write(&man_path, manifest).unwrap();
+        let err = run_err(bin().args(["sweep", man_path.to_str().unwrap()]));
+        assert!(err.contains(want), "case {k}: {err}");
+    }
 }
 
 // --- Minimal `.msw` archive reader for the binary-output test. Mirrors the
@@ -699,7 +689,7 @@ fn parse_msw(bytes: &[u8]) -> Vec<Blob> {
     assert_eq!(&bytes[0..4], b"MSWP", "bad magic");
     assert_eq!(
         u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-        1,
+        2,
         "version"
     );
     let mut blobs = Vec::new();
@@ -721,7 +711,7 @@ fn parse_msw(bytes: &[u8]) -> Vec<Blob> {
 }
 
 /// The binary output format bundles the manifest, the referenced hull files,
-/// and per-row parameters + metrics + full GZ curve + spectrum into one `.msw`
+/// and per-row parameters + metrics + spectrum into one `.msw`
 /// file that round-trips without re-running the study.
 #[test]
 fn manifest_binary_archive_bundles_everything() {
@@ -749,8 +739,7 @@ fn manifest_binary_archive_bundles_everything() {
   "hulls": [ { "id": "vaka", "file": "bin_arc.hull", "load": { "mass": 1500, "vcg": 0.0 } } ],
   "sweep": [ { "target": "speed", "unit": "ms", "values": [2.5, 3.5] } ],
   "output": { "format": "binary", "file": "study.msw", "spectrum": { "points": 129 } },
-  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2",
-               "heel": { "gz_step": 5, "gz_max": 70 } }
+  "options": { "samples": "61x17", "fit_control": "9x7", "fit_degree": "2x2" }
 }"#;
     let man_path = tmp("bin_arc.json");
     std::fs::write(&man_path, manifest).unwrap();
@@ -773,10 +762,14 @@ fn manifest_binary_archive_bundles_everything() {
     let meta = blobs.iter().find(|b| b.kind == 3).expect("meta blob");
     let meta_txt = String::from_utf8(meta.data.clone()).unwrap();
     assert!(meta_txt.contains("\"metric_labels\""), "{meta_txt}");
-    assert!(meta_txt.contains("gz_peak_deg"), "{meta_txt}");
+    assert!(meta_txt.contains("\"vcg\""), "{meta_txt}");
+    assert!(
+        !meta_txt.contains("gz"),
+        "no GZ in the archive any more: {meta_txt}"
+    );
     assert!(meta_txt.contains("\"speeds_ms\":[2.5,3.5]"), "{meta_txt}");
 
-    // Rows: two speeds → two rows, each with a full GZ curve and spectrum.
+    // Rows: two speeds → two rows, each with a spectrum.
     let rows = blobs.iter().find(|b| b.kind == 4).expect("rows blob");
     let d = &rows.data;
     let mut p = 0usize;
@@ -792,11 +785,8 @@ fn manifest_binary_archive_bundles_everything() {
     assert_eq!(n_axes, 0, "no pose/load axes in this study");
     assert!(n_metrics > 10, "metrics present: {n_metrics}");
 
-    // Walk row 0 and confirm the GZ curve and spectrum are non-empty.
+    // Walk row 0 and confirm the spectrum is non-empty.
     p += (n_axes as usize + n_metrics as usize) * 8;
-    let gz_n = u32_at(&mut p);
-    assert!(gz_n >= 2, "GZ curve should have multiple points: {gz_n}");
-    p += gz_n as usize * 16; // (heel, gz) pairs
     p += 16; // wavenumber + transverse wavelength
     let spec_n = u32_at(&mut p);
     assert_eq!(spec_n, 129, "spectrum sampled at the requested resolution");

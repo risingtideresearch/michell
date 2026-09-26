@@ -70,7 +70,7 @@ fn from_value(doc: &Value) -> Result<Manifest, String> {
         None => Output::default(),
     };
 
-    let options = options_from(obj.get("options"));
+    let options = options_from(obj.get("options"))?;
 
     Ok(Manifest {
         name,
@@ -120,11 +120,15 @@ fn hull_from(h: &Value) -> Result<HullSpec, String> {
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| format!("hull {id:?}: every point load needs an \"id\""))?;
+            if p.get("dy").is_some() {
+                return Err(format!(
+                    "hull {id:?} point {pid:?}: \"dy\" was removed along with heel; delete it"
+                ));
+            }
             points.push(PointLoad {
                 id: pid.to_string(),
                 mass: p.get("mass").and_then(Value::as_f64).unwrap_or(0.0),
                 dx: p.get("dx").and_then(Value::as_f64).unwrap_or(0.0),
-                dy: p.get("dy").and_then(Value::as_f64).unwrap_or(0.0),
                 dz: p.get("dz").and_then(Value::as_f64).unwrap_or(0.0),
             });
         }
@@ -191,8 +195,8 @@ fn axis_from(a: &Value, hull_ids: &[String], point_ids: &[String]) -> Result<Axi
             axis.point_param = match p {
                 "mass" => PointParam::Mass,
                 "dx" => PointParam::Dx,
-                "dy" => PointParam::Dy,
                 "dz" => PointParam::Dz,
+                "dy" => return Err("point-load param \"dy\" was removed along with heel".into()),
                 other => return Err(format!("unknown point-load param {other:?}")),
             };
         } else {
@@ -245,9 +249,9 @@ fn values_from(a: &Value) -> Result<ValueSpec, String> {
     Ok(v)
 }
 
-fn options_from(o: Option<&Value>) -> Options {
+fn options_from(o: Option<&Value>) -> Result<Options, String> {
     let mut opts = Options::default();
-    let Some(o) = o else { return opts };
+    let Some(o) = o else { return Ok(opts) };
     let set_str = |f: &mut OptField, v: Option<&str>| {
         if let Some(s) = v {
             f.enabled = true;
@@ -282,20 +286,10 @@ fn options_from(o: Option<&Value>) -> Options {
     set_num(&mut opts.rho, o.get("rho").and_then(Value::as_f64));
     set_num(&mut opts.nu, o.get("nu").and_then(Value::as_f64));
 
-    if let Some(h) = o.get("heel") {
-        opts.heel.enabled = true;
-        if let Some(arr) = h.get("resistance_angles").and_then(Value::as_array) {
-            let nums: Vec<String> = arr.iter().filter_map(Value::as_f64).map(fmt_num).collect();
-            opts.heel.resistance_angles = nums.join(", ");
-        }
-        if let Some(s) = h.get("gz_step").and_then(Value::as_f64) {
-            opts.heel.gz_step = fmt_num(s);
-        }
-        if let Some(s) = h.get("gz_max").and_then(Value::as_f64) {
-            opts.heel.gz_max = fmt_num(s);
-        }
+    if o.get("heel").is_some() {
+        return Err("options.heel: heel was removed — michell no longer models heel".into());
     }
-    opts
+    Ok(opts)
 }
 
 // -------------------------------------------------------------------------
@@ -386,9 +380,6 @@ fn hull_to(h: &HullSpec) -> Value {
                 po.insert("mass".into(), num_value(p.mass));
                 if p.dx != 0.0 {
                     po.insert("dx".into(), json!(p.dx));
-                }
-                if p.dy != 0.0 {
-                    po.insert("dy".into(), json!(p.dy));
                 }
                 if p.dz != 0.0 {
                     po.insert("dz".into(), json!(p.dz));
@@ -500,27 +491,6 @@ fn options_to(opts: &Options) -> Result<Value, String> {
     put_num(&mut o, "rho", &opts.rho)?;
     put_num(&mut o, "nu", &opts.nu)?;
 
-    if opts.heel.enabled {
-        let mut h = Map::new();
-        if !opts.heel.resistance_angles.trim().is_empty() {
-            let angles = parse_list(&opts.heel.resistance_angles)
-                .map_err(|e| format!("options.heel.resistance_angles: {e}"))?;
-            h.insert(
-                "resistance_angles".into(),
-                Value::Array(angles.into_iter().map(num_value).collect()),
-            );
-        }
-        if !opts.heel.gz_step.trim().is_empty() {
-            let s =
-                parse_num(&opts.heel.gz_step).map_err(|e| format!("options.heel.gz_step {e}"))?;
-            h.insert("gz_step".into(), num_value(s));
-        }
-        if !opts.heel.gz_max.trim().is_empty() {
-            let s = parse_num(&opts.heel.gz_max).map_err(|e| format!("options.heel.gz_max {e}"))?;
-            h.insert("gz_max".into(), num_value(s));
-        }
-        o.insert("heel".into(), Value::Object(h));
-    }
     Ok(Value::Object(o))
 }
 
