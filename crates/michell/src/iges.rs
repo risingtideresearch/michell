@@ -700,6 +700,8 @@ struct Patch {
     grid_n: usize,
     /// (x_lo, x_hi, z_lo, z_hi) over the whole patch presample.
     bbox: (f64, f64, f64, f64),
+    /// (y_lo, y_hi) over the whole patch presample.
+    ybox: (f64, f64),
     /// (x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) over the wetted presample only;
     /// `None` when the patch is entirely above the waterline.
     wet_box: Option<[f64; 6]>,
@@ -780,6 +782,8 @@ pub struct SourceFleet {
     units_scale: f64,
     /// Patches of each detected hull, CAD frame, metres, sorted by y.
     hulls: Vec<Vec<NurbsSurface3>>,
+    /// Each hull's patches tessellated once, for fast sectioning at any pose.
+    meshes: Vec<Tessellation>,
 }
 
 /// Parse an IGES file and cluster its patches into hulls at a reference
@@ -896,12 +900,14 @@ pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet>
         clusters[nearest].push(pi);
     }
 
+    let hulls: Vec<Vec<NurbsSurface3>> = clusters
+        .iter()
+        .map(|idxs| idxs.iter().map(|&i| file.surfaces[i].clone()).collect())
+        .collect();
     Ok(SourceFleet {
         units_scale: file.units_scale,
-        hulls: clusters
-            .iter()
-            .map(|idxs| idxs.iter().map(|&i| file.surfaces[i].clone()).collect())
-            .collect(),
+        meshes: hulls.iter().map(|h| Tessellation::new(h)).collect(),
+        hulls,
     })
 }
 
@@ -1093,43 +1099,63 @@ pub fn apply_pose(
 /// (`dz` positive lowers the hull), then platform pitch about
 /// `(platform.pivot_x, waterline_z + sinkage)`.
 fn pose_ctrl(surfs: &mut [NurbsSurface3], waterline_z: f64, pose: &HullPose, platform: &Platform) {
-    let wl = waterline_z + platform.sinkage;
-    if pose.scale != 1.0 {
-        let s = pose.scale;
-        let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
-        let py = ctrl_y_mid(surfs);
-        for surf in surfs.iter_mut() {
-            for p in surf.ctrl.iter_mut() {
-                p[0] = px + s * (p[0] - px);
-                p[1] = py + s * (p[1] - py);
-                p[2] = waterline_z + s * (p[2] - waterline_z);
-            }
+    let map = PoseMap::new(surfs, waterline_z, pose, platform);
+    for p in surfs.iter_mut().flat_map(|s| s.ctrl.iter_mut()) {
+        map.apply(p);
+    }
+}
+
+/// [`pose_ctrl`]'s transform as a map on points, with its pivots taken from
+/// the unposed control nets — so control points and points on the surface
+/// (a tessellation's vertices) move by exactly the same affine map, under
+/// which a B-spline surface and its points move together.
+struct PoseMap {
+    waterline_z: f64,
+    wl: f64,
+    scale: Option<(f64, f64, f64)>,
+    trim: Option<(f64, f64, f64)>,
+    shift: [f64; 3],
+    platform_trim: Option<(f64, f64, f64)>,
+}
+
+impl PoseMap {
+    fn new(
+        surfs: &[NurbsSurface3],
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Self {
+        let px = || pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+        PoseMap {
+            waterline_z,
+            wl: waterline_z + platform.sinkage,
+            scale: (pose.scale != 1.0).then(|| (pose.scale, px(), ctrl_y_mid(surfs))),
+            trim: (pose.trim != 0.0).then(|| {
+                let (sin, cos) = pose.trim.sin_cos();
+                (px(), cos, sin)
+            }),
+            shift: [pose.dx, pose.dy, -pose.dz],
+            platform_trim: (platform.trim != 0.0).then(|| {
+                let (sin, cos) = platform.trim.sin_cos();
+                (platform.pivot_x, cos, sin)
+            }),
         }
     }
-    if pose.trim != 0.0 {
-        let px = pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
-        let (sin, cos) = pose.trim.sin_cos();
-        for s in surfs.iter_mut() {
-            for p in s.ctrl.iter_mut() {
-                rotate_xz(p, px, waterline_z, cos, sin);
-            }
+
+    fn apply(&self, p: &mut [f64; 3]) {
+        if let Some((s, px, py)) = self.scale {
+            p[0] = px + s * (p[0] - px);
+            p[1] = py + s * (p[1] - py);
+            p[2] = self.waterline_z + s * (p[2] - self.waterline_z);
         }
-    }
-    if pose.dx != 0.0 || pose.dy != 0.0 || pose.dz != 0.0 {
-        for s in surfs.iter_mut() {
-            for p in s.ctrl.iter_mut() {
-                p[0] += pose.dx;
-                p[1] += pose.dy;
-                p[2] -= pose.dz;
-            }
+        if let Some((px, cos, sin)) = self.trim {
+            rotate_xz(p, px, self.waterline_z, cos, sin);
         }
-    }
-    if platform.trim != 0.0 {
-        let (sin, cos) = platform.trim.sin_cos();
-        for s in surfs.iter_mut() {
-            for p in s.ctrl.iter_mut() {
-                rotate_xz(p, platform.pivot_x, wl, cos, sin);
-            }
+        for k in 0..3 {
+            p[k] += self.shift[k];
+        }
+        if let Some((px, cos, sin)) = self.platform_trim {
+            rotate_xz(p, px, self.wl, cos, sin);
         }
     }
 }
@@ -1263,11 +1289,17 @@ fn presample_surfaces(surfaces: &[NurbsSurface3], waterline_z: f64) -> Vec<Patch
                 }
             }
         }
+        let ybox = pts
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| {
+                (lo.min(q.3), hi.max(q.3))
+            });
         patches.push(Patch {
             surf: hs,
             pts,
             grid_n: GRID_N,
             bbox,
+            ybox,
             wet_box,
         });
     }
@@ -1485,6 +1517,27 @@ struct ClusterFrame {
 /// folds about the midplane of its intersections, a one-sided one measures
 /// from y = 0 (and must reach it).
 fn cluster_frame(patches: &[Patch], centerplane: Option<f64>) -> Result<ClusterFrame> {
+    cluster_frame_with(patches, centerplane, None, None)
+}
+
+/// What a previous pose's frame lets the next one skip: its centreplane
+/// (unchanged by sinkage and trim) and its ends (to re-bracket, not search).
+#[derive(Debug, Clone, Copy)]
+struct FrameMemo {
+    y_c: f64,
+    two_sided: bool,
+    mirrored: bool,
+    x_lo: f64,
+    x_hi: f64,
+}
+
+/// [`cluster_frame`], warm-started from a nearby pose's frame when given.
+fn cluster_frame_with(
+    patches: &[Patch],
+    centerplane: Option<f64>,
+    prev: Option<&FrameMemo>,
+    mesh: Option<&PosedMesh>,
+) -> Result<ClusterFrame> {
     // Wetted statistics of this cluster.
     let mut draft = 0.0f64;
     let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -1512,6 +1565,48 @@ fn cluster_frame(patches: &[Patch], centerplane: Option<f64>) -> Result<ClusterF
     let length = x_max - x_min;
     let scale = length.max(draft).max(y_hi - y_lo);
 
+    if let Some(m) = prev {
+        // Same centreplane; ends re-bracketed from where they were.
+        let sides = frame_sides(m.two_sided, m.mirrored);
+        let step = 1e-3 * length;
+        let x_lo = hull_end(
+            patches,
+            m.x_lo + step,
+            -1.0,
+            m.y_c,
+            sides,
+            length,
+            scale,
+            step,
+            mesh,
+        );
+        let x_hi = hull_end(
+            patches,
+            m.x_hi - step,
+            1.0,
+            m.y_c,
+            sides,
+            length,
+            scale,
+            step,
+            mesh,
+        );
+        let (x_min, x_max) = if x_hi > x_lo {
+            (x_lo, x_hi)
+        } else {
+            (x_min, x_max)
+        };
+        return Ok(ClusterFrame {
+            draft,
+            x_min,
+            x_max,
+            length: x_max - x_min,
+            scale,
+            y_c: m.y_c,
+            two_sided: m.two_sided,
+            mirrored: m.mirrored,
+        });
+    }
     // Centerplane: probe interior depths and count shell intersections.
     let mut probe_counts: Vec<usize> = Vec::new();
     let mut probe_mids: Vec<f64> = Vec::new();
@@ -1562,23 +1657,28 @@ fn cluster_frame(patches: &[Patch], centerplane: Option<f64>) -> Result<ClusterF
     // The presample only brackets the ends (by up to a cell, which on a long
     // patch is decimetres); find where closed sections actually stop.
     let sides = frame_sides(two_sided, mirrored);
+    let step = 0.02 * length;
     let x_lo = hull_end(
         patches,
-        x_min + 0.02 * length,
+        x_min + step,
         -1.0,
         y_c,
         sides,
         length,
         scale,
+        step,
+        mesh,
     );
     let x_hi = hull_end(
         patches,
-        x_max - 0.02 * length,
+        x_max - step,
         1.0,
         y_c,
         sides,
         length,
         scale,
+        step,
+        mesh,
     );
     let (x_min, x_max) = if x_hi > x_lo {
         (x_lo, x_hi)
@@ -1895,6 +1995,18 @@ pub fn import_sectional(text: &str, opts: &SectionalOptions) -> Result<Sectional
     Ok(out)
 }
 
+/// What one sectional situate leaves for the next, so a sweep that re-poses
+/// the same hull many times (sinkage and trim in an equilibrium solve)
+/// skips the centreplane detection and re-brackets the hull's ends rather
+/// than searching for them. Carry one per hull between calls to
+/// [`SourceFleet::situate_sectional_warm`]; a fresh one is a cold start.
+/// Only valid between poses of the same hull with the same options,
+/// differing by sinkage and trim.
+#[derive(Debug, Clone, Default)]
+pub struct SectionalState {
+    frame: Option<FrameMemo>,
+}
+
 impl SourceFleet {
     /// Situate one hull (pose and platform state as for
     /// [`SourceFleet::situate_one`]) and build it by sections; `Ok(None)`
@@ -1906,6 +2018,27 @@ impl SourceFleet {
         pose: &HullPose,
         platform: &Platform,
         opts: &SectionalOptions,
+    ) -> Result<Option<SectionalImport>> {
+        self.situate_sectional_warm(
+            idx,
+            waterline_z,
+            pose,
+            platform,
+            opts,
+            &mut SectionalState::default(),
+        )
+    }
+
+    /// [`SourceFleet::situate_sectional`], warm-started from (and updating)
+    /// `state` — the cheap way to re-pose.
+    pub fn situate_sectional_warm(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+        state: &mut SectionalState,
     ) -> Result<Option<SectionalImport>> {
         if idx >= self.hulls.len() {
             return Err(Error::InvalidInput(format!(
@@ -1920,21 +2053,30 @@ impl SourceFleet {
         }
         let wl = waterline_z + platform.sinkage;
         let mut moved = self.hulls[idx].clone();
-        pose_ctrl(&mut moved, waterline_z, pose, platform);
+        let map = PoseMap::new(&self.hulls[idx], waterline_z, pose, platform);
+        for p in moved.iter_mut().flat_map(|s| s.ctrl.iter_mut()) {
+            map.apply(p);
+        }
         let patches = presample_surfaces(&moved, wl);
         if patches.iter().all(|p| p.wet_box.is_none()) {
             return Ok(None);
         }
-        sectional_cluster(&patches, opts, self.units_scale).map(Some)
+        let mesh = PosedMesh::new(&self.meshes[idx], |mut p| {
+            map.apply(&mut p);
+            [p[0], p[1], wl - p[2]]
+        });
+        sectional_cluster(&patches, Some(&mesh), opts, self.units_scale, state).map(Some)
     }
 }
 
 fn sectional_cluster(
     patches: &[Patch],
+    mesh: Option<&PosedMesh>,
     opts: &SectionalOptions,
     units_scale: f64,
+    state: &mut SectionalState,
 ) -> Result<SectionalImport> {
-    let frame = cluster_frame(patches, opts.centerplane)?;
+    let frame = cluster_frame_with(patches, opts.centerplane, state.frame.as_ref(), mesh)?;
     let (scale, y_c) = (frame.scale, frame.y_c);
     // Which side(s) of the centreplane carry shell.
     let sides = frame_sides(frame.two_sided, frame.mirrored);
@@ -1962,9 +2104,20 @@ fn sectional_cluster(
     let mut kept_x = Vec::with_capacity(ns);
     let mut sections = Vec::with_capacity(ns);
     let mut outlines = Vec::with_capacity(ns);
-    for (i, &x) in xs.iter().enumerate() {
+    // Stations are independent: sample them across cores, then assemble in
+    // order (the result does not depend on the thread count).
+    let sampled_all = crate::parallel::map_indexed(
+        ns,
+        || (),
+        |_, i| {
+            let mut amb = 0;
+            let s = sample_section(patches, mesh, xs[i], y_c, sides, &thetas, scale, &mut amb);
+            (s, amb)
+        },
+    );
+    for (i, (&x, (sampled, amb))) in xs.iter().zip(sampled_all).enumerate() {
+        ambiguous += amb;
         let end = i == 0 || i + 1 == ns;
-        let sampled = sample_section(patches, x, y_c, sides, &thetas, scale, &mut ambiguous);
         match sampled {
             Some((z0, beam, depth, radii, asym)) => {
                 max_asym = max_asym.max(asym);
@@ -2008,6 +2161,13 @@ fn sectional_cluster(
     knots.extend_from_slice(&kept_x[2..n - 2]);
     knots.extend(std::iter::repeat_n(kept_x[n - 1], p + 1));
     let hull = SectionalHull::new(p, knots, &kept_x, sections)?;
+    state.frame = Some(FrameMemo {
+        y_c,
+        two_sided: frame.two_sided,
+        mirrored: frame.mirrored,
+        x_lo: lo,
+        x_hi: hi,
+    });
     Ok(SectionalImport {
         hull,
         placement: Placement { x: 0.0, y: y_c },
@@ -2028,11 +2188,16 @@ fn sectional_cluster(
     })
 }
 
-/// One station plane `x = const` through a cluster's patches, with where the
-/// patch edges cross it found once up front. Edges matter because a
-/// section's defining points often lie *on* them — a keel or stem line
-/// where the half-breadth is exactly zero, a seam, an open rim — where a
-/// Newton solve in the parameter domain has nowhere to go but the boundary.
+/// One station plane `x = const` through a cluster's patches. Where a posed
+/// tessellation of the patches is available ([`PosedMesh`]), the plane's cut
+/// through it gives every place a ray can meet the shell — with the patch and
+/// parameters already known, so each hit is one or two Newton steps on the
+/// exact surface away. Without one (the lofted importer), hits are searched
+/// for from presample seeds. Patch-edge crossings are found up front either
+/// way, because a section's defining points often lie *on* an edge — a keel
+/// or stem line where the half-breadth is exactly zero, a seam, an open rim —
+/// where a Newton solve in the parameter domain has nowhere to go but the
+/// boundary.
 struct Station<'a> {
     patches: &'a [Patch],
     x: f64,
@@ -2040,10 +2205,28 @@ struct Station<'a> {
     scale: f64,
     /// `(y, z)` (hull frame, z down) of every patch-edge crossing.
     edges: Vec<(f64, f64)>,
+    /// The posed tessellation cut by the plane: segments between points on
+    /// the shell, with where they lie on their patch. `None` without a mesh.
+    cut: Option<Vec<[Cut; 2]>>,
 }
 
+/// A point where the station plane cuts a tessellation edge: its position
+/// (hull frame) and its patch and parameters (interpolated along the edge).
+#[derive(Debug, Clone, Copy)]
+struct Cut {
+    y: f64,
+    z: f64,
+    patch: usize,
+    u: f64,
+    v: f64,
+}
+
+/// One place a ray meets the shell: its reach and, for a patch hit, the
+/// patch and parameters.
+type Hit = (f64, Option<(usize, f64, f64)>);
+
 impl<'a> Station<'a> {
-    fn new(patches: &'a [Patch], x: f64, y_c: f64, scale: f64) -> Self {
+    fn new(patches: &'a [Patch], mesh: Option<&PosedMesh>, x: f64, y_c: f64, scale: f64) -> Self {
         let mut edges = Vec::new();
         for p in patches {
             if x < p.bbox.0 || x > p.bbox.1 {
@@ -2084,6 +2267,7 @@ impl<'a> Station<'a> {
             y_c,
             scale,
             edges,
+            cut: mesh.map(|m| m.cut(x)),
         }
     }
 
@@ -2125,41 +2309,116 @@ impl<'a> Station<'a> {
         }
         let (st, ct) = theta.sin_cos();
         if hits.len() <= 1 || ct < 1e-12 {
-            return hits.last().copied();
+            return hits.last().map(|h| h.0);
         }
         let tol = 1e-6 * self.scale;
-        for &r in hits.iter().rev() {
+        for &(r, _) in hits.iter().rev() {
             let (yb, z) = (r * ct, z0 + r * st);
             // The fold's outermost reach at this depth.
-            let outer = self.hits(sd, z, 0.0).last().copied().unwrap_or(0.0);
+            let outer = self.hits(sd, z, 0.0).last().map_or(0.0, |h| h.0);
             if yb >= outer - tol {
                 return Some(r);
             }
         }
-        hits.last().copied()
+        hits.last().map(|h| h.0)
+    }
+
+    /// Newton for the ray's hit on one patch from `(u, v)`: the reach and
+    /// where it landed, if it converged ahead of the origin.
+    fn solve_on(
+        &self,
+        pi: usize,
+        u: f64,
+        v: f64,
+        sd: f64,
+        z0: f64,
+        theta: f64,
+    ) -> Option<(f64, (usize, f64, f64))> {
+        let (st, ct) = theta.sin_cos();
+        let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
+        let off = |y: f64, z: f64| sd * (y - y_c) * st - (z - z0) * ct;
+        let p = self.patches.get(pi)?;
+        let (s, uv) = newton_in_domain_uv(&p.surf, u, v, 1e-11 * scale, |s, du, dv| {
+            (
+                [s[0] - x_t, off(s[1], s[2])],
+                [
+                    [du[0], dv[0]],
+                    [sd * du[1] * st - du[2] * ct, sd * dv[1] * st - dv[2] * ct],
+                ],
+            )
+        })?;
+        let r = sd * (s[1] - y_c) * ct + (s[2] - z0) * st;
+        (r > 1e-12 * scale).then_some((r, (pi, uv.0, uv.1)))
     }
 
     /// Every distinct distance along the ray from `(y_c, z0)` at angle `θ`
-    /// toward side `sd` at which it meets the shell, nearest first: patch
-    /// hits (Newton on `(u, v)` for `x(u,v) = x` and the point lying on the
-    /// ray, from the nearest presample seeds ahead of the origin) and the
-    /// edge crossings that lie on the ray.
-    fn hits(&self, sd: f64, z0: f64, theta: f64) -> Vec<f64> {
+    /// toward side `sd` at which it meets the shell, nearest first,
+    /// including the edge crossings that lie on the ray. From the mesh cut
+    /// when there is one: each cut segment the ray crosses, polished on the
+    /// exact patch from its interpolated parameters (a polish that fails, or
+    /// wanders off to another hit, falls back to the seed search for the
+    /// whole ray).
+    fn hits(&self, sd: f64, z0: f64, theta: f64) -> Vec<Hit> {
+        let Some(cut) = &self.cut else {
+            return self.search_hits(sd, z0, theta);
+        };
+        let (st, ct) = theta.sin_cos();
+        let (dy, dz) = (sd * ct, st);
+        let mut hits = self.edge_hits(sd, z0, theta);
+        for [a, b] in cut {
+            // Ray (y_c, z0) + r·(dy, dz) against segment a + s·(b − a).
+            let (ey, ez) = (b.y - a.y, b.z - a.z);
+            let den = dy * ez - dz * ey;
+            if den.abs() < 1e-300 {
+                continue;
+            }
+            let (qy, qz) = (a.y - self.y_c, a.z - z0);
+            let r = (qy * ez - qz * ey) / den;
+            let s = (qy * dz - qz * dy) / den;
+            if !(-1e-9..=1.0 + 1e-9).contains(&s) || r <= 0.0 {
+                continue;
+            }
+            let s = s.clamp(0.0, 1.0);
+            let (u, v) = (a.u + s * (b.u - a.u), a.v + s * (b.v - a.v));
+            match self.solve_on(a.patch, u, v, sd, z0, theta) {
+                // A polish lands within a facet's chord of where the mesh
+                // said; one that went much farther found some other hit.
+                Some((rr, at)) if (rr - r).abs() <= 0.02 * self.scale => hits.push((rr, Some(at))),
+                _ => return self.search_hits(sd, z0, theta),
+            }
+        }
+        self.tidy(hits)
+    }
+
+    /// [`Station::hits`] by search: patch hits by Newton on `(u, v)` for
+    /// `x(u,v) = x` and the point lying on the ray, from the nearest
+    /// presample seeds ahead of the origin.
+    fn search_hits(&self, sd: f64, z0: f64, theta: f64) -> Vec<Hit> {
         let (st, ct) = theta.sin_cos();
         let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
         let tol = 1e-11 * scale;
-        let margin = 0.05 * scale;
+        let margin = 0.02 * scale;
         let min_reach = 1e-12 * scale;
         let off = |y: f64, z: f64| sd * (y - y_c) * st - (z - z0) * ct;
         let along = |y: f64, z: f64| sd * (y - y_c) * ct + (z - z0) * st;
-        let mut hits: Vec<f64> = self
-            .edges
-            .iter()
-            .filter(|&&(y, z)| off(y, z).abs() <= 1e-9 * scale && along(y, z) > min_reach)
-            .map(|&(y, z)| along(y, z))
-            .collect();
-        for p in self.patches {
+        let mut hits = self.edge_hits(sd, z0, theta);
+        for (pi, p) in self.patches.iter().enumerate() {
             if x_t < p.bbox.0 - margin || x_t > p.bbox.1 + margin {
+                continue;
+            }
+            // Skip patches the ray passes well clear of: every corner of the
+            // patch's (y, z) box on one side of the ray, or behind its origin.
+            let corners = [
+                (p.ybox.0, p.bbox.2),
+                (p.ybox.0, p.bbox.3),
+                (p.ybox.1, p.bbox.2),
+                (p.ybox.1, p.bbox.3),
+            ];
+            let offs = corners.map(|(y, z)| off(y, z));
+            if offs.iter().all(|&o| o > margin)
+                || offs.iter().all(|&o| o < -margin)
+                || corners.iter().all(|&(y, z)| along(y, z) < -margin)
+            {
                 continue;
             }
             // Seeds ahead of the origin only: the shell behind it (a stem
@@ -2180,7 +2439,7 @@ impl<'a> Station<'a> {
                 if !d.is_finite() {
                     break;
                 }
-                let solved = newton_in_domain(&p.surf, u, v, tol, |s, du, dv| {
+                let solved = newton_in_domain_uv(&p.surf, u, v, tol, |s, du, dv| {
                     (
                         [s[0] - x_t, off(s[1], s[2])],
                         [
@@ -2189,16 +2448,42 @@ impl<'a> Station<'a> {
                         ],
                     )
                 });
-                if let Some(s) = solved {
+                if let Some((s, (su, sv))) = solved {
                     let r = along(s[1], s[2]);
                     if r > min_reach {
-                        hits.push(r);
+                        hits.push((r, Some((pi, su, sv))));
                     }
                 }
             }
         }
-        hits.sort_by(f64::total_cmp);
-        hits.dedup_by(|a, b| (*a - *b).abs() <= 1e-6 * scale);
+        self.tidy(hits)
+    }
+
+    /// The edge crossings that lie on the ray, as hits.
+    fn edge_hits(&self, sd: f64, z0: f64, theta: f64) -> Vec<Hit> {
+        let (st, ct) = theta.sin_cos();
+        let (y_c, scale) = (self.y_c, self.scale);
+        let off = |y: f64, z: f64| sd * (y - y_c) * st - (z - z0) * ct;
+        let along = |y: f64, z: f64| sd * (y - y_c) * ct + (z - z0) * st;
+        self.edges
+            .iter()
+            .filter(|&&(y, z)| off(y, z).abs() <= 1e-9 * scale && along(y, z) > 1e-12 * scale)
+            .map(|&(y, z)| (along(y, z), None))
+            .collect()
+    }
+
+    /// Sort hits by reach and merge coincident ones, keeping a patch hit
+    /// over an edge crossing at the same place.
+    fn tidy(&self, mut hits: Vec<Hit>) -> Vec<Hit> {
+        let scale = self.scale;
+        hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        hits.dedup_by(|a, b| {
+            let same = (a.0 - b.0).abs() <= 1e-6 * scale;
+            if same && b.1.is_none() {
+                b.1 = a.1;
+            }
+            same
+        });
         hits
     }
 
@@ -2218,9 +2503,10 @@ impl<'a> Station<'a> {
         best
     }
 
-    /// Shallowest wetted point on the centreplane, by Newton on
-    /// `x(u,v) = x`, `y(u,v) = y_c`, and among edge crossings there (keel and
-    /// stem lines are usually patch edges).
+    /// Shallowest wetted point on the centreplane: by Newton on
+    /// `x(u,v) = x`, `y(u,v) = y_c` from where the mesh cut crosses the
+    /// centreplane (or, without a mesh, from presample seeds), and among
+    /// edge crossings there (keel and stem lines are usually patch edges).
     fn centerplane_top(&self) -> Option<f64> {
         let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
         let tol = 1e-11 * scale;
@@ -2236,6 +2522,28 @@ impl<'a> Station<'a> {
                 take(z);
             }
         }
+        let system = |s: [f64; 3], du: [f64; 3], dv: [f64; 3]| {
+            ([s[0] - x_t, s[1] - y_c], [[du[0], dv[0]], [du[1], dv[1]]])
+        };
+        if let Some(cut) = &self.cut {
+            for [a, b] in cut {
+                if (a.y - y_c) * (b.y - y_c) > 0.0 {
+                    continue;
+                }
+                let s = if (b.y - a.y).abs() > 1e-300 {
+                    ((y_c - a.y) / (b.y - a.y)).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let (u, v) = (a.u + s * (b.u - a.u), a.v + s * (b.v - a.v));
+                if let Some(p) = self.patches.get(a.patch) {
+                    if let Some(q) = newton_in_domain(&p.surf, u, v, tol, system) {
+                        take(q[2]);
+                    }
+                }
+            }
+            return best;
+        }
         for p in self.patches {
             if x_t < p.bbox.0 - margin || x_t > p.bbox.1 + margin {
                 continue;
@@ -2248,15 +2556,173 @@ impl<'a> Station<'a> {
                 .collect();
             seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(_, u, v) in seeds.iter().take(4) {
-                let solved = newton_in_domain(&p.surf, u, v, tol, |s, du, dv| {
-                    ([s[0] - x_t, s[1] - y_c], [[du[0], dv[0]], [du[1], dv[1]]])
-                });
-                if let Some(s) = solved {
+                if let Some(s) = newton_in_domain(&p.surf, u, v, tol, system) {
                     take(s[2]);
                 }
             }
         }
         best
+    }
+}
+
+/// A hull's patches tessellated once, in the CAD frame, each vertex
+/// remembering its patch and parameters — so a pose moves vertices (by the
+/// same affine map as the control nets, under which a B-spline surface and
+/// its points move together) rather than re-evaluating surfaces, and a
+/// station's cut is found among the few triangles spanning it.
+#[derive(Debug, Clone)]
+pub(crate) struct Tessellation {
+    verts: Vec<[f64; 3]>,
+    /// `(patch, u, v)` of each vertex.
+    params: Vec<(usize, f64, f64)>,
+    tris: Vec<[u32; 3]>,
+}
+
+impl Tessellation {
+    /// Grid-tessellate every patch finely enough that a facet is ~1/400 of
+    /// the hull's largest extent: fine enough to catch every crossing
+    /// (thin plates are their own patches, so still get cells), coarse
+    /// enough to slice in microseconds. Accuracy comes from the Newton
+    /// polish on the exact surface, not from the facets.
+    pub(crate) fn new(surfs: &[NurbsSurface3]) -> Self {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for p in surfs.iter().flat_map(|s| s.ctrl.iter()) {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let extent = (0..3).map(|k| hi[k] - lo[k]).fold(0.0, f64::max);
+        let h = (extent / 400.0).max(1e-12);
+        let (mut verts, mut params, mut tris) = (Vec::new(), Vec::new(), Vec::new());
+        for (pi, s) in surfs.iter().enumerate() {
+            // Control-polygon lengths along u and v bound the patch's.
+            let (nu, nv) = (s.n_ctrl_u, s.n_ctrl_v);
+            let dist = |a: [f64; 3], b: [f64; 3]| {
+                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+            };
+            let len_u = (0..nv)
+                .map(|j| {
+                    (1..nu)
+                        .map(|i| dist(s.ctrl[i * nv + j], s.ctrl[(i - 1) * nv + j]))
+                        .sum::<f64>()
+                })
+                .fold(0.0, f64::max);
+            let len_v = (0..nu)
+                .map(|i| {
+                    (1..nv)
+                        .map(|j| dist(s.ctrl[i * nv + j], s.ctrl[i * nv + j - 1]))
+                        .sum::<f64>()
+                })
+                .fold(0.0, f64::max);
+            let cells = |len: f64| ((len / h).ceil() as usize).clamp(8, 256);
+            let (cu, cv) = (cells(len_u), cells(len_v));
+            let (u0, u1) = s.u_domain();
+            let (v0, v1) = s.v_domain();
+            let base = verts.len() as u32;
+            for i in 0..=cu {
+                let u = u0 + (u1 - u0) * i as f64 / cu as f64;
+                for j in 0..=cv {
+                    let v = v0 + (v1 - v0) * j as f64 / cv as f64;
+                    verts.push(s.point(u, v));
+                    params.push((pi, u, v));
+                }
+            }
+            let idx = |i: usize, j: usize| base + (i * (cv + 1) + j) as u32;
+            for i in 0..cu {
+                for j in 0..cv {
+                    tris.push([idx(i, j), idx(i + 1, j), idx(i + 1, j + 1)]);
+                    tris.push([idx(i, j), idx(i + 1, j + 1), idx(i, j + 1)]);
+                }
+            }
+        }
+        Tessellation {
+            verts,
+            params,
+            tris,
+        }
+    }
+}
+
+/// A [`Tessellation`] at one pose, in the hull frame (z down from the
+/// waterline), with its triangles bucketed by x so a station's cut touches
+/// only the triangles that span it.
+pub(crate) struct PosedMesh<'t> {
+    tess: &'t Tessellation,
+    verts: Vec<[f64; 3]>,
+    x0: f64,
+    bucket_w: f64,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl<'t> PosedMesh<'t> {
+    /// Pose the vertices with `to_hull` (CAD frame → hull frame) and bucket
+    /// the triangles.
+    pub(crate) fn new(tess: &'t Tessellation, to_hull: impl Fn([f64; 3]) -> [f64; 3]) -> Self {
+        let verts: Vec<[f64; 3]> = tess.verts.iter().map(|&p| to_hull(p)).collect();
+        let (x0, x1) = verts
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                (a.min(p[0]), b.max(p[0]))
+            });
+        let nb = (tess.tris.len() / 64).clamp(1, 4096);
+        let bucket_w = ((x1 - x0) / nb as f64).max(1e-300);
+        let mut buckets = vec![Vec::new(); nb];
+        let slot = |x: f64| (((x - x0) / bucket_w) as usize).min(nb - 1);
+        for (ti, t) in tess.tris.iter().enumerate() {
+            let xs = t.map(|k| verts[k as usize][0]);
+            let (lo, hi) = (xs[0].min(xs[1]).min(xs[2]), xs[0].max(xs[1]).max(xs[2]));
+            for b in slot(lo)..=slot(hi) {
+                buckets[b].push(ti as u32);
+            }
+        }
+        PosedMesh {
+            tess,
+            verts,
+            x0,
+            bucket_w,
+            buckets,
+        }
+    }
+
+    /// The plane `x = const` through the mesh: one segment per triangle it
+    /// crosses, its ends where it crosses the triangle's edges.
+    fn cut(&self, x: f64) -> Vec<[Cut; 2]> {
+        let b = (x - self.x0) / self.bucket_w;
+        if b < 0.0 || b >= self.buckets.len() as f64 + 1e-9 {
+            return Vec::new();
+        }
+        let b = (b as usize).min(self.buckets.len() - 1);
+        let mut out = Vec::new();
+        for &ti in &self.buckets[b] {
+            let t = self.tess.tris[ti as usize];
+            let mut ends = [None, None];
+            let mut n = 0;
+            for (a, c) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (pa, pc) = (self.verts[a as usize], self.verts[c as usize]);
+                let (da, dc) = (pa[0] - x, pc[0] - x);
+                // Half-open, so a plane through a vertex is counted once.
+                if (da >= 0.0) == (dc >= 0.0) {
+                    continue;
+                }
+                let s = da / (da - dc);
+                let (qa, qc) = (self.tess.params[a as usize], self.tess.params[c as usize]);
+                if n < 2 {
+                    ends[n] = Some(Cut {
+                        y: pa[1] + s * (pc[1] - pa[1]),
+                        z: pa[2] + s * (pc[2] - pa[2]),
+                        patch: qa.0,
+                        u: qa.1 + s * (qc.1 - qa.1),
+                        v: qa.2 + s * (qc.2 - qa.2),
+                    });
+                    n += 1;
+                }
+            }
+            if let [Some(a), Some(c)] = ends {
+                out.push([a, c]);
+            }
+        }
+        out
     }
 }
 
@@ -2268,18 +2734,29 @@ impl<'a> Station<'a> {
 /// converged point.
 fn newton_in_domain(
     surf: &NurbsSurface3,
+    u: f64,
+    v: f64,
+    tol: f64,
+    f: impl Fn([f64; 3], [f64; 3], [f64; 3]) -> ([f64; 2], [[f64; 2]; 2]),
+) -> Option<[f64; 3]> {
+    newton_in_domain_uv(surf, u, v, tol, f).map(|(s, _)| s)
+}
+
+/// [`newton_in_domain`], also returning the converged parameters.
+fn newton_in_domain_uv(
+    surf: &NurbsSurface3,
     mut u: f64,
     mut v: f64,
     tol: f64,
     f: impl Fn([f64; 3], [f64; 3], [f64; 3]) -> ([f64; 2], [[f64; 2]; 2]),
-) -> Option<[f64; 3]> {
+) -> Option<([f64; 3], (f64, f64))> {
     let (u0, u1) = surf.u_domain();
     let (v0, v1) = surf.v_domain();
     for _ in 0..60 {
         let (s, du, dv) = surf.eval1(u, v);
         let (r, j) = f(s, du, dv);
         if r[0].abs() + r[1].abs() < tol {
-            return Some(s);
+            return Some((s, (u, v)));
         }
         let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
         if det.abs() < 1e-30 {
@@ -2309,11 +2786,12 @@ fn newton_in_domain(
 }
 
 /// The hull's end in direction `dir = ±1` from a station `x_in` known to
-/// have a section: step outward until sections stop, then bisect the
-/// transition to ~1e-13 of the length. Returns the **inside** end of the
+/// have a section: step outward (from `first_step`, growing) until sections
+/// stop, then bisect the transition to ~1e-12 of the length. Returns the **inside** end of the
 /// final bracket, so the end station always has its section — which at a
 /// transom is the whole transom, and must not be read as empty (that would
 /// close the hull over one span: a spurious cliff in `Z(x)`).
+#[allow(clippy::too_many_arguments)]
 fn hull_end(
     patches: &[Patch],
     x_in: f64,
@@ -2322,21 +2800,24 @@ fn hull_end(
     sides: &[f64],
     length: f64,
     scale: f64,
+    first_step: f64,
+    mesh: Option<&PosedMesh>,
 ) -> f64 {
     // Start from a station that has a section (the presample's bracket can
     // sit in a recess or an open skin), moving inward if need be.
+    let probe = |x: f64| Station::new(patches, mesh, x, y_c, scale).has_section(sides);
     let mut inside = x_in;
     for k in 1..=20 {
-        if Station::new(patches, inside, y_c, scale).has_section(sides) {
+        if probe(inside) {
             break;
         }
         inside = x_in - dir * 0.01 * length * k as f64;
     }
-    let mut step = 0.02 * length;
+    let mut step = first_step;
     let mut outside = None;
     for _ in 0..40 {
         let x = inside + dir * step;
-        if Station::new(patches, x, y_c, scale).has_section(sides) {
+        if probe(x) {
             inside = x;
         } else {
             outside = Some(x);
@@ -2348,11 +2829,11 @@ fn hull_end(
         return inside;
     };
     for _ in 0..60 {
-        if (outside - inside).abs() <= 1e-13 * length {
+        if (outside - inside).abs() <= 1e-12 * length {
             break;
         }
         let mid = 0.5 * (inside + outside);
-        if Station::new(patches, mid, y_c, scale).has_section(sides) {
+        if probe(mid) {
             inside = mid;
         } else {
             outside = mid;
@@ -2367,8 +2848,10 @@ fn hull_end(
 /// ray's scaled reach averaged over the shell's sides, and the largest
 /// side-to-side difference [m]. `None` when the plane misses the hull or
 /// some ray finds no shell.
+#[allow(clippy::too_many_arguments)]
 fn sample_section(
     patches: &[Patch],
+    mesh: Option<&PosedMesh>,
     x: f64,
     y_c: f64,
     sides: &[f64],
@@ -2376,8 +2859,18 @@ fn sample_section(
     scale: f64,
     ambiguous: &mut usize,
 ) -> Option<(f64, f64, f64, Vec<f64>, f64)> {
+    let station = Station::new(patches, mesh, x, y_c, scale);
+    sample_station(&station, sides, thetas, scale, ambiguous)
+}
+
+fn sample_station(
+    station: &Station,
+    sides: &[f64],
+    thetas: &[f64],
+    scale: f64,
+    ambiguous: &mut usize,
+) -> Option<(f64, f64, f64, Vec<f64>, f64)> {
     let half_pi = std::f64::consts::FRAC_PI_2;
-    let station = Station::new(patches, x, y_c, scale);
     // Physical-angle reach, averaged over the sides.
     let reach = |z0: f64, t: f64, amb: &mut usize, asym: &mut f64| -> Option<f64> {
         let mut rs = [0.0f64; 2];
@@ -2395,12 +2888,7 @@ fn sample_section(
     // a bulb, an open shell whose rims are under) from its shallowest point.
     let wl = reach(0.0, 0.0, ambiguous, &mut asym);
     let z0 = if wl.is_some() { 0.0 } else { station.top()? };
-    let Some(depth) = reach(z0, half_pi, ambiguous, &mut asym) else {
-        if std::env::var("RAY_DEBUG").is_ok() {
-            eprintln!("x {x:.6}: depth ray failed; z0 {z0}, wl {wl:?}");
-        }
-        return None;
-    };
+    let depth = reach(z0, half_pi, ambiguous, &mut asym)?;
     // Beam scale: the widest of a coarse fan (the waterline, usually).
     let mut beam = wl.unwrap_or(0.0);
     for k in 1..8 {
@@ -2417,12 +2905,7 @@ fn sample_section(
         let (st, ct) = t.sin_cos();
         let (dy, dz) = (beam * ct, depth * st);
         let phys = dz.atan2(dy);
-        let Some(r) = reach(z0, phys, ambiguous, &mut asym) else {
-            if std::env::var("RAY_DEBUG").is_ok() {
-                eprintln!("x {x:.6}: ray θ̃ {t:.4} (phys {phys:.4}) failed; z0 {z0}, beam {beam:.4}, depth {depth:.5}");
-            }
-            return None;
-        };
+        let r = reach(z0, phys, ambiguous, &mut asym)?;
         radii.push(r / dy.hypot(dz));
     }
     Some((z0, beam, depth, radii, asym))
@@ -2822,11 +3305,17 @@ mod tests {
                 pts.push((u, v, s[0], s[1], s[2]));
             }
         }
+        let ybox = pts
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), q| {
+                (lo.min(q.3), hi.max(q.3))
+            });
         Patch {
             surf,
             pts,
             grid_n: n,
             bbox,
+            ybox,
             wet_box: None,
         }
     }
@@ -3023,5 +3512,74 @@ mod tests {
         assert!((after[0] - (before[0] + 1.0)).abs() < 1e-12);
         assert!((after[1] - (before[1] - 0.5)).abs() < 1e-12);
         assert!((after[2] - (before[2] - 0.3)).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod pose_timing {
+    use super::*;
+
+    /// How long a re-pose takes: the per-pose work (control-net pose,
+    /// presample, frame and ends, sections) on real CAD at a few nearby
+    /// poses. A report, not a check.
+    #[test]
+    #[ignore = "timing report"]
+    fn sectional_repose_cost() {
+        for (file, wl) in [("ama.igs", 0.0), ("e12.igs", -0.95)] {
+            let text =
+                std::fs::read_to_string(format!("{}/../../{file}", env!("CARGO_MANIFEST_DIR")))
+                    .unwrap();
+            let t = std::time::Instant::now();
+            let fleet = source_fleet(&text, wl).unwrap();
+            let tris: usize = fleet.meshes.iter().map(|m| m.tris.len()).sum();
+            eprintln!(
+                "{file}: load (parse, cluster, tessellate) {:.1} ms, {tris} triangles",
+                1e3 * t.elapsed().as_secs_f64()
+            );
+            let idx = (0..fleet.len())
+                .max_by_key(|&i| fleet.hulls[i].len())
+                .unwrap();
+            let opts = SectionalOptions {
+                waterline_z: wl,
+                ..Default::default()
+            };
+            // A cold start, then a run of nearby poses as an equilibrium
+            // solve would visit them, each warm-started from the last and
+            // checked against a cold import of the same pose.
+            let mut state = SectionalState::default();
+            for (sink, trim_deg) in [
+                (0.0, 0.0),
+                (0.005, 0.0),
+                (0.01, 0.0),
+                (0.01, 0.1),
+                (0.01, 0.2),
+                (0.012, 0.3),
+            ] {
+                let plat = Platform {
+                    sinkage: sink,
+                    trim: f64::to_radians(trim_deg),
+                    pivot_x: 0.0,
+                };
+                let t = std::time::Instant::now();
+                let warm = fleet
+                    .situate_sectional_warm(idx, wl, &HullPose::default(), &plat, &opts, &mut state)
+                    .unwrap()
+                    .unwrap();
+                let t_warm = t.elapsed().as_secs_f64();
+                let t = std::time::Instant::now();
+                let cold = fleet
+                    .situate_sectional(idx, wl, &HullPose::default(), &plat, &opts)
+                    .unwrap()
+                    .unwrap();
+                let t_cold = t.elapsed().as_secs_f64();
+                let dv = (warm.hull.displaced_volume() / cold.hull.displaced_volume() - 1.0).abs();
+                eprintln!(
+                    "{file} sinkage {sink} trim {trim_deg}°: warm {:.1} ms, cold {:.1} ms, volume {:.5} (warm vs cold {dv:.1e})",
+                    1e3 * t_warm,
+                    1e3 * t_cold,
+                    warm.hull.displaced_volume()
+                );
+            }
+        }
     }
 }
