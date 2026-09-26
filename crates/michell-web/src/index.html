@@ -176,38 +176,12 @@
     </div>
   </section>
 
-  <section>
-    <h2>Speed &amp; transom closure</h2>
-    <div class="fields">
-      <label class="wide">Froude number <span id="fnv" style="color:var(--ink)"></span>
-        <input id="froude" type="range" min="0.1" max="0.8" step="0.01" value="0.3">
-      </label>
-      <label>Closure
-        <select id="closure">
-          <option value="ballistic">Ballistic</option>
-          <option value="fixed">Fixed length</option>
-          <option value="off">Off (open)</option>
-        </select>
-      </label>
-      <label id="paramlabel"><span id="paramname">Coefficient c</span>
-        <input id="param" type="number" step="any" value="1.4142">
-      </label>
-    </div>
-    <p class="hint">The closure is a virtual appendage behind the transom: its section, faded out as φ(s) = 1 − 3s² + 2s³ over the hollow length L_v. Ballistic: L_v = c·U·√(d_T/g), c = √2 for free fall.</p>
-    <div class="readout" id="closureout"></div>
-  </section>
 
   <section>
     <h2>Cases</h2>
     <div class="fields" style="margin-bottom:10px">
-      <label>Froude number(s)
-        <input id="cfroude" type="text" placeholder="slider value">
-      </label>
-      <label>Attitude
-        <select id="attitude">
-          <option value="dynamic">Floated at speed</option>
-          <option value="design">Design waterline</option>
-        </select>
+      <label class="wide">Froude number(s)
+        <input id="cfroude" type="text" placeholder="e.g. 0.3, or 0.3:0.6:0.05">
       </label>
       <label>Mass [kg]
         <input id="mass" type="text" placeholder="design">
@@ -216,7 +190,7 @@
         <input id="lcg" type="text" placeholder="at LCB">
       </label>
     </div>
-    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case, with the transom closure above. Cases run one at a time; click a finished one to view it.</p>
+    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. Cases run one at a time; click a finished one to view it.</p>
     <button class="primary" id="flowgo" disabled style="width:100%">Add cases</button>
     <div id="cases"></div>
     <div id="flowprog" hidden>
@@ -224,7 +198,7 @@
       <div class="track"><div class="fill busy" id="fpfill"></div></div>
       <div class="detail" id="fpdetail"></div>
     </div>
-    <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. Floated at speed, the hull is first put at its dynamic equilibrium — the load defaults to its design displacement at its LCB — and re-cut there. A monohull case takes 5–40 s.</p>
+    <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. Each case first floats the hull at its dynamic equilibrium (sinkage and trim at speed) — the load defaults to its design displacement at its LCB — and re-cuts it there. A transom is closed by the ballistic hollow, L_v = √2·U·√(d_T/g). A monohull case takes 5–40 s.</p>
     <div id="flowout"></div>
   </section>
 
@@ -273,7 +247,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
 let file = null, hulls = [], flowData = null, flowAbort = null;
-// The case queue: {id, froude, mass, lcg, attitude, closure, status, data, error}.
+// The case queue: {id, froude, mass, lcg, status, data, error}.
 let cases = [], nextCase = 1, viewing = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
@@ -335,43 +309,19 @@ async function run() {
 }
 
 // ---------------------------------------------------------------- closure
-// Mirrors michell's TransomClosure::hollow_length: ballistic L_v = c·√(d_T/ν)
-// with ν = g/U² (i.e. c·U·√(d_T/g)); fixed L_v = L; off: no appendage.
-function closureSpec() {
-  const kind = $("closure").value, p = Number($("param").value);
-  return { kind, param: Number.isFinite(p) ? p : 0 };
-}
-function lRef() { return Math.max(0, ...hulls.map((h) => h.length)); }
-function speed() { return Number($("froude").value) * Math.sqrt(G * lRef()); }
+// Mirrors michell's default TransomClosure: the ballistic hollow,
+// L_v = √2·√(d_T/ν) with ν = g/U² (i.e. √2·U·√(d_T/g)), at the viewed
+// case's speed (no hollow until a case is viewed).
+function speed() { return flowData ? flowData.speed : null; }
 function hollowLength(depth) {
-  const { kind, param } = closureSpec();
-  if (kind === "off") return null;
-  if (kind === "fixed") return Math.max(0, param);
-  const u = speed(), nu = G / (u * u);
-  return param * Math.sqrt(depth / nu);
+  const u = speed();
+  if (!u) return null;
+  return Math.SQRT2 * Math.sqrt(depth * u * u / G);
 }
 // φ(s) = 1 − 3s² + 2s³: 1 at the transom, 0 at the hollow's end, flat at both.
 const phi = (s) => 1 - 3 * s * s + 2 * s * s * s;
 
-$("closure").onchange = () => {
-  const k = $("closure").value;
-  $("paramlabel").style.visibility = k === "off" ? "hidden" : "visible";
-  $("paramname").textContent = k === "fixed" ? "Hollow length [m]" : "Coefficient c";
-  $("param").value = k === "fixed" ? "0.3" : "1.4142";
-  updateClosure();
-};
-for (const id of ["froude", "param"]) $(id).addEventListener("input", updateClosure);
-
 function updateClosure() {
-  const fnum = Number($("froude").value), u = speed();
-  $("fnv").textContent = hulls.length ? `${fnum.toFixed(2)} · U ${u.toFixed(2)} m/s (${(u / 0.514444).toFixed(1)} kn)` : fnum.toFixed(2);
-  $("closureout").textContent = hulls.map((h, i) => {
-    const t = h.transom;
-    const name = hulls.length > 1 ? `hull ${i + 1}: ` : "";
-    if (!t) return `${name}no transom (closes aft)`;
-    const lv = hollowLength(t.depth);
-    return `${name}transom ${fmt(t.depth * 1000, 1)} mm deep (equivalent), ${fmt(2 * t.half_beam, 3)} m wide, ${(100 * t.area_ratio).toFixed(1)}% of max section\nhollow L_v ${lv == null ? "— (left open)" : fmt(lv, 3) + " m"}`;
-  }).join("\n");
   scene3d.closure();
   drawArea();
 }
@@ -398,7 +348,8 @@ function addCases() {
   if (!file || !hulls.length) return;
   let fns, masses, lcgs;
   try {
-    fns = values("cfroude", Number($("froude").value));
+    fns = values("cfroude", null);
+    if (fns.includes(null)) throw new Error("Enter a Froude number (or a list or range of them)");
     masses = values("mass", null);
     lcgs = values("lcg", null);
   } catch (e) { $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
@@ -406,9 +357,8 @@ function addCases() {
   if (masses.some((m) => m != null && !(m > 0))) { $("flowout").innerHTML = `<div class="note">Masses must be positive</div>`; return; }
   const n = fns.length * masses.length * lcgs.length;
   if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
-  const closure = closureSpec(), attitude = $("attitude").value;
   for (const mass of masses) for (const lcg of lcgs) for (const froude of fns) {
-    cases.push({ id: nextCase++, froude, mass, lcg, attitude, closure: { ...closure }, status: "queued", data: null, error: null });
+    cases.push({ id: nextCase++, froude, mass, lcg, status: "queued", data: null, error: null });
   }
   renderCases();
   pump();
@@ -417,7 +367,7 @@ $("flowgo").onclick = addCases;
 for (const id of ["cfroude", "mass", "lcg"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
 
 // What makes two cases' attitudes comparable, for warm starts.
-const loadKey = (c) => JSON.stringify([c.mass, c.lcg, c.attitude, c.closure]);
+const loadKey = (c) => JSON.stringify([c.mass, c.lcg]);
 
 // Run the queue, one case at a time: each one uses every core.
 let pumping = false;
@@ -446,14 +396,13 @@ async function pump() {
 }
 
 async function runCase(c) {
-  const q = new URLSearchParams({ name: file.name, froude: String(c.froude), attitude: c.attitude, closure: c.closure.kind, progress: "1" });
+  const q = new URLSearchParams({ name: file.name, froude: String(c.froude), progress: "1" });
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
-  if (c.closure.kind !== "off") q.set("param", String(c.closure.param));
   if (c.mass != null) q.set("mass", String(c.mass));
   if (c.lcg != null) q.set("lcg", String(c.lcg));
   // Start from the nearest finished attitude with the same load: the solver
   // then skips its coarse search.
-  if (c.attitude === "dynamic") {
+  {
     const near = cases
       .filter((o) => o.status === "done" && o.data.forces.solved && loadKey(o) === loadKey(c))
       .sort((a, b) => Math.abs(a.froude - c.froude) - Math.abs(b.froude - c.froude))[0];
@@ -495,7 +444,7 @@ async function runCase(c) {
 function caseLabel(c) {
   const load = c.mass == null && c.lcg == null ? "design load"
     : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg"}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
-  return `Fn ${c.froude.toFixed(2)} · ${load}${c.attitude === "design" ? " · design WL" : ""}`;
+  return `Fn ${c.froude.toFixed(2)} · ${load}`;
 }
 
 function renderCases() {
@@ -542,6 +491,7 @@ function view(id) {
   scene3d.flow(c.data);
   renderFlow();
   renderCases();
+  updateClosure();
 }
 
 // The flow's progress: the stage, its detail and the elapsed time, over a
@@ -820,7 +770,7 @@ const scene3d = (() => {
   // height field with the hulls' waterplanes cut out.
   let waveMesh = null;
   function flow(d) {
-    clear(layers.pressure); clear(layers.waves);
+    clear(layers.pressure); clear(layers.waves); clear(layers.hull);
     probes = []; waveMesh = null;
     const has = !!d;
     for (const id of ["lgcp", "lgzeta"]) $(id).style.display = has ? "block" : "none";
