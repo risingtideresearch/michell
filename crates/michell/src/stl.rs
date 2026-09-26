@@ -405,6 +405,11 @@ impl MeshFleet {
         self.hulls.is_empty()
     }
 
+    /// A hull's vertex x mid: the default pivot of its design trim.
+    pub fn x_mid(&self, idx: usize) -> f64 {
+        self.mids[idx].0
+    }
+
     pub fn units_scale(&self) -> f64 {
         self.units_scale
     }

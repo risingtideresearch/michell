@@ -3,11 +3,12 @@
 //! a sweep or an equilibrium solve needs.
 //!
 //! [`crate::iges::SourceFleet`] (IGES patches, or a B-spline `.hull` as its
-//! exact surfaces) is one; anything else that can cut a posed hull into
-//! sections plugs into the solver and the CLI through [`HullSource`].
+//! exact surfaces) and [`crate::stl::MeshFleet`] (a triangle mesh) are the
+//! two; either plugs into the solver and the CLI through [`HullSource`].
 
 use crate::error::Result;
 use crate::iges::{HullPose, Platform, SectionalImport, SectionalOptions, SectionalState, SourceFleet};
+use crate::stl::MeshFleet;
 
 /// A file's hulls, re-cuttable into sections at any pose.
 pub trait HullSource: Send + Sync {
@@ -87,6 +88,38 @@ impl HullSource for SourceFleet {
         platform: &Platform,
     ) -> Result<(Vec<[f64; 3]>, Vec<[u32; 3]>)> {
         SourceFleet::posed_tessellation(self, idx, waterline_z, pose, platform)
+    }
+}
+
+impl HullSource for MeshFleet {
+    fn len(&self) -> usize {
+        MeshFleet::len(self)
+    }
+
+    fn x_mid(&self, idx: usize) -> f64 {
+        MeshFleet::x_mid(self, idx)
+    }
+
+    fn situate_sectional_warm(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+        state: &mut SectionalState,
+    ) -> Result<Option<SectionalImport>> {
+        MeshFleet::situate_sectional_warm(self, idx, waterline_z, pose, platform, opts, state)
+    }
+
+    fn posed_tessellation(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Result<(Vec<[f64; 3]>, Vec<[u32; 3]>)> {
+        MeshFleet::posed_tessellation(self, idx, waterline_z, pose, platform)
     }
 }
 

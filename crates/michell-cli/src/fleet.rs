@@ -5,11 +5,13 @@
 //! sections at the design waterline:
 //!
 //! * `*.igs` / `*.iges`: NURBS patches, clustered into hulls;
+//! * `*.stl`: a triangle mesh (binary or ASCII; `--units` gives its scale),
+//!   clustered likewise;
 //! * `*.hull`: a B-spline half-breadth control net, as its exact mirrored
 //!   surfaces. A wetted net's top is its design waterline; a full-band body
 //!   (the `waterline` key) floats at that depth below its band top.
 
-use crate::formats::parse_hull_data;
+use crate::formats::{looks_binary_stl, parse_hull_data};
 use michell::iges::{
     source_fleet, HullPose, Platform, SectionalOptions, SectionalReport, SourceFleet,
 };
@@ -22,6 +24,7 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Iges,
+    Stl,
     Spline,
 }
 
@@ -33,6 +36,8 @@ pub struct LoadSettings {
     pub centerplane: Option<f64>,
     pub stations: usize,
     pub rays: usize,
+    /// Scale to metres for STL, which carries no units.
+    pub units: Option<f64>,
 }
 
 impl Default for LoadSettings {
@@ -43,6 +48,7 @@ impl Default for LoadSettings {
             centerplane: None,
             stations: d.stations,
             rays: d.rays,
+            units: None,
         }
     }
 }
@@ -178,16 +184,25 @@ pub fn open_source_bytes(
     settings: &LoadSettings,
 ) -> Result<SourceFile, String> {
     let lower = path.to_ascii_lowercase();
-    let text = String::from_utf8(bytes).map_err(|_| {
-        if lower.ends_with(".stl") {
-            format!("{path}: STL input is not supported yet")
-        } else {
-            format!("{path}: not a text file; expected IGES or a .hull control net")
-        }
-    })?;
-    if lower.ends_with(".stl") {
-        return Err(format!("{path}: STL input is not supported yet"));
+    // STL: by extension or binary layout (binary STL is not UTF-8).
+    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || std::str::from_utf8(&bytes).is_err()
+    {
+        let scale = settings.units.ok_or_else(|| {
+            format!(
+                "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
+                 (or a scale to metres)"
+            )
+        })?;
+        let src = michell::stl::mesh_fleet(&bytes, scale, settings.waterline_z)
+            .map_err(|e| format!("{path}: STL import failed: {e}"))?;
+        return Ok(SourceFile {
+            path: path.into(),
+            kind: Kind::Stl,
+            source: Box::new(src),
+            waterline_z: settings.waterline_z,
+        });
     }
+    let text = String::from_utf8(bytes).expect("checked utf8");
     let first = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -228,7 +243,7 @@ pub fn open_source_bytes(
         });
     }
     Err(format!(
-        "cannot determine the format of {path}: expected an IGES file or a \
+        "cannot determine the format of {path}: expected an IGES or STL file, or a \
          `michell-hull v1` control net"
     ))
 }
@@ -323,6 +338,7 @@ pub fn describe(fleet: &Fleet, m: &Member) -> Vec<String> {
     };
     let what = match fleet.files[m.file].kind {
         Kind::Iges => format!("IGES ({} patches, units scale {})", r.patches, r.units_scale),
+        Kind::Stl => format!("STL ({} triangles, units scale {})", r.patches, r.units_scale),
         Kind::Spline => "B-spline control net (exact surfaces)".to_string(),
     };
     let mut lines = vec![format!(

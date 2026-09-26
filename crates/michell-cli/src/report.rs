@@ -749,10 +749,22 @@ fn draw_profile_view(
     cond: &Conditions,
     wave_cut_y: f64,
 ) -> Result<String, String> {
-    let profiles: Vec<HullProfile> = posed
+    let mut profiles: Vec<HullProfile> = posed
         .iter()
         .map(|h| hull_profile_at(h, platform))
         .collect::<Result<_, _>>()?;
+    // Topsides are cut one draft above the water, so the panel's height goes
+    // to the immersed hull and the attitude rather than to freeboard.
+    let draft = profiles
+        .iter()
+        .flat_map(|p| p.keel.iter().map(|k| k[1]))
+        .fold(0.0f64, f64::max);
+    let cap = -draft.max(1e-3);
+    for p in &mut profiles {
+        for t in p.top.iter_mut().chain(p.silhouette.iter_mut().map(|sl| &mut sl[0])) {
+            t[1] = t[1].max(cap);
+        }
+    }
 
     // Wave elevation cut along the fleet centreline at the reference hull's
     // transverse offset ("the wake, in profile"); z is up here, so it adds
@@ -864,8 +876,8 @@ fn draw_profile_view(
     }
 
     let caption = format!(
-        "shaded: hull profile, darker = submerged; black: keel; gray: top of the \
-         geometry; orange: design waterline\n\
+        "shaded: hull profile, darker = submerged, topsides cut one draft above the \
+         water; black: keel; orange: design waterline\n\
          blue: still water and the wake cut at y = {wave_cut_y:.2} m; vertical \
          exaggeration {:.1}x",
         sz / sx

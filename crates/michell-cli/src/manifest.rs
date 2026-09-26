@@ -908,6 +908,10 @@ pub(crate) fn parse_manifest(
         if let Some(v) = o.get("waterline").and_then(Json::as_f64) {
             settings.waterline_z = v;
         }
+        if let Some(v) = o.get("units") {
+            let u = v.as_str().ok_or("options.units: expected a string (mm, m, in, ...)")?;
+            settings.units = Some(crate::formats::parse_units(u)?);
+        }
         let count = |key: &str, min: usize| -> Result<Option<usize>, String> {
             match o.get(key).and_then(Json::as_f64) {
                 None => Ok(None),

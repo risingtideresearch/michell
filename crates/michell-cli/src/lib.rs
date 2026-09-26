@@ -406,6 +406,7 @@ impl Parsed {
             centerplane: self.f64_flag("centerplane")?,
             stations: count("stations", d.stations, 8)?,
             rays: count("rays", d.rays, 5)?,
+            units: self.flag("units").map(|u| formats::parse_units(u)).transpose()?,
         })
     }
 
@@ -550,7 +551,7 @@ pub fn info(args: &[String]) -> Result<String, String> {
         } else {
             format!("hull: {}", m.path)
         };
-        if m.placement == Placement::default() {
+        if m.placement.x.abs() < 1e-9 && m.placement.y.abs() < 1e-9 {
             let _ = writeln!(out, "{name}");
         } else {
             let _ = writeln!(
