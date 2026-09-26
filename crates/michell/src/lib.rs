@@ -270,3 +270,18 @@ pub fn resistance_with(
         ct: total / q,
     })
 }
+
+/// Test support: the CAD files the real-hull tests run on live at the
+/// repository root and are not committed (`.gitignore`: `/*.igs`), so a test
+/// that needs one skips, saying so, when it is absent.
+#[cfg(test)]
+pub(crate) fn cad_fixture(name: &str) -> Option<String> {
+    let path = format!("{}/../../{name}", env!("CARGO_MANIFEST_DIR"));
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(_) => {
+            eprintln!("skipping: CAD fixture {name} is not present (not in the repository)");
+            None
+        }
+    }
+}

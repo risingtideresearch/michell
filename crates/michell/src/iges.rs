@@ -3581,10 +3581,9 @@ mod tests {
 mod sectional_ends {
     use super::*;
 
-    fn e12() -> SourceFleet {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
-        source_fleet(&text, -0.95).unwrap()
+    fn e12() -> Option<SourceFleet> {
+        let text = crate::cad_fixture("e12.igs")?;
+        Some(source_fleet(&text, -0.95).unwrap())
     }
 
     /// e12's transom is a flat face its side skins run on past. Trimmed bow
@@ -3595,7 +3594,9 @@ mod sectional_ends {
     /// transom section at every trim.
     #[test]
     fn a_trimmed_transom_keeps_its_section() {
-        let fleet = e12();
+        let Some(fleet) = e12() else {
+            return;
+        };
         let idx = (0..fleet.len())
             .max_by_key(|&i| fleet.hulls[i].len())
             .unwrap();
@@ -3641,9 +3642,9 @@ mod pose_timing {
     #[ignore = "timing report"]
     fn sectional_repose_cost() {
         for (file, wl) in [("ama.igs", 0.0), ("e12.igs", -0.95)] {
-            let text =
-                std::fs::read_to_string(format!("{}/../../{file}", env!("CARGO_MANIFEST_DIR")))
-                    .unwrap();
+            let Some(text) = crate::cad_fixture(file) else {
+                continue;
+            };
             let t = std::time::Instant::now();
             let fleet = source_fleet(&text, wl).unwrap();
             let tris: usize = fleet.meshes.iter().map(|m| m.tris.len()).sum();

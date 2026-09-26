@@ -1205,13 +1205,12 @@ mod sectional_tests {
     use crate::michell::{TransomClosure, WaveOptions};
     use crate::squat::SquatOptions;
 
-    fn e12() -> (SourceFleet, f64, usize) {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
+    fn e12() -> Option<(SourceFleet, f64, usize)> {
+        let text = crate::cad_fixture("e12.igs")?;
         let wl = -0.95;
         let src = crate::iges::source_fleet(&text, wl).unwrap();
         let idx = (0..src.len()).next().unwrap();
-        (src, wl, idx)
+        Some((src, wl, idx))
     }
 
     /// Loaded to its own displacement and LCB at the design waterline, a
@@ -1219,7 +1218,9 @@ mod sectional_tests {
     /// volume over the waterplane area.
     #[test]
     fn sectional_equilibrium_recovers_the_design_waterline() {
-        let (src, wl, idx) = e12();
+        let Some((src, wl, idx)) = e12() else {
+            return;
+        };
         let opts = SectionalOptions {
             waterline_z: wl,
             ..Default::default()
@@ -1257,7 +1258,9 @@ mod sectional_tests {
     #[test]
     #[ignore = "comparison report"]
     fn sectional_dynamic_equilibrium_report() {
-        let (src, wl, idx) = e12();
+        let Some((src, wl, idx)) = e12() else {
+            return;
+        };
         let rho = 1025.0;
         let sopts = SectionalOptions {
             waterline_z: wl,

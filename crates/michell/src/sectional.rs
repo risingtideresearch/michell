@@ -1165,12 +1165,11 @@ mod tests {
     use crate::michell::{InnerIntegral, TransomClosure};
     use crate::squat::SquatOptions;
 
-    fn ama() -> Hull {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ama.igs")).unwrap();
+    fn ama() -> Option<Hull> {
+        let text = crate::cad_fixture("ama.igs")?;
         let fleet =
             crate::iges::import_fleet(&text, &crate::iges::ImportOptions::default()).unwrap();
-        fleet.into_iter().next().unwrap().hull
+        Some(fleet.into_iter().next().unwrap().hull)
     }
 
     /// Largest relative disagreement of the six transforms over a (k_x, κ)
@@ -1229,7 +1228,9 @@ mod tests {
 
     #[test]
     fn reproduces_the_lofted_kernel_on_a_cad_import() {
-        let hull = ama();
+        let Some(hull) = ama() else {
+            return;
+        };
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         for nu in [0.25, 1.0] {
             let (t, a) = (
@@ -1247,7 +1248,9 @@ mod tests {
     #[test]
     #[ignore = "timing report, not a check"]
     fn cost_against_the_lofted_kernel() {
-        let hull = ama();
+        let Some(hull) = ama() else {
+            return;
+        };
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let nu = 9.81 / 25.0;
         let mut inner = InnerIntegral::new(&hull, nu, TransomClosure::None);
@@ -1355,7 +1358,9 @@ mod tests {
 
     #[test]
     fn wave_resistance_and_squat_match_the_lofted_hull_on_a_cad_import() {
-        compare_end_to_end(&ama(), "ama", 1e-7);
+        if let Some(hull) = ama() {
+            compare_end_to_end(&hull, "ama", 1e-7);
+        }
     }
 
     /// The sectional importer end to end on geometry with an exact answer:
@@ -1408,8 +1413,9 @@ mod tests {
     /// section (not closed to nothing), and resistance has converged.
     #[test]
     fn cad_sections_converge_and_keep_the_transom() {
-        let text =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
+        let Some(text) = crate::cad_fixture("e12.igs") else {
+            return;
+        };
         let wave = untransomed();
         let import = |stations: usize, rays: usize| {
             let so = crate::iges::SectionalOptions {
@@ -1488,22 +1494,24 @@ mod transom_tests {
 
     const E12_WL: f64 = -0.95;
 
-    fn e12_text() -> String {
-        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap()
+    fn e12_text() -> Option<String> {
+        crate::cad_fixture("e12.igs")
     }
 
     /// e12 lofted at its design waterline: it carries a wet transom.
-    fn e12_lofted() -> Hull {
+    fn e12_lofted() -> Option<Hull> {
         let io = crate::iges::ImportOptions {
             waterline_z: E12_WL,
             ..Default::default()
         };
-        crate::iges::import_fleet(&e12_text(), &io)
+        let text = e12_text()?;
+        let hull = crate::iges::import_fleet(&text, &io)
             .unwrap()
             .into_iter()
             .max_by(|a, b| a.hull.length().total_cmp(&b.hull.length()))
             .unwrap()
-            .hull
+            .hull;
+        Some(hull)
     }
 
     fn closures() -> [TransomClosure; 3] {
@@ -1519,7 +1527,9 @@ mod transom_tests {
     /// six near-field transforms with each closure, at two speeds.
     #[test]
     fn transom_closure_matches_the_lofted_kernel() {
-        let hull = e12_lofted();
+        let Some(hull) = e12_lofted() else {
+            return;
+        };
         assert!(hull.transom().is_some(), "e12 should carry a wet transom");
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let l = hull.length();
@@ -1567,7 +1577,9 @@ mod transom_tests {
     /// harness equal the lofted hull's.
     #[test]
     fn closed_transom_resistance_and_squat_match_the_lofted_hull() {
-        let hull = e12_lofted();
+        let Some(hull) = e12_lofted() else {
+            return;
+        };
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let wave = WaveOptions::default();
         let squat = SquatOptions {
@@ -1603,7 +1615,10 @@ mod transom_tests {
             waterline_z: E12_WL,
             ..Default::default()
         };
-        let imp = crate::iges::import_sectional(&e12_text(), &so)
+        let Some(text) = e12_text() else {
+            return;
+        };
+        let imp = crate::iges::import_sectional(&text, &so)
             .unwrap()
             .hulls
             .remove(0);
@@ -1628,12 +1643,17 @@ mod transom_tests {
             waterline_z: E12_WL,
             ..Default::default()
         };
-        let cad = crate::iges::import_sectional(&e12_text(), &so)
+        let Some(text) = e12_text() else {
+            return;
+        };
+        let cad = crate::iges::import_sectional(&text, &so)
             .unwrap()
             .hulls
             .remove(0)
             .hull;
-        let lofted = e12_lofted();
+        let Some(lofted) = e12_lofted() else {
+            return;
+        };
         let x_ref = cad.lcb_x();
         for fnum in [0.15, 0.2, 0.3, 0.5] {
             let cond = Conditions::seawater(fnum * (9.81 * cad.length()).sqrt());
