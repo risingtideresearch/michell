@@ -1140,7 +1140,7 @@ fn pose_ctrl(surfs: &mut [NurbsSurface3], waterline_z: f64, pose: &HullPose, pla
 /// the unposed control nets — so control points and points on the surface
 /// (a tessellation's vertices) move by exactly the same affine map, under
 /// which a B-spline surface and its points move together.
-struct PoseMap {
+pub(crate) struct PoseMap {
     waterline_z: f64,
     wl: f64,
     scale: Option<(f64, f64, f64)>,
@@ -1156,11 +1156,29 @@ impl PoseMap {
         pose: &HullPose,
         platform: &Platform,
     ) -> Self {
-        let px = || pose.pivot_x.unwrap_or_else(|| ctrl_x_mid(surfs));
+        Self::with_mids(
+            waterline_z,
+            pose,
+            platform,
+            || ctrl_x_mid(surfs),
+            || ctrl_y_mid(surfs),
+        )
+    }
+
+    /// The same map for any geometry, given its longitudinal and transverse
+    /// mids (the default trim and scale pivots), evaluated only if needed.
+    pub(crate) fn with_mids(
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        x_mid: impl Fn() -> f64,
+        y_mid: impl Fn() -> f64,
+    ) -> Self {
+        let px = || pose.pivot_x.unwrap_or_else(&x_mid);
         PoseMap {
             waterline_z,
             wl: waterline_z + platform.sinkage,
-            scale: (pose.scale != 1.0).then(|| (pose.scale, px(), ctrl_y_mid(surfs))),
+            scale: (pose.scale != 1.0).then(|| (pose.scale, px(), y_mid())),
             trim: (pose.trim != 0.0).then(|| {
                 let (sin, cos) = pose.trim.sin_cos();
                 (px(), cos, sin)
@@ -1173,7 +1191,7 @@ impl PoseMap {
         }
     }
 
-    fn apply(&self, p: &mut [f64; 3]) {
+    pub(crate) fn apply(&self, p: &mut [f64; 3]) {
         if let Some((s, px, py)) = self.scale {
             p[0] = px + s * (p[0] - px);
             p[1] = py + s * (p[1] - py);
@@ -1575,17 +1593,15 @@ fn cluster_frame_with(
     let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut y_sum = 0.0f64;
     let mut wet_count = 0usize;
-    for p in patches {
-        for q in &p.pts {
-            if q.4 >= -1e-12 {
-                draft = draft.max(q.4);
-                x_min = x_min.min(q.2);
-                x_max = x_max.max(q.2);
-                y_lo = y_lo.min(q.3);
-                y_hi = y_hi.max(q.3);
-                y_sum += q.3;
-                wet_count += 1;
-            }
+    for q in frame_points(patches, mesh) {
+        if q[2] >= -1e-12 {
+            draft = draft.max(q[2]);
+            x_min = x_min.min(q[0]);
+            x_max = x_max.max(q[0]);
+            y_lo = y_lo.min(q[1]);
+            y_hi = y_hi.max(q[1]);
+            y_sum += q[1];
+            wet_count += 1;
         }
     }
     if wet_count == 0 || !(draft > 0.0 && x_max > x_min) {
@@ -1642,19 +1658,44 @@ fn cluster_frame_with(
     let mut probe_counts: Vec<usize> = Vec::new();
     let mut probe_mids: Vec<f64> = Vec::new();
     {
-        let targets: Vec<(f64, f64)> = patches
-            .iter()
-            .flat_map(|p| p.pts.iter())
-            .filter(|q| q.4 >= 0.3 * draft && q.4 <= 0.7 * draft)
-            .map(|q| (q.2, q.4))
-            .collect();
+        let band = |z: f64| z >= 0.3 * draft && z <= 0.7 * draft;
+        // Probe points on the shell: the presample's, or — for a bare mesh —
+        // triangle centroids (a vertex would put the probe exactly on the
+        // facets' edges).
+        let targets: Vec<(f64, f64)> = match (patches.is_empty(), mesh) {
+            (true, Some(m)) => m
+                .tess
+                .tris
+                .iter()
+                .map(|t| {
+                    let c = t.map(|k| m.verts[k as usize]);
+                    (
+                        (c[0][0] + c[1][0] + c[2][0]) / 3.0,
+                        (c[0][2] + c[1][2] + c[2][2]) / 3.0,
+                    )
+                })
+                .filter(|&(_, z)| band(z))
+                .collect(),
+            _ => patches
+                .iter()
+                .flat_map(|p| p.pts.iter())
+                .filter(|q| band(q.4))
+                .map(|q| (q.2, q.4))
+                .collect(),
+        };
         let step = (targets.len() / 48).max(1);
         for t in targets.iter().step_by(step) {
-            let ys = shell_intersections(patches, t.0, t.1, scale);
+            let ys: Vec<f64> = match (patches.is_empty(), mesh) {
+                (true, Some(m)) => m.transverse(t.0, t.1, scale),
+                _ => shell_intersections(patches, t.0, t.1, scale)
+                    .iter()
+                    .map(|h| h.y)
+                    .collect(),
+            };
             if !ys.is_empty() {
                 probe_counts.push(ys.len());
                 if ys.len() >= 2 {
-                    probe_mids.push((ys[0].y + ys[ys.len() - 1].y) / 2.0);
+                    probe_mids.push((ys[0] + ys[ys.len() - 1]) / 2.0);
                 }
             }
         }
@@ -1671,11 +1712,9 @@ fn cluster_frame_with(
     let mirrored = !two_sided && y_sum / wet_count as f64 <= y_c;
     if !two_sided {
         // A half hull must actually reach its centerplane (keel/stem lines).
-        let nearest = patches
-            .iter()
-            .flat_map(|p| p.pts.iter())
-            .filter(|q| q.4 >= -1e-12)
-            .fold(f64::INFINITY, |m, q| m.min((q.3 - y_c).abs()));
+        let nearest = frame_points(patches, mesh)
+            .filter(|q| q[2] >= -1e-12)
+            .fold(f64::INFINITY, |m, q| m.min((q[1] - y_c).abs()));
         if nearest > 0.2 * (y_hi - y_lo).max(1e-12) {
             return Err(Error::InvalidGeometry(format!(
                 "the surface is one-sided but never approaches the centerplane \
@@ -1726,6 +1765,20 @@ fn cluster_frame_with(
         two_sided,
         mirrored,
     })
+}
+
+/// Points on a cluster's shell (hull frame) for its wetted statistics: the
+/// patches' presamples, or a bare mesh's vertices when there are no patches
+/// (an STL import, where the mesh is the geometry).
+fn frame_points<'a>(
+    patches: &'a [Patch],
+    mesh: Option<&'a PosedMesh>,
+) -> impl Iterator<Item = [f64; 3]> + 'a {
+    let bare = mesh.filter(|_| patches.is_empty());
+    patches
+        .iter()
+        .flat_map(|p| p.pts.iter().map(|q| [q.2, q.3, q.4]))
+        .chain(bare.into_iter().flat_map(|m| m.verts.iter().copied()))
 }
 
 /// Which side(s) of the centreplane carry shell: both for a full shell,
@@ -1956,6 +2009,7 @@ impl Default for SectionalOptions {
 #[derive(Debug, Clone)]
 pub struct SectionalReport {
     pub units_scale: f64,
+    /// Surface patches the hull was cut from (triangles, for a mesh import).
     pub patches: usize,
     pub two_sided: bool,
     pub centerplane: f64,
@@ -2003,18 +2057,29 @@ pub struct SectionalFleet {
 /// `opts`.
 pub fn import_sectional(text: &str, opts: &SectionalOptions) -> Result<SectionalFleet> {
     let fleet = source_fleet(text, opts.waterline_z)?;
-    let mut out = SectionalFleet {
-        hulls: Vec::new(),
-        failed: Vec::new(),
-    };
-    for i in 0..fleet.len() {
-        match fleet.situate_sectional(
+    collect_sectional(fleet.len(), |i| {
+        fleet.situate_sectional(
             i,
             opts.waterline_z,
             &HullPose::default(),
             &Platform::default(),
             opts,
-        ) {
+        )
+    })
+}
+
+/// Every hull of a fleet by sections, unposed: the ones that could be, the
+/// reasons the others could not.
+pub(crate) fn collect_sectional(
+    n: usize,
+    situate: impl Fn(usize) -> Result<Option<SectionalImport>>,
+) -> Result<SectionalFleet> {
+    let mut out = SectionalFleet {
+        hulls: Vec::new(),
+        failed: Vec::new(),
+    };
+    for i in 0..n {
+        match situate(i) {
             Ok(Some(h)) => out.hulls.push(h),
             Ok(None) => {}
             Err(e) => out.failed.push((i, e.to_string())),
@@ -2134,6 +2199,27 @@ impl SourceFleet {
     }
 }
 
+/// Build one posed hull by sections from a bare mesh that is the geometry
+/// itself (an STL): the same stations, rays, reach rule, end caps, ends and
+/// frame as for patches, with the hits taken straight from the facets.
+/// `Ok(None)` when the mesh is dry.
+pub(crate) fn sectional_mesh(
+    mesh: &PosedMesh,
+    opts: &SectionalOptions,
+    units_scale: f64,
+    state: &mut SectionalState,
+) -> Result<Option<SectionalImport>> {
+    if mesh.verts.iter().all(|p| p[2] < -1e-12) {
+        return Ok(None);
+    }
+    let mut imp = sectional_cluster(&[], Some(mesh), opts, units_scale, state)?;
+    imp.report.patches = mesh.tess.tris.len();
+    Ok(Some(imp))
+}
+
+/// Build one posed hull by sections. `patches` are its exact surfaces (the
+/// mesh, when given, guides the search and is polished onto them); with no
+/// patches, `mesh` is required and is the geometry itself.
 fn sectional_cluster(
     patches: &[Patch],
     mesh: Option<&PosedMesh>,
@@ -2275,6 +2361,9 @@ struct Station<'a> {
     /// The posed tessellation cut by the plane: segments between points on
     /// the shell, with where they lie on their patch. `None` without a mesh.
     cut: Option<Vec<[Cut; 2]>>,
+    /// The mesh is the geometry (no patches to polish on): hits are the
+    /// cut's own.
+    exact: bool,
 }
 
 /// A point where the station plane cuts a tessellation edge: its position
@@ -2340,6 +2429,7 @@ impl<'a> Station<'a> {
             scale,
             edges,
             cut: mesh.map(|m| m.cut(x)),
+            exact: mesh.is_some_and(|m| m.tess.params.is_empty()),
         }
     }
 
@@ -2447,6 +2537,9 @@ impl<'a> Station<'a> {
         let Some(cut) = &self.cut else {
             return self.search_hits(sd, z0, theta);
         };
+        if self.exact {
+            return self.mesh_hits(cut, sd, z0, theta);
+        }
         let (st, ct) = theta.sin_cos();
         let (dy, dz) = (sd * ct, st);
         let mut hits = self.edge_hits(sd, z0, theta);
@@ -2474,6 +2567,29 @@ impl<'a> Station<'a> {
                 // Onto an end cap: not a hit.
                 Some(None) => {}
                 _ => return self.search_hits(sd, z0, theta),
+            }
+        }
+        self.tidy(hits)
+    }
+
+    /// [`Station::hits`] on a mesh that is itself the geometry (an STL): the
+    /// ray's crossings of the cut segments, as they are.
+    fn mesh_hits(&self, cut: &[[Cut; 2]], sd: f64, z0: f64, theta: f64) -> Vec<Hit> {
+        let (st, ct) = theta.sin_cos();
+        let (dy, dz) = (sd * ct, st);
+        let min_reach = 1e-12 * self.scale;
+        let mut hits = Vec::new();
+        for [a, b] in cut {
+            let (ey, ez) = (b.y - a.y, b.z - a.z);
+            let den = dy * ez - dz * ey;
+            if den.abs() < 1e-300 {
+                continue;
+            }
+            let (qy, qz) = (a.y - self.y_c, a.z - z0);
+            let r = (qy * ez - qz * ey) / den;
+            let s = (qy * dz - qz * dy) / den;
+            if (-1e-9..=1.0 + 1e-9).contains(&s) && r > min_reach {
+                hits.push((r, None));
             }
         }
         self.tidy(hits)
@@ -2624,6 +2740,10 @@ impl<'a> Station<'a> {
                 } else {
                     0.5
                 };
+                if self.exact {
+                    take(a.z + s * (b.z - a.z));
+                    continue;
+                }
                 let (u, v) = (a.u + s * (b.u - a.u), a.v + s * (b.v - a.v));
                 if let Some(p) = self.patches.get(a.patch) {
                     if let Some((q, (qu, qv))) = newton_in_domain_uv(&p.surf, u, v, tol, system) {
@@ -2665,13 +2785,24 @@ impl<'a> Station<'a> {
 /// station's cut is found among the few triangles spanning it.
 #[derive(Debug, Clone)]
 pub(crate) struct Tessellation {
-    verts: Vec<[f64; 3]>,
-    /// `(patch, u, v)` of each vertex.
+    pub(crate) verts: Vec<[f64; 3]>,
+    /// `(patch, u, v)` of each vertex; empty for a mesh that is itself the
+    /// geometry (an STL), whose cuts are then taken as exact.
     params: Vec<(usize, f64, f64)>,
-    tris: Vec<[u32; 3]>,
+    pub(crate) tris: Vec<[u32; 3]>,
 }
 
 impl Tessellation {
+    /// A bare triangle mesh (CAD frame) that is the geometry itself: no
+    /// patches behind it, so sections come straight from its facets.
+    pub(crate) fn from_mesh(verts: Vec<[f64; 3]>, tris: Vec<[u32; 3]>) -> Self {
+        Tessellation {
+            verts,
+            params: Vec::new(),
+            tris,
+        }
+    }
+
     /// Grid-tessellate every patch finely enough that a facet is ~1/400 of
     /// the hull's largest extent: fine enough to catch every crossing
     /// (thin plates are their own patches, so still get cells), coarse
@@ -2778,6 +2909,27 @@ impl<'t> PosedMesh<'t> {
         }
     }
 
+    /// Every y at which the transverse line through `(x, z)` (hull frame)
+    /// crosses the mesh, sorted, coincident crossings merged.
+    fn transverse(&self, x: f64, z: f64, scale: f64) -> Vec<f64> {
+        let mut ys: Vec<f64> = Vec::new();
+        for [a, b] in self.cut(x) {
+            if (a.z - z) * (b.z - z) > 0.0 {
+                continue;
+            }
+            let dz = b.z - a.z;
+            let y = if dz.abs() > 1e-300 {
+                a.y + (z - a.z) / dz * (b.y - a.y)
+            } else {
+                0.5 * (a.y + b.y)
+            };
+            ys.push(y);
+        }
+        ys.sort_by(f64::total_cmp);
+        ys.dedup_by(|a, b| (*a - *b).abs() <= 1e-6 * scale);
+        ys
+    }
+
     /// The plane `x = const` through the mesh: one segment per triangle it
     /// crosses, its ends where it crosses the triangle's edges.
     fn cut(&self, x: f64) -> Vec<[Cut; 2]> {
@@ -2803,7 +2955,14 @@ impl<'t> PosedMesh<'t> {
                     continue;
                 }
                 let s = da / (da - dc);
-                let (qa, qc) = (self.tess.params[a as usize], self.tess.params[c as usize]);
+                let param = |k: u32| {
+                    self.tess
+                        .params
+                        .get(k as usize)
+                        .copied()
+                        .unwrap_or((usize::MAX, 0.0, 0.0))
+                };
+                let (qa, qc) = (param(a), param(c));
                 if n < 2 {
                     ends[n] = Some(Cut {
                         y: pa[1] + s * (pc[1] - pa[1]),
