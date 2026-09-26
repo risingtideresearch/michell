@@ -1,40 +1,35 @@
 //! `michell-web` — a browser front end for the `michell` tools.
 //!
-//! The first step is the loft viewer: upload a hull file in any input format
-//! the CLI reads (native `.hull`, offsets table, `*.grid.json`, IGES, STL),
-//! and see what it lofted to. The server does the work with the CLI's own
-//! loaders ([`michell_cli::load_hulls_from_bytes`]), so a hull looks here
-//! exactly as `michell info` would describe it, and ships the browser a
-//! sampled surface, the control net, and the sample grid with per-sample
-//! residuals so the loft's fidelity can be judged by eye.
+//! Upload a hull and see it the way the physics sees it: cut into sections.
+//! IGES hulls are cut straight from their CAD patches
+//! ([`michell::iges::import_sectional`]); exact B-spline `.hull` files are
+//! converted with [`SectionalHull::from_hull`]. The page is sent each
+//! station at its depth-quadrature nodes (what the depth integral
+//! integrates), the CAD ray hits those were interpolated from, the
+//! depth-integral curve the kernel interpolates along x, the hydrostatics,
+//! and the transom with what the closure needs to draw its virtual appendage
+//! at any speed.
 
-use michell::fit::FitOptions;
-use michell::{Hull, SampleGrid};
-use michell_cli::{describe_source, load_hulls_from_bytes, LoadSettings, LoadedHull, Source};
+use michell::iges::{import_sectional, SectionalImport, SectionalOptions};
+use michell::sectional::{DepthQuadrature, SectionalHull};
+use michell::Placement;
+use michell_cli::{load_hulls_from_bytes, LoadSettings};
 use serde_json::{json, Value};
-
-mod variants;
 
 /// Largest upload accepted [bytes]. Big enough for a finely tessellated STL.
 pub const MAX_UPLOAD: usize = 128 << 20;
 
-/// Loft options the page can set, mirroring the CLI flags of the same names.
+/// Import options the page can set.
 #[derive(Default)]
 pub struct LoftRequest {
-    /// Design waterline height in the file's frame [m] (`--waterline`).
+    /// Design waterline height in the file's frame [m] (IGES).
     pub waterline: Option<f64>,
-    /// Centerplane override [m] (`--centerplane`).
+    /// Centreplane override [m] (IGES).
     pub centerplane: Option<f64>,
-    /// Unit scale for STL (`--units`), e.g. "mm".
-    pub units: Option<String>,
-    /// Control-net size (`--fit-control NX,NZ`).
-    pub fit_control: Option<(usize, usize)>,
-    /// Fairing weight (`--fit-fairing`).
-    pub fairing: Option<f64>,
-    /// Control net of the experimental keel-following loft.
-    pub keel_net: Option<(usize, usize)>,
-    /// Keel segments per knot span for the experimental lofts.
-    pub keel_subdiv: Option<usize>,
+    /// Stations along the hull (IGES).
+    pub stations: Option<usize>,
+    /// Rays across each section (IGES).
+    pub rays: Option<usize>,
 }
 
 impl LoftRequest {
@@ -46,6 +41,12 @@ impl LoftRequest {
                 .parse::<f64>()
                 .map_err(|_| format!("{k}: expected a number, got {v:?}"))
         };
+        let count = |k: &str, v: &str, min: usize| match v.trim().parse::<usize>() {
+            Ok(n) if n >= min => Ok(n),
+            _ => Err(format!(
+                "{k}: expected a count of at least {min}, got {v:?}"
+            )),
+        };
         for (k, v) in pairs {
             if v.trim().is_empty() {
                 continue;
@@ -53,128 +54,60 @@ impl LoftRequest {
             match k.as_str() {
                 "waterline" => r.waterline = Some(num(k, v)?),
                 "centerplane" => r.centerplane = Some(num(k, v)?),
-                "units" => r.units = Some(v.clone()),
-                "fairing" => r.fairing = Some(num(k, v)?),
-                "ksub" => {
-                    r.keel_subdiv = Some(
-                        v.trim()
-                            .parse()
-                            .map_err(|_| format!("{k}: expected a count, got {v:?}"))?,
-                    )
-                }
-                "knx" | "kns" => {
-                    let n = v
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|_| format!("{k}: expected a count, got {v:?}"))?;
-                    let (nx, ns) = r.keel_net.get_or_insert((20, 12));
-                    if k == "knx" {
-                        *nx = n;
-                    } else {
-                        *ns = n;
-                    }
-                }
-                "nx" | "nz" => {
-                    let n = v
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|_| format!("{k}: expected a count, got {v:?}"))?;
-                    let (nx, nz) = r.fit_control.get_or_insert((0, 0));
-                    if k == "nx" {
-                        *nx = n;
-                    } else {
-                        *nz = n;
-                    }
-                }
+                "stations" => r.stations = Some(count(k, v, 8)?),
+                "rays" => r.rays = Some(count(k, v, 5)?),
                 _ => {}
-            }
-        }
-        if let Some((nx, nz)) = r.fit_control {
-            if nx == 0 || nz == 0 {
-                return Err("control net: give both nx and nz".into());
             }
         }
         Ok(r)
     }
-
-    fn settings(&self) -> Result<LoadSettings, String> {
-        let mut s = LoadSettings::default();
-        if let Some(w) = self.waterline {
-            s.waterline_z = w;
-        }
-        s.centerplane = self.centerplane;
-        if let Some(u) = &self.units {
-            s.units = Some(michell_cli::parse_units(u)?);
-        }
-        if let Some((nx, nz)) = self.fit_control {
-            s.fit = FitOptions {
-                n_ctrl_x: nx,
-                n_ctrl_z: nz,
-                ..s.fit
-            };
-            s.fit_explicit = true;
-        }
-        if let Some(f) = self.fairing {
-            s.fit.fairing = f;
-        }
-        Ok(s)
-    }
 }
 
-/// Loft an uploaded file and describe the result as the JSON the page draws.
+/// Cut an uploaded hull into sections and describe it as the JSON the page
+/// draws.
 pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
     let t0 = std::time::Instant::now();
-    // CAD files are also imported by sections, straight from the patches.
-    let sectional = is_iges(name, &bytes).then(|| {
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        let opts = michell::iges::SectionalOptions {
-            waterline_z: req.waterline.unwrap_or(0.0),
-            centerplane: req.centerplane,
-            ..Default::default()
-        };
-        let t = std::time::Instant::now();
-        (
-            michell::iges::import_sectional(&text, &opts),
-            t.elapsed().as_secs_f64(),
-        )
-    });
-    let hulls = load_hulls_from_bytes(name, bytes, &req.settings()?)?;
-    let elapsed = t0.elapsed().as_secs_f64();
-    let vopts = variants::VariantOptions {
-        fairing: req.fairing.unwrap_or(0.0),
-        keel_net: req.keel_net.unwrap_or((20, 12)),
-        keel_subdiv: req.keel_subdiv.unwrap_or(1),
+    let d = SectionalOptions::default();
+    let opts = SectionalOptions {
+        waterline_z: req.waterline.unwrap_or(0.0),
+        centerplane: req.centerplane,
+        stations: req.stations.unwrap_or(d.stations),
+        rays: req.rays.unwrap_or(d.rays),
+        ..d
     };
-    let mut out: Vec<Value> = hulls.iter().map(|h| hull_json(h, &vopts)).collect();
-    if let Some((result, secs)) = sectional {
-        match result {
-            Ok(fleet) => {
-                // Pair each sectional hull with the lofted one at the same
-                // centreplane.
-                for sh in &fleet.hulls {
-                    let nearest = hulls
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| {
-                            (a.placement.y - sh.placement.y)
-                                .abs()
-                                .total_cmp(&(b.placement.y - sh.placement.y).abs())
-                        })
-                        .map(|(i, _)| i);
-                    if let Some(v) =
-                        nearest.and_then(|i| out[i]["compare"]["variants"].as_array_mut())
-                    {
-                        v.push(variants::sectional_variant(sh, secs));
-                    }
-                }
-            }
-            Err(e) => eprintln!("sectional import of {name}: {e}"),
+    let mut notes = Vec::new();
+    let hulls: Vec<Value> = if is_iges(name, &bytes) {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let fleet = import_sectional(&text, &opts).map_err(|e| e.to_string())?;
+        for (i, why) in &fleet.failed {
+            notes.push(format!("hull {} not sectioned: {why}", i + 1));
         }
-    }
+        fleet.hulls.iter().map(iges_hull_json).collect()
+    } else if is_native_hull(&bytes) {
+        load_hulls_from_bytes(name, bytes, &LoadSettings::default())?
+            .iter()
+            .map(|l| {
+                let sec = SectionalHull::from_hull(&l.hull, &DepthQuadrature::default())
+                    .map_err(|e| e.to_string())?;
+                let lines = vec![
+                    "source: exact B-spline control net, sectioned at its Greville stations"
+                        .to_string(),
+                ];
+                Ok(hull_json(&sec, l.placement, None, lines))
+            })
+            .collect::<Result<_, String>>()?
+    } else {
+        return Err(
+            "the viewer shows hulls cut into sections: upload an IGES file or a \
+             michell-hull .hull file (STL sections are not built yet)"
+                .into(),
+        );
+    };
     Ok(json!({
         "name": name,
-        "seconds": elapsed,
-        "hulls": out,
+        "seconds": t0.elapsed().as_secs_f64(),
+        "notes": notes,
+        "hulls": hulls,
     }))
 }
 
@@ -188,170 +121,199 @@ fn is_iges(name: &str, bytes: &[u8]) -> bool {
     first.len() >= 73 && matches!(first[72], b'S' | b'G')
 }
 
-fn hull_json(l: &LoadedHull, vopts: &variants::VariantOptions) -> Value {
-    let h = &l.hull;
-    let fit = match &l.source {
-        Source::Native => None,
-        Source::Body(r) | Source::Offsets(r) | Source::Grid(r) => Some(r),
-        Source::Iges(r) | Source::Stl(r) => Some(&r.fit),
+fn is_native_hull(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
+        .is_some_and(|l| l.trim_start().starts_with("michell-hull"))
+}
+
+fn iges_hull_json(imp: &SectionalImport) -> Value {
+    let r = &imp.report;
+    let sides = if r.two_sided {
+        format!("both sides averaged about y = {:.4} m", r.centerplane)
+    } else {
+        format!("one side about y = {:.4} m", r.centerplane)
     };
-    json!({
-        "placement": { "x": l.placement.x, "y": l.placement.y },
-        "source": source_kind(&l.source),
-        "diagnostics": describe_source(&l.source),
-        "under_resolved": fit.is_some_and(|r| r.under_resolved()),
-        "relative_rms": fit.map(|r| r.relative_rms()),
-        "length": h.length(),
-        "beam": michell_cli::max_beam(h),
-        "draft": h.draft(),
-        "wetted_surface": h.wetted_surface(),
-        "displaced_volume": h.displaced_volume(),
-        "lcb_x": h.lcb_x(),
-        "waterplane_area": h.waterplane_area(),
-        "transom": h.transom().map(|t| json!({
-            "x": t.x, "depth": t.depth, "half_beam": t.half_beam, "area": t.area,
-        })),
-        "surface": surface_json(h),
-        "control": control_json(h),
-        "grid": l.grid.as_ref().map(|g| grid_json(g, h)),
-        // Experimental alternative lofts of the same samples, for comparison.
-        "compare": l.grid.as_ref().map(|g| variants::variants(g, h, vopts)),
-    })
-}
-
-fn source_kind(s: &Source) -> &'static str {
-    match s {
-        Source::Native => "control net",
-        Source::Body(_) => "body",
-        Source::Offsets(_) => "offsets",
-        Source::Grid(_) => "sample grid",
-        Source::Iges(_) => "IGES",
-        Source::Stl(_) => "STL",
+    let mut lines = vec![format!(
+        "source: IGES, {} patches, cut at {} stations over x {:.4}..{:.4} m ({sides})",
+        r.patches, r.stations, r.x_range.0, r.x_range.1
+    )];
+    if r.dropped_stations > 0 {
+        lines.push(format!(
+            "{} interior stations could not be sectioned (bridged by the interpolant)",
+            r.dropped_stations
+        ));
     }
+    if r.max_asymmetry > 1e-3 * r.draft.max(1e-9) {
+        lines.push(format!(
+            "port and starboard differ by up to {:.3e} m (averaged)",
+            r.max_asymmetry
+        ));
+    }
+    hull_json(&imp.hull, imp.placement, Some(&imp.sections), lines)
 }
 
-/// The half-beam surface sampled for display: stations at every knot and
-/// uniformly between (so chines and knuckles land on a mesh line), uniform
-/// waterlines likewise augmented with the z knots.
-fn surface_json(h: &Hull) -> Value {
-    let s = h.surface();
-    let xs = display_axis(s.x_domain(), s.knots_x(), 240);
-    let zs = display_axis(s.z_domain(), s.knots_z(), 48);
-    let mut y = Vec::with_capacity(xs.len() * zs.len());
-    for &x in &xs {
-        for &z in &zs {
-            y.push(s.eval(x, z));
+/// One hull, drawn as the physics uses it (see the module docs).
+fn hull_json(
+    hull: &SectionalHull,
+    placement: Placement,
+    rays: Option<&Vec<(f64, Vec<(f64, f64)>)>>,
+    lines: Vec<String>,
+) -> Value {
+    let stations: Vec<(f64, Vec<(f64, f64)>)> =
+        hull.sections().map(|(x, o)| (x, o.to_vec())).collect();
+    // A see-through surface between stations, for orientation only (the
+    // kernel interpolates each station's depth integral along x, not a
+    // surface): rows joined at equal fractions of girth, so neighbouring
+    // sections with different node spacing still meet cleanly.
+    let rows = 48usize;
+    let (mut mx, mut mz, mut my) = (Vec::new(), Vec::new(), Vec::new());
+    for (x, o) in &stations {
+        for (y, z) in by_girth(o, rows) {
+            mx.push(*x);
+            mz.push(z);
+            my.push(y);
         }
     }
-    json!({ "x": xs, "z": zs, "y": y })
-}
-
-fn display_axis((a, b): (f64, f64), knots: &[f64], n: usize) -> Vec<f64> {
-    let mut v: Vec<f64> = (0..=n)
-        .map(|i| a + (b - a) * i as f64 / n as f64)
-        .chain(knots.iter().copied())
-        .filter(|t| (a..=b).contains(t))
+    let keel: Vec<(f64, f64)> = stations
+        .iter()
+        .map(|(x, o)| (*x, o.last().map_or(0.0, |p| p.1)))
         .collect();
-    v.sort_by(f64::total_cmp);
-    let tol = 1e-9 * (b - a).abs().max(1e-12);
-    v.dedup_by(|p, q| (*p - *q).abs() < tol);
-    v
-}
-
-/// Control points at their Greville abscissae: where each control value
-/// "sits" on the surface, which is how a control net is conventionally drawn.
-fn control_json(h: &Hull) -> Value {
-    let s = h.surface();
-    let greville = |knots: &[f64], p: usize, n: usize| -> Vec<f64> {
-        (0..n)
-            .map(|i| knots[i + 1..=i + p].iter().sum::<f64>() / p.max(1) as f64)
-            .collect()
-    };
-    let (nx, nz) = (s.n_ctrl_x(), s.n_ctrl_z());
+    let beam = 2.0
+        * stations
+            .iter()
+            .flat_map(|(_, o)| o.first().map(|p| p.0))
+            .fold(0.0, f64::max);
+    // The depth-integral curves at κ = 0 (sectional area) and at a short
+    // wave's decay rate: λ = 2 at Fn 0.15, κ = νλ², ν = g/U² = 1/(0.0225 L).
+    let kappas = [0.0, 4.0 / (0.0225 * hull.length())];
+    let curves: Vec<Value> = kappas
+        .iter()
+        .map(|&kappa| {
+            let (st, c) = hull.depth_integral_curve(kappa, 8);
+            json!({ "kappa": kappa, "stations": st, "curve": c })
+        })
+        .collect();
+    // The transom and its section — the aft end station's outline, whose
+    // depth integral is the closure's depth factor — so the page can draw
+    // the virtual appendage at whatever speed and closure it is asked about.
+    let transom = hull.transom().map(|t| {
+        let aft = stations
+            .iter()
+            .min_by(|a, b| (a.0 - t.x).abs().total_cmp(&(b.0 - t.x).abs()));
+        json!({
+            "x": t.x,
+            "depth": t.depth,
+            "half_beam": t.half_beam,
+            "area": t.area,
+            "area_ratio": t.area / hull.max_section_area().max(1e-300),
+            "outline": aft.map(|s| by_girth(&s.1, rows)).unwrap_or_default(),
+            // Z_T at each curve's κ: the kernel extends Z over the hollow as
+            // Z_T · φ(s).
+            "z_t": kappas
+                .iter()
+                .map(|&k| hull.depth_integral_curve(k, 1).0.first().map_or(0.0, |p| p.1))
+                .collect::<Vec<_>>(),
+        })
+    });
     json!({
-        "degree": [s.degree_x(), s.degree_z()],
-        "x": greville(s.knots_x(), s.degree_x(), nx),
-        "z": greville(s.knots_z(), s.degree_z(), nz),
-        "y": s.control(),
+        "placement": { "x": placement.x, "y": placement.y },
+        "diagnostics": lines,
+        "length": hull.length(),
+        "beam": beam,
+        "draft": hull.draft(),
+        "displaced_volume": hull.displaced_volume(),
+        "wetted_surface": hull.wetted_surface(),
+        "lcb_x": hull.lcb_x(),
+        "waterplane_area": hull.waterplane_area(),
+        "stations": stations,
+        "rays": rays,
+        "mesh": { "nx": stations.len(), "nz": rows + 1, "x": mx, "z": mz, "y": my },
+        "keel": keel,
+        "area": curves,
+        "transom": transom,
     })
 }
 
-/// The samples the loft was fitted to, with the loft's residual at each
-/// (`null` where the sample was excluded, e.g. a failed CAD inversion).
-fn grid_json(g: &SampleGrid, h: &Hull) -> Value {
-    let s = h.surface();
-    let (st, wl, hb) = (g.stations(), g.waterlines(), g.half_beams());
-    let w = g.weights();
-    let mut residual = Vec::with_capacity(hb.len());
-    for (i, &x) in st.iter().enumerate() {
-        for (j, &z) in wl.iter().enumerate() {
-            let k = g.idx(i, j);
-            let used = w.is_none_or(|w| w[k] > 0.0) && hb[k].is_finite();
-            residual.push(if used {
-                Some(s.eval(x, z) - hb[k])
-            } else {
-                None
-            });
-        }
+/// A section outline resampled at `rows + 1` points evenly spaced in girth
+/// (a point for an empty section).
+fn by_girth(o: &[(f64, f64)], rows: usize) -> Vec<(f64, f64)> {
+    if o.len() < 2 {
+        return vec![(0.0, 0.0); rows + 1];
     }
-    json!({
-        "x": st,
-        "z": wl,
-        "y": hb.iter().map(|v| v.is_finite().then_some(*v)).collect::<Vec<_>>(),
-        "residual": residual,
-    })
+    let mut cum = vec![0.0];
+    for w in o.windows(2) {
+        let d = ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt();
+        cum.push(cum.last().unwrap() + d);
+    }
+    let total = *cum.last().unwrap();
+    (0..=rows)
+        .map(|k| {
+            let g = total * k as f64 / rows as f64;
+            let j = cum.partition_point(|&c| c < g).clamp(1, o.len() - 1);
+            let t = if cum[j] > cum[j - 1] {
+                (g - cum[j - 1]) / (cum[j] - cum[j - 1])
+            } else {
+                0.0
+            };
+            (
+                o[j - 1].0 + t * (o[j].0 - o[j - 1].0),
+                o[j - 1].1 + t * (o[j].1 - o[j - 1].1),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const OFFSETS: &str = "michell-offsets v1
-waterlines 0 0.125 0.25 0.375 0.5 0.625
-station -5.0   0    0    0    0    0    0
-station -4.0   0.36 0.35 0.32 0.27 0.19 0
-station -3.0   0.64 0.62 0.57 0.48 0.34 0
-station -2.0   0.84 0.81 0.75 0.63 0.44 0
-station -1.0   0.96 0.93 0.86 0.72 0.51 0
-station  0.0   1.00 0.97 0.89 0.75 0.53 0
-station  1.0   0.96 0.93 0.86 0.72 0.51 0
-station  2.0   0.84 0.81 0.75 0.63 0.44 0
-station  3.0   0.64 0.62 0.57 0.48 0.34 0
-station  4.0   0.36 0.35 0.32 0.27 0.19 0
-station  5.0   0    0    0    0    0    0
-";
-
-    #[test]
-    fn lofts_an_offsets_table_with_its_samples() {
-        let v = loft("t.offsets", OFFSETS.into(), &LoftRequest::default()).unwrap();
-        let hulls = v["hulls"].as_array().unwrap();
-        assert_eq!(hulls.len(), 1);
-        let h = &hulls[0];
-        assert_eq!(h["source"], "offsets");
-        assert!((h["length"].as_f64().unwrap() - 10.0).abs() < 1e-9);
-        let surf = &h["surface"];
-        let (nx, nz) = (
-            surf["x"].as_array().unwrap().len(),
-            surf["z"].as_array().unwrap().len(),
+    /// The Wigley as a native `.hull` file, shown by sections.
+    fn wigley_file(hull: &michell::Hull) -> String {
+        let s = hull.surface();
+        let join = |v: &[f64]| {
+            v.iter()
+                .map(|x| format!("{x}"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let mut out = format!(
+            "michell-hull v1\ndegree-x {}\ndegree-z {}\nknots-x {}\nknots-z {}\n",
+            s.degree_x(),
+            s.degree_z(),
+            join(s.knots_x()),
+            join(s.knots_z())
         );
-        assert_eq!(surf["y"].as_array().unwrap().len(), nx * nz);
-        let grid = &h["grid"];
-        assert_eq!(grid["residual"].as_array().unwrap().len(), 11 * 6);
-        let c = &h["control"];
-        assert_eq!(
-            c["y"].as_array().unwrap().len(),
-            c["x"].as_array().unwrap().len() * c["z"].as_array().unwrap().len()
-        );
+        let nz = s.n_ctrl_z();
+        for i in 0..s.n_ctrl_x() {
+            out.push_str(&format!(
+                "row {}\n",
+                join(&s.control()[i * nz..(i + 1) * nz])
+            ));
+        }
+        out
     }
 
     #[test]
-    fn rejects_an_unrecognised_file() {
-        assert!(loft("x.txt", b"hello".to_vec(), &LoftRequest::default()).is_err());
+    fn a_native_wigley_is_shown_in_sections() {
+        let hull = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let v = loft(
+            "w.hull",
+            wigley_file(&hull).into_bytes(),
+            &LoftRequest::default(),
+        )
+        .unwrap();
+        let h = &v["hulls"][0];
+        let vol = h["displaced_volume"].as_f64().unwrap();
+        assert!((vol - hull.displaced_volume()).abs() < 1e-9 * vol, "{vol}");
+        assert!(h["transom"].is_null());
+        assert!(!h["stations"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn stl_without_units_says_so() {
+    fn rejects_what_it_cannot_section() {
         let e = loft("x.stl", vec![0; 200], &LoftRequest::default()).unwrap_err();
-        assert!(e.contains("units"), "{e}");
+        assert!(e.contains("sections"), "{e}");
     }
 }

@@ -3,20 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>michell — loft viewer</title>
+<title>michell — sectional hull viewer</title>
 <link rel="icon" href="data:,">
 <style>
   :root {
     --bg: #f4f3ef; --panel: #ffffff; --ink: #1d1f22; --muted: #6b6f76;
     --line: #dddad2; --accent: #1f6feb; --warn: #b54708; --warn-bg: #fff4e5;
-    --err: #b42318; --err-bg: #fdecea; --canvas: #eef0f2;
+    --err: #b42318; --err-bg: #fdecea; --canvas: #eef0f2; --closure: #e8590c;
     --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #16181b; --panel: #1e2125; --ink: #e6e7e9; --muted: #9aa0a8;
       --line: #30343a; --accent: #5b9cff; --warn: #f5a524; --warn-bg: #3a2a10;
-      --err: #ff7b72; --err-bg: #3b1a1a; --canvas: #111316;
+      --err: #ff7b72; --err-bg: #3b1a1a; --canvas: #111316; --closure: #ff8c42;
     }
   }
   * { box-sizing: border-box; }
@@ -24,13 +24,13 @@
   body {
     background: var(--bg); color: var(--ink);
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: grid; grid-template-columns: 380px 1fr; grid-template-rows: 100%;
+    display: grid; grid-template-columns: 360px 1fr; grid-template-rows: 100%;
   }
   aside {
     background: var(--panel); border-right: 1px solid var(--line);
     overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px;
   }
-  h1 { font-size: 16px; margin: 0; letter-spacing: .01em; }
+  h1 { font-size: 16px; margin: 0; }
   h1 span { color: var(--muted); font-weight: 400; }
   h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
   #drop {
@@ -48,10 +48,12 @@
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px;
   }
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input[type=range] { padding: 0; }
   button { cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; padding: 7px; }
   button:disabled { opacity: .5; cursor: default; }
   .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .readout { font-family: var(--mono); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
   #status { font-size: 13px; min-height: 1.4em; }
   #status.err { color: var(--err); background: var(--err-bg); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; }
   .hull { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
@@ -61,16 +63,13 @@
   dl { display: grid; grid-template-columns: auto 1fr; gap: 1px 12px; margin: 0; font-size: 13px; }
   dt { color: var(--muted); }
   dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
-  .warn { color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-top: 8px; }
+  .note { color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin-top: 8px; }
   details { margin-top: 8px; font-size: 12px; }
   summary { cursor: pointer; color: var(--muted); }
-  details pre { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; margin: 6px 0 0; color: var(--ink); }
+  details pre { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; margin: 6px 0 0; }
   main { position: relative; background: var(--canvas); min-width: 0; }
   canvas { display: block; }
-  .toolbar {
-    position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap;
-    gap: 8px; pointer-events: none; align-items: flex-start;
-  }
+  .toolbar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; pointer-events: none; }
   .group {
     pointer-events: auto; background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; padding: 4px; display: flex; gap: 2px; align-items: center;
@@ -79,34 +78,18 @@
   .group button { border: 0; background: transparent; padding: 4px 9px; border-radius: 5px; font-size: 13px; }
   .group button.on { background: var(--accent); color: #fff; }
   .group label { flex-direction: row; align-items: center; gap: 6px; padding: 0 6px; color: var(--ink); font-size: 13px; }
-  .group input[type=range] { width: 90px; padding: 0; }
-  #readout {
-    position: absolute; left: 12px; bottom: 12px; font-family: var(--mono); font-size: 12px;
+  .group input[type=range] { width: 90px; }
+  #readout3d {
+    position: absolute; left: 12px; top: 64px; font-family: var(--mono); font-size: 12px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     pointer-events: none; display: none;
   }
-  #legend {
-    position: absolute; right: 12px; bottom: 12px; background: var(--panel); border: 1px solid var(--line);
-    border-radius: 6px; padding: 6px 8px; font-size: 11px; display: none; width: 190px;
-  }
-  #legend .bar { height: 8px; border-radius: 3px; margin: 4px 0 2px;
-    background: linear-gradient(90deg, #2166ac, #92c5de, #f7f7f7, #f4a582, #b2182b); }
-  #legend .ends { display: flex; justify-content: space-between; font-family: var(--mono); color: var(--muted); }
-  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
-  table.cmp { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; font-variant-numeric: tabular-nums; }
-  table.cmp th { text-align: right; font-weight: 500; color: var(--muted); padding: 2px 2px; }
-  table.cmp th:first-child, table.cmp td:first-child { text-align: left; }
-  table.cmp td { text-align: right; padding: 2px 2px; border-top: 1px solid var(--line); white-space: nowrap; }
-  table.cmp tr.on td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-  table.cmp tr { cursor: pointer; }
-  .vplabel { position: absolute; left: 12px; font-size: 12px; font-weight: 600; background: var(--panel);
-    border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; pointer-events: none; display: none; }
-  #area { position: absolute; left: 12px; bottom: 44px; width: min(560px, calc(100% - 24px));
+  #area { position: absolute; left: 12px; bottom: 12px; width: min(620px, calc(100% - 24px));
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 4px;
     font-size: 11px; display: none; }
-  #area svg { width: 100%; height: 120px; display: block; }
-  #area .key { display: flex; gap: 12px; color: var(--muted); }
-  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+  #area svg { width: 100%; height: 130px; display: block; }
+  #area .key { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
+  #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -117,61 +100,56 @@
 </head>
 <body>
 <aside>
-  <h1>michell <span>· loft viewer</span></h1>
+  <h1>michell <span>· sectional hull viewer</span></h1>
 
   <section>
     <div id="drop">
       <strong>Drop a hull file</strong>
-      or click to choose — .hull, offsets, .grid.json, IGES, STL
+      or click to choose — IGES, or a michell-hull .hull
       <div class="fname" id="fname"></div>
     </div>
     <input type="file" id="file" hidden>
   </section>
 
   <section>
-    <h2>Import options</h2>
+    <h2>Sections</h2>
     <div class="fields">
       <label>Waterline z [m]
         <input id="waterline" type="number" step="any" placeholder="0">
       </label>
-      <label>Centerplane y [m]
+      <label>Centreplane y [m]
         <input id="centerplane" type="number" step="any" placeholder="auto">
       </label>
-      <label>Units (STL)
-        <select id="units">
-          <option value="">—</option>
-          <option>mm</option><option>cm</option><option>m</option>
-          <option>in</option><option>ft</option>
-        </select>
+      <label>Stations
+        <input id="stations" type="number" min="8" placeholder="121">
       </label>
-      <label>Control net
-        <span style="display:flex;gap:4px;align-items:center">
-          <input id="nx" type="number" min="4" placeholder="auto" style="width:100%">×
-          <input id="nz" type="number" min="4" placeholder="auto" style="width:100%">
-        </span>
-      </label>
-      <label class="wide" title="Penalise bending energy against the mean squared residual. Stops the loft rippling along a keel line that crosses the grid diagonally; 1e-7 is a good start, 1e-5 visibly rounds the keel.">Fairing λ
-        <input id="fairing" type="number" step="any" min="0" placeholder="0 (plain least squares) — try 1e-7">
+      <label>Rays per section
+        <input id="rays" type="number" min="5" placeholder="33">
       </label>
     </div>
-    <p class="hint">Waterline and centerplane apply to IGES and STL, in the file's frame after unit conversion.</p>
+    <p class="hint">IGES only: the waterline is the design waterline height in the file's frame, after unit conversion.</p>
+    <button class="primary" id="go" disabled style="width:100%;margin-top:10px">Cut into sections</button>
   </section>
 
   <section>
-    <h2>Experimental lofts</h2>
+    <h2>Transom closure</h2>
     <div class="fields">
-      <label title="Control net of the keel-following loft, along x and down the normalised depth s = z/d(x)">Keel-following net
-        <span style="display:flex;gap:4px;align-items:center">
-          <input id="knx" type="number" min="4" placeholder="20" style="width:100%">×
-          <input id="kns" type="number" min="5" placeholder="12" style="width:100%">
-        </span>
+      <label class="wide">Froude number <span id="fnv" style="color:var(--ink)"></span>
+        <input id="froude" type="range" min="0.1" max="0.8" step="0.01" value="0.3">
       </label>
-      <label title="Piecewise-linear keel segments per x knot span. The keel line is estimated from the samples, so more segments follow its sampling noise too.">Keel segments / span
-        <input id="ksub" type="number" min="1" placeholder="1">
+      <label>Closure
+        <select id="closure">
+          <option value="ballistic">Ballistic</option>
+          <option value="fixed">Fixed length</option>
+          <option value="off">Off (open)</option>
+        </select>
+      </label>
+      <label id="paramlabel"><span id="paramname">Coefficient c</span>
+        <input id="param" type="number" step="any" value="1.4142">
       </label>
     </div>
-    <p class="hint">Both alternatives cut the hull at a piecewise-linear keel line fitted to the samples. <b>Trimmed</b> keeps the (x, z) spline but only fits and integrates above the keel; <b>keel-following</b> lofts in s = z/d(x), zero at the keel.</p>
-    <button class="primary" id="go" disabled style="width:100%;margin-top:10px">Loft</button>
+    <p class="hint">The closure is a virtual appendage behind the transom: its section, faded out as φ(s) = 1 − 3s² + 2s³ over the hollow length L_v. Ballistic: L_v = c·U·√(d_T/g), c = √2 for free fall.</p>
+    <div class="readout" id="closureout"></div>
   </section>
 
   <div id="status"></div>
@@ -180,15 +158,7 @@
 
 <main id="view">
   <div id="empty">No hull loaded</div>
-  <div class="vplabel" id="vp0"></div><div class="vplabel" id="vp1"></div><div class="vplabel" id="vp2"></div><div class="vplabel" id="vp3"></div>
   <div class="toolbar">
-    <div class="group" id="variants">
-      <button data-variant="0" class="on" title="1">Current</button>
-      <button data-variant="1" title="2">Trimmed</button>
-      <button data-variant="2" title="3">Keel-following</button>
-      <button data-variant="3" title="5">Sectional</button>
-      <button data-variant="all" title="4">All ⧉</button>
-    </div>
     <div class="group" id="views">
       <button data-view="iso" class="on">3D</button>
       <button data-view="profile">Profile</button>
@@ -197,10 +167,10 @@
     </div>
     <div class="group" id="layers">
       <button data-layer="surface" class="on">Surface</button>
-      <button data-layer="lines" class="on">Lines</button>
+      <button data-layer="stations" class="on">Stations</button>
       <button data-layer="keel" class="on">Keel</button>
-      <button data-layer="samples">Samples</button>
-      <button data-layer="control">Control net</button>
+      <button data-layer="rays">CAD rays</button>
+      <button data-layer="closure" class="on">Closure</button>
       <button data-layer="water" class="on">Waterplane</button>
     </div>
     <div class="group">
@@ -210,17 +180,11 @@
       </label>
     </div>
   </div>
-  <div id="readout"></div>
+  <div id="readout3d"></div>
   <div id="area">
-    <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots) and its interpolant (line), each scaled to its peak</span></div>
-    <svg id="areasvg" viewBox="0 0 560 120" preserveAspectRatio="none"></svg>
+    <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots), its interpolant (line), and the closure's Z_T·φ(s) over the hollow (dashed), each scaled to its peak</span></div>
+    <svg id="areasvg" viewBox="0 0 620 130" preserveAspectRatio="none"></svg>
     <div class="key"><span style="color:#1f6feb">— κ = 0 (sectional area)</span><span style="color:#d6336c">— κ of a short wave (λ = 2 at Fn 0.15)</span></div>
-  </div>
-  <div id="legend">
-    <div>Loft − sample (half-beam)</div>
-    <div class="bar"></div>
-    <div class="ends"><span id="lmin"></span><span>0</span><span id="lmax"></span></div>
-    <div id="lworst" style="color:var(--muted);margin-top:3px"></div>
   </div>
 </main>
 
@@ -228,21 +192,18 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-// ---------------------------------------------------------------- UI state
 const $ = (id) => document.getElementById(id);
-let file = null;
-const FIELDS = ["waterline", "centerplane", "units", "nx", "nz", "fairing", "knx", "kns", "ksub"];
+const G = 9.81;
+let file = null, hulls = [];
+const FIELDS = ["waterline", "centerplane", "stations", "rays"];
 
+// ---------------------------------------------------------------- upload
 const drop = $("drop"), picker = $("file");
 drop.onclick = () => picker.click();
 picker.onchange = () => picker.files[0] && choose(picker.files[0]);
 drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
-drop.ondrop = (e) => {
-  e.preventDefault(); drop.classList.remove("over");
-  if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]);
-};
-// Dropping anywhere on the page works too.
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); };
 document.body.ondragover = (e) => e.preventDefault();
 document.body.ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); };
 
@@ -250,38 +211,28 @@ function choose(f) {
   file = f;
   $("fname").textContent = `${f.name} · ${fmtBytes(f.size)}`;
   $("go").disabled = false;
-  if (/\.stl$/i.test(f.name) && !$("units").value) {
-    status("STL files carry no units — choose one, then Loft.");
-    $("units").focus();
-    return;
-  }
   run();
 }
 $("go").onclick = run;
 for (const id of FIELDS) $(id).addEventListener("keydown", (e) => e.key === "Enter" && file && run());
 
-function status(msg, err = false) {
-  const s = $("status");
-  s.textContent = msg; s.className = err ? "err" : "";
-}
+function status(msg, err = false) { const s = $("status"); s.textContent = msg; s.className = err ? "err" : ""; }
 
 async function run() {
   if (!file) return;
   const q = new URLSearchParams({ name: file.name });
-  for (const id of FIELDS) {
-    const v = $(id).value.trim();
-    if (v) q.set(id, v);
-  }
+  for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
   $("go").disabled = true;
-  status(`Lofting ${file.name}…`);
-  const t0 = performance.now();
+  status(`Cutting ${file.name} into sections…`);
   try {
     const r = await fetch(`/api/loft?${q}`, { method: "POST", body: file });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
-    const s = ((performance.now() - t0) / 1000).toFixed(2);
-    status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · lofted in ${data.seconds.toFixed(2)} s (${s} s round trip)`);
-    show(data);
+    status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · sectioned in ${data.seconds.toFixed(2)} s`);
+    hulls = data.hulls;
+    renderResults(data.notes || []);
+    scene3d.load(hulls);
+    updateClosure();
   } catch (e) {
     status(e.message, true);
   } finally {
@@ -289,80 +240,74 @@ async function run() {
   }
 }
 
+// ---------------------------------------------------------------- closure
+// Mirrors michell's TransomClosure::hollow_length: ballistic L_v = c·√(d_T/ν)
+// with ν = g/U² (i.e. c·U·√(d_T/g)); fixed L_v = L; off: no appendage.
+function closureSpec() {
+  const kind = $("closure").value, p = Number($("param").value);
+  return { kind, param: Number.isFinite(p) ? p : 0 };
+}
+function lRef() { return Math.max(0, ...hulls.map((h) => h.length)); }
+function speed() { return Number($("froude").value) * Math.sqrt(G * lRef()); }
+function hollowLength(depth) {
+  const { kind, param } = closureSpec();
+  if (kind === "off") return null;
+  if (kind === "fixed") return Math.max(0, param);
+  const u = speed(), nu = G / (u * u);
+  return param * Math.sqrt(depth / nu);
+}
+// φ(s) = 1 − 3s² + 2s³: 1 at the transom, 0 at the hollow's end, flat at both.
+const phi = (s) => 1 - 3 * s * s + 2 * s * s * s;
+
+$("closure").onchange = () => {
+  const k = $("closure").value;
+  $("paramlabel").style.visibility = k === "off" ? "hidden" : "visible";
+  $("paramname").textContent = k === "fixed" ? "Hollow length [m]" : "Coefficient c";
+  $("param").value = k === "fixed" ? "0.3" : "1.4142";
+  updateClosure();
+};
+for (const id of ["froude", "param"]) $(id).addEventListener("input", updateClosure);
+
+function updateClosure() {
+  const fnum = Number($("froude").value), u = speed();
+  $("fnv").textContent = hulls.length ? `${fnum.toFixed(2)} · U ${u.toFixed(2)} m/s (${(u / 0.514444).toFixed(1)} kn)` : fnum.toFixed(2);
+  $("closureout").textContent = hulls.map((h, i) => {
+    const t = h.transom;
+    const name = hulls.length > 1 ? `hull ${i + 1}: ` : "";
+    if (!t) return `${name}no transom (closes aft)`;
+    const lv = hollowLength(t.depth);
+    return `${name}transom ${fmt(t.depth * 1000, 1)} mm deep (equivalent), ${fmt(2 * t.half_beam, 3)} m wide, ${(100 * t.area_ratio).toFixed(1)}% of max section\nhollow L_v ${lv == null ? "— (left open)" : fmt(lv, 3) + " m"}`;
+  }).join("\n");
+  scene3d.closure();
+  drawArea();
+}
+
 // ---------------------------------------------------------------- results
 const fmt = (v, d = 3) => v == null ? "—" : Number(v).toFixed(d);
-const pct = (v, d = 2) => v == null ? "—" : `${(100 * v).toFixed(d)}%`;
 const fmtBytes = (n) => n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} kB` : `${(n / (1 << 20)).toFixed(1)} MB`;
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-const COLORS = [0xd8c9a8, 0xa8c8d8, 0xb8d8a8, 0xd8b0c8];
-const SHORT = { current: "Current", trimmed: "Trimmed", keel: "Keel-follow.", sectional: "Sectional" };
-const hex = (c) => `#${c.toString(16).padStart(6, "0")}`;
 
-// Every hull gets a list of lofts to draw: the server's comparison set when
-// the hull came from samples, else just the one loft it has.
-function variantsOf(h) {
-  if (h.compare) return h.compare.variants;
-  const s = h.surface, nx = s.x.length, nz = s.z.length;
-  const mesh = { nx, nz, x: [], z: [], y: s.y };
-  for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) { mesh.x.push(s.x[i]); mesh.z.push(s.z[j]); }
-  const c = h.control, cx = c.x.length, cz = c.z.length;
-  const control = { nx: cx, nz: cz, x: [], z: [], y: c.y };
-  for (let i = 0; i < cx; i++) for (let j = 0; j < cz; j++) { control.x.push(c.x[i]); control.z.push(c.z[j]); }
-  return [{ key: "current", label: "Current (x, z)", net: [cx, cz], mesh, cull_dry: true, control, residual: h.grid?.residual ?? null, keel: null }];
-}
-
-let hulls = [];
-function show(data) {
-  hulls = data.hulls;
-  renderResults();
-  scene3d.load(hulls);
-}
-
-function renderResults() {
-  const active = scene3d.variant;
-  $("results").innerHTML = hulls.map((h, i) => {
+function renderResults(notes) {
+  $("results").innerHTML = notes.map((n) => `<div class="note">${esc(n)}</div>`).join("") + hulls.map((h, i) => {
     const title = hulls.length > 1 ? `Hull ${i + 1}` : "Hull";
-    const where = h.placement.y || h.placement.x ? ` · y ${fmt(h.placement.y)} m` : "";
-    const warn = [];
-    if (h.transom) warn.push(`Wet transom at x = ${fmt(h.transom.x)} m, ${fmt(h.transom.depth)} m deep.`);
-    let table = "";
-    if (h.compare) {
-      const sv = h.compare.samples.volume, si = h.compare.samples.inflections;
-      const rows = h.compare.variants.map((v, k) => {
-        const on = active === "all" || active === k ? "on" : "";
-        const sw = `<span class="swatch" style="background:${hex(COLORS[k])}"></span>`;
-        if (v.error) return `<tr class="${on}" data-k="${k}"><td>${sw}${esc(v.key)}</td><td colspan="6" style="color:var(--err)">${esc(v.error)}</td></tr>`;
-        const s = v.stats;
-        return `<tr class="${on}" data-k="${k}"><td>${sw}${SHORT[v.key] ?? esc(v.key)}</td>
-          <td>${v.net[0]}×${v.net[1]}</td><td>${pct(s.wetted_rms)}</td>
-          <td>${s.inflections ? `${s.inflections[0]} / ${s.inflections[1]}` : "—"}</td>
-          <td>${(100 * (s.volume / sv - 1)).toFixed(2)}%</td><td>${pct(s.phantom_volume)}</td>
-          <td>${(1000 * s.min_beam).toFixed(1)}</td></tr>`;
-      }).join("");
-      table = `<table class="cmp">
-        <tr><th>Loft</th><th>Net</th><th title="RMS residual over the wetted samples, as a fraction of max half-beam">RMS</th>
-          <th title="Curvature sign changes at the wetted samples, along waterlines / down sections">Inflect.</th>
-          <th title="Displaced volume against the samples' own">ΔVol</th>
-          <th title="Volume the loft puts where the samples have no beam, as a fraction of hull volume">Phantom</th>
-          <th title="Most negative half-beam anywhere the loft is integrated [mm]">Min</th></tr>
-        <tr><td>Samples</td><td></td><td></td><td>${si[0]} / ${si[1]}</td><td></td><td></td><td></td></tr>
-        ${rows}</table>`;
-    }
+    const where = h.placement.y || h.placement.x ? `y ${fmt(h.placement.y)} m` : "";
+    const t = h.transom;
     return `<div class="hull">
-      <h3>${title}<span class="tag">${esc(h.source)}${where}</span></h3>
+      <h3>${title}<span class="tag">${esc(where)}</span></h3>
       <dl>
         <dt>Length</dt><dd>${fmt(h.length)} m</dd>
         <dt>Beam (WL)</dt><dd>${fmt(h.beam)} m</dd>
         <dt>Draft</dt><dd>${fmt(h.draft)} m</dd>
         <dt>Displaced volume</dt><dd>${fmt(h.displaced_volume, 4)} m³</dd>
         <dt>Wetted surface</dt><dd>${fmt(h.wetted_surface)} m²</dd>
+        <dt>Waterplane area</dt><dd>${fmt(h.waterplane_area)} m²</dd>
+        <dt>LCB</dt><dd>x ${fmt(h.lcb_x)} m</dd>
+        <dt>Stations</dt><dd>${h.stations.length}</dd>
+        ${t ? `<dt>Transom</dt><dd>x ${fmt(t.x)} m, ${(100 * t.area_ratio).toFixed(1)}% of max section</dd>` : ""}
       </dl>
-      ${table}
-      ${warn.map((w) => `<div class="warn">${esc(w)}</div>`).join("")}
-      <details><summary>Import diagnostics</summary><pre>${esc(h.diagnostics.join("\n"))}</pre></details>
+      <details><summary>Sectioning diagnostics</summary><pre>${esc(h.diagnostics.join("\n"))}</pre></details>
     </div>`;
   }).join("");
-  for (const tr of $("results").querySelectorAll("tr[data-k]")) tr.onclick = () => pickVariant(Number(tr.dataset.k));
 }
 
 // ---------------------------------------------------------------- 3D view
@@ -372,296 +317,144 @@ const scene3d = (() => {
   const host = $("view");
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(devicePixelRatio);
-  renderer.autoClear = false;
   host.prepend(renderer.domElement);
-
   const scene = new THREE.Scene();
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, -1000, 1000);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.addEventListener("change", render);
-
   scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.6));
-  const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-  sun.position.set(0.4, 1, 0.7);
-  scene.add(sun);
-  const fill = new THREE.DirectionalLight(0xffffff, 0.6);
-  fill.position.set(-0.5, -0.3, -0.8);
-  scene.add(fill);
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(0.4, 1, 0.7); scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xffffff, 0.6); fill.position.set(-0.5, -0.3, -0.8); scene.add(fill);
 
-  // `model` holds everything hull-related; its y/z scale is the stretch.
-  // One group per loft variant, each with the same named layers; the
-  // waterplane is shared.
   const model = new THREE.Group();
   scene.add(model);
-  const LAYERS = ["surface", "lines", "keel", "samples", "control"];
-  const layerOn = { surface: true, lines: true, keel: true, samples: false, control: false, water: true };
-  const water = new THREE.Group();
-  model.add(water);
-  let groups = [];      // per variant: { root, layers: {name: Group}, label }
-  let surfaces = [];    // per variant: [meshes]
-  let bounds = null, stretch = 1, view = "iso", resMax = 0, active = 0;
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water"];
+  const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
+  for (const g of Object.values(layers)) model.add(g);
+  layers.rays.visible = false;
+  let bounds = null, stretch = 1, view = "iso", surfaces = [];
 
-  function dispose(obj) {
-    obj.traverse((c) => { c.geometry?.dispose(); c.material?.dispose(); });
-  }
-
-  function load(hs) {
-    for (const g of groups) { model.remove(g.root); dispose(g.root); }
-    dispose(water); water.clear();
-    groups = []; surfaces = [];
-    const box = new THREE.Box3();
-    // One residual colour scale across every variant, so they compare.
-    const abs = hs.flatMap((h) => variantsOf(h).flatMap((v) => (v.residual ?? []).filter((r) => r != null).map(Math.abs))).sort((a, b) => a - b);
-    resMax = abs.length ? abs[Math.floor(0.98 * (abs.length - 1))] || abs[abs.length - 1] : 0;
-    const worst = abs.length ? abs[abs.length - 1] : 0;
-    const nVar = Math.max(...hs.map((h) => variantsOf(h).length));
-    for (let k = 0; k < nVar; k++) {
-      const root = new THREE.Group(), layers = {};
-      for (const n of LAYERS) { layers[n] = new THREE.Group(); layers[n].visible = layerOn[n]; root.add(layers[n]); }
-      model.add(root);
-      groups.push({ root, layers, label: "" });
-      surfaces.push([]);
-    }
-    hs.forEach((h, hi) => {
-      variantsOf(h).forEach((v, k) => {
-        if (v.error || !v.mesh) return;
-        const g = groups[k];
-        g.label = v.label;
-        addSurface(g.layers.surface, surfaces[k], h, v, COLORS[k]);
-        addLines(g.layers.lines, h, v);
-        if (v.keel) addKeel(g.layers.keel, h, v.keel);
-        if (h.grid && v.residual) addSamples(g.layers.samples, h, v.residual);
-        if (v.rays) addRayHits(g.layers.samples, h, v);
-        addControl(g.layers.control, h, v.control);
-        const px = h.placement.x, py = h.placement.y, half = Math.max(...v.mesh.y);
-        box.expandByPoint(new THREE.Vector3(Math.min(...v.mesh.x) + px, -h.draft, py - half));
-        box.expandByPoint(new THREE.Vector3(Math.max(...v.mesh.x) + px, 0, py + half));
-      });
-    });
-    bounds = box;
-    addWater(box);
-    $("empty").style.display = hs.length ? "none" : "";
-    const hasSamples = hs.some((h) => h.grid);
-    $("legend").style.display = hasSamples && layerOn.samples ? "block" : "none";
-    $("lworst").textContent = worst > resMax ? `worst sample ${fmtLen(worst)}; colours clip at the 98th percentile` : "";
-    $("lmin").textContent = `−${fmtLen(resMax)}`;
-    $("lmax").textContent = `+${fmtLen(resMax)}`;
-    // Without a comparison set only the current loft exists.
-    for (const b of $("variants").querySelectorAll("button")) {
-      const k = b.dataset.variant;
-      b.disabled = k === "all" ? nVar < 2 : Number(k) >= nVar;
-    }
-    if (active !== "all" && active >= nVar) active = 0;
-    if (active === "all" && nVar < 2) active = 0;
-    setVariant(active);
-    setView(view);
-  }
-
-  const fmtLen = (m) => m >= 0.01 ? `${(m * 1000).toFixed(0)} mm` : m >= 1e-4 ? `${(m * 1000).toFixed(2)} mm` : `${(m * 1e6).toFixed(1)} µm`;
+  const clear = (g) => { for (const c of [...g.children]) { g.remove(c); c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); } };
   const P = (h, x, z, y) => [x + h.placement.x, -z, h.placement.y + y];
+  const seg = (arr, color, opacity = 1, depthTest = true) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
+    return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest }));
+  };
 
-  // Both sides of the hull about its centerplane, from a structured mesh.
-  function addSurface(layer, list, h, v, color) {
-    const m = v.mesh, nx = m.nx, nz = m.nz;
-    const eps = 1e-6 * Math.max(...m.y);
+  // A structured (nx × nz) mesh on both sides of the centreplane.
+  function sheet(h, nx, nz, pt, color, opacity) {
+    const group = new THREE.Group();
     for (const side of [1, -1]) {
       const pos = new Float32Array(nx * nz * 3);
-      for (let k = 0; k < nx * nz; k++) pos.set(P(h, m.x[k], m.z[k], side * m.y[k]), 3 * k);
+      for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
+        const [x, y, z] = pt(i, j);
+        pos.set(P(h, x, z, side * y), 3 * (i * nz + j));
+      }
       const index = [];
       for (let i = 0; i + 1 < nx; i++) for (let j = 0; j + 1 < nz; j++) {
         const a = i * nz + j, b = a + nz, c = b + 1, d = a + 1;
-        // The untrimmed loft spans the whole rectangle; below the keel it is
-        // centreplane, not shell, unless the loft left beam there.
-        if (v.cull_dry && m.y[a] <= eps && m.y[b] <= eps && m.y[c] <= eps && m.y[d] <= eps) continue;
         if (side > 0) index.push(a, b, c, a, c, d); else index.push(a, c, b, a, d, c);
       }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
       geo.setIndex(index);
       geo.computeVertexNormals();
-      const mat = new THREE.MeshStandardMaterial({
-        color, roughness: 0.65, metalness: 0, side: THREE.DoubleSide,
-        polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
-        // A sectional hull has no surface between stations; this one is for
-        // orientation only.
-        transparent: !!v.ghost, opacity: v.ghost ? 0.28 : 1, depthWrite: !v.ghost,
-      });
-      if (side < 0) mat.color.multiplyScalar(0.93);
+      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.65, side: THREE.DoubleSide,
+        transparent: opacity < 1, opacity, depthWrite: opacity >= 1 });
       const mesh = new THREE.Mesh(geo, mat);
       mesh.userData = { h };
-      layer.add(mesh);
-      list.push(mesh);
+      group.add(mesh);
     }
+    return group;
   }
 
-  // Parameter lines of the mesh: stations, and lines of constant second
-  // parameter (waterlines for the (x, z) lofts, constant s for the
-  // keel-following one), plus the DWL outline.
-  function addLines(layer, h, v) {
-    if (v.stations) return addStationCurves(layer, h, v);
-    const m = v.mesh, nx = m.nx, nz = m.nz;
-    const eps = 1e-6 * Math.max(...m.y);
-    const pickN = (n, count) => {
-      const out = new Set([0, n - 1]);
-      for (let t = 1; t < count; t++) out.add(Math.round((n - 1) * t / count));
-      return [...out];
-    };
-    const stations = [];
-    { // evenly spaced in x, not in index
-      const xs = Array.from({ length: nx }, (_, i) => m.x[i * nz]);
-      const a = xs[0], b = xs[nx - 1];
-      const out = new Set([0, nx - 1]);
-      for (let t = 1; t < 20; t++) {
-        const target = a + (b - a) * t / 20;
-        let best = 0;
-        for (let i = 1; i < nx; i++) if (Math.abs(xs[i] - target) < Math.abs(xs[best] - target)) best = i;
-        out.add(best);
-      }
-      stations.push(...out);
-    }
-    const pts = [], dwl = [];
-    for (const side of [1, -1]) {
-      const Q = (k) => P(h, m.x[k], m.z[k], side * m.y[k]);
-      const wet = (k1, k2) => !v.cull_dry || m.y[k1] > eps || m.y[k2] > eps;
-      for (const i of stations) for (let j = 0; j + 1 < nz; j++) {
-        const k = i * nz + j;
-        if (wet(k, k + 1)) pts.push(...Q(k), ...Q(k + 1));
-      }
-      for (const j of pickN(nz, 6)) for (let i = 0; i + 1 < nx; i++) {
-        const k = i * nz + j, k2 = k + nz;
-        if (wet(k, k2)) (j === 0 ? dwl : pts).push(...Q(k), ...Q(k2));
-      }
-    }
-    const seg = (arr, color, opacity) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
-      return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
-    };
-    layer.add(seg(pts, 0x3b3f45, 0.45));
-    layer.add(seg(dwl, 0x1f6feb, 1));
-  }
-
-  // A sectional hull as the physics uses it: every station's curve at its
-  // quadrature nodes, both sides, and the waterline through their tops.
-  function addStationCurves(layer, h, v) {
-    const pts = [], dwl = [];
-    for (const side of [1, -1]) {
-      let prev = null;
-      for (const [x, outline] of v.stations) {
-        for (let k = 0; k + 1 < outline.length; k++) {
-          pts.push(...P(h, x, outline[k][1], side * outline[k][0]), ...P(h, x, outline[k + 1][1], side * outline[k + 1][0]));
+  function load(hs) {
+    for (const g of Object.values(layers)) clear(g);
+    surfaces = [];
+    const box = new THREE.Box3();
+    for (const h of hs) {
+      // The see-through surface between stations: orientation only.
+      const m = h.mesh;
+      const s = sheet(h, m.nx, m.nz, (i, j) => { const k = i * m.nz + j; return [m.x[k], m.y[k], m.z[k]]; }, 0xd8b0c8, 0.3);
+      layers.surface.add(s);
+      surfaces.push(...s.children);
+      // Stations as the physics uses them: each at its quadrature nodes.
+      const pts = [], dwl = [];
+      for (const side of [1, -1]) {
+        let prev = null;
+        for (const [x, o] of h.stations) {
+          for (let k = 0; k + 1 < o.length; k++) pts.push(...P(h, x, o[k][1], side * o[k][0]), ...P(h, x, o[k + 1][1], side * o[k + 1][0]));
+          if (o.length && o[0][1] === 0) { const q = P(h, x, 0, side * o[0][0]); if (prev) dwl.push(...prev, ...q); prev = q; } else prev = null;
         }
-        if (outline.length && outline[0][1] === 0) {
-          const q = P(h, x, 0, side * outline[0][0]);
-          if (prev) dwl.push(...prev, ...q);
-          prev = q;
-        } else prev = null;
       }
+      layers.stations.add(seg(pts, 0x5b2a4a, 0.85));
+      layers.stations.add(seg(dwl, 0x1f6feb));
+      // Keel: each section's lowest point, on the centreplane.
+      const kp = h.keel.flatMap(([x, d]) => P(h, x, d, 0));
+      const kg = new THREE.BufferGeometry(); kg.setAttribute("position", new THREE.Float32BufferAttribute(kp, 3));
+      layers.keel.add(new THREE.Line(kg, new THREE.LineBasicMaterial({ color: 0xd62728, depthTest: false })));
+      // CAD ray hits the stations were interpolated from.
+      if (h.rays) {
+        const rp = [];
+        for (const [x, o] of h.rays) for (const [y, z] of o) rp.push(...P(h, x, z, y));
+        const rg = new THREE.BufferGeometry(); rg.setAttribute("position", new THREE.Float32BufferAttribute(rp, 3));
+        layers.rays.add(new THREE.Points(rg, new THREE.PointsMaterial({ color: 0xe8590c, size: 3, sizeAttenuation: false, depthTest: false })));
+      }
+      const xs = h.stations.map((s) => s[0]);
+      box.expandByPoint(new THREE.Vector3(Math.min(...xs) + h.placement.x, -h.draft, h.placement.y - h.beam / 2));
+      box.expandByPoint(new THREE.Vector3(Math.max(...xs) + h.placement.x, 0, h.placement.y + h.beam / 2));
     }
-    const seg = (arr, color, opacity) => {
-      const g = new THREE.BufferGeometry();
-      g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
-      return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
-    };
-    layer.add(seg(pts, 0x5b2a4a, 0.85));
-    layer.add(seg(dwl, 0x1f6feb, 1));
-  }
-
-  // CAD ray hits a sectional hull's stations were interpolated from.
-  function addRayHits(layer, h, v) {
-    const pos = [];
-    for (const [x, outline] of v.rays) for (const [y, z] of outline) pos.push(...P(h, x, z, y));
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    layer.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xe8590c, size: 3, sizeAttenuation: false, depthTest: false })));
-  }
-
-  // The piecewise-linear keel on the centreplane, breakpoints marked.
-  function addKeel(layer, h, keel) {
-    const pts = keel.flatMap(([x, d]) => P(h, x, d, 0));
-    const g = new THREE.BufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-    layer.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: 0xd62728, depthTest: false, transparent: true })));
-    layer.add(new THREE.Points(g.clone(), new THREE.PointsMaterial({ color: 0xd62728, size: 4, sizeAttenuation: false, depthTest: false })));
-  }
-
-  // Samples on the starboard side, coloured by this loft's residual.
-  function addSamples(layer, h, residual) {
-    const g = h.grid, nz = g.z.length;
-    const pos = [], col = [], c = new THREE.Color();
-    for (let i = 0; i < g.x.length; i++) for (let j = 0; j < nz; j++) {
-      const k = i * nz + j, r = residual[k];
-      if (r == null || g.y[k] == null) continue;
-      pos.push(...P(h, g.x[i], g.z[j], g.y[k]));
-      diverging(resMax > 0 ? r / resMax : 0, c);
-      col.push(c.r, c.g, c.b);
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
-    const size = pos.length / 3 > 5000 ? 2.5 : 5;
-    layer.add(new THREE.Points(geo, new THREE.PointsMaterial({ size, vertexColors: true, sizeAttenuation: false, depthTest: false })));
-  }
-
-  // RdBu, t in [-1, 1].
-  const RDBU = [[0x21, 0x66, 0xac], [0x92, 0xc5, 0xde], [0xf7, 0xf7, 0xf7], [0xf4, 0xa5, 0x82], [0xb2, 0x18, 0x2b]];
-  function diverging(t, c) {
-    const u = (Math.max(-1, Math.min(1, t)) + 1) / 2 * (RDBU.length - 1);
-    const i = Math.min(RDBU.length - 2, Math.floor(u)), f = u - i;
-    const a = RDBU[i], b = RDBU[i + 1];
-    c.setRGB(...[0, 1, 2].map((k) => (a[k] + (b[k] - a[k]) * f) / 255), THREE.SRGBColorSpace);
-  }
-
-  // Control points (placed in the hull frame by the server), joined along
-  // both parameter directions.
-  function addControl(layer, h, c) {
-    const nx = c.nx, nz = c.nz;
-    const Q = (i, j) => { const k = i * nz + j; return P(h, c.x[k], c.z[k], c.y[k]); };
-    const pts = [], seg = [];
-    for (let i = 0; i < nx; i++) for (let j = 0; j < nz; j++) {
-      pts.push(...Q(i, j));
-      if (i + 1 < nx) seg.push(...Q(i, j), ...Q(i + 1, j));
-      if (j + 1 < nz) seg.push(...Q(i, j), ...Q(i, j + 1));
-    }
-    const lg = new THREE.BufferGeometry();
-    lg.setAttribute("position", new THREE.Float32BufferAttribute(seg, 3));
-    layer.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0xe8590c, transparent: true, opacity: 0.55, depthTest: false })));
-    const pg = new THREE.BufferGeometry();
-    pg.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-    layer.add(new THREE.Points(pg, new THREE.PointsMaterial({ color: 0xe8590c, size: 4, sizeAttenuation: false, depthTest: false })));
-  }
-
-  function addWater(box) {
+    // Room aft for a closure's hollow.
+    if (hs.some((h) => h.transom)) box.min.x -= 0.1 * (box.max.x - box.min.x);
+    bounds = box;
+    clear(layers.water);
     const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
-    const w = size.x * 1.25, d = Math.max(size.z * 1.6, size.x * 0.25);
-    const geo = new THREE.PlaneGeometry(w, d);
-    geo.rotateX(-Math.PI / 2);
-    const mat = new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false });
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(mid.x, 0, mid.z);
-    m.renderOrder = 2;
-    water.add(m);
-    water.visible = layerOn.water;
+    const wgeo = new THREE.PlaneGeometry(size.x * 1.25, Math.max(size.z * 1.6, size.x * 0.25));
+    wgeo.rotateX(-Math.PI / 2);
+    const water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
+    water.position.set(mid.x, 0, mid.z);
+    layers.water.add(water);
+    $("empty").style.display = hs.length ? "none" : "";
+    setView(view);
   }
 
-  function setStretch(k) {
-    stretch = k;
-    model.scale.set(1, k, k);
-    setView(view, true);
+  // The virtual appendage behind each transom at the current speed and
+  // closure: the transom section with its half-beam scaled by φ(s) over the
+  // hollow, x = x_T − s·L_v.
+  function closure() {
+    clear(layers.closure);
+    for (const h of hulls) {
+      const t = h.transom;
+      if (!t) continue;
+      const lv = hollowLength(t.depth);
+      if (lv == null || lv <= 0 || !t.outline.length) continue;
+      const ns = 25, o = t.outline;
+      layers.closure.add(sheet(h, ns, o.length, (i, j) => {
+        const s = i / (ns - 1);
+        return [t.x - s * lv, o[j][0] * phi(s), o[j][1]];
+      }, 0xe8590c, 0.55));
+      const lines = [];
+      for (const s of [0.25, 0.5, 0.75]) for (const side of [1, -1]) {
+        for (let j = 0; j + 1 < o.length; j++) {
+          lines.push(...P(h, t.x - s * lv, o[j][1], side * o[j][0] * phi(s)), ...P(h, t.x - s * lv, o[j + 1][1], side * o[j + 1][0] * phi(s)));
+        }
+      }
+      layers.closure.add(seg(lines, 0xb54708, 0.8));
+    }
+    render();
   }
 
-  // Frame the (stretched) model from a named direction.
+  function setStretch(k) { stretch = k; model.scale.set(1, k, k); setView(view, true); }
+
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
     if (!bounds) return render();
     const box = bounds.clone().applyMatrix4(new THREE.Matrix4().makeScale(1, stretch, stretch));
     const mid = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
-    const dirs = {
-      iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1),
-      plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0),
-    };
+    const dirs = { iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1), plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0) };
     const dir = keepDir ? camera.position.clone().sub(controls.target).normalize() : dirs[name].clone().normalize();
     const r = size.length();
     controls.target.copy(mid);
@@ -672,9 +465,7 @@ const scene3d = (() => {
     camera.lookAt(mid);
     camera.updateMatrixWorld();
     const inv = camera.matrixWorldInverse, seen = new THREE.Box3();
-    for (let i = 0; i < 8; i++) {
-      seen.expandByPoint(new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(inv));
-    }
+    for (let i = 0; i < 8; i++) seen.expandByPoint(new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).applyMatrix4(inv));
     const ss = seen.getSize(new THREE.Vector3());
     fitW = ss.x * 1.12; fitH = ss.y * 1.12;
     camera.zoom = 1;
@@ -682,173 +473,82 @@ const scene3d = (() => {
     controls.update();
   }
 
-  // In "all" mode the canvas is split into stacked viewports sharing one
-  // camera, below the toolbar so the top one is not hidden under it.
-  const panes = () => active === "all" ? groups.length : 1;
-  const topInset = () => active === "all" ? host.querySelector(".toolbar").offsetHeight + 16 : 0;
   function resize() {
     const w = host.clientWidth, h = host.clientHeight;
     renderer.setSize(w, h);
-    const aspect = w / ((h - topInset()) / panes());
+    const aspect = w / h;
     let hw = fitW / 2, hh = fitH / 2;
     if (hw / hh > aspect) hh = hw / aspect; else hw = hh * aspect;
     Object.assign(camera, { left: -hw, right: hw, top: hh, bottom: -hh });
     camera.updateProjectionMatrix();
-    placeLabels();
     render();
   }
   new ResizeObserver(resize).observe(host);
-
-  function placeLabels() {
-    const n = panes(), top = topInset(), h = host.clientHeight - top;
-    for (let k = 0; k < 4; k++) {
-      const el = $(`vp${k}`);
-      const show = active === "all" && k < groups.length;
-      el.style.display = show ? "block" : "none";
-      if (show) {
-        el.textContent = groups[k].label;
-        el.style.borderLeft = `4px solid ${hex(COLORS[k])}`;
-        el.style.top = `${top + (k + 1) * h / n - 30}px`;
-      }
-    }
-  }
 
   let pending = false;
   function render() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => {
-      pending = false;
-      if (controls.update()) render();
-      const w = host.clientWidth, h = host.clientHeight;
-      renderer.setScissorTest(false);
-      renderer.clear();
-      if (active === "all") {
-        const n = groups.length, ph = (h - topInset()) / n;
-        renderer.setScissorTest(true);
-        groups.forEach((g, k) => {
-          groups.forEach((o, j) => (o.root.visible = j === k));
-          // WebGL viewports count from the bottom.
-          const y = h - topInset() - (k + 1) * ph;
-          renderer.setViewport(0, y, w, ph);
-          renderer.setScissor(0, y, w, ph);
-          renderer.render(scene, camera);
-        });
-        renderer.setScissorTest(false);
-        renderer.setViewport(0, 0, w, h);
-      } else {
-        groups.forEach((o, j) => (o.root.visible = j === active));
-        renderer.render(scene, camera);
-      }
-    });
+    requestAnimationFrame(() => { pending = false; if (controls.update()) render(); renderer.render(scene, camera); });
   }
 
-  // Hover readout: hull-frame coordinates of the surface under the cursor.
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
   renderer.domElement.addEventListener("pointermove", (e) => {
-    const out = $("readout");
+    const out = $("readout3d");
+    if (!layers.surface.visible || !surfaces.length) { out.style.display = "none"; return; }
     const r = renderer.domElement.getBoundingClientRect();
-    let k = active, top = r.top, height = r.height;
-    if (active === "all") {
-      const inset = topInset(), ph = (r.height - inset) / groups.length;
-      k = Math.max(0, Math.min(groups.length - 1, Math.floor((e.clientY - r.top - inset) / ph)));
-      top = r.top + inset + k * ph; height = ph;
-    }
-    if (!layerOn.surface || !surfaces[k]?.length) { out.style.display = "none"; return; }
-    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - top) / height) * 2 + 1);
-    groups.forEach((o, j) => (o.root.visible = j === k));
-    model.updateMatrixWorld();
+    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects(surfaces[k], false)[0];
+    const hit = ray.intersectObjects(surfaces, false)[0];
     if (!hit) { out.style.display = "none"; return; }
     const p = model.worldToLocal(hit.point.clone()), { h } = hit.object.userData;
-    const x = p.x - h.placement.x, z = -p.y, y = Math.abs(p.z - h.placement.y);
-    out.textContent = `${groups[k].label}   x ${x.toFixed(3)} m   z ${z.toFixed(3)} m   half-beam ${y.toFixed(4)} m`;
+    out.textContent = `x ${(p.x - h.placement.x).toFixed(3)} m   z ${(-p.y).toFixed(3)} m   half-beam ${Math.abs(p.z - h.placement.y).toFixed(4)} m`;
     out.style.display = "block";
   });
-  renderer.domElement.addEventListener("pointerleave", () => { $("readout").style.display = "none"; });
+  renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
-  // The residual legend only means something for a loft of the samples.
-  function showLegend() {
-    const withResiduals = (k) => hulls.some((h) => variantsOf(h)[k]?.residual);
-    const any = active === "all" ? groups.some((_, k) => withResiduals(k)) : withResiduals(active);
-    $("legend").style.display = layerOn.samples && any ? "block" : "none";
-  }
-
-  function toggle(name, on) {
-    layerOn[name] = on;
-    if (name === "water") water.visible = on;
-    else for (const g of groups) g.layers[name].visible = on;
-    if (name === "samples") showLegend();
-    render();
-  }
-
-  function setVariant(k) {
-    active = k;
-    resize();
-    drawArea();
-    showLegend();
-  }
-
-  // The depth-integral curves of the active sectional variant, if any.
-  function drawArea() {
-    const panel = $("area"), svg = $("areasvg");
-    const v = active === "all" ? null : hulls.map((h) => variantsOf(h)[active]).find((v) => v?.area);
-    if (!v) { panel.style.display = "none"; return; }
-    panel.style.display = "block";
-    const xs = v.area.flatMap((a) => a.curve.map((p) => p[0]));
-    const x0 = Math.min(...xs), x1 = Math.max(...xs);
-    const W = 560, H = 120, pad = 6;
-    const X = (x) => pad + (W - 2 * pad) * (x - x0) / (x1 - x0 || 1);
-    let out = "";
-    v.area.forEach((a, i) => {
-      const peak = Math.max(...a.curve.map((p) => Math.abs(p[1])), 1e-300);
-      const Y = (z) => H - pad - (H - 2 * pad) * z / peak;
-      const col = i === 0 ? "#1f6feb" : "#d6336c";
-      out += `<polyline fill="none" stroke="${col}" stroke-width="1.2" points="${a.curve.map((p) => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ")}"/>`;
-      out += a.stations.map((p) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="1.6" fill="${col}"/>`).join("");
-    });
-    svg.innerHTML = out;
-  }
-
-  return {
-    load, setView, setStretch, toggle, setVariant,
-    get variant() { return active; },
-  };
+  function toggle(name, on) { layers[name].visible = on; render(); }
+  return { load, closure, setView, setStretch, toggle };
 })();
 
-function pickVariant(k) {
-  const key = String(k);
-  const b = $("variants").querySelector(`button[data-variant="${key}"]`);
-  if (!b || b.disabled) return;
-  $("variants").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-  scene3d.setVariant(k);
-  renderResults();
+// ---------------------------------------------------------------- area panel
+function drawArea() {
+  const panel = $("area"), svg = $("areasvg");
+  const h = hulls.find((h) => h.area);
+  if (!h) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+  const t = h.transom, lv = t ? hollowLength(t.depth) : null;
+  const xs = h.area.flatMap((a) => a.curve.map((p) => p[0]));
+  let x0 = Math.min(...xs); const x1 = Math.max(...xs);
+  if (t && lv) x0 = Math.min(x0, t.x - lv);
+  const W = 620, H = 130, pad = 6;
+  const X = (x) => pad + (W - 2 * pad) * (x - x0) / (x1 - x0 || 1);
+  let out = "";
+  h.area.forEach((a, i) => {
+    const peak = Math.max(...a.curve.map((p) => Math.abs(p[1])), 1e-300);
+    const Y = (z) => H - pad - (H - 2 * pad) * z / peak;
+    const col = i === 0 ? "#1f6feb" : "#d6336c";
+    out += `<polyline fill="none" stroke="${col}" stroke-width="1.2" points="${a.curve.map((p) => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ")}"/>`;
+    out += a.stations.map((p) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="1.5" fill="${col}"/>`).join("");
+    if (t && lv) {
+      const n = 24, pts = [];
+      for (let k = 0; k <= n; k++) { const s = k / n; pts.push(`${X(t.x - s * lv).toFixed(1)},${Y(t.z_t[i] * phi(s)).toFixed(1)}`); }
+      out += `<polyline fill="none" stroke="${col}" stroke-width="1.2" stroke-dasharray="3 2" points="${pts.join(" ")}"/>`;
+    }
+  });
+  if (t) out += `<line x1="${X(t.x).toFixed(1)}" x2="${X(t.x).toFixed(1)}" y1="${pad}" y2="${H - pad}" stroke="#e8590c" stroke-width="0.8" stroke-dasharray="2 2"/>`;
+  svg.innerHTML = out;
 }
-for (const b of $("variants").querySelectorAll("button")) {
-  b.onclick = () => pickVariant(b.dataset.variant === "all" ? "all" : Number(b.dataset.variant));
-}
-// 1–3 flip between lofts, 4 stacks them — flipping in place is the quickest
-// way to see what changes.
-document.addEventListener("keydown", (e) => {
-  if (e.target.closest("input, select, textarea")) return;
-  const map = { "1": 0, "2": 1, "3": 2, "5": 3, "4": "all" };
-  if (e.key in map) pickVariant(map[e.key]);
-});
+
+// ---------------------------------------------------------------- controls
 for (const b of $("views").querySelectorAll("button")) {
-  b.onclick = () => {
-    $("views").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    scene3d.setView(b.dataset.view);
-  };
+  b.onclick = () => { $("views").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b)); scene3d.setView(b.dataset.view); };
 }
 for (const b of $("layers").querySelectorAll("button")) {
   b.onclick = () => { b.classList.toggle("on"); scene3d.toggle(b.dataset.layer, b.classList.contains("on")); };
 }
-$("stretch").oninput = (e) => {
-  const k = Number(e.target.value);
-  $("stretchv").textContent = `${k}×`;
-  scene3d.setStretch(k);
-};
+$("stretch").oninput = (e) => { const k = Number(e.target.value); $("stretchv").textContent = `${k}×`; scene3d.setStretch(k); };
+updateClosure();
 </script>
 </body>
 </html>
