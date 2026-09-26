@@ -17,9 +17,10 @@ mod render;
 mod report;
 mod view;
 
-use formats::{
-    load_hulls, parse_pair, parse_range, resolved_fit, write_hull_file, LoadSettings, Source,
-};
+use formats::{load_hulls, parse_pair, parse_range, resolved_fit, write_hull_file};
+/// The hull loaders, for front-ends that hold file contents in memory (the web
+/// server's uploads) rather than on disk.
+pub use formats::{load_hulls_from_bytes, parse_units, LoadSettings, LoadedHull, Source};
 use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -156,6 +157,9 @@ IMPORT / LOFT OPTIONS (offsets and IGES inputs)
   --fit-control NxM     loft control net (default: 12x8 offsets, 20x12 IGES)
   --fit-deriv-weight W  relative weight of sampled surface slopes in the
                         loft (default 1; 0 fits values only)
+  --fit-fairing L       fairing weight of the loft: penalise surface bending
+                        energy by L against the mean squared residual
+                        (default 0, plain least squares)
   --dump-grid PATH      write the sampled grid(s) as *.grid.json before
                         lofting (multihull files get -0, -1, ... suffixes)
 
@@ -401,6 +405,9 @@ impl Parsed {
         if let Some(w) = self.f64_flag("fit-deriv-weight")? {
             s.fit.derivative_weight = w;
         }
+        if let Some(f) = self.f64_flag("fit-fairing")? {
+            s.fit.fairing = f;
+        }
         if let Some(p) = self.flag("dump-grid") {
             s.dump_grid = Some(p.clone());
         }
@@ -593,7 +600,7 @@ fn roughness_regime_note<'a>(
     ))
 }
 
-fn describe_source(source: &Source) -> Vec<String> {
+pub fn describe_source(source: &Source) -> Vec<String> {
     match source {
         Source::Native => vec!["source: native control net (exact)".into()],
         Source::Body(r) => {
@@ -692,7 +699,7 @@ fn describe_source(source: &Source) -> Vec<String> {
 
 /// Maximum breadth [m] of a situated hull: twice the largest half-breadth
 /// sampled over its wetted surface graph.
-fn max_beam(hull: &michell::Hull) -> f64 {
+pub fn max_beam(hull: &michell::Hull) -> f64 {
     let s = hull.surface();
     let (x0, x1) = s.x_domain();
     let (z0, z1) = s.z_domain();
@@ -2318,6 +2325,7 @@ pub fn loft(args: &[String], report: &mut Reporter) -> Result<String, String> {
                 n_ctrl_z: 32,
                 // Honour --fit-deriv-weight even with the default net.
                 derivative_weight: settings.fit.derivative_weight,
+                fairing: settings.fit.fairing,
             }
         },
         centerplane: settings.centerplane,

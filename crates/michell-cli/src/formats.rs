@@ -192,6 +192,29 @@ pub fn load_hulls(
     settings: &LoadSettings,
 ) -> Result<Vec<(Hull, Placement, Source)>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    Ok(load_hulls_from_bytes(path, bytes, settings)?
+        .into_iter()
+        .map(|l| (l.hull, l.placement, l.source))
+        .collect())
+}
+
+/// One hull as [`load_hulls_from_bytes`] produced it.
+pub struct LoadedHull {
+    pub hull: Hull,
+    pub placement: Placement,
+    pub source: Source,
+    /// The sample grid the hull was lofted from (in the hull's own frame),
+    /// or `None` for an exact control net, which involves no sampling.
+    pub grid: Option<SampleGrid>,
+}
+
+/// [`load_hulls`] on a file's contents already in memory. `path` is used only
+/// to sniff the format by extension and to name the file in messages.
+pub fn load_hulls_from_bytes(
+    path: &str,
+    bytes: Vec<u8>,
+    settings: &LoadSettings,
+) -> Result<Vec<LoadedHull>, String> {
     let lower = path.to_ascii_lowercase();
 
     // STL: by extension or binary layout (binary STL is not UTF-8).
@@ -225,7 +248,12 @@ pub fn load_hulls(
         return Ok(fl
             .members
             .into_iter()
-            .map(|m| (m.hull, m.placement, Source::Stl(m.report)))
+            .map(|m| LoadedHull {
+                hull: m.hull,
+                placement: m.placement,
+                source: Source::Stl(m.report),
+                grid: Some(m.grid),
+            })
             .collect());
     }
 
@@ -249,14 +277,15 @@ pub fn load_hulls(
         }
         dump_grids(settings, &[(&grid, centerplane)])?;
         let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
-        return Ok(vec![(
+        return Ok(vec![LoadedHull {
             hull,
-            Placement {
+            placement: Placement {
                 x: 0.0,
                 y: centerplane.unwrap_or(0.0),
             },
-            Source::Grid(report),
-        )]);
+            source: Source::Grid(report),
+            grid: Some(grid),
+        }]);
     }
     let first = text
         .lines()
@@ -276,11 +305,12 @@ pub fn load_hulls(
                     .map_err(|e| format!("{e}"))?
                     .ok_or_else(|| format!("{path}: body is dry at its design waterline"))?;
                 dump_grids(settings, &[(&situated.grid, Some(situated.placement.y))])?;
-                Ok(vec![(
-                    situated.hull,
-                    situated.placement,
-                    Source::Body(situated.fit),
-                )])
+                Ok(vec![LoadedHull {
+                    hull: situated.hull,
+                    placement: situated.placement,
+                    source: Source::Body(situated.fit),
+                    grid: Some(situated.grid),
+                }])
             }
             None => {
                 if settings.dump_grid.is_some() {
@@ -290,7 +320,12 @@ pub fn load_hulls(
                     ));
                 }
                 let hull = Hull::new(data.surface).map_err(|e| format!("{e}"))?;
-                Ok(vec![(hull, Placement { x: 0.0, y }, Source::Native)])
+                Ok(vec![LoadedHull {
+                    hull,
+                    placement: Placement { x: 0.0, y },
+                    source: Source::Native,
+                    grid: None,
+                }])
             }
         };
     }
@@ -312,7 +347,12 @@ pub fn load_hulls(
         let grid = SampleGrid::new(st, wl, y).map_err(|e| format!("{path}: {e}"))?;
         dump_grids(settings, &[(&grid, None)])?;
         let (hull, report) = fit_grid(&grid, &fit).map_err(|e| format!("loft failed: {e}"))?;
-        return Ok(vec![(hull, Placement::default(), Source::Offsets(report))]);
+        return Ok(vec![LoadedHull {
+            hull,
+            placement: Placement::default(),
+            source: Source::Offsets(report),
+            grid: Some(grid),
+        }]);
     }
     let looks_iges = lower.ends_with(".igs")
         || lower.ends_with(".iges")
@@ -336,7 +376,12 @@ pub fn load_hulls(
         dump_grids(settings, &grids)?;
         return Ok(fleet
             .into_iter()
-            .map(|m| (m.hull, m.placement, Source::Iges(m.report)))
+            .map(|m| LoadedHull {
+                hull: m.hull,
+                placement: m.placement,
+                source: Source::Iges(m.report),
+                grid: Some(m.grid),
+            })
             .collect());
     }
     Err(format!(
@@ -468,7 +513,15 @@ pub fn resolved_fit(settings: &LoadSettings, default: FitOptions) -> FitOptions 
     if settings.fit_explicit {
         settings.fit
     } else {
-        clamp_fit_to_samples(default, settings.samples)
+        // The default net, but the channel weights the user asked for.
+        clamp_fit_to_samples(
+            FitOptions {
+                derivative_weight: settings.fit.derivative_weight,
+                fairing: settings.fit.fairing,
+                ..default
+            },
+            settings.samples,
+        )
     }
 }
 
