@@ -2,12 +2,13 @@
 //! in its own (CAD) frame so each hull can be re-posed and re-cut as often as
 //! a sweep or an equilibrium solve needs.
 //!
-//! [`crate::iges::SourceFleet`] (IGES patches, or a B-spline `.hull` as its
-//! exact surfaces) and [`crate::stl::MeshFleet`] (a triangle mesh) are the
-//! two; either plugs into the solver and the CLI through [`HullSource`].
+//! [`crate::iges::SourceFleet`] (IGES patches) and [`crate::stl::MeshFleet`]
+//! (a triangle mesh) are the two; either plugs into the solver and the CLI through [`HullSource`].
 
 use crate::error::Result;
-use crate::iges::{HullPose, Platform, SectionalImport, SectionalOptions, SectionalState, SourceFleet};
+use crate::iges::{
+    HullPose, Platform, SectionalImport, SectionalOptions, SectionalState, SourceFleet,
+};
 use crate::stl::MeshFleet;
 
 /// A file's hulls, re-cuttable into sections at any pose.
@@ -140,7 +141,7 @@ mod tests {
     use crate::sectional::{wave_resistance, SectionalHull};
     use crate::{Conditions, WaveOptions};
 
-    /// A `.hull` spline re-cut from its exact surfaces agrees with the
+    /// A B-spline hull re-cut from its exact surfaces agrees with the
     /// direct conversion, and re-poses: 5 cm deeper displaces more.
     #[test]
     fn a_spline_hull_recuts_from_its_surfaces() {
@@ -159,7 +160,10 @@ mod tests {
             wave_resistance(&cut.hull, &cond, &w).unwrap().resistance,
         );
         let vol = (direct.displaced_volume(), cut.hull.displaced_volume());
-        eprintln!("Rw direct {a} cut {b}; volume {vol:?}; y {}", cut.placement.y);
+        eprintln!(
+            "Rw direct {a} cut {b}; volume {vol:?}; y {}",
+            cut.placement.y
+        );
         assert!((a - b).abs() < 1e-3 * a, "Rw {a} vs {b}");
         assert!((vol.0 - vol.1).abs() < 1e-5 * vol.0, "{vol:?}");
         let deeper = HullPose {

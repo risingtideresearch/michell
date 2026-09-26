@@ -1,67 +1,12 @@
-//! Validated hull wrapper: a B-spline half-breadth surface plus everything
-//! the resistance computations need, precomputed once.
+//! Test oracle: a validated B-spline half-breadth surface `y = f(x, z)` plus
+//! the span polynomials the exact kernel (`crate::michell::InnerIntegral`)
+//! integrates, precomputed once. The sectional kernel is checked against it,
+//! through [`crate::sectional::SectionalHull::from_hull`].
 
 use crate::bspline::BSplineSurface;
 use crate::error::{Error, Result};
 use crate::quadrature::gauss_legendre;
-
-/// One non-empty knot span in one direction.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Span {
-    /// Physical coordinate of the span start.
-    pub start: f64,
-    /// Span length (> 0).
-    pub len: f64,
-}
-
-/// A transom whose area is under this fraction of the hull's maximum section
-/// area is not reported: it is hydrodynamically negligible and, on a lofted
-/// hull, indistinguishable from the fit's own wiggle at a closing stern.
-pub(crate) const TRANSOM_AREA_REL: f64 = 1e-3;
-
-/// The aft-end section of a hull whose half-breadth does not close there — a
-/// **transom**.
-///
-/// The geometry contract puts the bow at the high-`x` end, so the transom, if
-/// there is one, is the section at the hull's lowest `x`. `f_T(z) = f(x_T, z)`
-/// is a piecewise polynomial on the hull's own z-spans, which is what lets the
-/// virtual-appendage closure reuse the exact free-wave kernel.
-///
-/// Presence alone is not a warning: a transom clear of the water is simply a
-/// closed hull as far as the wave integral is concerned. What matters is
-/// [`Transom::depth`] and the area ratio against [`Hull::max_section_area`].
-#[derive(Debug, Clone)]
-pub struct Transom {
-    /// Station of the transom — the aft end of the hull's x-domain [m].
-    pub x: f64,
-    /// Immersion depth [m], as the **equivalent rectangle**:
-    /// `A_T / (2 · max_z f_T)` — the depth of a rectangle of the transom's
-    /// widest beam carrying the same immersed area. Exact for a rectangular
-    /// transom; `T/2` for one tapering linearly to the keel.
-    ///
-    /// Deliberately not a level crossing of `f_T`. A hull lofted from CAD
-    /// cannot hold the transom's sharp lower edge: the fit leaves a tail of a
-    /// few percent of the waterline beam running most of the way down the
-    /// draft, so "the deepest z carrying beam" is set by the fit's ringing
-    /// rather than by the transom, and lands near the keel whatever threshold
-    /// it is given. An area measure is insensitive to that tail — and it is
-    /// also the scale a closure wants, since what sets the hollow is how much
-    /// water has to fill in behind the transom, not where its edge sits.
-    pub depth: f64,
-    /// Immersed transom area, `2∫₀^T f_T(z) dz` [m²] — both sides.
-    pub area: f64,
-    /// Half-beam at the waterline, `f_T(0)` [m].
-    pub half_beam: f64,
-    /// Per-z-span polynomial coefficients of the transom section:
-    /// `f_T(z) = Σ_b c[b] (z − z0_sz)^b` on z-span `sz`, flattened as
-    /// `[sz * (q + 1) + b]` to match the layout [`Hull::fx_coeff`] uses.
-    ///
-    /// Carried for the virtual-appendage closure, which multiplies it by a
-    /// polynomial decay in `x` and hands the product to the same exact
-    /// per-span kernel the hull itself goes through.
-    #[allow(dead_code, reason = "consumed by the virtual-appendage closure")]
-    pub(crate) coeff: Vec<f64>,
-}
+use crate::sectional::{Span, Transom, TRANSOM_AREA_REL};
 
 /// A validated hull.
 ///
@@ -92,7 +37,6 @@ pub struct Hull {
     wetted_surface: f64,
     displaced_volume: f64,
     lcb_x: f64,
-    vcb_z: f64,
     waterplane_area: f64,
     waterplane_moment: f64,
     waterplane_second_moment: f64,
@@ -182,7 +126,6 @@ impl Hull {
         let (xwz, wwz) = gauss_legendre(n_wet_z);
         let mut volume = 0.0;
         let mut volume_mx = 0.0;
-        let mut volume_mz = 0.0;
         let mut wetted = 0.0;
         for sx in &spans_x {
             for sz in &spans_z {
@@ -194,7 +137,6 @@ impl Hull {
                         let f = surface.eval(x, z);
                         volume += wv[i] * wv[j] * jac * f;
                         volume_mx += wv[i] * wv[j] * jac * x * f;
-                        volume_mz += wv[i] * wv[j] * jac * z * f;
                     }
                 }
                 for (i, &xi) in xwx.iter().enumerate() {
@@ -211,7 +153,6 @@ impl Hull {
         // Both sides of the hull.
         volume *= 2.0;
         volume_mx *= 2.0;
-        volume_mz *= 2.0;
         wetted *= 2.0;
 
         // Waterplane properties: 1-D integrals of the beam b(x) = 2 f(x, 0)
@@ -248,11 +189,6 @@ impl Hull {
             displaced_volume: volume,
             lcb_x: if volume > 0.0 {
                 volume_mx / volume
-            } else {
-                0.0
-            },
-            vcb_z: if volume > 0.0 {
-                volume_mz / volume
             } else {
                 0.0
             },
@@ -294,12 +230,6 @@ impl Hull {
     /// x coordinates.
     pub fn lcb_x(&self) -> f64 {
         self.lcb_x
-    }
-
-    /// Vertical centre of buoyancy `z_B = ∬ z f / ∬ f` [m], measured
-    /// **downward** from the waterline (KB below the water surface).
-    pub fn vcb_z(&self) -> f64 {
-        self.vcb_z
     }
 
     /// Waterplane area `A_w = ∫ 2 f(x, 0) dx` [m²].

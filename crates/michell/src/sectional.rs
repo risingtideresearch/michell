@@ -21,20 +21,23 @@
 //! one pass over the stations' depth nodes (`Σ_j w_j e^{−κ z_j}` per station)
 //! followed by one banded solve for the B-spline interpolant of `Z(·; κ)`
 //! along `x`; each `k_x` at that `κ` then costs one closed-form
-//! oscillatory-moment call per x-span, exactly as the lofted kernel's does.
+//! oscillatory-moment call per x-span, exactly as the exact B-spline kernel's does.
 //!
-//! This module is the kernel only. [`SectionalHull::from_hull`] builds one
-//! from an existing lofted hull — stations at the Greville points of its own
-//! x knots, where the interpolant reproduces `Z(x; κ)` exactly — which is the
-//! reference harness: any difference from [`crate::michell::InnerIntegral`] is
-//! the depth quadrature's.
+//! Hulls are cut from CAD through [`crate::source::HullSource`]. In tests,
+//! `SectionalHull::from_hull` builds one from a B-spline half-breadth
+//! surface — stations at the Greville points of its own x knots, where the
+//! interpolant reproduces `Z(x; κ)` exactly — which is the reference
+//! harness: any difference from the exact B-spline kernel
+//! (`crate::michell::InnerIntegral`, a test oracle) is the depth
+//! quadrature's.
 
 use crate::bspline::{ders_basis, find_span};
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::float::{DynamicLoad, FleetState};
 use crate::friction::{viscous_resistance_for, ViscousOptions, ViscousResistance};
-use crate::hull::{Hull, Span, Transom, TRANSOM_AREA_REL};
+#[cfg(test)]
+use crate::hull::Hull;
 use crate::michell::Placement;
 use crate::michell::{
     hollow_shape_moment, run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms,
@@ -47,7 +50,7 @@ use crate::MultihullResistance;
 use std::f64::consts::PI;
 
 /// Below this, `e^{−κz}` cannot matter against the shallowest node's weight
-/// (the same floor the lofted kernel drops z-spans at).
+/// (the same floor the exact B-spline kernel drops z-spans at).
 const DECAY_EXPONENT_FLOOR: f64 = 46.0; // e^{-46} ≈ 1e-20
 
 /// One station's depth integral `Z(κ) = ∫ f(x_i, z) e^{−κz} dz`, as a
@@ -311,7 +314,7 @@ pub struct DepthQuadrature {
 impl Default for DepthQuadrature {
     fn default() -> Self {
         // 8 points on panels graded by 0.35 toward the waterline hold the
-        // transforms to ~1e-11 of the lofted kernel's exact values on the
+        // transforms to ~1e-11 of the exact B-spline kernel's exact values on the
         // Wigley (one z-span: the deepest panel is ~0.4 T long) and ~1e-12
         // on a CAD import, for κ up to ~1e4·ν. Six points leave ~1e-8.
         DepthQuadrature {
@@ -320,6 +323,56 @@ impl Default for DepthQuadrature {
             finest: 1e-7,
         }
     }
+}
+
+/// One non-empty knot span in one direction.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Span {
+    /// Physical coordinate of the span start.
+    pub start: f64,
+    /// Span length (> 0).
+    pub len: f64,
+}
+
+/// A transom whose area is under this fraction of the hull's maximum section
+/// area is not reported: it is hydrodynamically negligible, and at a closing
+/// stern indistinguishable from the geometry's own noise.
+pub(crate) const TRANSOM_AREA_REL: f64 = 1e-3;
+
+/// The aft-end section of a hull whose half-breadth does not close there — a
+/// **transom**.
+///
+/// The geometry contract puts the bow at the high-`x` end, so the transom, if
+/// there is one, is the section at the hull's lowest `x`. `f_T(z) = f(x_T, z)`
+/// is the aft end station's section.
+///
+/// Presence alone is not a warning: a transom clear of the water is simply a
+/// closed hull as far as the wave integral is concerned. What matters is
+/// [`Transom::depth`] and the area ratio against
+/// [`SectionalHull::max_section_area`].
+#[derive(Debug, Clone)]
+pub struct Transom {
+    /// Station of the transom — the aft end of the hull's x-domain [m].
+    pub x: f64,
+    /// Immersion depth [m], as the **equivalent rectangle**:
+    /// `A_T / (2 · max_z f_T)` — the depth of a rectangle of the transom's
+    /// widest beam carrying the same immersed area. Exact for a rectangular
+    /// transom; `T/2` for one tapering linearly to the keel.
+    ///
+    /// Deliberately not a level crossing of `f_T`: an area measure is
+    /// insensitive to a thin tail of beam running down the draft, and it is
+    /// also the scale a closure wants, since what sets the hollow is how much
+    /// water has to fill in behind the transom, not where its edge sits.
+    pub depth: f64,
+    /// Immersed transom area, `2∫₀^T f_T(z) dz` [m²] — both sides.
+    pub area: f64,
+    /// Half-beam at the waterline, `f_T(0)` [m].
+    pub half_beam: f64,
+    /// The exact B-spline oracle's transom section: per-z-span polynomial
+    /// coefficients `f_T(z) = Σ_b c[b] (z − z0_sz)^b`, flattened as
+    /// `[sz * (q + 1) + b]`. Empty on a sectional hull cut from geometry.
+    #[cfg(test)]
+    pub(crate) coeff: Vec<f64>,
 }
 
 /// A hull as stations along `x`, each with its section's depth quadrature,
@@ -349,12 +402,12 @@ pub struct SectionalHull {
     waterplane: [f64; 3],
     wetted_surface: f64,
     /// The aft end station's section, when it is a real (immersed) one: a
-    /// transom, closed by [`TransomClosure`] as on a lofted hull.
+    /// transom, closed by [`TransomClosure`] as on any hull.
     transom: Option<Transom>,
 }
 
 /// A sectional hull's depth integrals at one `κ`, in each x-span's local
-/// power basis (the layout the lofted kernel's `ZContracted` uses).
+/// power basis (the layout the exact B-spline kernel's `ZContracted` uses).
 #[derive(Debug, Clone, Default)]
 pub struct SectionalContracted {
     g_f: Vec<f64>,
@@ -462,11 +515,12 @@ impl SectionalHull {
         Ok(hull)
     }
 
-    /// The reference construction: sections of a lofted hull at the Greville
-    /// points of its own x knots, depth-integrated panel by panel between
-    /// its z knots. `Z(x; κ)` is then exactly in the interpolating space, so
-    /// the only approximation is the depth quadrature.
-    pub fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self> {
+    /// The reference construction: sections of a B-spline hull at the
+    /// Greville points of its own x knots, depth-integrated panel by panel
+    /// between its z knots. `Z(x; κ)` is then exactly in the interpolating
+    /// space, so the only approximation is the depth quadrature.
+    #[cfg(test)]
+    pub(crate) fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self> {
         let s = hull.surface();
         let (p, n) = (s.degree_x(), s.n_ctrl_x());
         let kx = s.knots_x();
@@ -478,21 +532,20 @@ impl SectionalHull {
             .iter()
             .map(|&x| SectionNodes::from_depth_function(depth, s.knots_z(), |z| s.eval(x, z), opts))
             .collect();
-        // The loft's own transom description (its depth measure samples the
-        // spline, not the quadrature nodes), so the harness checks the
+        // The spline's own transom description (its depth measure samples
+        // the spline, not the quadrature nodes), so the harness checks the
         // closure machinery exactly.
         let mut sec = SectionalHull::new(p, kx.to_vec(), &xs, sections)?;
         sec.transom = hull.transom().cloned();
         Ok(sec)
     }
 
-    /// The transom, if the aft end station carries a real section: the
-    /// lofted hull's test ([`Hull::transom`]) on the sections — immersed area
+    /// The transom, if the aft end station carries a real section: immersed area
     /// above `TRANSOM_AREA_REL` of the largest section's — with its depth as
     /// the same equivalent rectangle, `A_T / (2 · max f_T)`. The geometry
     /// contract puts the bow at high x, so this is the lowest-x station.
     ///
-    /// Only the aft end is closed, as on a lofted hull. A truncated **bow**
+    /// Only the aft end is closed. A truncated **bow**
     /// (a forward end station with a real section) is left as it is: its
     /// section steps to nothing past the end of the interpolant, which the
     /// wave kernel reads as an open, bluff forward face — no virtual
@@ -523,11 +576,12 @@ impl SectionalHull {
             depth,
             area,
             half_beam: aft.waterline,
+            #[cfg(test)]
             coeff: Vec::new(),
         })
     }
 
-    /// The transom the aft end presents, if any (see [`Hull::transom`]).
+    /// The transom the aft end presents, if any.
     pub fn transom(&self) -> Option<&Transom> {
         self.transom.as_ref()
     }
@@ -658,7 +712,7 @@ impl SectionalHull {
     }
 
     /// The source free-wave amplitude `∬ ∂f/∂x e^{−κz} e^{ik_x(x−x_c)}` at
-    /// `λ` (the lofted kernel's `InnerIntegral::eval` convention, no transom
+    /// `λ` (the exact B-spline kernel's `InnerIntegral::eval` convention, no transom
     /// closure).
     pub fn amplitude(&self, nu: f64, lambda: f64, scratch: &mut SectionalContracted) -> C64 {
         self.amplitude_closed(nu, lambda, TransomClosure::None, scratch)
@@ -666,7 +720,7 @@ impl SectionalHull {
 
     /// [`SectionalHull::amplitude`] with the transom closed by `closure`: the
     /// virtual appendage `f_v = f_T(z)·φ(s)` over the hollow behind the
-    /// transom, exactly as the lofted kernel adds it — its z-factor is the
+    /// transom, exactly as the exact B-spline kernel adds it — its z-factor is the
     /// aft end station's own depth integral.
     pub fn amplitude_closed(
         &self,
@@ -697,7 +751,7 @@ impl SectionalHull {
     }
 
     /// The transom appendage's free-wave amplitude (kernel convention): the
-    /// lofted `InnerIntegral::transom_term` with the transom section's
+    /// exact `InnerIntegral::transom_term` with the transom section's
     /// z-factor `z_t` taken from the aft end station.
     fn transom_term(&self, kx: f64, nu: f64, closure: TransomClosure, z_t: f64) -> C64 {
         let Some(tr) = &self.transom else {
@@ -713,7 +767,7 @@ impl SectionalHull {
     }
 
     /// The transom appendage's share of every near-field transform (kernel
-    /// convention), as the lofted `InnerIntegral::add_transom_transforms`.
+    /// convention), as the exact `InnerIntegral::add_transom_transforms`.
     fn add_transom_transforms(
         &self,
         kx: f64,
@@ -748,7 +802,7 @@ impl SectionalHull {
     }
 
     /// The six near-field transforms at `k_x` from a contraction at some `κ`
-    /// — the same quantities, convention and x origin as the lofted kernel's
+    /// — the same quantities, convention and x origin as the exact B-spline kernel's
     /// `InnerIntegral::transforms_at` (no transom closure).
     #[allow(
         dead_code,
@@ -955,7 +1009,9 @@ impl SectionalHull {
                 }
                 let t = sx.len * k as f64 / per_span as f64;
                 let v = if zc.any {
-                    (0..p).rev().fold(0.0, |acc, a| acc * t + zc.g_fx[s * p + a])
+                    (0..p)
+                        .rev()
+                        .fold(0.0, |acc, a| acc * t + zc.g_fx[s * p + a])
                 } else {
                     0.0
                 };
@@ -1023,9 +1079,8 @@ impl MemberWave for SectionalMember<'_> {
     }
 }
 
-/// Michell wave resistance of a single sectional hull, by the same outer
-/// quadrature the lofted hulls use, the transom (if any) closed by
-/// `opts.transom` exactly as on a lofted hull.
+/// Michell wave resistance of a single sectional hull: an adaptive outer
+/// quadrature over `λ`, the transom (if any) closed by `opts.transom`.
 pub fn wave_resistance(
     hull: &SectionalHull,
     cond: &Conditions,
@@ -1035,8 +1090,10 @@ pub fn wave_resistance(
 }
 
 /// Wave resistance of a fleet of sectional hulls, placements and interference
-/// included exactly as for lofted hulls (each member's amplitude carries its
-/// placement phase; see [`crate::multihull_wave_resistance_with`]).
+/// included: each member's amplitude carries its placement phase
+/// `exp(i ν (λ Δx_j ± λ √(λ²−1) y_j))`, and the integrand is the mean of the
+/// two (±θ) wave systems. For two identical hulls separated by `s` this
+/// reduces to the classical catamaran factor `4 cos²(½ ν s λ √(λ²−1))`.
 pub fn multihull_wave_resistance(
     members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
@@ -1077,9 +1134,9 @@ pub fn multihull_wave_resistance(
     Ok(run_outer(&params, opts, coeff, mem))
 }
 
-/// Wave + viscous resistance of a fleet of sectional hulls, broken down as
-/// [`crate::multihull_resistance_with`] does for lofted ones. The viscous
-/// part uses each hull's own shell area ([`SectionalHull::wetted_surface`]).
+/// Wave + viscous resistance of a fleet of sectional hulls, broken down into
+/// [`MultihullResistance`]. The viscous part uses each hull's own shell area
+/// ([`SectionalHull::wetted_surface`]).
 pub fn multihull_resistance(
     members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
@@ -1119,8 +1176,8 @@ pub fn multihull_resistance(
 }
 
 /// Near-field vertical force and pitch moment on a single sectional hull
-/// about `x_ref`, by the same wavenumber quadrature as
-/// [`crate::squat::dynamic_force`], the transom closed by `opts.wave.transom`.
+/// about `x_ref` (see [`crate::squat`] for the theory), the transom closed by
+/// `opts.wave.transom`.
 pub fn dynamic_force(
     hull: &SectionalHull,
     cond: &Conditions,
@@ -1131,7 +1188,9 @@ pub fn dynamic_force(
 }
 
 /// Near-field force and moment on a fleet of sectional hulls, demihull
-/// interaction included (see [`crate::squat::multihull_dynamic_force`]).
+/// interaction included: every member's pressure includes what every other
+/// member's source sheet induces on it, through the placement phases.
+/// `x_ref` is the pitch pivot in fleet coordinates.
 pub fn multihull_dynamic_force(
     members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
@@ -1168,7 +1227,9 @@ pub fn multihull_dynamic_force(
 }
 
 /// The dynamic load a sectional fleet carries at speed, as the equilibrium
-/// solver's closure (see [`crate::squat::dynamic_load_closure`]).
+/// solver's closure for [`crate::float::solve_equilibrium_sectional_dynamic`].
+/// A dry fleet reports zero load: the hydrostatic side of the solver already
+/// sinks it until something gets wet.
 pub fn dynamic_load_closure<'a>(
     cond: &'a Conditions,
     x_ref: f64,
@@ -1259,13 +1320,6 @@ mod tests {
     use crate::michell::{InnerIntegral, TransomClosure};
     use crate::squat::SquatOptions;
 
-    fn ama() -> Option<Hull> {
-        let text = crate::cad_fixture("ama.igs")?;
-        let fleet =
-            crate::iges::import_fleet(&text, &crate::iges::ImportOptions::default()).unwrap();
-        Some(fleet.into_iter().next().unwrap().hull)
-    }
-
     /// Largest relative disagreement of the six transforms over a (k_x, κ)
     /// grid spanning the near-field quadrature's range, each transform
     /// against its own largest magnitude on the grid.
@@ -1321,30 +1375,9 @@ mod tests {
     }
 
     #[test]
-    fn reproduces_the_lofted_kernel_on_a_cad_import() {
-        let Some(hull) = ama() else {
-            return;
-        };
-        let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
-        for nu in [0.25, 1.0] {
-            let (t, a) = (
-                transform_error(&hull, &sec, nu),
-                amplitude_error(&hull, &sec, nu),
-            );
-            eprintln!("ama ν {nu}: transforms {t:.1e}, amplitude {a:.1e}");
-            assert!(
-                t < 1e-8 && a < 1e-8,
-                "ν {nu}: transforms {t:.1e}, amplitude {a:.1e}"
-            );
-        }
-    }
-
-    #[test]
     #[ignore = "timing report, not a check"]
     fn cost_against_the_lofted_kernel() {
-        let Some(hull) = ama() else {
-            return;
-        };
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let nu = 9.81 / 25.0;
         let mut inner = InnerIntegral::new(&hull, nu, TransomClosure::None);
@@ -1448,13 +1481,6 @@ mod tests {
     fn wave_resistance_and_squat_match_the_lofted_hull_on_wigley() {
         let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
         compare_end_to_end(&hull, "wigley", 1e-7);
-    }
-
-    #[test]
-    fn wave_resistance_and_squat_match_the_lofted_hull_on_a_cad_import() {
-        if let Some(hull) = ama() {
-            compare_end_to_end(&hull, "ama", 1e-7);
-        }
     }
 
     /// The sectional importer end to end on geometry with an exact answer:
@@ -1592,20 +1618,18 @@ mod transom_tests {
         crate::cad_fixture("e12.igs")
     }
 
-    /// e12 lofted at its design waterline: it carries a wet transom.
-    fn e12_lofted() -> Option<Hull> {
-        let io = crate::iges::ImportOptions {
-            waterline_z: E12_WL,
-            ..Default::default()
-        };
-        let text = e12_text()?;
-        let hull = crate::iges::import_fleet(&text, &io)
-            .unwrap()
-            .into_iter()
-            .max_by(|a, b| a.hull.length().total_cmp(&b.hull.length()))
-            .unwrap()
-            .hull;
-        Some(hull)
+    /// A smooth hull with a wet transom: cubic along x, full aft (half-beam
+    /// 0.3 m at x = 0) and closed at the bow (x = 8), quadratic in depth and
+    /// closed at the keel (T = 0.5).
+    fn transom_hull() -> Hull {
+        let knots_x = vec![0.0, 0.0, 0.0, 0.0, 4.0, 8.0, 8.0, 8.0, 8.0];
+        let knots_z = vec![0.0, 0.0, 0.0, 0.5, 0.5, 0.5];
+        let control: Vec<f64> = [0.3, 0.45, 0.5, 0.35, 0.0]
+            .iter()
+            .flat_map(|&c| [c, 0.9 * c, 0.0])
+            .collect();
+        let surface = crate::bspline::BSplineSurface::new(3, 2, knots_x, knots_z, control).unwrap();
+        Hull::new(surface).unwrap()
     }
 
     fn closures() -> [TransomClosure; 3] {
@@ -1616,15 +1640,16 @@ mod transom_tests {
         ]
     }
 
-    /// The closure machinery against the lofted kernel's, exactly: on the
-    /// harness (the loft's own stations and transom), the amplitude and all
+    /// The closure machinery against the exact B-spline kernel's: on the
+    /// harness (the spline's own stations and transom), the amplitude and all
     /// six near-field transforms with each closure, at two speeds.
     #[test]
     fn transom_closure_matches_the_lofted_kernel() {
-        let Some(hull) = e12_lofted() else {
-            return;
-        };
-        assert!(hull.transom().is_some(), "e12 should carry a wet transom");
+        let hull = transom_hull();
+        assert!(
+            hull.transom().is_some(),
+            "the hull should carry a wet transom"
+        );
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let l = hull.length();
         for fnum in [0.2, 0.4] {
@@ -1671,9 +1696,7 @@ mod transom_tests {
     /// harness equal the lofted hull's.
     #[test]
     fn closed_transom_resistance_and_squat_match_the_lofted_hull() {
-        let Some(hull) = e12_lofted() else {
-            return;
-        };
+        let hull = transom_hull();
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let wave = WaveOptions::default();
         let squat = SquatOptions {
@@ -1726,58 +1749,5 @@ mod transom_tests {
         );
         assert!(tr.depth > 0.004 && tr.depth < 0.012, "depth {}", tr.depth);
         assert_eq!(imp.report.transom.as_ref().map(|t| t.x), Some(tr.x));
-    }
-
-    /// The closure's effect on e12 cut from CAD, against the lofted hull
-    /// with the same closure. A report, not a check.
-    #[test]
-    #[ignore = "comparison report"]
-    fn transom_closure_effect_report() {
-        let so = crate::iges::SectionalOptions {
-            waterline_z: E12_WL,
-            ..Default::default()
-        };
-        let Some(text) = e12_text() else {
-            return;
-        };
-        let cad = crate::iges::import_sectional(&text, &so)
-            .unwrap()
-            .hulls
-            .remove(0)
-            .hull;
-        let Some(lofted) = e12_lofted() else {
-            return;
-        };
-        let x_ref = cad.lcb_x();
-        for fnum in [0.15, 0.2, 0.3, 0.5] {
-            let cond = Conditions::seawater(fnum * (9.81 * cad.length()).sqrt());
-            let mut line = format!("Fn {fnum}:");
-            for closure in [TransomClosure::default(), TransomClosure::None] {
-                let wave = WaveOptions {
-                    transom: closure,
-                    ..WaveOptions::default()
-                };
-                let squat = SquatOptions {
-                    wave,
-                    ..SquatOptions::default()
-                };
-                let rs = wave_resistance(&cad, &cond, &wave).unwrap().resistance;
-                let rl = crate::michell::wave_resistance_with(&lofted, &cond, &wave)
-                    .unwrap()
-                    .resistance;
-                let fs = dynamic_force(&cad, &cond, x_ref, &squat).unwrap();
-                let fl = crate::squat::dynamic_force(&lofted, &cond, x_ref, &squat).unwrap();
-                let name = if matches!(closure, TransomClosure::None) {
-                    "open"
-                } else {
-                    "ballistic"
-                };
-                line += &format!(
-                    "  {name}: Rw sec {rs:.4} loft {rl:.4} | Fz sec {:.1} loft {:.1} | M sec {:.1} loft {:.1}",
-                    fs.force_up, fl.force_up, fs.moment_bow_up, fl.moment_bow_up
-                );
-            }
-            eprintln!("{line}");
-        }
     }
 }

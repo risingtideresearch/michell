@@ -55,9 +55,13 @@
 //! [`DynamicForce::lift_fraction`] is reported so that boundary is visible.
 
 use crate::conditions::Conditions;
+#[cfg(test)]
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, NearFieldKernel, Placement, SquatTransforms, WaveOptions};
+#[cfg(test)]
+use crate::michell::{InnerIntegral, Placement};
+use crate::michell::{NearFieldKernel, SquatTransforms, WaveOptions};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -107,40 +111,9 @@ impl Default for SquatOptions {
     }
 }
 
-/// A closure adapting [`multihull_dynamic_force`] to the shape
-/// `FnMut(&FleetState) -> Result<DynamicLoad>` the dynamic equilibrium solver
-/// wants (`crate::float::solve_equilibrium_dynamic_with` /
-/// `solve_equilibrium_bodies_dynamic`): the fleet's situated hulls are
-/// borrowed fresh from `FleetState` on every call, so the closure has no
-/// stale state and works unchanged across Newton iterations and warm starts.
-///
-/// A dry fleet (`fleet.members` empty — everything lifted clear of the water)
-/// reports zero load rather than erroring: the hydrostatic side of the solver
-/// already handles that case by sinking until something gets wet.
-pub fn dynamic_load_closure<'a>(
-    cond: &'a Conditions,
-    x_ref: f64,
-    opts: &'a SquatOptions,
-) -> impl FnMut(&crate::float::FleetState) -> Result<crate::float::DynamicLoad> + 'a {
-    move |fleet: &crate::float::FleetState| {
-        if fleet.members.is_empty() {
-            return Ok(crate::float::DynamicLoad {
-                force_up: 0.0,
-                moment_bow_up: 0.0,
-            });
-        }
-        let members: Vec<(&Hull, Placement)> = fleet.members.iter().map(|(h, p)| (h, *p)).collect();
-        let d = multihull_dynamic_force(&members, cond, x_ref, opts)?;
-        Ok(crate::float::DynamicLoad {
-            force_up: d.force_up,
-            moment_bow_up: d.moment_bow_up,
-        })
-    }
-}
-
+#[cfg(test)]
 /// Near-field force and moment of a single hull about `x_ref`.
-/// Near-field force and moment of a single hull about `x_ref`.
-pub fn dynamic_force(
+pub(crate) fn dynamic_force(
     hull: &Hull,
     cond: &Conditions,
     x_ref: f64,
@@ -149,12 +122,13 @@ pub fn dynamic_force(
     multihull_dynamic_force(&[(hull, Placement::default())], cond, x_ref, opts)
 }
 
+#[cfg(test)]
 /// Near-field force and moment of a fleet — every member's pressure includes
 /// what every other member's source sheet induces on it, through the same
 /// placement phases the wave superposition uses (`e^{ik_x Δx} cos(k_y Δy)`),
 /// so demihull interaction in sinkage and trim is carried exactly within the
 /// theory. `x_ref` is the pitch pivot in fleet coordinates.
-pub fn multihull_dynamic_force(
+pub(crate) fn multihull_dynamic_force(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     x_ref: f64,

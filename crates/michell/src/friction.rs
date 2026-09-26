@@ -18,7 +18,6 @@
 
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
-use crate::hull::Hull;
 
 /// How the hull's surface finish is charged on top of flat-plate friction.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -170,33 +169,9 @@ pub fn roughness_delta_cf(k_s: f64, length: f64, reynolds: f64) -> f64 {
     (schlichting_rough_cf(length / k_s) - ittc57_cf(reynolds)).max(0.0)
 }
 
-/// Viscous resistance with zero form factor and a smooth hull (bare ITTC-57).
-pub fn viscous_resistance(hull: &Hull, cond: &Conditions) -> Result<ViscousResistance> {
-    viscous_resistance_with_options(hull, cond, &ViscousOptions::default())
-}
-
-/// Viscous resistance with a form factor k, i.e. `R_v = (1 + k) R_F`, and no
-/// roughness allowance.
-pub fn viscous_resistance_with(
-    hull: &Hull,
-    cond: &Conditions,
-    form_factor: f64,
-) -> Result<ViscousResistance> {
-    viscous_resistance_with_options(hull, cond, &ViscousOptions::form_factor(form_factor))
-}
-
-/// Viscous resistance with an explicit form factor and roughness allowance.
-pub fn viscous_resistance_with_options(
-    hull: &Hull,
-    cond: &Conditions,
-    opts: &ViscousOptions,
-) -> Result<ViscousResistance> {
-    viscous_resistance_for(hull.length(), hull.wetted_surface(), cond, opts)
-}
-
-/// [`viscous_resistance_with_options`] from the two things it reads: the
-/// Reynolds length [m] and the wetted surface [m²] — for any hull
-/// representation.
+/// Viscous resistance with an explicit form factor and roughness allowance,
+/// from the two things it reads: the Reynolds length [m] and the wetted
+/// surface [m²] — for any hull representation.
 pub fn viscous_resistance_for(
     length: f64,
     wetted_surface: f64,
@@ -242,7 +217,12 @@ pub fn viscous_resistance_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hull::Hull;
     use crate::hulls;
+
+    fn viscous(hull: &Hull, cond: &Conditions, opts: &ViscousOptions) -> Result<ViscousResistance> {
+        viscous_resistance_for(hull.length(), hull.wetted_surface(), cond, opts)
+    }
 
     #[test]
     fn ittc_line_known_value() {
@@ -289,14 +269,14 @@ mod tests {
             form_factor: 0.2,
             roughness: Roughness::DeltaCf(dcf),
         };
-        let v = viscous_resistance_with_options(&hull, &cond, &opts).unwrap();
+        let v = viscous(&hull, &cond, &opts).unwrap();
         let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * hull.wetted_surface();
         let want = (1.2 * v.cf + dcf) * q;
         assert!((v.resistance - want).abs() < 1e-9 * want);
         assert_eq!(v.roughness_cf, dcf);
         assert!((v.roughness_fraction() - dcf / (1.2 * v.cf + dcf)).abs() < 1e-12);
         // And the two knobs are genuinely separate.
-        let k_only = viscous_resistance_with(&hull, &cond, 0.2).unwrap();
+        let k_only = viscous(&hull, &cond, &ViscousOptions::form_factor(0.2)).unwrap();
         assert_eq!(k_only.roughness_cf, 0.0);
         assert!((v.resistance - k_only.resistance - dcf * q).abs() < 1e-9 * want);
     }
@@ -305,8 +285,8 @@ mod tests {
     fn defaults_reproduce_the_bare_flat_plate() {
         let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
         let cond = Conditions::seawater(3.0);
-        let a = viscous_resistance(&hull, &cond).unwrap();
-        let b = viscous_resistance_with_options(&hull, &cond, &ViscousOptions::default()).unwrap();
+        let a = viscous(&hull, &cond, &ViscousOptions::default()).unwrap();
+        let b = viscous(&hull, &cond, &ViscousOptions::default()).unwrap();
         assert_eq!(a.resistance, b.resistance);
         assert_eq!(a.roughness_cf, 0.0);
         assert!(a.roughness_reynolds.is_none());
@@ -322,7 +302,7 @@ mod tests {
             form_factor: 0.0,
             roughness: Roughness::SandGrain(2e-4),
         };
-        let v = viscous_resistance_with_options(&hull, &cond, &opts).unwrap();
+        let v = viscous(&hull, &cond, &opts).unwrap();
         let ksp = v.roughness_reynolds.expect("k_s+ reported");
         // k_s+ = k_s·U·sqrt(C_F/2)/ν, a few units for 0.2 mm at 3 m/s.
         let want = 2e-4 * 3.0 * (v.cf / 2.0).sqrt() / cond.fluid.kinematic_viscosity;
@@ -339,8 +319,8 @@ mod tests {
                 form_factor: 0.0,
                 roughness: r,
             };
-            assert!(viscous_resistance_with_options(&hull, &cond, &opts).is_err());
+            assert!(viscous(&hull, &cond, &opts).is_err());
         }
-        assert!(viscous_resistance_with(&hull, &cond, -0.1).is_err());
+        assert!(viscous(&hull, &cond, &ViscousOptions::form_factor(-0.1)).is_err());
     }
 }

@@ -450,12 +450,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (
-                FleetState {
-                    members,
-                    dry,
-                    band_exceeded: 0,
-                    band_overshoot: 0.0,
-                },
+                FleetState { members, dry },
                 0.0,
                 0.0,
                 volume,

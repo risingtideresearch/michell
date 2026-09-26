@@ -1,11 +1,10 @@
-//! End-to-end IGES import: a synthetic file exercising units conversion (mm),
-//! a 124 transformation matrix, port-half mirroring, waterline clipping, and
-//! the sampled-inversion + loft pipeline — validated against the native
-//! Wigley hull.
+//! End-to-end IGES (and STL) import by sections: synthetic files exercising
+//! units conversion (mm), a 124 transformation matrix, port-half mirroring,
+//! waterline clipping, centreplane detection, multihull clustering, posing
+//! and equilibrium — validated against the exact Wigley hull.
 
-use michell::fit::FitOptions;
-use michell::iges::{self, ImportOptions};
-use michell::{hulls, Conditions};
+use michell::iges::{self, HullPose, Platform, SectionalImport, SectionalOptions, SourceFleet};
+use michell::{sectional, Conditions, Placement, SectionalHull, WaveOptions};
 
 fn line(content: &str, section: char, seq: usize) -> String {
     format!("{content:<72}{section}{seq:>7}\n")
@@ -121,27 +120,55 @@ fn wigley_iges(extra_dir: &str, weights_mid: f64) -> String {
     s
 }
 
-fn import_opts() -> ImportOptions {
-    ImportOptions {
-        waterline_z: 2.625,
-        stations: 61,
-        waterlines: 25,
-        fit: FitOptions {
-            degree_x: 2,
-            degree_z: 2,
-            n_ctrl_x: 9,
-            n_ctrl_z: 7,
-            ..FitOptions::default()
-        },
-        centerplane: None,
-    }
+/// Cut hull `idx` of a source at `waterline_z`, posed.
+fn cut_posed(
+    src: &SourceFleet,
+    idx: usize,
+    waterline_z: f64,
+    pose: &HullPose,
+    centerplane: Option<f64>,
+) -> michell::Result<SectionalImport> {
+    let opts = SectionalOptions {
+        waterline_z,
+        centerplane,
+        ..SectionalOptions::default()
+    };
+    Ok(src
+        .situate_sectional(idx, waterline_z, pose, &Platform::default(), &opts)?
+        .expect("wet"))
+}
+
+fn cut(src: &SourceFleet, idx: usize, waterline_z: f64) -> SectionalImport {
+    cut_posed(src, idx, waterline_z, &HullPose::default(), None).unwrap()
+}
+
+/// The reference: the exact Wigley surfaces (L = 10, B = 1, T = 0.625), cut.
+fn reference() -> SectionalHull {
+    let surfaces = iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+    let src = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
+    cut(&src, 0, 0.0).hull
+}
+
+const WIGLEY_VOLUME: f64 = 4.0 * 1.0 * 10.0 * 0.625 / 9.0;
+
+fn rw(members: &[(&SectionalHull, Placement)], u: f64) -> f64 {
+    let cond = Conditions::seawater(u);
+    sectional::multihull_wave_resistance(members, &cond, &WaveOptions::default())
+        .unwrap()
+        .resistance
+}
+
+fn solo_rw(hull: &SectionalHull, u: f64) -> f64 {
+    rw(&[(hull, Placement::default())], u)
 }
 
 #[test]
 fn imports_wigley_and_reproduces_resistance() {
     let text = wigley_iges("", 1.0);
-    let (hull, report) = iges::import_hull(&text, &import_opts()).unwrap();
-
+    let src = iges::source_fleet(&text, 2.625).unwrap();
+    assert_eq!(src.len(), 1);
+    let m = cut(&src, 0, 2.625);
+    let report = &m.report;
     assert!((report.units_scale - 0.001).abs() < 1e-15);
     assert!(report.mirrored, "port half must be mirrored");
     assert_eq!(report.patches, 1);
@@ -154,31 +181,18 @@ fn imports_wigley_and_reproduces_resistance() {
     );
     assert!((report.x_range.0 - 0.0).abs() < 1e-9);
     assert!((report.x_range.1 - 10.0).abs() < 1e-9);
-    assert_eq!(report.failed_inversions, 0);
-    assert!(
-        report.fit.max_residual < 1e-8,
-        "fit residual {}",
-        report.fit.max_residual
-    );
 
-    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+    let v = m.hull.displaced_volume();
     assert!(
-        (hull.displaced_volume() - reference.displaced_volume()).abs()
-            < 1e-6 * reference.displaced_volume()
+        (v - WIGLEY_VOLUME).abs() < 1e-6 * WIGLEY_VOLUME,
+        "volume {v}"
     );
-    assert!(
-        (hull.wetted_surface() - reference.wetted_surface()).abs()
-            < 1e-6 * reference.wetted_surface()
-    );
+    let reference = reference();
     for u in [2.0, 3.5] {
-        let cond = Conditions::seawater(u);
-        let rw = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-        let rw_ref = michell::wave_resistance(&reference, &cond)
-            .unwrap()
-            .resistance;
+        let (got, want) = (solo_rw(&m.hull, u), solo_rw(&reference, u));
         assert!(
-            (rw - rw_ref).abs() < 1e-5 * rw_ref,
-            "U={u}: Rw {rw} vs {rw_ref}"
+            (got - want).abs() < 1e-5 * want,
+            "U={u}: Rw {got} vs {want}"
         );
     }
 }
@@ -186,7 +200,7 @@ fn imports_wigley_and_reproduces_resistance() {
 #[test]
 fn rejects_rational_surface() {
     let text = wigley_iges("", 2.0); // one weight = 2.0 -> rational
-    let err = iges::import_hull(&text, &import_opts()).unwrap_err();
+    let err = iges::source_fleet(&text, 2.625).err().expect("rejected");
     assert!(
         format!("{err}").contains("rational"),
         "unexpected error: {err}"
@@ -198,7 +212,7 @@ fn rejects_trimmed_surface_files() {
     // A 144 (trimmed surface) directory entry is enough to trigger rejection.
     let extra = dir_entry(144, 999, 0, 0, 5);
     let text = wigley_iges(&extra, 1.0);
-    let err = iges::import_hull(&text, &import_opts()).unwrap_err();
+    let err = iges::source_fleet(&text, 2.625).err().expect("rejected");
     assert!(
         format!("{err}").contains("trimmed"),
         "unexpected error: {err}"
@@ -207,11 +221,9 @@ fn rejects_trimmed_surface_files() {
 
 #[test]
 fn rejects_wrong_waterline() {
-    // Waterline below the keel: nothing wetted.
+    // Waterline below the keel (2.0 m after the transform): nothing wetted.
     let text = wigley_iges("", 1.0);
-    let mut opts = import_opts();
-    opts.waterline_z = 1.5; // keel is at 2.0 m after the transform
-    let err = iges::import_hull(&text, &opts).unwrap_err();
+    let err = iges::source_fleet(&text, 1.5).err().expect("rejected");
     assert!(
         format!("{err}").contains("above the specified waterline"),
         "unexpected error: {err}"
@@ -343,31 +355,24 @@ fn wigley_shell_bodies_zsplit(y0: f64) -> Vec<String> {
 
 #[test]
 fn dry_patches_are_retained_for_deeper_poses() {
-    use michell::iges::{HullPose, Platform};
     // Cluster at a shallow reference waterline (upper band of every quadrant
-    // fully dry), then situate deeper: the volume must recover the full hull.
+    // fully dry), then cut deeper: the volume must recover the full hull.
     let text = iges_file_meters(&wigley_shell_bodies_zsplit(0.0));
     let src = iges::source_fleet(&text, 0.3).unwrap();
     assert_eq!(src.len(), 1);
-    let opts = import_opts();
-    let fl = src
-        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
-        .unwrap();
-    let v = fl.members[0].hull.displaced_volume();
-    let v_full = 4.0 * 1.0 * 10.0 * 0.625 / 9.0;
+    let v = cut(&src, 0, 0.7).hull.displaced_volume();
     assert!(
-        (v - v_full).abs() < 1e-3 * v_full,
-        "volume {v} vs full {v_full}"
+        (v - WIGLEY_VOLUME).abs() < 1e-3 * WIGLEY_VOLUME,
+        "volume {v} vs full {WIGLEY_VOLUME}"
     );
 }
 
 #[test]
 fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
     let text = wigley_multipatch_iges();
-    let mut opts = import_opts();
-    opts.waterline_z = 0.7;
-    let (hull, report) = iges::import_hull(&text, &opts).unwrap();
-
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    let m = cut(&src, 0, 0.7);
+    let report = &m.report;
     assert_eq!(report.patches, 4);
     assert!(report.two_sided, "full shell must be detected as two-sided");
     assert!(
@@ -375,36 +380,25 @@ fn multipatch_full_shell_detects_centerplane_and_matches_wigley() {
         "centerplane {}",
         report.centerplane
     );
+    assert!((m.placement.y - 7.0).abs() < 1e-6);
     assert!((report.draft - 0.625).abs() < 1e-9);
     assert!(
         report.max_asymmetry < 1e-8,
         "asymmetry {}",
         report.max_asymmetry
     );
-    assert_eq!(report.failed_inversions, 0);
+    let v = m.hull.displaced_volume();
     assert!(
-        report.fit.max_residual < 1e-8,
-        "fit residual {}",
-        report.fit.max_residual
+        (v - WIGLEY_VOLUME).abs() < 1e-6 * WIGLEY_VOLUME,
+        "volume {v}"
     );
-
-    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    assert!(
-        (hull.displaced_volume() - reference.displaced_volume()).abs()
-            < 1e-6 * reference.displaced_volume()
-    );
-    let cond = Conditions::seawater(3.0);
-    let rw = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-    let rw_ref = michell::wave_resistance(&reference, &cond)
-        .unwrap()
-        .resistance;
-    assert!((rw - rw_ref).abs() < 1e-5 * rw_ref, "Rw {rw} vs {rw_ref}");
+    let (got, want) = (solo_rw(&m.hull, 3.0), solo_rw(&reference(), 3.0));
+    assert!((got - want).abs() < 1e-5 * want, "Rw {got} vs {want}");
 
     // Explicit centerplane gives the same answer.
-    opts.centerplane = Some(7.0);
-    let (_, report2) = iges::import_hull(&text, &opts).unwrap();
-    assert_eq!(report2.centerplane, 7.0);
-    assert!(report2.two_sided);
+    let m2 = cut_posed(&src, 0, 0.7, &HullPose::default(), Some(7.0)).unwrap();
+    assert_eq!(m2.report.centerplane, 7.0);
+    assert!(m2.report.two_sided);
 }
 
 #[test]
@@ -415,11 +409,9 @@ fn trimaran_file_imports_as_fleet_with_detected_placements() {
     bodies.extend(wigley_shell_bodies(7.0));
     bodies.extend(wigley_shell_bodies(-7.0));
     let text = iges_file_meters(&bodies);
-    let mut opts = import_opts();
-    opts.waterline_z = 0.7;
-
-    let fleet = iges::import_fleet(&text, &opts).unwrap();
-    assert_eq!(fleet.len(), 3, "expected 3 hulls");
+    let src = iges::source_fleet(&text, 0.7).unwrap();
+    assert_eq!(src.len(), 3, "expected 3 hulls");
+    let fleet: Vec<SectionalImport> = (0..3).map(|i| cut(&src, i, 0.7)).collect();
     let ys: Vec<f64> = fleet.iter().map(|m| m.placement.y).collect();
     for (got, want) in ys.iter().zip([-7.0, 0.0, 7.0]) {
         assert!((got - want).abs() < 1e-6, "placements {ys:?}");
@@ -428,42 +420,23 @@ fn trimaran_file_imports_as_fleet_with_detected_placements() {
         assert_eq!(m.report.patches, 4);
         assert!(m.report.two_sided);
         assert!((m.report.draft - 0.625).abs() < 1e-9);
-        assert!(m.report.fit.max_residual < 1e-8);
     }
 
     // Resistance of the imported fleet matches a manually placed fleet of
     // reference Wigley hulls at the same transverse positions.
-    let cond = Conditions::seawater(3.0);
-    let members: Vec<(&michell::Hull, michell::Placement)> =
+    let members: Vec<(&SectionalHull, Placement)> =
         fleet.iter().map(|m| (&m.hull, m.placement)).collect();
-    let got = michell::multihull_wave_resistance(&members, &cond)
-        .unwrap()
-        .resistance;
-    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    let refs = [
-        (&reference, michell::Placement { x: 0.0, y: -7.0 }),
-        (&reference, michell::Placement { x: 0.0, y: 0.0 }),
-        (&reference, michell::Placement { x: 0.0, y: 7.0 }),
-    ];
-    let want = michell::multihull_wave_resistance(&refs, &cond)
-        .unwrap()
-        .resistance;
+    let got = rw(&members, 3.0);
+    let reference = reference();
+    // The reference spans x in [-5, 5]; the file's hulls span [0, 10].
+    let refs: Vec<(&SectionalHull, Placement)> = [-7.0, 0.0, 7.0]
+        .iter()
+        .map(|&y| (&reference, Placement { x: 5.0, y }))
+        .collect();
+    let want = rw(&refs, 3.0);
     assert!(
         (got - want).abs() < 1e-5 * want,
         "trimaran Rw {got} vs reference {want}"
-    );
-
-    // Single-hull import must refuse the multihull file with a clear count.
-    let err = iges::import_hull(&text, &opts).unwrap_err();
-    let msg = format!("{err}");
-    assert!(msg.contains("3 separate hulls"), "unexpected error: {msg}");
-
-    // A centerplane override is ambiguous for a multi-hull file.
-    opts.centerplane = Some(0.0);
-    let err = iges::import_fleet(&text, &opts).unwrap_err();
-    assert!(
-        format!("{err}").contains("ambiguous"),
-        "unexpected error: {err}"
     );
 }
 
@@ -508,25 +481,12 @@ fn bounded_base_plane_does_not_bridge_hulls() {
         2,
         "expected 2 hulls, plane restricted to a plank"
     );
-
-    let mut opts = import_opts();
-    opts.waterline_z = 0.7;
-    let fleet = iges::import_fleet(&text, &opts).unwrap();
-    assert_eq!(fleet.len(), 2);
     // The plank joins the first hull; the second imports untouched.
-    assert!(
-        fleet[0].placement.y.abs() < 0.1,
-        "y {}",
-        fleet[0].placement.y
-    );
-    assert_eq!(fleet[0].report.patches, 5);
-    assert!(
-        (fleet[1].placement.y - 7.0).abs() < 1e-6,
-        "y {}",
-        fleet[1].placement.y
-    );
-    assert_eq!(fleet[1].report.patches, 4);
-    assert!(fleet[1].report.fit.max_residual < 1e-8);
+    let (a, b) = (cut(&src, 0, 0.7), cut(&src, 1, 0.7));
+    assert!(a.placement.y.abs() < 0.1, "y {}", a.placement.y);
+    assert_eq!(a.report.patches, 5);
+    assert!((b.placement.y - 7.0).abs() < 1e-6, "y {}", b.placement.y);
+    assert_eq!(b.report.patches, 4);
 
     // Without the bounded-surface wrapper the untrimmed plane really does
     // bridge the hulls — the hazard this test guards against.
@@ -538,28 +498,22 @@ fn bounded_base_plane_does_not_bridge_hulls() {
 #[test]
 fn offset_one_sided_hull_is_rejected_without_centerplane() {
     // A one-sided hull far from y = 0 must error with advice (rather than
-    // silently producing a ~7 m half-beam), and import cleanly once the
+    // silently producing a ~7 m half-beam), and cut cleanly once the
     // centerplane is supplied.
     let half = wigley_iges_offset_starboard();
-    let mut opts = import_opts();
-    opts.waterline_z = 0.7;
-    let err = iges::import_hull(&half, &opts).unwrap_err();
+    let src = iges::source_fleet(&half, 0.7).unwrap();
+    let err = cut_posed(&src, 0, 0.7, &HullPose::default(), None)
+        .err()
+        .expect("rejected");
     assert!(
         format!("{err}").contains("centerplane"),
         "unexpected error: {err}"
     );
-
-    opts.centerplane = Some(7.0);
-    let (hull, report) = iges::import_hull(&half, &opts).unwrap();
-    assert!(!report.two_sided);
-    assert_eq!(report.centerplane, 7.0);
-    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    let cond = Conditions::seawater(3.0);
-    let rw = michell::wave_resistance(&hull, &cond).unwrap().resistance;
-    let rw_ref = michell::wave_resistance(&reference, &cond)
-        .unwrap()
-        .resistance;
-    assert!((rw - rw_ref).abs() < 1e-5 * rw_ref, "Rw {rw} vs {rw_ref}");
+    let m = cut_posed(&src, 0, 0.7, &HullPose::default(), Some(7.0)).unwrap();
+    assert!(!m.report.two_sided);
+    assert_eq!(m.report.centerplane, 7.0);
+    let (got, want) = (solo_rw(&m.hull, 3.0), solo_rw(&reference(), 3.0));
+    assert!((got - want).abs() < 1e-5 * want, "Rw {got} vs {want}");
 }
 
 /// Single starboard-side Wigley patch offset to y ~ 7 (never reaches y = 0).
@@ -608,28 +562,17 @@ fn wigley_iges_offset_starboard() -> String {
 
 #[test]
 fn situate_dz_equals_waterline_shift() {
-    use michell::iges::{HullPose, Platform};
     // Raising a hull by 0.1 m is the same wetted geometry as lowering the
     // waterline by 0.1 m.
     let text = iges_file_meters(&wigley_shell_bodies(7.0));
     let src = iges::source_fleet(&text, 0.7).unwrap();
     assert_eq!(src.len(), 1);
-    let opts = import_opts();
-    let raised = src
-        .situate(
-            0.7,
-            &[HullPose {
-                dz: -0.1,
-                ..Default::default()
-            }],
-            &Platform::default(),
-            &opts,
-        )
-        .unwrap();
-    let lowered_wl = src
-        .situate(0.6, &[HullPose::default()], &Platform::default(), &opts)
-        .unwrap();
-    let (a, b) = (&raised.members[0].hull, &lowered_wl.members[0].hull);
+    let raised = HullPose {
+        dz: -0.1,
+        ..Default::default()
+    };
+    let a = cut_posed(&src, 0, 0.7, &raised, None).unwrap().hull;
+    let b = cut(&src, 0, 0.6).hull;
     assert!(
         (a.displaced_volume() - b.displaced_volume()).abs() < 1e-9 * b.displaced_volume(),
         "vol {} vs {}",
@@ -637,37 +580,23 @@ fn situate_dz_equals_waterline_shift() {
         b.displaced_volume()
     );
     assert!((a.draft() - b.draft()).abs() < 1e-9);
-    let cond = Conditions::seawater(3.0);
-    let rw_a = michell::wave_resistance(a, &cond).unwrap().resistance;
-    let rw_b = michell::wave_resistance(b, &cond).unwrap().resistance;
+    let (rw_a, rw_b) = (solo_rw(&a, 3.0), solo_rw(&b, 3.0));
     assert!((rw_a - rw_b).abs() < 1e-8 * rw_b, "Rw {rw_a} vs {rw_b}");
 }
 
 #[test]
 fn situate_scale_is_geometrically_similar() {
-    use michell::iges::{HullPose, Platform};
     // A uniform pose scale must grow the wetted hull similarly: length and
     // draft as s, displaced volume as s^3.
     let text = iges_file_meters(&wigley_shell_bodies(7.0));
     let src = iges::source_fleet(&text, 0.7).unwrap();
-    let opts = import_opts();
-    let base = src
-        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
-        .unwrap();
-    let b = &base.members[0].hull;
+    let b = cut(&src, 0, 0.7).hull;
     for &s in &[0.6, 1.4] {
-        let scaled = src
-            .situate(
-                0.7,
-                &[HullPose {
-                    scale: s,
-                    ..Default::default()
-                }],
-                &Platform::default(),
-                &opts,
-            )
-            .unwrap();
-        let c = &scaled.members[0].hull;
+        let pose = HullPose {
+            scale: s,
+            ..Default::default()
+        };
+        let c = cut_posed(&src, 0, 0.7, &pose, None).unwrap().hull;
         let rel = |got: f64, want: f64| (got - want).abs() <= 1e-3 * want.abs();
         assert!(
             rel(c.length(), s * b.length()),
@@ -692,23 +621,17 @@ fn situate_scale_is_geometrically_similar() {
 
 #[test]
 fn situate_trim_is_symmetric_for_symmetric_hull() {
-    use michell::iges::{HullPose, Platform};
     let text = iges_file_meters(&wigley_shell_bodies(0.0));
     let src = iges::source_fleet(&text, 0.7).unwrap();
-    let opts = import_opts();
     let vol = |trim: f64| -> f64 {
-        let fl = src
-            .situate(
-                0.7,
-                &[HullPose {
-                    trim,
-                    ..Default::default()
-                }],
-                &Platform::default(),
-                &opts,
-            )
-            .unwrap();
-        fl.members[0].hull.displaced_volume()
+        let pose = HullPose {
+            trim,
+            ..Default::default()
+        };
+        cut_posed(&src, 0, 0.7, &pose, None)
+            .unwrap()
+            .hull
+            .displaced_volume()
     };
     let v0 = vol(0.0);
     let vp = vol(3.0f64.to_radians());
@@ -724,8 +647,8 @@ fn situate_trim_is_symmetric_for_symmetric_hull() {
 
 #[test]
 fn equilibrium_matches_analytic_wigley() {
-    use michell::float::{solve_equilibrium, LoadCase};
-    use michell::iges::HullPose;
+    use michell::float::{solve_equilibrium_sectional, LoadCase};
+    use michell::source::SourceHull;
     // Wigley shell at design draft T0 = 0.625 under waterline 0.7. Target
     // immersion d = 0.5 -> analytic volume and sinkage = -0.125.
     let (l, b, t0, d) = (10.0f64, 1.0f64, 0.625f64, 0.5f64);
@@ -736,18 +659,22 @@ fn equilibrium_matches_analytic_wigley() {
 
     let text = iges_file_meters(&wigley_shell_bodies(0.0));
     let src = iges::source_fleet(&text, 0.7).unwrap();
-    let opts = import_opts();
+    let hulls = [SourceHull {
+        source: &src,
+        index: 0,
+        waterline_z: 0.7,
+        pose: HullPose::default(),
+    }];
+    let opts = SectionalOptions {
+        waterline_z: 0.7,
+        ..SectionalOptions::default()
+    };
+    let solve = |lcg: Option<f64>| {
+        solve_equilibrium_sectional(&hulls, &LoadCase { mass, lcg }, density, &opts)
+    };
 
     // Weight-only balance (trim locked).
-    let eq = solve_equilibrium(
-        &src,
-        0.7,
-        &[HullPose::default()],
-        &LoadCase { mass, lcg: None },
-        density,
-        &opts,
-    )
-    .unwrap();
+    let eq = solve(None).unwrap();
     assert!(
         (eq.sinkage + 0.125).abs() < 2e-3,
         "sinkage {} (want -0.125)",
@@ -763,34 +690,12 @@ fn equilibrium_matches_analytic_wigley() {
 
     // The shell spans x in [0, 10], so its symmetry plane is x = 5: with lcg
     // there the trim must stay ~0.
-    let eq = solve_equilibrium(
-        &src,
-        0.7,
-        &[HullPose::default()],
-        &LoadCase {
-            mass,
-            lcg: Some(5.0),
-        },
-        density,
-        &opts,
-    )
-    .unwrap();
+    let eq = solve(Some(5.0)).unwrap();
     assert!(eq.trim.abs() < 1e-3, "trim {}", eq.trim);
     assert!(eq.lcb_residual < 1e-3, "lcb residual {}", eq.lcb_residual);
 
     // Shift the CG forward: solver must trim until LCB follows.
-    let eq = solve_equilibrium(
-        &src,
-        0.7,
-        &[HullPose::default()],
-        &LoadCase {
-            mass,
-            lcg: Some(5.3),
-        },
-        density,
-        &opts,
-    )
-    .unwrap();
+    let eq = solve(Some(5.3)).unwrap();
     assert!(eq.volume_residual < 5e-4);
     assert!(eq.lcb_residual < 1.5e-3, "lcb residual {}", eq.lcb_residual);
     assert!((eq.lcb - 5.3).abs() < 1.5e-3, "lcb {}", eq.lcb);
@@ -800,141 +705,14 @@ fn equilibrium_matches_analytic_wigley() {
         eq.trim
     );
 
-    // An impossible CG (at the bow tip) must fail with a diagnosis, not hang.
-    let err = solve_equilibrium(
-        &src,
-        0.7,
-        &[HullPose::default()],
-        &LoadCase {
-            mass,
-            lcg: Some(0.0),
-        },
-        density,
-        &opts,
-    )
-    .unwrap_err();
+    // An impossible CG (at the bow tip) must fail with a diagnosis, not hang:
+    // this shell has no topside, so the bow's waterplane runs out first.
+    let err = solve(Some(0.0)).unwrap_err();
+    let msg = format!("{err}");
     assert!(
-        format!("{err}").contains("unreachable"),
-        "unexpected error: {err}"
+        msg.contains("unreachable") || msg.contains("waterplane area vanished"),
+        "unexpected error: {msg}"
     );
-}
-
-#[test]
-fn import_grid_carries_accurate_slopes() {
-    // The synthetic file is the exact biquadratic Wigley (L=10, B=1,
-    // T=0.625) with x ∈ [0, 10], so the sampled slope channels recovered
-    // from the Newton Jacobian must match the analytic derivatives of
-    // f(x, z) = (10x − x²)/50 · (1 − (z/T)²).
-    let text = wigley_iges("", 1.0);
-    let fleet = iges::import_fleet(&text, &import_opts()).unwrap();
-    assert_eq!(fleet.len(), 1);
-    let g = &fleet[0].grid;
-    let (fx, fz) = (g.fx().expect("fx channel"), g.fz().expect("fz channel"));
-    let t = 0.625f64;
-    let mut checked = 0usize;
-    for (i, &x) in g.stations().iter().enumerate() {
-        for (j, &z) in g.waterlines().iter().enumerate() {
-            let s = g.idx(i, j);
-            // Interior samples only: away from the fold (f = 0) and with a
-            // recovered slope.
-            if g.half_beams()[s] < 1e-3 || !(fx[s].is_finite() && fz[s].is_finite()) {
-                continue;
-            }
-            let want_fx = (10.0 - 2.0 * x) / 50.0 * (1.0 - (z / t).powi(2));
-            let want_fz = -(10.0 * x - x * x) / 25.0 * z / (t * t);
-            assert!(
-                (fx[s] - want_fx).abs() < 1e-8,
-                "x={x} z={z}: fx {} vs {want_fx}",
-                fx[s]
-            );
-            assert!(
-                (fz[s] - want_fz).abs() < 1e-8,
-                "x={x} z={z}: fz {} vs {want_fz}",
-                fz[s]
-            );
-            checked += 1;
-        }
-    }
-    // Most of the wet grid must carry slopes (gaps allowed only at folds
-    // and footprint edges).
-    let total = g.stations().len() * g.waterlines().len();
-    assert!(
-        checked > total / 3,
-        "only {checked} of {total} samples carried slopes"
-    );
-    assert!(fleet[0].report.fit.fx_residual.is_some());
-}
-
-#[test]
-fn body_situate_matches_iges_situate() {
-    use michell::body::{Body, BodyOptions};
-    use michell::iges::{HullPose, Platform};
-    // Loft the shell over its full band (this generator's hull tops out at
-    // the DWL, so the band top is z_cad = 0.7 and the design waterline sits
-    // at depth 0 below it), build a Body, and compare re-situating through
-    // the body against re-situating through the IGES source.
-    let text = iges_file_meters(&wigley_shell_bodies(0.0));
-    let src = iges::source_fleet(&text, 0.7).unwrap();
-    let opts = import_opts();
-    let full = src
-        .situate_one(0, 0.7, &HullPose::default(), &Platform::default(), &opts)
-        .unwrap()
-        .expect("wet");
-    let body = Body::new(full.hull.surface().clone(), 0.0, full.report.centerplane).unwrap();
-    let bopts = BodyOptions {
-        stations: opts.stations,
-        waterlines: opts.waterlines,
-        fit: opts.fit,
-    };
-
-    // dz: raise by 0.1 — body vs IGES at the equivalent lowered waterline.
-    let pose = HullPose {
-        dz: -0.1,
-        ..Default::default()
-    };
-    let via_body = body
-        .situate(0.0, &pose, &Platform::default(), &bopts)
-        .unwrap()
-        .expect("wet");
-    let via_iges = src
-        .situate_one(0, 0.6, &HullPose::default(), &Platform::default(), &opts)
-        .unwrap()
-        .expect("wet");
-    let (vb, vi) = (
-        via_body.hull.displaced_volume(),
-        via_iges.hull.displaced_volume(),
-    );
-    assert!((vb - vi).abs() < 1e-6 * vi, "dz: vol {vb} vs {vi}");
-    let cond = Conditions::seawater(3.0);
-    let rwb = michell::wave_resistance(&via_body.hull, &cond)
-        .unwrap()
-        .resistance;
-    let rwi = michell::wave_resistance(&via_iges.hull, &cond)
-        .unwrap()
-        .resistance;
-    assert!((rwb - rwi).abs() < 1e-4 * rwi, "dz: Rw {rwb} vs {rwi}");
-    assert_eq!(via_body.band_exceeded, 0);
-
-    // trim: 2 degrees through both paths.
-    let pose = HullPose {
-        trim: 2.0f64.to_radians(),
-        ..Default::default()
-    };
-    let via_body = body
-        .situate(0.0, &pose, &Platform::default(), &bopts)
-        .unwrap()
-        .expect("wet");
-    let via_iges = src
-        .situate_one(0, 0.7, &pose, &Platform::default(), &opts)
-        .unwrap()
-        .expect("wet");
-    let (vb, vi) = (
-        via_body.hull.displaced_volume(),
-        via_iges.hull.displaced_volume(),
-    );
-    assert!((vb - vi).abs() < 1e-3 * vi, "trim: vol {vb} vs {vi}");
-    let (db, di) = (via_body.hull.draft(), via_iges.hull.draft());
-    assert!((db - di).abs() < 1e-3 * di, "trim: draft {db} vs {di}");
 }
 
 /// Tessellate Wigley full shells (L=10, B=1, T=0.625, DWL at z_cad = 0.7)
@@ -974,51 +752,50 @@ fn wigley_stl_ascii(y0s: &[f64], nx: usize, nz: usize) -> String {
     s
 }
 
+/// Cut hull `idx` of an STL fleet at `waterline_z`.
+fn cut_mesh(mf: &michell::stl::MeshFleet, idx: usize, waterline_z: f64) -> SectionalImport {
+    let opts = SectionalOptions {
+        waterline_z,
+        ..SectionalOptions::default()
+    };
+    mf.situate_sectional(
+        idx,
+        waterline_z,
+        &HullPose::default(),
+        &Platform::default(),
+        &opts,
+    )
+    .unwrap()
+    .expect("wet")
+}
+
 #[test]
 fn stl_import_matches_reference_wigley() {
-    use michell::iges::{HullPose, Platform};
     let stl = wigley_stl_ascii(&[0.0], 160, 48);
     let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
     assert_eq!(mf.len(), 1, "one hull expected");
-    let opts = import_opts();
-    let fl = mf
-        .situate(0.7, &[HullPose::default()], &Platform::default(), &opts)
-        .unwrap();
-    let m = &fl.members[0];
+    let m = cut_mesh(&mf, 0, 0.7);
     assert!(m.report.two_sided);
     assert!(m.report.centerplane.abs() < 1e-6);
     assert!((m.report.draft - 0.625).abs() < 1e-9);
     assert!(m.report.max_asymmetry < 1e-9);
 
-    let reference = hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    let (v, vr) = (m.hull.displaced_volume(), reference.displaced_volume());
-    assert!((v - vr).abs() < 1e-3 * vr, "volume {v} vs {vr}");
-    let cond = Conditions::seawater(3.0);
-    let rw = michell::wave_resistance(&m.hull, &cond).unwrap().resistance;
-    let rw_ref = michell::wave_resistance(&reference, &cond)
-        .unwrap()
-        .resistance;
-    assert!((rw - rw_ref).abs() < 1e-2 * rw_ref, "Rw {rw} vs {rw_ref}");
+    let v = m.hull.displaced_volume();
+    assert!(
+        (v - WIGLEY_VOLUME).abs() < 1e-3 * WIGLEY_VOLUME,
+        "volume {v} vs {WIGLEY_VOLUME}"
+    );
+    let (got, want) = (solo_rw(&m.hull, 3.0), solo_rw(&reference(), 3.0));
+    assert!((got - want).abs() < 1e-2 * want, "Rw {got} vs {want}");
 }
 
 #[test]
 fn stl_catamaran_clusters_into_two_hulls() {
-    use michell::iges::{HullPose, Platform};
     let stl = wigley_stl_ascii(&[3.0, -3.0], 60, 20);
     let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
     assert_eq!(mf.len(), 2, "two hulls expected");
-    let opts = import_opts();
-    let fl = mf
-        .situate(
-            0.7,
-            &[HullPose::default(), HullPose::default()],
-            &Platform::default(),
-            &opts,
-        )
-        .unwrap();
-    assert_eq!(fl.members.len(), 2);
-    assert!((fl.members[0].placement.y + 3.0).abs() < 1e-3);
-    assert!((fl.members[1].placement.y - 3.0).abs() < 1e-3);
+    assert!((cut_mesh(&mf, 0, 0.7).placement.y + 3.0).abs() < 1e-3);
+    assert!((cut_mesh(&mf, 1, 0.7).placement.y - 3.0).abs() < 1e-3);
 }
 
 #[test]
