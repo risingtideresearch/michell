@@ -37,7 +37,7 @@ use crate::friction::{viscous_resistance_for, ViscousOptions, ViscousResistance}
 use crate::hull::{Hull, Span, Transom, TRANSOM_AREA_REL};
 use crate::michell::Placement;
 use crate::michell::{
-    hollow_shape_moment, run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms,
+    add_transom_step, appendage_source, hollow_shape_moment, run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms,
     TransomClosure, WaveOptions, WaveResistance,
 };
 use crate::moments::{osc_moments, C64};
@@ -712,8 +712,10 @@ impl SectionalHull {
         C64::ZERO - (phase * shape).scale(z_t)
     }
 
-    /// The transom appendage's share of every near-field transform (kernel
-    /// convention), as the lofted `InnerIntegral::add_transom_transforms`.
+    /// The transom's share of the near-field transforms (kernel convention),
+    /// as the lofted `InnerIntegral::add_transom_transforms`: the step in the
+    /// weights, the closing appendage in the sources (see
+    /// [`SquatTransforms`]).
     fn add_transom_transforms(
         &self,
         kx: f64,
@@ -725,26 +727,15 @@ impl SectionalHull {
         let Some(tr) = &self.transom else {
             return;
         };
+        let dx_t = tr.x - self.x_center;
+        let phase = C64::cis(kx * dx_t);
+        add_transom_step(phase, dx_t, z_t, tr.half_beam, t);
         let Some(lv) = closure.hollow_length(tr.depth, nu) else {
             return;
         };
-        let f_t0 = tr.half_beam;
-        let dx_t = tr.x - self.x_center;
-        let phase = C64::cis(kx * dx_t);
-        // φ = 1 − 3s² + 2s³, φ′ = 6s² − 6s, sφ′ = 6s³ − 6s².
         let mut m = Vec::with_capacity(4);
         osc_moments(-kx * lv, 1.0, 3, &mut m);
-        let shape_dx = m[2].scale(6.0) - m[1].scale(6.0);
-        let shape_f = (m[0] - m[2].scale(3.0) + m[3].scale(2.0)).scale(lv);
-        let shape_xdx = (m[3].scale(6.0) - m[2].scale(6.0)).scale(lv);
-        let q_app = C64::ZERO - (phase * shape_dx);
-        t.q = t.q + q_app.scale(z_t);
-        t.w = t.w + q_app.scale(f_t0);
-        t.p = t.p + (phase * shape_f).scale(z_t);
-        t.p_wl = t.p_wl + (phase * shape_f).scale(f_t0);
-        let q1_app = (phase * shape_xdx) + q_app.scale(dx_t);
-        t.q1 = t.q1 + q1_app.scale(z_t);
-        t.q1_wl = t.q1_wl + q1_app.scale(f_t0);
+        t.q_src = t.q_src + appendage_source(phase, &m).scale(z_t);
     }
 
     /// The six near-field transforms at `k_x` from a contraction at some `κ`
@@ -799,8 +790,10 @@ impl SectionalHull {
             t.p = t.p + phase * p_s;
             t.p_wl = t.p_wl + phase * pw_s;
         }
+        t.q_src = t.q;
         self.add_transom_transforms(kx, nu, closure, zc.z_t, &mut t);
         let conj = |v: C64| C64::new(v.re, -v.im);
+        t.q_src = conj(t.q_src);
         t.q = conj(t.q);
         t.p = conj(t.p);
         t.q1 = conj(t.q1);
@@ -1778,6 +1771,46 @@ mod transom_tests {
                 );
             }
             eprintln!("{line}");
+        }
+    }
+
+    /// The transom's closure is a hollow in the water, not hull: it adds
+    /// sources but no pressure-bearing surface. So on e12, whose transom is
+    /// barely immersed (6.5 mm equivalent depth, but 0.37 m wide at the
+    /// waterline), the near-field force and moment hardly depend on the
+    /// hollow's length — they once moved by 35% and changed sign when the
+    /// appendage's waterplane was counted as hull.
+    #[test]
+    fn a_shallow_transom_closure_barely_moves_the_squat_force() {
+        let Some(text) = e12_text() else {
+            return;
+        };
+        let opts = crate::iges::SectionalOptions {
+            waterline_z: -0.95,
+            ..Default::default()
+        };
+        let fleet = crate::iges::import_sectional(&text, &opts).unwrap();
+        let h = &fleet.hulls[0].hull;
+        assert!(h.transom().is_some());
+        let cond = Conditions::seawater(0.3 * (9.81f64 * h.length()).sqrt());
+        let force = |closure| {
+            let so = crate::squat::SquatOptions {
+                wave: WaveOptions {
+                    transom: closure,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            dynamic_force(h, &cond, h.lcb_x(), &so).unwrap()
+        };
+        let open = force(TransomClosure::None);
+        for closure in [TransomClosure::default(), TransomClosure::Fixed { length: 1.0 }] {
+            let d = force(closure);
+            let (df, dm) = (
+                (d.force_up - open.force_up).abs() / open.force_up.abs(),
+                (d.moment_bow_up - open.moment_bow_up).abs() / open.moment_bow_up.abs(),
+            );
+            assert!(df < 0.05 && dm < 0.05, "{closure:?}: force {df:.3}, moment {dm:.3} off");
         }
     }
 }

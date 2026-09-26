@@ -351,7 +351,9 @@ impl<K: NearFieldKernel> Fleet<K> {
             let rj = tj.p + tj.q1 + tj.q.scale(shift_j);
             let rwj = tj.p_wl + tj.q1_wl + tj.w.scale(shift_j);
             for (i, mi) in self.members.iter().enumerate() {
-                let qi = self.scratch[i].q;
+                // Weights of j (the hull the pressure acts on) against the
+                // sources of i (hull plus any transom closure).
+                let qi = self.scratch[i].q_src;
                 let e = C64::cis(kx * (mj.cx - mi.cx)).scale((ky * (mj.y - mi.y)).cos());
                 let qi_e = qi * e;
                 out.qq += (conj(tj.q) * qi_e).re;

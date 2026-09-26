@@ -595,6 +595,13 @@ impl MemberWave for SourceMember<'_> {
 /// `(x − x_ref) = (x − x_c) + (x_c − x_ref)`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SquatTransforms {
+    /// The source strength's transform: the hull's `∂f/∂x` plus, on a
+    /// transom stern, the closing virtual appendage. What makes the pressure.
+    pub q_src: C64,
+    /// The rest are the **weights**: the real hull the pressure acts on,
+    /// which ends at its transom — `f` drops from `f_T` to 0 there, a step
+    /// its `∂f/∂x` carries. The appendage is a hollow in the water whose
+    /// surface is free (zero pressure), so it adds sources but no weight.
     pub q: C64,
     pub p: C64,
     pub q1: C64,
@@ -630,6 +637,7 @@ impl ZContracted {
 impl Default for SquatTransforms {
     fn default() -> Self {
         SquatTransforms {
+            q_src: C64::ZERO,
             q: C64::ZERO,
             p: C64::ZERO,
             q1: C64::ZERO,
@@ -643,6 +651,7 @@ impl Default for SquatTransforms {
 impl SquatTransforms {
     fn conj_in_place(&mut self) {
         let conj = |v: C64| C64::new(v.re, -v.im);
+        self.q_src = conj(self.q_src);
         self.q = conj(self.q);
         self.p = conj(self.p);
         self.q1 = conj(self.q1);
@@ -650,6 +659,25 @@ impl SquatTransforms {
         self.p_wl = conj(self.p_wl);
         self.q1_wl = conj(self.q1_wl);
     }
+}
+
+/// The weights' share of a transom at `x_T` (`phase = e^{ik_x(x_T − x_c)}`,
+/// `dx_t = x_T − x_c`): the hull's half-breadth steps from `f_T` to 0 there,
+/// so `∂f/∂x` carries `f_T δ(x − x_T)` — through the depth z-factor `z_t` in
+/// the volume transforms and the waterline half-beam `f_t0` in the waterline
+/// ones. `p` (the transform of `f` itself) has no share.
+pub(crate) fn add_transom_step(phase: C64, dx_t: f64, z_t: f64, f_t0: f64, t: &mut SquatTransforms) {
+    t.q = t.q + phase.scale(z_t);
+    t.w = t.w + phase.scale(f_t0);
+    t.q1 = t.q1 + phase.scale(dx_t * z_t);
+    t.q1_wl = t.q1_wl + phase.scale(dx_t * f_t0);
+}
+
+/// The closing appendage's `∬ ∂f_v/∂x` per unit z-factor, from the
+/// oscillatory moments `m` of `e^{−ik_x L_v s}` on `s ∈ [0, 1]` (orders 0–3):
+/// `−phase · ∫φ′`, with `φ = 1 − 3s² + 2s³`, `φ′ = 6s² − 6s`.
+pub(crate) fn appendage_source(phase: C64, m: &[C64]) -> C64 {
+    C64::ZERO - phase * (m[2].scale(6.0) - m[1].scale(6.0))
 }
 
 /// What the near-field (sinkage/trim) quadrature needs from a hull: every
@@ -866,6 +894,7 @@ impl<'h> InnerIntegral<'h> {
             t.p = t.p + phase * p_s;
             t.p_wl = t.p_wl + phase * pw_s;
         }
+        t.q_src = t.q;
         self.add_transom_transforms(kx, zc.z_t, &mut t);
         // Everything above is in the kernel's e^{+i k_x (x − x_c)} convention;
         // the near-field formulas are written for e^{−i k_x x}. All nets are
@@ -874,35 +903,22 @@ impl<'h> InnerIntegral<'h> {
         t
     }
 
-    /// The transom appendage's share of every transform (kernel convention).
-    /// With `f_v = f_T(z)·φ(s)`, `s = (x_T − x)/L_v`, and `x − x_T = −s·L_v`:
-    ///   ∬ f_v            → e^{iκ_x(x_T−x_c)} · Z_T · L_v ∫φ e^{−ik_xL_v s}
-    ///   ∬ (x−x_T)∂f_v/∂x → e^{iκ_x(x_T−x_c)} · Z_T · L_v ∫ s φ′ e^{−ik_xL_v s}
-    /// and the waterline versions replace `Z_T` by `f_T(0)`.
+    /// The transom's share of the transforms (kernel convention): the step
+    /// `f_T → 0` in the weights (see [`SquatTransforms`]), and the closing
+    /// appendage `f_v = f_T(z)·φ(s)`, `s = (x_T − x)/L_v`, in the sources:
+    ///   ∬ ∂f_v/∂x → −e^{iκ_x(x_T−x_c)} · Z_T ∫φ′ e^{−ik_xL_v s}
     fn add_transom_transforms(&mut self, kx: f64, z_t: f64, t: &mut SquatTransforms) {
         let Some(tr) = self.hull.transom() else {
             return;
         };
+        let dx_t = tr.x - self.hull.x_center();
+        let phase = C64::cis(kx * dx_t);
+        add_transom_step(phase, dx_t, z_t, tr.half_beam, t);
         let Some(lv) = self.transom.hollow_length(tr.depth, self.nu) else {
             return;
         };
-        let f_t0 = tr.half_beam;
-        let dx_t = tr.x - self.hull.x_center();
-        let phase = C64::cis(kx * dx_t);
-        // φ = 1 − 3s² + 2s³, φ′ = 6s² − 6s, sφ′ = 6s³ − 6s².
         osc_moments(-kx * lv, 1.0, 3, &mut self.sm);
-        let m = &self.sm;
-        let shape_dx = m[2].scale(6.0) - m[1].scale(6.0);
-        let shape_f = (m[0] - m[2].scale(3.0) + m[3].scale(2.0)).scale(lv);
-        let shape_xdx = (m[3].scale(6.0) - m[2].scale(6.0)).scale(lv);
-        let q_app = C64::ZERO - (phase * shape_dx);
-        t.q = t.q + q_app.scale(z_t);
-        t.w = t.w + q_app.scale(f_t0);
-        t.p = t.p + (phase * shape_f).scale(z_t);
-        t.p_wl = t.p_wl + (phase * shape_f).scale(f_t0);
-        let q1_app = (phase * shape_xdx) + q_app.scale(dx_t);
-        t.q1 = t.q1 + q1_app.scale(z_t);
-        t.q1_wl = t.q1_wl + q1_app.scale(f_t0);
+        t.q_src = t.q_src + appendage_source(phase, &self.sm).scale(z_t);
     }
 
     /// Source free-wave amplitude `I + iJ` at λ = sec θ. Phases use x relative
@@ -1000,9 +1016,10 @@ mod tests {
             let t = inner.eval_transforms(nu * lambda, nu * lambda * lambda);
             let scale = amp.abs().max(1e-300);
             assert!(
-                (t.q.re - amp.re).abs() < 1e-12 * scale && (t.q.im + amp.im).abs() < 1e-12 * scale,
-                "λ = {lambda}: q = {:?}, amplitude = {:?}",
-                t.q,
+                (t.q_src.re - amp.re).abs() < 1e-12 * scale
+                    && (t.q_src.im + amp.im).abs() < 1e-12 * scale,
+                "λ = {lambda}: q_src = {:?}, amplitude = {:?}",
+                t.q_src,
                 amp
             );
         }
