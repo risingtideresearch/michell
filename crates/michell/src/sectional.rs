@@ -857,6 +857,41 @@ impl SectionalHull {
         t
     }
 
+    /// Just the source transform `q` of [`SectionalHull::transforms_at_closed`]
+    /// (same convention), for the near field, which needs nothing else.
+    pub(crate) fn q_closed(
+        &self,
+        zc: &SectionalContracted,
+        kx: f64,
+        nu: f64,
+        closure: TransomClosure,
+        xm: &mut Vec<C64>,
+    ) -> C64 {
+        if !zc.any {
+            return C64::ZERO;
+        }
+        let p = self.p;
+        let mut q = C64::ZERO;
+        for (s, sx) in self.spans.iter().enumerate() {
+            osc_moments(kx, sx.len, p - 1, xm);
+            let mut q_s = C64::ZERO;
+            for (a, &m) in xm.iter().enumerate().take(p) {
+                q_s = q_s + m.scale(zc.g_fx[s * p + a]);
+            }
+            q = q + C64::cis(kx * (sx.start - self.x_center)) * q_s;
+        }
+        if let Some(tr) = &self.transom {
+            if let Some(lv) = closure.hollow_length(tr.depth, nu) {
+                let mut m = Vec::with_capacity(4);
+                osc_moments(-kx * lv, 1.0, 3, &mut m);
+                let shape_dx = m[2].scale(6.0) - m[1].scale(6.0);
+                let phase = C64::cis(kx * (tr.x - self.x_center));
+                q = q - (phase * shape_dx).scale(zc.z_t);
+            }
+        }
+        C64::new(q.re, -q.im)
+    }
+
     /// Length between the end stations' knots [m].
     pub fn length(&self) -> f64 {
         self.length
