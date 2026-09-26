@@ -138,6 +138,36 @@ fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
     })
 }
 
+/// The solver's dynamic-load model with a progress report on every full
+/// evaluation (the solver's cheap slope probes pass straight through), so a
+/// cancelled request also stops the Newton loop.
+struct Counted<'a, R> {
+    inner: michell::sectional::SectionalDynamic<'a>,
+    report: R,
+}
+
+impl<R> michell::float::DynamicModel<SectionalHull> for Counted<'_, R>
+where
+    R: FnMut(&michell::float::DynamicLoad, f64) -> michell::Result<()>,
+{
+    fn load(
+        &mut self,
+        fleet: &michell::float::FleetState<SectionalHull>,
+    ) -> michell::Result<michell::float::DynamicLoad> {
+        let d = self.inner.load(fleet)?;
+        let vol: f64 = fleet.members.iter().map(|(h, _)| h.displaced_volume()).sum();
+        (self.report)(&d, vol)?;
+        Ok(d)
+    }
+
+    fn probe(
+        &mut self,
+        fleet: &michell::float::FleetState<SectionalHull>,
+    ) -> Option<michell::Result<michell::float::DynamicLoad>> {
+        self.inner.probe(fleet)
+    }
+}
+
 /// The flow request: a speed and the transom closure, on top of the cut.
 pub struct FlowRequest {
     pub cut: LoftRequest,
@@ -361,14 +391,12 @@ pub fn flow_with_progress(
         // Count the solve's force evaluations (each is most of an
         // iteration's cost) and report the latest lift; the count is open
         // ended, so the stage's share fills asymptotically.
-        let mut inner = michell::sectional::dynamic_load_closure(&cond, lcg, &squat);
+        let inner = michell::sectional::dynamic_load_closure(&cond, lcg, &squat);
         let mut evaluations = 0usize;
         let weight = mass * cond.gravity;
         let track_ref = &mut track;
-        let counted = move |fleet: &michell::float::FleetState<SectionalHull>| {
-            let d = inner(fleet)?;
+        let report = move |d: &michell::float::DynamicLoad, vol: f64| {
             evaluations += 1;
-            let vol: f64 = fleet.members.iter().map(|(h, _)| h.displaced_volume()).sum();
             track_ref
                 .at(
                     1,
@@ -380,9 +408,9 @@ pub fn flow_with_progress(
                         100.0 * rho * vol / mass,
                     ),
                 )
-                .map_err(michell::Error::InvalidInput)?;
-            Ok(d)
+                .map_err(michell::Error::InvalidInput)
         };
+        let counted = Counted { inner, report };
         let eq = solve_equilibrium_sectional_dynamic(
             &sources,
             &LoadCase {
