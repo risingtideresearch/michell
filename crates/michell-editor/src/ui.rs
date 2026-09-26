@@ -224,7 +224,6 @@ fn points_editor(ui: &mut Ui, i: usize, points: &mut Vec<PointLoad>) -> bool {
                 .changed();
             changed |= labelled_drag(ui, "mass", &mut p.mass, 1.0);
             changed |= labelled_drag(ui, "dx", &mut p.dx, 0.01);
-            changed |= labelled_drag(ui, "dy", &mut p.dy, 0.01);
             changed |= labelled_drag(ui, "dz", &mut p.dz, 0.01);
             if ui.button("✕").clicked() {
                 remove = Some(j);
@@ -478,30 +477,6 @@ fn options_section(ui: &mut Ui, o: &mut Options) -> bool {
                 changed |= opt_row(ui, "rho (fluid density)", &mut o.rho);
                 changed |= opt_row(ui, "nu (kinematic visc.)", &mut o.nu);
             });
-
-        ui.add_space(6.0);
-        changed |= ui
-            .checkbox(&mut o.heel.enabled, "heel roll-up metrics")
-            .on_hover_text("GZ-curve summaries + resistance rise (equilibrium mode only)")
-            .changed();
-        if o.heel.enabled {
-            Grid::new("heel")
-                .num_columns(2)
-                .spacing([12.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label("resistance_angles [deg]");
-                    changed |= ui
-                        .text_edit_singleline(&mut o.heel.resistance_angles)
-                        .changed();
-                    ui.end_row();
-                    ui.label("gz_step [deg]");
-                    changed |= ui.text_edit_singleline(&mut o.heel.gz_step).changed();
-                    ui.end_row();
-                    ui.label("gz_max [deg]");
-                    changed |= ui.text_edit_singleline(&mut o.heel.gz_max).changed();
-                    ui.end_row();
-                });
-        }
     });
     changed
 }

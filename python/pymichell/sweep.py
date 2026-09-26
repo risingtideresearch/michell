@@ -2,9 +2,11 @@
 
 A ``.msw`` file bundles a whole study into one self-contained container: the
 JSON manifest, the referenced hull files (verbatim), and, for every output
-row, the swept parameter values, the scalar metrics, the full righting-arm
-(GZ) curve, and the free-wave spectrum ``A(θ)``. See ``crates/michell-cli/
-src/archive.rs`` for the byte-level format; this reader mirrors it.
+row, the swept parameter values, the scalar metrics, and the free-wave
+spectrum ``A(θ)``. See ``crates/michell-cli/src/archive.rs`` for the
+byte-level format; this reader mirrors it. Version-1 archives (which also
+carried a righting-arm curve per row, since removed with heel) still read; the
+curve is skipped.
 
 Because each row carries its spectrum, a stored sweep is enough to regenerate a
 wake elevation field or heatmap on demand, at any resolution, without re-running
@@ -48,11 +50,10 @@ class Spectrum:
 
 @dataclass
 class Row:
-    """One output row: parameters, metrics, GZ curve, and spectrum."""
+    """One output row: parameters, metrics, and spectrum."""
 
     params: dict  # axis label -> swept value
     metrics: dict  # metric label -> value
-    gz_curve: np.ndarray  # (m, 2) columns (heel_rad, gz_m); empty when undefined
     spectrum: Spectrum
 
 
@@ -118,7 +119,7 @@ def read_sweep(path) -> Sweep:
     if data[:4] != _MAGIC:
         raise ValueError("not an MSWP archive (bad magic)")
     version = struct.unpack_from("<I", data, 4)[0]
-    if version != 1:
+    if version not in (1, 2):
         raise ValueError(f"unsupported .msw version {version}")
 
     manifest_name = "manifest.json"
@@ -142,7 +143,7 @@ def read_sweep(path) -> Sweep:
         elif kind == KIND_META:
             meta = json.loads(blob.decode("utf-8"))
         elif kind == KIND_ROWS:
-            rows = _decode_rows(blob, meta)
+            rows = _decode_rows(blob, meta, version)
         # Unknown kinds are ignored for forward compatibility.
 
     return Sweep(
@@ -154,7 +155,7 @@ def read_sweep(path) -> Sweep:
     )
 
 
-def _decode_rows(blob: bytes, meta: dict) -> list:
+def _decode_rows(blob: bytes, meta: dict, version: int) -> list:
     cur = _Cursor(blob)
     n_rows = cur.u32()
     n_axes = cur.u32()
@@ -169,8 +170,8 @@ def _decode_rows(blob: bytes, meta: dict) -> list:
         params = dict(zip(axis_labels, params_vals.tolist()))
         metrics = dict(zip(metric_labels, metric_vals.tolist()))
 
-        gz_n = cur.u32()
-        gz = cur.f64_array(2 * gz_n).reshape(gz_n, 2) if gz_n else np.empty((0, 2))
+        if version == 1:
+            cur.f64_array(2 * cur.u32())  # v1 righting-arm curve, no longer modelled
 
         wavenumber = cur.f64_array(1)[0]
         twl = cur.f64_array(1)[0]
@@ -183,5 +184,5 @@ def _decode_rows(blob: bytes, meta: dict) -> list:
             amp=(flat[:, 1] + 1j * flat[:, 2]),
             drw_dtheta=flat[:, 3].copy(),
         )
-        rows.append(Row(params=params, metrics=metrics, gz_curve=gz, spectrum=spectrum))
+        rows.append(Row(params=params, metrics=metrics, spectrum=spectrum))
     return rows

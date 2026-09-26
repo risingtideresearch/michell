@@ -8,10 +8,7 @@ use michell::float::{solve_equilibrium_bodies_dynamic, LoadCase};
 use michell::iges::HullPose;
 use michell::parallel::with_threads;
 use michell::squat::{dynamic_load_closure, multihull_dynamic_force, SquatOptions};
-use michell::{
-    hulls, multihull_heel_wave_resistance, multihull_wave_resistance_lifting,
-    multihull_wave_resistance_with, Conditions, Hull, LiftingGrid, Placement, WaveOptions,
-};
+use michell::{hulls, multihull_wave_resistance_with, Conditions, Hull, Placement, WaveOptions};
 
 fn catamaran() -> (Hull, Hull) {
     (
@@ -42,31 +39,6 @@ fn wave_resistance_is_bitwise_independent_of_thread_count() {
         assert_eq!(s.max_lambda.to_bits(), p.max_lambda.to_bits());
         assert_eq!(s.inner_evaluations, p.inner_evaluations);
     }
-}
-
-#[test]
-fn heeled_and_lifting_paths_are_bitwise_independent_of_thread_count() {
-    let (a, b) = catamaran();
-    let members = placed(&a, &b);
-    let opts = WaveOptions::default();
-    let cond = Conditions::seawater(3.0);
-
-    let s = with_threads(1, || {
-        multihull_heel_wave_resistance(&members, &cond, 0.2, &opts).unwrap()
-    });
-    let p = with_threads(8, || {
-        multihull_heel_wave_resistance(&members, &cond, 0.2, &opts).unwrap()
-    });
-    assert_eq!(s.resistance.to_bits(), p.resistance.to_bits());
-
-    let grid = LiftingGrid { nx: 8, nz: 4 };
-    let s = with_threads(1, || {
-        multihull_wave_resistance_lifting(&members, &cond, &opts, grid).unwrap()
-    });
-    let p = with_threads(8, || {
-        multihull_wave_resistance_lifting(&members, &cond, &opts, grid).unwrap()
-    });
-    assert_eq!(s.resistance.to_bits(), p.resistance.to_bits());
 }
 
 #[test]

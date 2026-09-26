@@ -31,20 +31,6 @@ const PLACEMENT: &str = r#"{
   "options": { "rel_tol": 1e-5, "form_factor": 0.05 }
 }"#;
 
-// The README heel-rollup example: symmetric loads, options.heel, no CG axis.
-const HEEL: &str = r#"{
-  "name": "gz",
-  "fluid": "seawater",
-  "options": { "heel": { "resistance_angles": [5, 10], "gz_step": 2.5, "gz_max": 90 } },
-  "hulls": [
-    { "id": "port", "file": "boat-port.hull", "load": { "mass": 1100, "vcg": 1.1 } },
-    { "id": "stbd", "file": "boat-starboard.hull", "load": { "mass": 1100, "vcg": 1.1 } }
-  ],
-  "sweep": [
-    { "target": "speed", "unit": "knots", "value": 8 }
-  ]
-}"#;
-
 fn reparse(m: &Manifest) -> Manifest {
     let text = jsonio::to_string(m).expect("serialize");
     jsonio::from_str(&text).expect("reparse serialized output")
@@ -114,24 +100,18 @@ fn placement_loads_points_and_axes_survive() {
 }
 
 #[test]
-fn heel_rollup_options_survive() {
-    let m = jsonio::from_str(HEEL).unwrap();
-    assert!(m.options.heel.enabled);
-    assert_eq!(m.options.heel.resistance_angles, "5, 10");
-    assert_eq!(m.options.heel.gz_step, "2.5");
-    // Both hulls carry mass → float mode → heel metrics valid, no errors.
-    assert!(
-        no_errors(&m),
-        "{:?}",
-        validate::validate(&m)
-            .iter()
-            .map(|i| &i.msg)
-            .collect::<Vec<_>>()
-    );
-
-    let m2 = reparse(&m);
-    assert!(m2.options.heel.enabled);
-    assert_eq!(m2.options.heel.resistance_angles, "5, 10");
+fn heel_inputs_are_rejected() {
+    let err = jsonio::from_str(r#"{ "name": "gz", "options": { "heel": { "gz_step": 2.5 } } }"#)
+        .err()
+        .expect("options.heel must be rejected");
+    assert!(err.contains("heel was removed"), "{err}");
+    let err = jsonio::from_str(
+        r#"{ "name": "p", "hulls": [ { "id": "v", "file": "v.hull",
+             "points": [ { "id": "crew", "mass": 80, "dy": 0.5 } ] } ] }"#,
+    )
+    .err()
+    .expect("point dy must be rejected");
+    assert!(err.contains("\"dy\" was removed"), "{err}");
 }
 
 #[test]

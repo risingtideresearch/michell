@@ -86,15 +86,6 @@ pub struct Hull {
     /// (sinkage/trim) transforms need moments of `f` and `x·∂f/∂x`, not only
     /// of `∂f/∂x`; carrying `f` per span keeps them exact too.
     f_coeff: Vec<f64>,
-    /// `∂f_a/∂x` coefficients for the **antisymmetric** half-beam
-    /// `f_a = (f₊ − f₋)/2` of an asymmetric hull, same layout as `fx_coeff`.
-    /// `None` for a port/starboard-symmetric hull (the default contract), in
-    /// which case every wave computation reduces exactly to classical Michell.
-    fx_a_coeff: Option<Vec<f64>>,
-    /// The antisymmetric half-beam surface `f_a = (f₊ − f₋)/2` itself, kept for
-    /// evaluating `∂f_a/∂x` at arbitrary `(x, z)` (the camber forcing of the
-    /// centreplane lifting solve). `Some` exactly when `fx_a_coeff` is.
-    a_surface: Option<BSplineSurface>,
     length: f64,
     draft: f64,
     x_center: f64,
@@ -105,7 +96,6 @@ pub struct Hull {
     waterplane_area: f64,
     waterplane_moment: f64,
     waterplane_second_moment: f64,
-    waterplane_transverse_moment: f64,
     max_section_area: f64,
     transom: Option<Transom>,
 }
@@ -225,13 +215,11 @@ impl Hull {
         wetted *= 2.0;
 
         // Waterplane properties: 1-D integrals of the beam b(x) = 2 f(x, 0)
-        // (the transverse inertia integrand f³ has degree 3p; the rule is
-        // sized for it, which also covers x²·f at degree p + 2).
+        // (the rule is exact to degree 3p + 3, which covers x²·f at p + 2).
         let (xq, wq) = gauss_legendre(3 * p / 2 + 2);
         let mut wp_area = 0.0;
         let mut wp_mx = 0.0;
         let mut wp_ixx = 0.0;
-        let mut wp_iyy = 0.0;
         for sx in &spans_x {
             let jac = sx.len / 2.0;
             for (i, &xi) in xq.iter().enumerate() {
@@ -241,7 +229,6 @@ impl Hull {
                 wp_area += wq[i] * jac * b;
                 wp_mx += wq[i] * jac * x * b;
                 wp_ixx += wq[i] * jac * x * x * b;
-                wp_iyy += wq[i] * jac * (2.0 / 3.0) * f * f * f;
             }
         }
 
@@ -254,8 +241,6 @@ impl Hull {
             spans_z,
             fx_coeff,
             f_coeff,
-            fx_a_coeff: None,
-            a_surface: None,
             length: x1 - x0,
             draft,
             x_center: 0.5 * (x0 + x1),
@@ -274,100 +259,9 @@ impl Hull {
             waterplane_area: wp_area,
             waterplane_moment: wp_mx,
             waterplane_second_moment: wp_ixx,
-            waterplane_transverse_moment: wp_iyy,
             max_section_area,
             transom,
         })
-    }
-
-    /// Validate an **asymmetric** hull from its two half-breadth surfaces.
-    ///
-    /// `starboard` is the half-beam `y = +f₊(x, z) >= 0` and `port` is
-    /// `y = −f₋(x, z) <= 0` (both surfaces store the *magnitude* `f ≥ 0`). The
-    /// hull is split into a symmetric thickness part `f_sym = (f₊ + f₋)/2` and
-    /// an antisymmetric camber part `f_a = (f₊ − f₋)/2`; the wave field then
-    /// superposes a source system from `f_sym` (classical Michell) and a
-    /// centreplane y-dipole system from `f_a` (see the `michell` module docs).
-    ///
-    /// Contract: both surfaces must share **identical degrees and knot
-    /// vectors** (they may differ only in their control nets), so the two
-    /// decomposed surfaces live on the same spans. Each side must be a valid
-    /// non-negative half-breadth. When `port == starboard` the result is bit
-    /// -for-bit the symmetric [`Hull::new`] with `f_a ≡ 0`.
-    pub fn new_asymmetric(port: BSplineSurface, starboard: BSplineSurface) -> Result<Hull> {
-        if starboard.degree_x() != port.degree_x() || starboard.degree_z() != port.degree_z() {
-            return Err(Error::InvalidGeometry(
-                "asymmetric hull: port and starboard surfaces must share degrees".into(),
-            ));
-        }
-        let knots_match = |a: &[f64], b: &[f64]| {
-            a.len() == b.len()
-                && a.iter()
-                    .zip(b)
-                    .all(|(x, y)| (x - y).abs() <= 1e-12 * (1.0 + x.abs()))
-        };
-        if !knots_match(starboard.knots_x(), port.knots_x())
-            || !knots_match(starboard.knots_z(), port.knots_z())
-        {
-            return Err(Error::InvalidGeometry(
-                "asymmetric hull: port and starboard surfaces must share knot vectors \
-                 (only the control nets may differ)"
-                    .into(),
-            ));
-        }
-        if starboard.control().len() != port.control().len() {
-            return Err(Error::InvalidGeometry(
-                "asymmetric hull: control nets differ in length".into(),
-            ));
-        }
-
-        // Symmetric and antisymmetric control nets on the shared parametrisation.
-        let sym_ctrl: Vec<f64> = starboard
-            .control()
-            .iter()
-            .zip(port.control())
-            .map(|(s, p)| 0.5 * (s + p))
-            .collect();
-        let a_ctrl: Vec<f64> = starboard
-            .control()
-            .iter()
-            .zip(port.control())
-            .map(|(s, p)| 0.5 * (s - p))
-            .collect();
-        let sym_surface = BSplineSurface::new(
-            starboard.degree_x(),
-            starboard.degree_z(),
-            starboard.knots_x().to_vec(),
-            starboard.knots_z().to_vec(),
-            sym_ctrl,
-        )?;
-        let a_surface = BSplineSurface::new(
-            starboard.degree_x(),
-            starboard.degree_z(),
-            starboard.knots_x().to_vec(),
-            starboard.knots_z().to_vec(),
-            a_ctrl,
-        )?;
-
-        // The symmetric mean is itself a valid non-negative half-breadth
-        // (mean of two non-negative nets), so build the base hull from it —
-        // this reuses every validated symmetric computation unchanged.
-        let mut hull = Hull::new(sym_surface)?;
-
-        // Antisymmetric ∂f_a/∂x on the same spans.
-        let xs = a_surface.x_span_indices();
-        let zs = a_surface.z_span_indices();
-        hull.fx_a_coeff = Some(compute_span_coeffs(&a_surface, &xs, &zs).0);
-        hull.a_surface = Some(a_surface);
-
-        // Two-sided geometry corrections: wetted surface and the centreplane
-        // transverse inertia see each side separately, not twice the mean.
-        // (Volume, LCB/VCB and waterplane area/moment depend only on the sum
-        // f₊ + f₋ = 2 f_sym and are already correct from the base hull.)
-        hull.wetted_surface = wetted_surface_of(&starboard) + wetted_surface_of(&port);
-        hull.waterplane_transverse_moment =
-            waterplane_transverse_moment_of(&starboard) + waterplane_transverse_moment_of(&port);
-        Ok(hull)
     }
 
     pub fn surface(&self) -> &BSplineSurface {
@@ -423,13 +317,6 @@ impl Hull {
         self.waterplane_second_moment
     }
 
-    /// Second moment of the waterplane about the hull's own centerplane:
-    /// `I_T = ∫ (2/3) f(x, 0)³ dx` [m⁴] — the transverse inertia that sets
-    /// the hull's individual metacentric radius `BM_T = I_T / ∇`.
-    pub fn waterplane_transverse_moment(&self) -> f64 {
-        self.waterplane_transverse_moment
-    }
-
     /// Longitudinal centre of flotation (waterplane centroid) [m].
     pub fn lcf_x(&self) -> f64 {
         if self.waterplane_area > 0.0 {
@@ -471,26 +358,6 @@ impl Hull {
         &self.f_coeff
     }
 
-    /// `∂f_a/∂x` coefficients for the antisymmetric half-beam, or `None` if the
-    /// hull is port/starboard symmetric.
-    pub(crate) fn fx_a_coeff(&self) -> Option<&[f64]> {
-        self.fx_a_coeff.as_deref()
-    }
-
-    /// Whether the hull is asymmetric (has an antisymmetric camber part).
-    pub fn is_asymmetric(&self) -> bool {
-        self.a_surface.is_some()
-    }
-
-    /// `∂f_a/∂x` at `(x, z)` in the hull's own coordinates, evaluated from the
-    /// antisymmetric surface. Returns 0 for a symmetric hull. This is the
-    /// camber-slope forcing of the centreplane lifting solve.
-    pub(crate) fn eval_fx_a(&self, x: f64, z: f64) -> f64 {
-        self.a_surface
-            .as_ref()
-            .map_or(0.0, |s| s.eval_deriv(x, z, 1, 0))
-    }
-
     /// Half-extent of the hull about its x-midpoint (bandwidth of the
     /// oscillatory inner integral).
     pub(crate) fn x_half_extent(&self) -> f64 {
@@ -509,8 +376,7 @@ fn zj_map(sz: &Span, node: f64) -> f64 {
 
 /// Local polynomial coefficients of `∂f/∂x` and of `f` per span pair, in the
 /// flattened layouts documented on [`Hull::fx_coeff`] and [`Hull::f_coeff`].
-/// Both come from one corner-Taylor pass; shared by the symmetric and
-/// asymmetric constructors so both paths use identical arithmetic.
+/// Both come from one corner-Taylor pass.
 fn compute_span_coeffs(
     surface: &BSplineSurface,
     xs: &[usize],
@@ -638,55 +504,6 @@ fn detect_transom(
         half_beam: surface.eval(x_t, 0.0),
         coeff,
     })
-}
-
-/// One-sided wetted surface `∬ √(1 + fx² + fz²) dx dz` of a half-breadth
-/// surface (thin-ship projection, no girth correction).
-fn wetted_surface_of(surface: &BSplineSurface) -> f64 {
-    let xs = surface.x_span_indices();
-    let zs = surface.z_span_indices();
-    let (xw, ww) = gauss_legendre(24);
-    let mut wetted = 0.0;
-    for &sxi in &xs {
-        let x_start = surface.knots_x()[sxi];
-        let x_len = surface.knots_x()[sxi + 1] - x_start;
-        for &szi in &zs {
-            let z_start = surface.knots_z()[szi];
-            let z_len = surface.knots_z()[szi + 1] - z_start;
-            let jac = x_len / 2.0 * (z_len / 2.0);
-            for (i, &xi) in xw.iter().enumerate() {
-                let x = x_start + x_len * (xi + 1.0) / 2.0;
-                for (j, &zj) in xw.iter().enumerate() {
-                    let z = z_start + z_len * (zj + 1.0) / 2.0;
-                    let fx = surface.eval_deriv(x, z, 1, 0);
-                    let fz = surface.eval_deriv(x, z, 0, 1);
-                    wetted += ww[i] * ww[j] * jac * (1.0 + fx * fx + fz * fz).sqrt();
-                }
-            }
-        }
-    }
-    wetted
-}
-
-/// One-sided waterplane transverse inertia about the centreplane,
-/// `∫ (1/3) f(x, 0)³ dx`.
-fn waterplane_transverse_moment_of(surface: &BSplineSurface) -> f64 {
-    let p = surface.degree_x();
-    let (z0, _) = surface.z_domain();
-    let xs = surface.x_span_indices();
-    let (xq, wq) = gauss_legendre(3 * p / 2 + 2);
-    let mut iyy = 0.0;
-    for &sxi in &xs {
-        let x_start = surface.knots_x()[sxi];
-        let x_len = surface.knots_x()[sxi + 1] - x_start;
-        let jac = x_len / 2.0;
-        for (i, &xi) in xq.iter().enumerate() {
-            let x = x_start + x_len * (xi + 1.0) / 2.0;
-            let f = surface.eval(x, z0.max(0.0));
-            iyy += wq[i] * jac * (1.0 / 3.0) * f * f * f;
-        }
-    }
-    iyy
 }
 
 #[cfg(test)]

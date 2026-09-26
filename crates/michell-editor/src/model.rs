@@ -7,8 +7,7 @@
 //! gravity), and any number of `points` (discrete masses). A sweep axis is
 //! either the reserved `speed`/`waterline`, or it targets one or more hull ids
 //! (pose/load params) or point-load ids (mass/offset params) and offsets their
-//! base value. Heel is not an axis — it is a roll-up configured under
-//! `options.heel`.
+//! base value.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Fluid {
@@ -64,13 +63,12 @@ pub struct Load {
 }
 
 /// A discrete point mass mounted on a hull, offset from its centerpoint
-/// (`dx` forward, `dy` to +y, `dz` down).
+/// (`dx` forward, `dz` down).
 #[derive(Clone, Default)]
 pub struct PointLoad {
     pub id: String,
     pub mass: f64,
     pub dx: f64,
-    pub dy: f64,
     pub dz: f64,
 }
 
@@ -194,23 +192,16 @@ impl HullParam {
 pub enum PointParam {
     Mass,
     Dx,
-    Dy,
     Dz,
 }
 
 impl PointParam {
-    pub const ALL: [PointParam; 4] = [
-        PointParam::Mass,
-        PointParam::Dx,
-        PointParam::Dy,
-        PointParam::Dz,
-    ];
+    pub const ALL: [PointParam; 3] = [PointParam::Mass, PointParam::Dx, PointParam::Dz];
 
     pub fn as_str(self) -> &'static str {
         match self {
             PointParam::Mass => "mass",
             PointParam::Dx => "dx",
-            PointParam::Dy => "dy",
             PointParam::Dz => "dz",
         }
     }
@@ -322,28 +313,6 @@ impl OptField {
     }
 }
 
-/// The heel roll-up config (`options.heel`). Written only when `enabled`; each
-/// field is emitted only when non-empty, else the CLI default applies.
-#[derive(Clone)]
-pub struct Heel {
-    pub enabled: bool,
-    /// Comma-separated heel angles (deg) for the resistance-rise columns.
-    pub resistance_angles: String,
-    pub gz_step: String,
-    pub gz_max: String,
-}
-
-impl Default for Heel {
-    fn default() -> Self {
-        Heel {
-            enabled: false,
-            resistance_angles: "5, 10".into(),
-            gz_step: "2.5".into(),
-            gz_max: "90".into(),
-        }
-    }
-}
-
 /// The `options` object. `samples`/`fit_degree`/`fit_control` are `"NxM"`
 /// strings; the rest are scalars.
 #[derive(Clone)]
@@ -359,7 +328,6 @@ pub struct Options {
     pub gravity: OptField,
     pub rho: OptField,
     pub nu: OptField,
-    pub heel: Heel,
 }
 
 impl Default for Options {
@@ -374,7 +342,6 @@ impl Default for Options {
             gravity: OptField::off("9.80665"),
             rho: OptField::off("1025"),
             nu: OptField::off("1.19e-6"),
-            heel: Heel::default(),
         }
     }
 }
@@ -390,8 +357,7 @@ impl Options {
             || self.roughness.enabled
             || self.gravity.enabled
             || self.rho.enabled
-            || self.nu.enabled
-            || self.heel.enabled)
+            || self.nu.enabled)
     }
 }
 

@@ -16,37 +16,11 @@
 //! numerical error lives in the smooth outer θ-integral, which is integrated
 //! with Gauss–Legendre panels sized to the local oscillation rate and then
 //! refined until the requested tolerance is met.
-//!
-//! ## Asymmetric hulls
-//!
-//! A hull built with [`Hull::new_asymmetric`] is split into a symmetric
-//! thickness part `f_sym = (f₊ + f₋)/2` and an antisymmetric camber part
-//! `f_a = (f₊ − f₋)/2`. The thickness part is the classical **source** system
-//! above; the camber part adds a centreplane **y-dipole** system whose
-//! free-wave amplitude is the same inner integral over `∂f_a/∂x` weighted by
-//! the transverse wavenumber (see [`dipole_weight`]). Because the source
-//! amplitude is even in θ and the dipole amplitude is odd, their cross term
-//! integrates to zero over the Kelvin fan, so
-//!
-//! ```text
-//! R_w = R_source(f_sym) + R_dipole(f_a)
-//! ```
-//!
-//! with the symmetric hull (`f_a ≡ 0`) recovering classical Michell exactly.
-//!
-//! The [`multihull_wave_resistance_with`] path fixes the dipole *magnitude* with
-//! the crude prescribed strip closure `μ = 2U f_a` (read qualitatively — see
-//! [`DIPOLE_WEIGHT_C`]). [`asymmetric_wave_resistance_lifting`] instead *solves*
-//! the centreplane lifting-surface problem ([`crate::centerplane`]) for the
-//! doublet density and forms the same dipole from the solved `μ` — the
-//! physically grounded magnitude, sharing this term's normalisation exactly (the
-//! strip closure is what it reduces to when `μ = 2U f_a`).
 
-use crate::centerplane::CenterplaneSolution;
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
 use crate::hull::Hull;
-use crate::moments::{exp_moments, exp_moments_complex, osc_moments, C64};
+use crate::moments::{exp_moments, osc_moments, C64};
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -186,114 +160,6 @@ pub fn wave_resistance_with(
     multihull_wave_resistance_with(&[(hull, Placement::default())], cond, opts)
 }
 
-/// Wave resistance of a hull **heeled** by `heel` radians about its
-/// longitudinal axis.
-///
-/// A heeled hull is asymmetric relative to the horizontal free surface, but its
-/// keel swings off the earth-vertical centreplane, so it cannot be written as
-/// port/starboard half-beams there. Thin-ship theory instead keeps the sources
-/// on the ship's own (now tilted) centreplane: a strip at ship-depth `z` sits
-/// at earth depth `z·cosφ` and transverse offset `−z·sinφ`, which turns the
-/// vertical decay **complex**,
-///
-/// ```text
-/// κ = νλ²·cosφ + i·νλ√(λ²−1)·sinφ,
-/// ```
-/// the imaginary part being the transverse-wavenumber phase of the tilt (the
-/// same dipole coupling as an asymmetric hull, arising here from geometry). The
-/// upright kernel is untouched; heel just swaps in a complex-`κ` variant of the
-/// inner integral, so `heel = 0` reproduces [`wave_resistance`] exactly. The
-/// result is even in `heel` (port and starboard heel are mirror images).
-///
-/// This captures the asymmetric **wave-making** of the tilted thickness
-/// distribution — the leading heel effect. It does not include the lifting
-/// side-force a heeled-and-yawed (drifting) hull develops; that is a separate
-/// forcing into the centreplane lifting solve.
-pub fn heel_wave_resistance(
-    hull: &Hull,
-    cond: &Conditions,
-    heel: f64,
-    opts: &WaveOptions,
-) -> Result<WaveResistance> {
-    // The single-hull case of the fleet path: one member at the origin, so the
-    // placement phase is unity and the result is bit-for-bit the standalone
-    // heeled amplitude averaged over the ±θ systems.
-    multihull_heel_wave_resistance(&[(hull, Placement::default())], cond, heel, opts)
-}
-
-/// Combined wave resistance of a **heeled multihull** — a rigid platform (e.g.
-/// a catamaran or trimaran) heeled by `heel` radians about its own longitudinal
-/// axis.
-///
-/// A rigid heel rotates *every* demihull's centreplane by the same angle `φ`,
-/// so the single scalar `heel` is applied to each member's tilted-centreplane
-/// (complex-`κ`) kernel — the same one [`heel_wave_resistance`] uses. Rotating
-/// about the distant platform axis decomposes into a rotation about each
-/// demihull's own axis (captured by the kernel) plus a rigid translation of the
-/// centreplane; the transverse part of that translation is exactly the
-/// member's transverse offset `y_j`, carried by the usual placement phase. So a
-/// caller who has already repositioned the demihulls to the heeled attitude
-/// (e.g. via [`crate::float::heel_poses`], which also supplies the immersion)
-/// and passes the same `φ` here gets both the per-hull tilt and the demihull
-/// interference of the heeled fleet.
-///
-/// The demihull free-wave systems (each tilted, each at its heeled transverse
-/// offset) superpose exactly as in [`multihull_wave_resistance_with`]:
-///
-/// ```text
-/// A_± = Σ_j F_j^φ(λ, ±) · exp(iν(λ Δx_j ± λ√(λ²−1) y_j)),
-/// R_w = (4ρg²/πU²) ∫₁^∞ ½(|A₊|² + |A₋|²) λ²/√(λ²−1) dλ.
-/// ```
-///
-/// Unlike the single-hull case the result is **not** even in `φ`: for a fleet
-/// that is not mirror-symmetric about its mean centreplane, or once the demihull
-/// interference is included, port-down and starboard-down heel differ, so both
-/// Kelvin half-systems are carried explicitly (they are not folded together).
-/// `heel = 0` reproduces [`multihull_wave_resistance_with`] for a symmetric
-/// fleet exactly.
-///
-/// Scope (inherited from [`heel_wave_resistance`]): this captures the asymmetric
-/// **wave-making** of the tilted thickness distribution. It does not re-clip
-/// each hull to the true tilted waterline (the emerging/submerging wedges — the
-/// same approximation the hydrostatic heel sweep makes), nor include the lifting
-/// side-force of a heeled-and-yawed (drifting) fleet.
-pub fn multihull_heel_wave_resistance(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    heel: f64,
-    opts: &WaveOptions,
-) -> Result<WaveResistance> {
-    validate_fleet(members, cond, opts)?;
-    if !heel.is_finite() || heel.abs() >= FRAC_PI_2 {
-        return Err(Error::InvalidGeometry(
-            "heel angle must be finite with |heel| < 90°".into(),
-        ));
-    }
-    let u = cond.speed;
-    let g = cond.gravity;
-    let nu = g / (u * u);
-    let rho = cond.fluid.density;
-
-    let (cx_ref, y_ref) = fleet_phase_refs(members);
-    // The tilt spreads each centreplane transversely by up to T·|sinφ| beyond
-    // its placement offset; widen the panel-sizing extent so the outer integral
-    // resolves that heel-induced oscillation.
-    let t_max = members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max);
-    let params = fleet_outer_params(members, nu, cx_ref, y_ref, t_max * heel.sin().abs());
-
-    let mem: Vec<HeelMember> = members
-        .iter()
-        .map(|(h, p)| HeelMember {
-            inner: HeelInner::new(h, nu, heel, opts.transom),
-            dx: h.x_center() + p.x - cx_ref,
-            dy: p.y - y_ref,
-        })
-        .collect();
-
-    let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, mem))
-}
-
 /// Combined wave resistance of several thin hulls (multihull), with default
 /// options. See [`multihull_wave_resistance_with`].
 pub fn multihull_wave_resistance(
@@ -314,13 +180,6 @@ pub fn multihull_wave_resistance(
 /// mirror-symmetric about their mean centerplane, e.g. staggered pairs). For
 /// two identical hulls separated by `s` this reduces to the classical
 /// catamaran interference factor `4 cos²(½ ν s λ √(λ²−1))`.
-///
-/// A member built with [`Hull::new_asymmetric`] additionally contributes a
-/// centreplane y-dipole wave system from its antisymmetric half-beam `f_a`
-/// (weighted by `dipole_weight`); this superposes on the source system exactly
-/// like any other free-wave amplitude, so demihull asymmetry and demihull
-/// interference are handled together. The dipole *magnitude* rests on an
-/// approximate strip closure — see the `DIPOLE_WEIGHT_C` constant.
 pub fn multihull_wave_resistance_with(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
@@ -333,7 +192,7 @@ pub fn multihull_wave_resistance_with(
     let rho = cond.fluid.density;
 
     let (cx_ref, y_ref) = fleet_phase_refs(members);
-    let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
+    let params = fleet_outer_params(members, nu, cx_ref, y_ref);
 
     let mem: Vec<SourceMember> = members
         .iter()
@@ -341,145 +200,6 @@ pub fn multihull_wave_resistance_with(
             inner: InnerIntegral::new(h, nu, opts.transom),
             dx: h.x_center() + p.x - cx_ref,
             dy: p.y - y_ref,
-        })
-        .collect();
-
-    let coeff = 4.0 * rho * g * g / (PI * u * u);
-    Ok(run_outer(&params, opts, coeff, mem))
-}
-
-/// Grid resolution for the centreplane lifting solve behind
-/// [`asymmetric_wave_resistance_lifting`]: `nx` streamwise panels along the
-/// hull, `nz` vertical panels over the draft (physical half).
-#[derive(Debug, Clone, Copy)]
-pub struct LiftingGrid {
-    pub nx: usize,
-    pub nz: usize,
-}
-
-impl Default for LiftingGrid {
-    fn default() -> Self {
-        LiftingGrid { nx: 48, nz: 16 }
-    }
-}
-
-/// Wave resistance of a single **asymmetric** hull with the camber (dipole)
-/// system taken from a *solved* centreplane lifting distribution rather than
-/// the prescribed strip closure `μ = 2U f_a` that
-/// [`multihull_wave_resistance_with`] uses.
-///
-/// The symmetric thickness part is the usual Michell source integral. The
-/// antisymmetric part runs the [`crate::centerplane`] vortex-lattice solve for
-/// the doublet density `μ(x, z)` and forms the dipole free-wave amplitude
-///
-/// ```text
-/// A_d(λ) = i · νλ√(λ²−1) · ½ · G(λ),   G(λ) = ∬ (μ/U) e^{−νλ²z} e^{iνλx} dx dz.
-/// ```
-///
-/// Substituting the strip closure `μ/U = 2 f_a` into this (via integration by
-/// parts in x) reproduces the `dipole_weight` term exactly, so the two paths
-/// share one normalisation; the solved `μ` has a different chordwise/vertical
-/// shape than `2 f_a`, giving a physically grounded dipole of the same order
-/// (their ratio is speed-dependent; for a 2-D flat plate `μ_lift/μ_strip =
-/// π/2`). The source amplitude is even in θ and the dipole odd, so they add with
-/// no cross term: `R_w = R_source(f_sym) + R_dipole(μ)`.
-///
-/// Errors if `hull` is symmetric (use [`wave_resistance`] instead). This is the
-/// single-hull case of [`multihull_wave_resistance_lifting`].
-pub fn asymmetric_wave_resistance_lifting(
-    hull: &Hull,
-    cond: &Conditions,
-    opts: &WaveOptions,
-    grid: LiftingGrid,
-) -> Result<WaveResistance> {
-    if !hull.is_asymmetric() {
-        return Err(Error::InvalidGeometry(
-            "asymmetric_wave_resistance_lifting requires a hull built with \
-             Hull::new_asymmetric"
-                .into(),
-        ));
-    }
-    multihull_wave_resistance_lifting(&[(hull, Placement::default())], cond, opts, grid)
-}
-
-/// One fleet member's precomputed inner integral and (for an asymmetric hull)
-/// its solved centreplane dipole distribution.
-#[derive(Clone)]
-struct LiftMember<'h> {
-    inner: InnerIntegral<'h>,
-    /// The solved doublet distribution and the hull length (to re-centre the
-    /// dipole phase at the hull midpoint). `None` for a symmetric member.
-    dipole: Option<(CenterplaneSolution, f64)>,
-    dx: f64,
-    dy: f64,
-}
-
-/// Combined wave resistance of a fleet whose asymmetric members carry a
-/// **solved** centreplane-lifting dipole (rather than the strip closure of
-/// [`multihull_wave_resistance_with`]).
-///
-/// Each asymmetric member's centreplane lifting problem is solved once for its
-/// doublet density `μ_j`; the dipole amplitude `A_{d,j} = i·νλ√(λ²−1)·½·G_j`
-/// then superposes on the source system with the member's placement phase,
-/// exactly like any other free-wave amplitude:
-///
-/// ```text
-/// A₊ = Σ_j (F_j + A_{d,j}) e^{iν(λΔx_j + λ√(λ²−1) y_j)},   A₋ likewise with −y_j,
-/// R_w = (4ρg²/πU²) ∫₁^∞ ½(|A₊|² + |A₋|²) λ²/√(λ²−1) dλ.
-/// ```
-///
-/// This is the far-field coupling: each member's lifting problem is solved
-/// independently (its own free-surface image), and their dipole **wave**
-/// systems interfere through the superposition — so an asymmetric-demihull
-/// catamaran's demihull interference is captured. Near-field lifting
-/// cross-induction between close demihulls is not (that needs one coupled
-/// lifting solve over all centreplanes).
-///
-/// Symmetric members contribute source-only (no dipole); a fleet of one
-/// asymmetric hull is [`asymmetric_wave_resistance_lifting`].
-pub fn multihull_wave_resistance_lifting(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    opts: &WaveOptions,
-    grid: LiftingGrid,
-) -> Result<WaveResistance> {
-    validate_fleet(members, cond, opts)?;
-    if grid.nx == 0 || grid.nz == 0 {
-        return Err(Error::InvalidConditions(
-            "lifting grid must have at least one panel each way".into(),
-        ));
-    }
-    let u = cond.speed;
-    let g = cond.gravity;
-    let nu = g / (u * u);
-    let rho = cond.fluid.density;
-
-    let (cx_ref, y_ref) = fleet_phase_refs(members);
-    let params = fleet_outer_params(members, nu, cx_ref, y_ref, 0.0);
-
-    // Solve each asymmetric member's centreplane once (up front, not per λ).
-    let mem: Vec<LiftMember> = members
-        .iter()
-        .map(|(h, p)| {
-            let dipole = if h.is_asymmetric() {
-                let x0 = h.surface().x_domain().0;
-                let sol = crate::centerplane::solve_centerplane(
-                    h.length(),
-                    h.draft(),
-                    |xl, z| h.eval_fx_a(x0 + xl, z),
-                    grid.nx,
-                    grid.nz,
-                );
-                Some((sol, h.length()))
-            } else {
-                None
-            };
-            LiftMember {
-                inner: InnerIntegral::new(h, nu, opts.transom),
-                dipole,
-                dx: h.x_center() + p.x - cx_ref,
-                dy: p.y - y_ref,
-            }
         })
         .collect();
 
@@ -515,51 +235,6 @@ pub fn inner_integrals_with(
     let mut inner = InnerIntegral::new(hull, nu, opts.transom);
     let f = inner.eval(lambda);
     Ok((f.re, f.im))
-}
-
-/// Closure constant for the antisymmetric (dipole) free-wave amplitude — see
-/// [`dipole_weight`]. `1.0` is the value self-consistent with this crate's
-/// source normalisation *under the prescribed strip closure* `μ = 2U f_a` (the
-/// naive antisymmetric analogue of Michell's `σ = 2U ∂f_sym/∂x`).
-///
-/// **This magnitude is approximate.** Unlike the source strength — which the
-/// boundary condition fixes *pointwise*, because a source sheet's normal-
-/// velocity *jump* equals its local strength — the dipole density is fixed by
-/// the *mean* of the two-sided normal velocities, and a doublet sheet's mean
-/// normal velocity is a hypersingular (finite-part) integral of `μ`. So `μ` is
-/// genuinely **non-local** in `∂f_a/∂x`; no exact pointwise closure exists, and
-/// the rigorous density solves a hypersingular Fredholm equation of the first
-/// kind (Kaklis & Papanikolaou; 21st Symp. Naval Hydro., Appendix A). `μ = 2U
-/// f_a` is the crudest strip estimate of that solve — the *structure* below
-/// (weight, θ-parity, additive separation) is exact, but the overall constant
-/// should be validated against a reference before the dipole magnitude is
-/// trusted quantitatively.
-const DIPOLE_WEIGHT_C: f64 = 1.0;
-
-/// Real spectral weight relating the antisymmetric dipole amplitude to the
-/// companion source integral `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz`.
-///
-/// A y-normal centreplane doublet of density `μ(x,z)` radiates a free wave
-/// carrying one extra factor of the **transverse wavenumber**
-/// `k_y = νλ√(λ²−1)` relative to a source:
-/// `A_d(θ) = i k_y ∬ μ e^{−κz} e^{iνλx} dx dz`. With the prescribed closure
-/// `μ = 2U f_a`, `f_a` closing at bow and stern, integration by parts in `x`
-/// rewrites `∬ f_a e^{iνλx} = (i/νλ) G`, and the two factors of `i` collapse to
-/// a **real** weight on `G` in this crate's normalisation:
-///
-/// ```text
-/// A_d(λ) = i · k_y · (2U) · (i/νλ) G(λ) / (2U)   (÷2U → crate amplitude units)
-///        = −√(λ²−1) · DIPOLE_WEIGHT_C · G(λ).
-/// ```
-///
-/// The sign is carried in [`multihull_wave_resistance_with`] (the +θ system
-/// gets `−w·G`); this function returns the magnitude `w = √(λ²−1)·C`. It
-/// vanishes as `λ → 1` (θ → 0): a wave running dead ahead carries no transverse
-/// wavenumber and is blind to side-to-side asymmetry, so `R_dipole` is fed
-/// entirely by the diverging (large-λ) part of the spectrum.
-#[inline]
-fn dipole_weight(lambda: f64) -> f64 {
-    DIPOLE_WEIGHT_C * (lambda * lambda - 1.0).max(0.0).sqrt()
 }
 
 /// Geometry-derived phase-rate parameters for the outer quadrature.
@@ -862,15 +537,12 @@ fn fleet_phase_refs(members: &[(&Hull, Placement)]) -> (f64, f64) {
     (cx_ref, y_ref)
 }
 
-/// Outer-integral panel-sizing parameters for a fleet. `y_tilt` widens the
-/// transverse extent for a heeled fleet (the tilt spreads each centreplane by
-/// up to `T·|sinφ|` beyond its placement offset); pass 0 for an upright fleet.
+/// Outer-integral panel-sizing parameters for a fleet.
 fn fleet_outer_params(
     members: &[(&Hull, Placement)],
     nu: f64,
     cx_ref: f64,
     y_ref: f64,
-    y_tilt: f64,
 ) -> OuterParams {
     OuterParams {
         nu,
@@ -881,13 +553,13 @@ fn fleet_outer_params(
         y_half: members
             .iter()
             .map(|(_, p)| (p.y - y_ref).abs())
-            .fold(0.0, f64::max)
-            + y_tilt,
+            .fold(0.0, f64::max),
         t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
     }
 }
 
-/// Upright source (thickness) member carrying the strip-closure camber dipole.
+/// Source (thickness) member: its free-wave amplitude, the same for the ±θ
+/// systems before the placement phase.
 #[derive(Clone)]
 struct SourceMember<'h> {
     inner: InnerIntegral<'h>,
@@ -897,55 +569,8 @@ struct SourceMember<'h> {
 
 impl MemberWave for SourceMember<'_> {
     fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
-        // Source amplitude plus the strip-closure y-dipole. The dipole spectral
-        // weight scales the source integral by the transverse wavenumber (see
-        // [`dipole_weight`]); it is *odd* in θ (the +θ system carries −w·G, the
-        // −θ system +w·G), so the ½(|A₊|²+|A₋|²) average in `superpose` cancels
-        // the source–dipole cross term, leaving R_w = R_source + R_dipole.
-        let (f, g) = self.inner.eval_pair(lambda);
-        let wg = g.map_or(C64::ZERO, |g| g.scale(dipole_weight(lambda)));
-        (f - wg, f + wg)
-    }
-    fn offsets(&self) -> (f64, f64) {
-        (self.dx, self.dy)
-    }
-}
-
-impl MemberWave for LiftMember<'_> {
-    fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64) {
-        let f = self.inner.eval(lambda); // source (thickness) amplitude
-        let a_d = match &self.dipole {
-            Some((sol, len)) => {
-                let kx = nu * lambda;
-                let wd = 0.5 * nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-                let (gre, gim) = sol.doublet_free_wave_amplitude(nu, lambda);
-                // Re-centre the dipole phase at the hull midpoint so it shares
-                // the source's origin (the solver uses x ∈ [0, L]).
-                let gc = C64::new(gre, gim) * C64::cis(-kx * len * 0.5);
-                // A_d = i · wd · G (odd in θ: +θ gets +A_d, −θ gets −A_d).
-                C64::new(-gc.im, gc.re).scale(wd)
-            }
-            None => C64::ZERO,
-        };
-        (f + a_d, f - a_d)
-    }
-    fn offsets(&self) -> (f64, f64) {
-        (self.dx, self.dy)
-    }
-}
-
-/// Heeled member: the tilted-centreplane (complex-`κ`) source amplitude for the
-/// ±θ systems, at a shared platform heel angle.
-#[derive(Clone)]
-struct HeelMember<'h> {
-    inner: HeelInner<'h>,
-    dx: f64,
-    dy: f64,
-}
-
-impl MemberWave for HeelMember<'_> {
-    fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
-        (self.inner.eval(lambda, 1.0), self.inner.eval(lambda, -1.0))
+        let f = self.inner.eval(lambda);
+        (f, f)
     }
     fn offsets(&self) -> (f64, f64) {
         (self.dx, self.dy)
@@ -1285,29 +910,13 @@ impl<'h> InnerIntegral<'h> {
     /// |I + iJ|² unchanged, but keeps the oscillatory arguments as small as
     /// possible).
     pub(crate) fn eval(&mut self, lambda: f64) -> C64 {
-        self.eval_pair(lambda).0
-    }
-
-    /// The source amplitude `F(λ)` and, for an asymmetric hull, the companion
-    /// **dipole** amplitude `G(λ) = ∬ (∂f_a/∂x) e^{−κz} e^{iνλx} dx dz` from the
-    /// antisymmetric half-beam. `G` is `None` for a symmetric hull. Both share
-    /// the single z-moment pass; only the x-span accumulation is repeated with
-    /// the second coefficient array, so an asymmetric evaluation costs little
-    /// more than a symmetric one.
-    pub(crate) fn eval_pair(&mut self, lambda: f64) -> (C64, Option<C64>) {
         let hull = self.hull;
         let kx = self.nu * lambda;
         let kappa = self.nu * lambda * lambda;
         if !self.fill_zm(kappa) {
-            return (C64::ZERO, hull.fx_a_coeff().map(|_| C64::ZERO));
+            return C64::ZERO;
         }
-        let f = self.accumulate(kx, hull.fx_coeff()) + self.transom_term(kx);
-        // The camber (dipole) system is not closed here: an asymmetric hull's
-        // antisymmetric half-beam has its own transom section, which this
-        // crate does not yet carry. Symmetric hulls — the default contract —
-        // are unaffected.
-        let g = hull.fx_a_coeff().map(|c| self.accumulate(kx, c));
-        (f, g)
+        self.accumulate(kx, hull.fx_coeff()) + self.transom_term(kx)
     }
 
     /// Fill the per-span z-moments (shifted by the decay to each span start) at
@@ -1344,9 +953,7 @@ impl<'h> InnerIntegral<'h> {
 
     /// Accumulate `∬ (Σ coeff·XᵃZᵇ) e^{−κz} e^{iνλx} dx dz` over all span pairs
     /// using the already-filled z-moments and the per-span x-oscillation
-    /// moments. `coeff` is either the source `∂f/∂x` net or the antisymmetric
-    /// `∂f_a/∂x` net (identical layout), so source and dipole amplitudes reuse
-    /// this one kernel.
+    /// moments, for the `∂f/∂x` coefficient net `coeff`.
     fn accumulate(&mut self, kx: f64, coeff: &[f64]) -> C64 {
         let hull = self.hull;
         let (p, q) = (self.p, self.q);
@@ -1369,145 +976,6 @@ impl<'h> InnerIntegral<'h> {
                     }
                 }
                 span_sum = span_sum + xma.scale(g_a);
-            }
-            f = f + phase * span_sum;
-        }
-        f
-    }
-}
-
-/// Heeled-hull free-wave amplitude kernel — the upright [`InnerIntegral`] with a
-/// **complex** vertical decay `κ = νλ²cosφ + i·νλ√(λ²−1)·sinφ` (see
-/// [`heel_wave_resistance`]). The x-oscillation moments and the per-span
-/// accumulate are identical to the upright kernel; only the z-moment is complex
-/// (via [`exp_moments_complex`]), so the real path is entirely untouched.
-#[derive(Clone)]
-pub(crate) struct HeelInner<'h> {
-    hull: &'h Hull,
-    nu: f64,
-    transom: TransomClosure,
-    cos_phi: f64,
-    sin_phi: f64,
-    /// Scratch: complex z-moments including the e^{−κ z0} shift, [n_spans_z][q+1].
-    zm: Vec<C64>,
-    /// Scratch: x-moments for one span.
-    xm: Vec<C64>,
-    /// Scratch: raw complex z-moments for one span.
-    zm_raw: Vec<C64>,
-    /// Scratch: hollow-shape moments for the transom closure.
-    sm: Vec<C64>,
-    /// Number of leading (shallowest) z-spans still above the decay floor at
-    /// the current `κ`; the deeper ones are exactly zero in `zm`.
-    z_active: usize,
-    p: usize,
-    q: usize,
-}
-
-impl<'h> HeelInner<'h> {
-    fn new(hull: &'h Hull, nu: f64, heel: f64, transom: TransomClosure) -> Self {
-        let p = hull.surface().degree_x();
-        let q = hull.surface().degree_z();
-        HeelInner {
-            hull,
-            nu,
-            transom,
-            cos_phi: heel.cos(),
-            sin_phi: heel.sin(),
-            zm: vec![C64::ZERO; hull.spans_z().len() * (q + 1)],
-            xm: Vec::with_capacity(p),
-            zm_raw: Vec::with_capacity(q + 1),
-            sm: Vec::with_capacity(3),
-            z_active: 0,
-            p,
-            q,
-        }
-    }
-
-    /// The transom closure on the tilted centreplane — the upright term with
-    /// the complex `κ` already carried by `zm`, so heel and closure compose
-    /// without either kernel knowing about the other.
-    fn transom_term(&mut self, kx: f64) -> C64 {
-        let Some(tr) = self.hull.transom() else {
-            return C64::ZERO;
-        };
-        let Some(lv) = self.transom.hollow_length(tr.depth, self.nu) else {
-            return C64::ZERO;
-        };
-        let q = self.q;
-        let mut z_factor = C64::ZERO;
-        for t in 0..self.hull.spans_z().len() {
-            let base = t * (q + 1);
-            for b in 0..=q {
-                z_factor = z_factor + self.zm[base + b].scale(tr.coeff[base + b]);
-            }
-        }
-        let shape = hollow_shape_moment(-kx * lv, &mut self.sm);
-        let phase = C64::cis(kx * (tr.x - self.hull.x_center()));
-        C64::ZERO - phase * shape * z_factor
-    }
-
-    /// Free-wave amplitude of the tilted source distribution at λ, for the wave
-    /// system with transverse-wavenumber sign `ky_sign` (±1 ⇒ the ±θ system).
-    fn eval(&mut self, lambda: f64, ky_sign: f64) -> C64 {
-        let kx = self.nu * lambda;
-        let ky = self.nu * lambda * (lambda * lambda - 1.0).max(0.0).sqrt();
-        let kappa = C64::new(
-            self.nu * lambda * lambda * self.cos_phi,
-            ky_sign * ky * self.sin_phi,
-        );
-        if !self.fill_zm(kappa) {
-            return C64::ZERO;
-        }
-        self.accumulate(kx) + self.transom_term(kx)
-    }
-
-    fn fill_zm(&mut self, kappa: C64) -> bool {
-        let hull = self.hull;
-        let q = self.q;
-        let mut any = false;
-        self.z_active = 0;
-        for (t, sz) in hull.spans_z().iter().enumerate() {
-            let decay = kappa.scale(-sz.start).exp();
-            // Only the real part of κ decays; |decay| is monotone in depth
-            // exactly as in the upright kernel, so the same prefix rule holds.
-            if decay.abs() < Z_DECAY_FLOOR {
-                for z in self.zm[t * (q + 1)..].iter_mut() {
-                    *z = C64::ZERO;
-                }
-                break;
-            }
-            any = true;
-            self.z_active = t + 1;
-            exp_moments_complex(kappa, sz.len, q, &mut self.zm_raw);
-            for b in 0..=q {
-                self.zm[t * (q + 1) + b] = decay * self.zm_raw[b];
-            }
-        }
-        any
-    }
-
-    fn accumulate(&mut self, kx: f64) -> C64 {
-        let hull = self.hull;
-        let (p, q) = (self.p, self.q);
-        let nsz = hull.spans_z().len();
-        let x_center = hull.x_center();
-        let coeff = hull.fx_coeff();
-        let mut f = C64::ZERO;
-        for (s, sx) in hull.spans_x().iter().enumerate() {
-            osc_moments(kx, sx.len, p - 1, &mut self.xm);
-            let phase = C64::cis(kx * (sx.start - x_center));
-            let mut span_sum = C64::ZERO;
-            for (a, &xma) in self.xm.iter().enumerate() {
-                let mut g_a = C64::ZERO;
-                for t in 0..self.z_active {
-                    let base = ((s * nsz + t) * p + a) * (q + 1);
-                    let zrow = &self.zm[t * (q + 1)..(t + 1) * (q + 1)];
-                    let crow = &coeff[base..base + q + 1];
-                    for b in 0..=q {
-                        g_a = g_a + zrow[b].scale(crow[b]);
-                    }
-                }
-                span_sum = span_sum + xma * g_a;
             }
             f = f + phase * span_sum;
         }

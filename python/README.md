@@ -100,7 +100,7 @@ python examples/demo.py ../ama.hull 8      # a real .hull control net at 8 m/s
 
 `read_sweep("study.msw")` parses a binary sweep archive written by
 `michell sweep` (a study's manifest, hull files, and per-row parameters,
-metrics, GZ curve, and spectrum). Each row carries its free-wave spectrum
+metrics, and spectrum). Each row carries its free-wave spectrum
 `A(θ)`, so it pairs with `wave_field` to regenerate a wake without re-running
 the study.
 

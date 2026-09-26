@@ -15,10 +15,6 @@
 //! hydrodynamic vertical force and pitch moment (thin-ship dynamic sinkage
 //! and trim); [`solve_equilibrium_dynamic_with`] folds a caller-supplied
 //! [`DynamicLoad`] into the same Newton core as a forcing term.
-//!
-//! Transverse stability rides on [`solve_equilibrium_heeled`]: it holds the
-//! displacement at a prescribed heel and reads the righting arm off the true
-//! inclined-waterplane cut ([`crate::inclined`]).
 
 use crate::body::{Body, BodyOptions};
 use crate::conditions::STANDARD_GRAVITY;
@@ -27,7 +23,6 @@ use crate::hull::Hull;
 use crate::iges::{
     HullPose, ImportOptions, Platform, SectionalOptions, SectionalState, SourceFleet,
 };
-use crate::inclined::{fleet_inclined, InclinedGrid};
 use crate::michell::Placement;
 use crate::sectional::SectionalHull;
 
@@ -42,18 +37,17 @@ pub struct LoadCase {
 }
 
 /// An extra point mass mounted on a hull, positioned as offsets from the hull's
-/// **centerpoint** (midship station, centreplane, design floatplane): `dx`
-/// forward, `dy` to +y, `dz` **down** (deeper) — the same axis conventions as
-/// [`HullPose`]. It rides with the hull through its pose just like the hull's
-/// own CG, and adds to the mass-weighted fleet CG ([`fleet_cg`]).
+/// **centerpoint** (midship station, design floatplane): `dx` forward, `dz`
+/// **down** (deeper) — the same axis conventions as [`HullPose`]. It rides with
+/// the hull through its pose just like the hull's own CG, and adds to the
+/// mass-weighted fleet CG ([`fleet_cg`]). Its height matters only through
+/// design trim, which swings a raised mass fore or aft.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PointLoad {
     /// Point mass [kg].
     pub mass: f64,
     /// Longitudinal offset [m] from the hull midship (+forward).
     pub dx: f64,
-    /// Transverse offset [m] from the hull centreplane (+y).
-    pub dy: f64,
     /// Vertical offset [m] from the design floatplane, positive **down**.
     pub dz: f64,
 }
@@ -61,14 +55,13 @@ pub struct PointLoad {
 /// A single hull's contribution to the load, with its centre of gravity given
 /// in the hull's own **local** design frame — the same frame [`HullPose`] maps
 /// into the platform. `lcg` is the local longitudinal CG station; `vcg` is
-/// metres **above the design floatplane**; the transverse CG is taken on the
-/// hull's own centreplane. `points` are extra discrete masses mounted on the
-/// hull (batteries, crew, ballast). Because every contribution is expressed
-/// pre-pose, mounting the hull carries its weight with it: `dx`/`dz` translate
-/// each CG, design `trim` rotates it. The fleet CG is then always the
-/// mass-weighted sum over all hull loads and point loads ([`fleet_cg`]) — never
-/// specified directly — so it moves realistically as the hulls are
-/// repositioned.
+/// metres **above the design floatplane**. `points` are extra discrete masses
+/// mounted on the hull (batteries, crew, ballast). Because every contribution
+/// is expressed pre-pose, mounting the hull carries its weight with it:
+/// `dx`/`dz` translate each CG, design `trim` rotates it. The fleet CG is then
+/// always the mass-weighted sum over all hull loads and point loads
+/// ([`fleet_cg`]) — never specified directly — so it moves realistically as
+/// the hulls are repositioned.
 #[derive(Debug, Clone, Default)]
 pub struct HullLoad {
     /// Structural mass carried on this hull [kg], at `(lcg, vcg)`.
@@ -82,47 +75,40 @@ pub struct HullLoad {
 }
 
 /// The platform centre of gravity, mass-weighted over the per-hull loads at
-/// their posed positions. `lcg`/`tcg` are in the platform (fleet) frame; `vcg`
-/// is metres above the design floatplane. Zero throughout for a massless fleet.
+/// their posed positions. `lcg` is in the platform (fleet) frame; `vcg` is
+/// metres above the design floatplane. Zero throughout for a massless fleet.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FleetCg {
     /// Total mass [kg] = Σ hull mass.
     pub mass: f64,
     /// Longitudinal CG [m] in the fleet frame.
     pub lcg: f64,
-    /// Transverse CG [m] in the fleet frame (0 for a laterally symmetric load).
-    pub tcg: f64,
     /// Vertical CG [m] above the design floatplane.
     pub vcg: f64,
 }
 
 /// Derive the fleet CG by summing every per-hull load — the hull's structural
 /// CG and each mounted [`PointLoad`] — carried through the hull's pose. Each
-/// contribution is a local point (longitudinal `x`, transverse offset from the
-/// centreplane, height `vcg` above the floatplane) mapped through the design
-/// pose exactly as the geometry is — design `trim` about the pose pivot, then
-/// `+dx`/`+dy`, and deepened by `+dz` — then mass-weighted. Massless
-/// contributions (and, if the whole fleet is massless, the fleet) add nothing.
-/// `bodies`, `loads`, and `poses` must share their length and order.
+/// contribution is a local point (longitudinal `x`, height `vcg` above the
+/// floatplane) mapped through the design pose exactly as the geometry is —
+/// design `trim` about the pose pivot, then `+dx`, and deepened by `+dz` —
+/// then mass-weighted. Massless contributions (and, if the whole fleet is
+/// massless, the fleet) add nothing. `bodies`, `loads`, and `poses` must share
+/// their length and order.
 pub fn fleet_cg(bodies: &[&Body], loads: &[HullLoad], poses: &[HullPose]) -> FleetCg {
     let mut mass = 0.0;
     let mut mx = 0.0;
-    let mut my = 0.0;
     let mut mz = 0.0; // Σ m · (height above floatplane), up-positive.
     for ((body, load), pose) in bodies.iter().zip(loads).zip(poses) {
         let (x0, x1) = body.surface().x_domain();
         let midship = 0.5 * (x0 + x1);
         let pivot = pose.pivot_x.unwrap_or(midship);
-        let centerplane = body.centerplane();
-        // Every contribution as (mass, local x, transverse offset from the
-        // centreplane, height above the floatplane). The structural load sits
-        // at (lcg, 0, vcg); a point load at (midship+dx, dy, −dz) — dz is +down.
-        let structural = std::iter::once((load.mass, load.lcg, 0.0, load.vcg));
-        let points = load
-            .points
-            .iter()
-            .map(|p| (p.mass, midship + p.dx, p.dy, -p.dz));
-        for (m, lx, toff, vcg) in structural.chain(points) {
+        // Every contribution as (mass, local x, height above the floatplane).
+        // The structural load sits at (lcg, vcg); a point load at
+        // (midship+dx, −dz) — dz is +down.
+        let structural = std::iter::once((load.mass, load.lcg, load.vcg));
+        let points = load.points.iter().map(|p| (p.mass, midship + p.dx, -p.dz));
+        for (m, lx, vcg) in structural.chain(points) {
             if !(m.is_finite() && m > 0.0) {
                 continue;
             }
@@ -139,10 +125,8 @@ pub fn fleet_cg(bodies: &[&Body], loads: &[HullLoad], poses: &[HullPose]) -> Fle
             }
             x += pose.dx;
             zd += pose.dz;
-            let y = centerplane + toff + pose.dy;
             mass += m;
             mx += m * x;
-            my += m * y;
             mz += m * (-zd); // back to up-positive height above floatplane.
         }
     }
@@ -150,7 +134,6 @@ pub fn fleet_cg(bodies: &[&Body], loads: &[HullLoad], poses: &[HullPose]) -> Fle
         FleetCg {
             mass,
             lcg: mx / mass,
-            tcg: my / mass,
             vcg: mz / mass,
         }
     } else {
@@ -783,45 +766,6 @@ pub fn solve_equilibrium_dynamic_with<M: Floating>(
     })
 }
 
-/// Rigid platform heel applied to a set of body poses — the transverse
-/// reposition of each demihull, used to build the wetted **geometry** at heel
-/// (e.g. for resistance). Heel is a rotation about the platform's longitudinal
-/// axis through the centerline at the design floatplane; **positive heel puts
-/// the +y side down**. Each hull's transverse station `y = centerplane + dy`
-/// moves to `y·cos φ` and gains `y·sin φ` of immersion. A half-breadth surface
-/// cannot rotate about its own x axis, so this reposition does not tilt the
-/// sections. For **hydrostatics and the righting arm** — which need the true
-/// tilted cut — use [`solve_equilibrium_heeled`] instead (it applies heel as an
-/// exact inclined-waterplane rotation, not this reposition).
-pub fn heel_poses(bodies: &[&Body], poses: &[HullPose], heel: f64) -> Result<Vec<HullPose>> {
-    if bodies.len() != poses.len() {
-        return Err(Error::InvalidInput(format!(
-            "{} poses supplied for {} bodies",
-            poses.len(),
-            bodies.len()
-        )));
-    }
-    if !heel.is_finite() || heel.abs() >= std::f64::consts::FRAC_PI_2 {
-        return Err(Error::InvalidConditions(format!(
-            "heel angle must be finite and within ±90 degrees, got {} rad",
-            heel
-        )));
-    }
-    let (sin, cos) = heel.sin_cos();
-    Ok(bodies
-        .iter()
-        .zip(poses)
-        .map(|(body, pose)| {
-            let y = body.centerplane() + pose.dy;
-            HullPose {
-                dy: y * cos - body.centerplane(),
-                dz: pose.dz + y * sin,
-                ..*pose
-            }
-        })
-        .collect())
-}
-
 /// Equilibrium of an IGES source fleet at design poses (see
 /// [`SourceFleet::situate`]). `waterline_z` is the base waterline the sinkage
 /// is measured from.
@@ -1064,138 +1008,6 @@ pub fn solve_equilibrium_sectional_dynamic(
         gravity,
         warm_start,
     )
-}
-
-/// A solved heeled floating condition with a true inclined-waterplane righting
-/// arm (see [`crate::inclined`]).
-#[derive(Debug)]
-pub struct HeeledEquilibrium {
-    /// Solved additional immersion below the design floatplane [m].
-    pub sinkage: f64,
-    /// Solved platform pitch [rad]; positive raises the +x end.
-    pub trim: f64,
-    /// Heel the fleet was solved at [rad].
-    pub heel: f64,
-    /// Displaced volume at the solution (inclined cut) [m³].
-    pub volume: f64,
-    /// Longitudinal centre of buoyancy at the solution [m].
-    pub lcb: f64,
-    /// Righting arm `GZ` [m] from the inclined cut — form stability included,
-    /// no metacentric approximation. Positive rights the platform.
-    pub gz: f64,
-    /// Wetted fleet for the resistance path, situated at the solved attitude.
-    /// (Heel enters the geometry as the rigid reposition of [`heel_poses`];
-    /// the tilt of each hull is carried by the wave kernel, not re-clipped —
-    /// the hydrostatics above use the exact inclined cut instead.)
-    pub fleet: FleetState,
-    /// Newton iterations used.
-    pub iterations: usize,
-    /// |∇ − target| / target at the solution.
-    pub volume_residual: f64,
-    /// |LCB − lcg| [m] at the solution (0 when lcg is None).
-    pub lcb_residual: f64,
-    /// Band-top-immersed samples in the inclined cut (deck under water).
-    pub band_exceeded: usize,
-}
-
-/// Heel-aware equilibrium of an assembly of full-band bodies, holding the
-/// load's displacement (and LCG, if given) at a **prescribed** heel angle, with
-/// the hydrostatics — volume, trim balance, and the righting arm `gz` for the
-/// centre of gravity `(vcg, tcg)` — taken from the true inclined-waterplane cut
-/// ([`crate::inclined`]) rather than the metacentric approximation of
-/// [`heel_poses`] + [`righting_arm`].
-///
-/// `vcg` is metres above the design floatplane; `tcg` is the transverse CG
-/// offset in the fleet frame (0 for a laterally symmetric load), entering the
-/// arm as `GZ = TCB − vcg·sin φ − tcg·cos φ`. For a fleet whose CG is derived
-/// from per-hull loads, pass [`fleet_cg`]'s `vcg`/`tcg`.
-///
-/// `poses` are the design (un-heeled) poses. The (sinkage, pitch) solve runs on
-/// the proven equilibrium core over the rigid heel reposition ([`heel_poses`])
-/// — robust for any geometry — and the reported volume, LCB, and `gz` are then
-/// evaluated from the exact inclined cut at that attitude, so the righting arm
-/// carries the full (nonlinear) form stability. `grid` sets the section
-/// integration resolution. `heel = 0` reproduces [`solve_equilibrium_bodies`]
-/// with `gz = 0`.
-#[allow(clippy::too_many_arguments)]
-pub fn solve_equilibrium_heeled(
-    bodies: &[&Body],
-    water_offset: f64,
-    poses: &[HullPose],
-    load: &LoadCase,
-    density: f64,
-    heel: f64,
-    vcg: f64,
-    tcg: f64,
-    opts: &BodyOptions,
-    grid: InclinedGrid,
-) -> Result<HeeledEquilibrium> {
-    check_poses(bodies, poses)?;
-    if !(load.mass.is_finite() && load.mass > 0.0) {
-        return Err(Error::InvalidConditions(format!(
-            "load mass must be finite and positive, got {}",
-            load.mass
-        )));
-    }
-    if !(density.is_finite() && density > 0.0) {
-        return Err(Error::InvalidConditions("density must be positive".into()));
-    }
-    if !heel.is_finite() || heel.abs() >= std::f64::consts::FRAC_PI_2 {
-        return Err(Error::InvalidConditions(format!(
-            "heel angle must be finite and within ±90 degrees, got {heel} rad"
-        )));
-    }
-    if let Some(l) = load.lcg {
-        if !l.is_finite() {
-            return Err(Error::InvalidConditions("lcg must be finite".into()));
-        }
-    }
-
-    let pivot_x = load.lcg.unwrap_or(0.0);
-
-    // Solve (sinkage, pitch) with the proven equilibrium core on the
-    // horizontal-cut reposition (`heel_poses`). This is robust across
-    // geometries — including hulls with no freeboard, where a naive inclined
-    // Newton stalls (sinking a fully immersed hull adds no volume and the
-    // waterplane Jacobian vanishes). The reported hydrostatics below then come
-    // from the exact inclined cut at the solved attitude, so the righting arm
-    // carries the full (nonlinear) form stability.
-    let heeled = heel_poses(bodies, poses, heel)?;
-    let eq = solve_equilibrium_with(
-        body_situator(bodies, water_offset, &heeled, pivot_x, opts),
-        load,
-        density,
-    )?;
-
-    // The righting arm — and only it — uses the exact inclined cut at the
-    // solved attitude. Displacement, LCB, sinkage, and trim stay on the same
-    // (lofted) basis the solve balanced, so those columns match the upright
-    // solver exactly; the inclined cut just replaces the metacentric GZ.
-    let platform = Platform {
-        sinkage: eq.sinkage,
-        trim: eq.trim,
-        pivot_x,
-    };
-    let f = fleet_inclined(bodies, water_offset, poses, &platform, heel, grid);
-    let gz = if f.volume > 0.0 {
-        f.moment_y / f.volume - vcg * heel.sin() - tcg * heel.cos()
-    } else {
-        0.0
-    };
-
-    Ok(HeeledEquilibrium {
-        sinkage: eq.sinkage,
-        trim: eq.trim,
-        heel,
-        volume: eq.volume,
-        lcb: eq.lcb,
-        gz,
-        fleet: eq.fleet,
-        iterations: eq.iterations,
-        volume_residual: eq.volume_residual,
-        lcb_residual: eq.lcb_residual,
-        band_exceeded: f.band_exceeded,
-    })
 }
 
 #[cfg(test)]
