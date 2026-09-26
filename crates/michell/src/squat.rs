@@ -88,7 +88,12 @@ pub struct DynamicForce {
 /// Quadrature controls for the near-field integrals.
 #[derive(Debug, Clone, Copy)]
 pub struct SquatOptions {
-    /// Relative tolerance on the force between refinement passes.
+    /// Relative tolerance on the force between refinement passes. The
+    /// pass-to-pass change wobbles (it is not monotone) and overstates the
+    /// finer pass's error by about an order of magnitude: on e12 at Fn 0.3
+    /// and 0.5 the first pass is already within 0.1% of the eighth, and a
+    /// change under 2e-3 leaves the result within ~1e-4 of it, far inside
+    /// thin-ship's own 20–40%. Each pass costs 4× the last.
     pub rel_tol: f64,
     /// Maximum panel-doubling passes.
     pub max_refinements: usize,
@@ -100,7 +105,7 @@ pub struct SquatOptions {
 impl Default for SquatOptions {
     fn default() -> Self {
         SquatOptions {
-            rel_tol: 1e-4,
+            rel_tol: 2e-3,
             max_refinements: 3,
             wave: WaveOptions::default(),
         }

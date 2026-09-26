@@ -484,10 +484,11 @@ force, N) and `lift_pct` (as a fraction of the weight, %) columns; `sinkage`/
 `weight` axis, and cannot combine with a `vcg` axis. Real cost: the
 near-field quadrature is far more expensive than the wave integral it reuses
 parts of, and equilibrium calls it every Newton iteration at every speed —
-budget minutes, not seconds, per sweep point, and prefer a handful of speed
-values over a fine grid until you know how much resolution you need.
+about 10 s per speed on a CAD monohull, so prefer a handful of speed values
+over a fine grid until you know how much resolution you need.
 `options.squat_tol` overrides the closure's own quadrature tolerance
-(default `1e-4`; loosening it trades sweep speed for a rougher force/moment).
+(default `2e-3` on the pass-to-pass change, which leaves the force within
+~1e-4 of the converged value; each tighter pass costs 4×).
 
 Two situations hand the dynamic Newton solver a state that was converged
 *somewhere else* rather than validated against what it is about to evaluate:
