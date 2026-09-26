@@ -6,14 +6,11 @@
 //!
 //! * `*.igs` / `*.iges`: NURBS patches, clustered into hulls;
 //! * `*.stl`: a triangle mesh (binary or ASCII; `--units` gives its scale),
-//!   clustered likewise;
-//! * `*.hull`: a B-spline half-breadth control net, as its exact mirrored
-//!   surfaces. A wetted net's top is its design waterline; a full-band body
-//!   (the `waterline` key) floats at that depth below its band top.
+//!   clustered likewise.
 
-use crate::formats::{looks_binary_stl, parse_hull_data};
+use crate::formats::looks_binary_stl;
 use michell::iges::{
-    source_fleet, HullPose, Platform, SectionalOptions, SectionalReport, SourceFleet,
+    source_fleet, HullPose, Platform, SectionalOptions, SectionalReport,
 };
 use michell::sectional::SectionalHull;
 use michell::source::{HullSource, SourceHull};
@@ -25,13 +22,12 @@ use std::collections::HashMap;
 pub enum Kind {
     Iges,
     Stl,
-    Spline,
 }
 
 /// Import settings shared by every command that reads a hull.
 #[derive(Clone, Copy)]
 pub struct LoadSettings {
-    /// CAD height of the design waterline (IGES; a spline's is its own).
+    /// CAD height of the design waterline.
     pub waterline_z: f64,
     pub centerplane: Option<f64>,
     pub stations: usize,
@@ -208,25 +204,13 @@ pub fn open_source_bytes(
         .find(|l| !l.trim().is_empty())
         .unwrap_or("")
         .trim_end();
-    if first.starts_with("michell-hull") {
-        let data = parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?;
-        let src = SourceFleet::from_halfbreadth(
-            &data.surface,
-            data.centerplane.unwrap_or(0.0),
-            data.waterline.unwrap_or(0.0),
-        )
-        .map_err(|e| format!("{path}: {e}"))?;
-        return Ok(SourceFile {
-            path: path.into(),
-            kind: Kind::Spline,
-            source: Box::new(src),
-            waterline_z: 0.0,
-        });
-    }
-    if first.starts_with("michell-offsets") || text.trim_start().starts_with('{') {
+    if first.starts_with("michell-hull")
+        || first.starts_with("michell-offsets")
+        || text.trim_start().starts_with('{')
+    {
         return Err(format!(
-            "{path}: offsets tables and sample grids are no longer read (lofting was \
-             removed); import the CAD geometry (IGES) instead"
+            "{path}: .hull control nets, offsets tables and sample grids are no longer \
+             read; import the CAD geometry (IGES or STL) instead"
         ));
     }
     let looks_iges = lower.ends_with(".igs")
@@ -243,8 +227,7 @@ pub fn open_source_bytes(
         });
     }
     Err(format!(
-        "cannot determine the format of {path}: expected an IGES or STL file, or a \
-         `michell-hull v1` control net"
+        "cannot determine the format of {path}: expected an IGES or STL file"
     ))
 }
 
@@ -339,7 +322,6 @@ pub fn describe(fleet: &Fleet, m: &Member) -> Vec<String> {
     let what = match fleet.files[m.file].kind {
         Kind::Iges => format!("IGES ({} patches, units scale {})", r.patches, r.units_scale),
         Kind::Stl => format!("STL ({} triangles, units scale {})", r.patches, r.units_scale),
-        Kind::Spline => "B-spline control net (exact surfaces)".to_string(),
     };
     let mut lines = vec![format!(
         "source: {what}, {} stations over x {:.4}..{:.4} m, {sides}",

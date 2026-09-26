@@ -12,37 +12,29 @@
 //!
 //! ## Import pipeline
 //!
-//! A CAD surface is parametric, `S(u,v) → (x, y, z)`; the crate's core wants a
-//! height field `y = f(x, z)`. The importer therefore:
+//! A CAD surface is parametric, `S(u,v) → (x, y, z)`. The importer
 //!
 //! 1. parses every 128 entity (all weights must be uniform — the polynomial
 //!    contract; see crate docs),
-//! 2. maps patches to the hull frame (`x` longitudinal as in the file, `z'`
-//!    downward from the user-specified waterline),
-//! 3. finds the hull's **centerplane**: given via [`ImportOptions::centerplane`],
-//!    or auto-detected — interior probes count shell intersections along y;
-//!    a two-sided (full) shell folds about the midplane of its intersections,
-//!    a one-sided (half-hull) file measures from y = 0,
-//! 4. clips to the wetted region `z' ∈ [0, T]` and samples half-beams on a
-//!    station × waterline grid by per-patch 2-D Newton inversion of
-//!    `(x(u,v), z'(u,v))`, taking the outermost fold `max |y - y_c|`; the
-//!    surface slopes `∂y/∂x`, `∂y/∂z` come for free from the converged
-//!    Newton Jacobian (implicit function theorem),
-//! 5. lofts the resulting [`crate::grid::SampleGrid`] — values, slopes, and
-//!    per-sample weights (failed inversions are excluded, not zeroed) — with
-//!    [`crate::fit::fit_grid`].
+//! 2. clusters patches into hulls by wetted-geometry proximity
+//!    ([`source_fleet`]), keeping each hull in the CAD frame so it can be
+//!    re-posed ([`HullPose`], [`Platform`]) and re-cut repeatedly,
+//! 3. finds each hull's **centerplane**: given via
+//!    [`SectionalOptions::centerplane`], or auto-detected — interior probes
+//!    count shell intersections along y; a two-sided (full) shell folds about
+//!    the midplane of its intersections, a one-sided (half-hull) file measures
+//!    from y = 0,
+//! 4. cuts the posed hull at stations below the waterline and integrates
+//!    each section along a fan of rays, taking the outermost fold, into a
+//!    [`SectionalHull`] ([`SourceFleet::situate_sectional`]).
 //!
 //! Expected CAD frame: `x` longitudinal, `z` **up**, `y` transverse.
 //! `waterline_z` gives the design waterline height in the file's frame, **in
-//! metres** (after unit conversion). Diagnostics (fold asymmetry, ambiguous
-//! samples, failed inversions, loft residuals) are reported so a bad import
-//! is visible.
+//! metres** (after unit conversion). Diagnostics (ambiguous rays, the
+//! detected transom) are reported so a bad import is visible.
 
 use crate::bspline::{ders_basis, find_span, BSplineSurface};
 use crate::error::{Error, Result};
-use crate::fit::{fit_grid, FitOptions, FitReport};
-use crate::grid::SampleGrid;
-use crate::hull::Hull;
 use crate::michell::Placement;
 use crate::sectional::{DepthQuadrature, SectionNodes, SectionalHull};
 
@@ -614,84 +606,6 @@ fn split_global(text: &str) -> Vec<String> {
 // Hull import
 // ---------------------------------------------------------------------------
 
-/// Options controlling the IGES → hull conversion.
-#[derive(Debug, Clone, Copy)]
-pub struct ImportOptions {
-    /// Height of the design waterline in the file's frame (z up), in
-    /// **metres** (i.e. after unit conversion).
-    pub waterline_z: f64,
-    /// Number of sample stations along x.
-    pub stations: usize,
-    /// Number of sample waterlines over the draft.
-    pub waterlines: usize,
-    pub fit: FitOptions,
-    /// Transverse position of the hull's centerplane in the file frame [m].
-    /// `None` auto-detects: a two-sided (full) shell folds about the midplane
-    /// of its shell intersections; a one-sided (half-hull) file measures from
-    /// y = 0.
-    pub centerplane: Option<f64>,
-}
-
-impl Default for ImportOptions {
-    fn default() -> Self {
-        ImportOptions {
-            waterline_z: 0.0,
-            stations: 301,
-            waterlines: 61,
-            // Real CAD hulls carry more shape than hand-typed offset tables,
-            // and a net too coarse to hold it does not fail loudly — it
-            // quietly smooths away the short-scale `∂f/∂x` that feeds the
-            // diverging end of the wave spectrum, biasing `R_w` at low Froude
-            // first (on a real hull the old 20x12 default overstated it by
-            // more than 3x at Fn 0.15). The banded normal equations make a
-            // net this size cost milliseconds, so resolve the geometry and
-            // let `FitReport::under_resolved` flag anything still short.
-            fit: FitOptions {
-                degree_x: 3,
-                degree_z: 3,
-                n_ctrl_x: 80,
-                n_ctrl_z: 18,
-                ..FitOptions::default()
-            },
-            centerplane: None,
-        }
-    }
-}
-
-/// Import diagnostics.
-#[derive(Debug, Clone, Copy)]
-pub struct ImportReport {
-    pub units_scale: f64,
-    /// Number of surface patches used.
-    pub patches: usize,
-    /// True if the file contained a full (both-sided) shell that was folded
-    /// about the centerplane.
-    pub two_sided: bool,
-    /// Centerplane y used for folding (auto-detected or user-supplied) [m].
-    pub centerplane: f64,
-    /// True if a one-sided file contained the port half (y < y_c).
-    pub mirrored: bool,
-    /// Draft found below the waterline [m].
-    pub draft: f64,
-    /// Longitudinal extent of the wetted surface [m].
-    pub x_range: (f64, f64),
-    /// Largest port/starboard half-beam disagreement among folded sample
-    /// pairs [m]. Large values mean the shell is not symmetric about the
-    /// centerplane — or that patch rectangles extend past real trims.
-    pub max_asymmetry: f64,
-    /// Samples with more than two shell intersections (overlapping or
-    /// interior geometry; a few near seams are harmless).
-    pub ambiguous_samples: usize,
-    /// Grid samples inside a waterline's footprint that could not be
-    /// inverted onto any patch (excluded from the loft by zero weight).
-    pub failed_inversions: usize,
-    /// Converged samples whose surface slope was unavailable (tangent-vertical
-    /// shell, boundary-clamped near-misses, the centerplane fold): their
-    /// half-beam still constrains the loft, their slope simply does not.
-    pub derivative_gaps: usize,
-    pub fit: FitReport,
-}
-
 /// One patch, presampled in the hull frame (x, y, z-downward).
 struct Patch {
     surf: NurbsSurface3,
@@ -705,18 +619,6 @@ struct Patch {
     /// (x_lo, x_hi, y_lo, y_hi, z_lo, z_hi) over the wetted presample only;
     /// `None` when the patch is entirely above the waterline.
     wet_box: Option<[f64; 6]>,
-}
-
-/// One hull detected in an IGES file, with its recovered placement.
-#[derive(Debug, Clone)]
-pub struct ImportedHull {
-    pub hull: Hull,
-    /// Placement recovered from the file: `x = 0` (the file's longitudinal
-    /// coordinates are kept) and `y` = the hull's detected centerplane.
-    pub placement: Placement,
-    pub report: ImportReport,
-    /// The derivative-augmented sample grid the hull was lofted from.
-    pub grid: SampleGrid,
 }
 
 /// Per-hull **design** pose: how a hull is mounted relative to the platform.
@@ -767,15 +669,6 @@ pub struct Platform {
     pub pivot_x: f64,
 }
 
-/// A situated fleet: the wetted hulls plus which source hulls were dry.
-#[derive(Debug)]
-pub struct SituatedFleet {
-    /// Wetted members, in source-hull order.
-    pub members: Vec<ImportedHull>,
-    /// Indices (into the [`SourceFleet`]) of hulls entirely above the water.
-    pub dry: Vec<usize>,
-}
-
 /// Parsed and clustered source geometry, kept in CAD coordinates so hulls can
 /// be re-situated (waterline, immersion, trim, position) repeatedly.
 pub struct SourceFleet {
@@ -795,7 +688,7 @@ pub fn source_fleet(text: &str, reference_waterline: f64) -> Result<SourceFleet>
 }
 
 /// [`source_fleet`] from surfaces already in hand (CAD frame, z up, metres),
-/// e.g. a B-spline hull's exact [`halfbreadth_surfaces`].
+/// e.g. [`wigley_surfaces`].
 pub fn source_fleet_from_surfaces(
     surfaces: Vec<NurbsSurface3>,
     units_scale: f64,
@@ -924,11 +817,12 @@ pub fn source_fleet_from_surfaces(
 impl SourceFleet {
     /// A B-spline half-breadth surface `y = f(x, z')` as source geometry:
     /// its exact mirrored pair of surfaces about `centerplane`, with the
-    /// spline's top (z' = 0) at CAD height `top_z`. A wetted `.hull` has its
-    /// top at the waterline (`top_z` 0); a full-band body's top is its band
-    /// top, `top_z` = its waterline depth — either way the design waterline
-    /// lands at CAD height 0, and the hull re-poses like any CAD hull.
-    pub fn from_halfbreadth(
+    /// spline's top (z' = 0) at CAD height `top_z`: 0 for a wetted surface,
+    /// or the freeboard for one carried up above the design waterline —
+    /// either way the design waterline lands at CAD height 0, and the hull
+    /// re-poses like any CAD hull. Test support.
+    #[cfg(test)]
+    pub(crate) fn from_halfbreadth(
         surface: &BSplineSurface,
         centerplane: f64,
         top_z: f64,
@@ -956,81 +850,8 @@ impl SourceFleet {
         self.units_scale
     }
 
-    /// Situate the fleet: apply each hull's design pose and the platform
-    /// state, clip at the effective waterline `waterline_z + sinkage`, and
-    /// loft. Hulls that end up entirely dry are reported, not errors.
-    pub fn situate(
-        &self,
-        waterline_z: f64,
-        poses: &[HullPose],
-        platform: &Platform,
-        opts: &ImportOptions,
-    ) -> Result<SituatedFleet> {
-        if poses.len() != self.hulls.len() {
-            return Err(Error::InvalidInput(format!(
-                "{} poses supplied for {} hulls",
-                poses.len(),
-                self.hulls.len()
-            )));
-        }
-        if self.hulls.len() > 1 && opts.centerplane.is_some() {
-            return Err(Error::InvalidConditions(format!(
-                "a centerplane override is ambiguous: {} separate hulls detected",
-                self.hulls.len()
-            )));
-        }
-        if opts.stations < 8 || opts.waterlines < 6 {
-            return Err(Error::InvalidInput(
-                "need at least 8 stations and 6 waterlines to sample".into(),
-            ));
-        }
-        let mut members = Vec::new();
-        let mut dry = Vec::new();
-        for (hi, pose) in poses.iter().enumerate() {
-            match self.situate_hull(hi, waterline_z, pose, platform, opts, &mut |_| {})? {
-                Some(m) => members.push(m),
-                None => dry.push(hi),
-            }
-        }
-        Ok(SituatedFleet { members, dry })
-    }
-
-    /// Situate a single hull of the fleet; `Ok(None)` when it is dry.
-    pub fn situate_one(
-        &self,
-        idx: usize,
-        waterline_z: f64,
-        pose: &HullPose,
-        platform: &Platform,
-        opts: &ImportOptions,
-    ) -> Result<Option<ImportedHull>> {
-        self.situate_one_progress(idx, waterline_z, pose, platform, opts, &mut |_| {})
-    }
-
-    /// Like [`SourceFleet::situate_one`], but reports loft-sampling progress as
-    /// a fraction in `0.0..=1.0` (one call per waterline row) through
-    /// `progress`, so a front-end can show a bar. The final surface fit is not
-    /// subdivided, so progress reaches ~1.0 as sampling completes.
-    pub fn situate_one_progress(
-        &self,
-        idx: usize,
-        waterline_z: f64,
-        pose: &HullPose,
-        platform: &Platform,
-        opts: &ImportOptions,
-        progress: &mut dyn FnMut(f32),
-    ) -> Result<Option<ImportedHull>> {
-        if idx >= self.hulls.len() {
-            return Err(Error::InvalidInput(format!(
-                "hull index {idx} out of range ({} hulls)",
-                self.hulls.len()
-            )));
-        }
-        self.situate_hull(idx, waterline_z, pose, platform, opts, progress)
-    }
-
     /// Highest z (CAD frame, up) of a hull's control net — an upper bound on
-    /// its geometry, used to loft full bands.
+    /// its geometry.
     pub fn hull_z_top(&self, idx: usize) -> f64 {
         self.hulls[idx]
             .iter()
@@ -1048,7 +869,7 @@ impl SourceFleet {
     }
 
     /// A hull's patches with a pose applied — the geometry
-    /// [`SourceFleet::situate`] would sample, expressed in the CAD frame
+    /// [`SourceFleet::situate_sectional`] would cut, expressed in the CAD frame
     /// (z up, metres) with the water surface back at `waterline_z`: platform
     /// sinkage moves the *hulls* down rather than the waterline up, so the
     /// result drops into a CAD model whose waterplane is fixed. Intended for
@@ -1070,41 +891,12 @@ impl SourceFleet {
         apply_pose(&mut surfs, waterline_z, pose, platform);
         Ok(surfs)
     }
-
-    fn situate_hull(
-        &self,
-        hi: usize,
-        waterline_z: f64,
-        pose: &HullPose,
-        platform: &Platform,
-        opts: &ImportOptions,
-        progress: &mut dyn FnMut(f32),
-    ) -> Result<Option<ImportedHull>> {
-        let surfs = &self.hulls[hi];
-        let wl = waterline_z + platform.sinkage;
-        let mut moved = surfs.clone();
-        pose_ctrl(&mut moved, waterline_z, pose, platform);
-        let patches = presample_surfaces(&moved, wl);
-        if patches.iter().all(|p| p.wet_box.is_none()) {
-            return Ok(None);
-        }
-        let (hull, report, grid) = import_cluster(patches, opts, self.units_scale, progress)?;
-        Ok(Some(ImportedHull {
-            placement: Placement {
-                x: 0.0,
-                y: report.centerplane,
-            },
-            hull,
-            report,
-            grid,
-        }))
-    }
 }
 
 /// Apply a design pose and platform state to CAD-frame surfaces (z up,
 /// metres), by moving their control nets, and re-express platform sinkage
 /// as a geometry shift so the water surface stays at `waterline_z`. This is
-/// the configuration [`SourceFleet::situate`] evaluates (situate instead
+/// the configuration [`SourceFleet::situate_sectional`] evaluates (it instead
 /// raises the waterline to `waterline_z + sinkage`, which is equivalent),
 /// in a frame that drops into a CAD model whose waterplane is fixed.
 pub fn apply_pose(
@@ -1123,7 +915,7 @@ pub fn apply_pose(
     }
 }
 
-/// The transform [`SourceFleet::situate`] applies before clipping at the
+/// The transform [`SourceFleet::situate_sectional`] applies before cutting at the
 /// effective waterline `waterline_z + sinkage`: uniform `scale` about
 /// `(pose.pivot_x, y-mid, waterline_z)`, then design trim about
 /// `(pose.pivot_x, waterline_z)`, then the `dx`/`dy`/`dz` shifts
@@ -1355,46 +1147,6 @@ fn presample_surfaces(surfaces: &[NurbsSurface3], waterline_z: f64) -> Vec<Patch
     patches
 }
 
-/// Import every hull found in an IGES file at the fixed waterline in `opts`.
-///
-/// Patches are clustered by wetted-geometry proximity: seams between patches
-/// of one hull touch to CAD tolerance, while distinct hulls of a multihull
-/// are far apart, so a whole boat modelled in position imports as a fleet
-/// with its true placements. Only wetted geometry clusters, so dry structure
-/// (cross-beams, decks) cannot bridge two hulls and is dropped. Results are
-/// sorted by transverse position.
-///
-/// [`ImportOptions::centerplane`] may only be set when the file contains a
-/// single hull. For repeated re-situating (sweeps over waterline, immersion,
-/// trim), use [`source_fleet`] + [`SourceFleet::situate`].
-pub fn import_fleet(text: &str, opts: &ImportOptions) -> Result<Vec<ImportedHull>> {
-    let src = source_fleet(text, opts.waterline_z)?;
-    let poses = vec![HullPose::default(); src.len()];
-    let fl = src.situate(opts.waterline_z, &poses, &Platform::default(), opts)?;
-    Ok(fl.members)
-}
-
-/// Import a hull from an IGES file that contains exactly one; errors (listing
-/// the detected centerplanes) when the file holds several hulls — use
-/// [`import_fleet`] for whole-multihull files.
-pub fn import_hull(text: &str, opts: &ImportOptions) -> Result<(Hull, ImportReport)> {
-    let mut fleet = import_fleet(text, opts)?;
-    if fleet.len() == 1 {
-        let m = fleet.pop().expect("one member");
-        return Ok((m.hull, m.report));
-    }
-    let ys: Vec<String> = fleet
-        .iter()
-        .map(|m| format!("{:.3}", m.placement.y))
-        .collect();
-    Err(Error::Unsupported(format!(
-        "the file contains {} separate hulls (centerplanes at y = {}); import \
-         them as a fleet (import_fleet) or export hulls separately",
-        fleet.len(),
-        ys.join(", ")
-    )))
-}
-
 /// Union-find clustering of patches whose wetted bounding boxes come within
 /// `eps` of touching; dry patches are excluded.
 #[allow(clippy::needless_range_loop)]
@@ -1438,135 +1190,17 @@ fn cluster_patches(patches: &[Patch], eps: f64) -> Vec<Vec<usize>> {
     groups.into_iter().map(|(_, v)| v).collect()
 }
 
-/// Run the single-hull pipeline on one cluster of patches.
-fn import_cluster(
-    patches: Vec<Patch>,
-    opts: &ImportOptions,
-    units_scale: f64,
-    progress: &mut dyn FnMut(f32),
-) -> Result<(Hull, ImportReport, SampleGrid)> {
-    let ClusterFrame {
-        draft,
-        x_min,
-        x_max,
-        length,
-        scale,
-        y_c,
-        two_sided,
-        mirrored,
-    } = cluster_frame(&patches, opts.centerplane)?;
-
-    // Sample grid: cosine-spaced stations, uniform waterlines to the draft.
-    let ns = opts.stations;
-    let nw = opts.waterlines;
-    let stations: Vec<f64> = (0..ns)
-        .map(|i| {
-            let c = (std::f64::consts::PI * i as f64 / (ns - 1) as f64).cos();
-            x_min + length * (1.0 - c) / 2.0
-        })
-        .collect();
-    let waterlines: Vec<f64> = (0..nw)
-        .map(|j| draft * j as f64 / (nw - 1) as f64)
-        .collect();
-
-    let mut grid = vec![0.0f64; ns * nw];
-    let mut fx = vec![f64::NAN; ns * nw];
-    let mut fz = vec![f64::NAN; ns * nw];
-    let mut weight = vec![1.0f64; ns * nw];
-    let mut failed = 0usize;
-    let mut ambiguous = 0usize;
-    let mut deriv_gaps = 0usize;
-    let mut max_asym = 0.0f64;
-    for (j, &zj) in waterlines.iter().enumerate() {
-        let Some((flo, fhi)) = footprint(&patches, zj, draft) else {
-            continue; // no hull at this depth
-        };
-        for (i, &xi) in stations.iter().enumerate() {
-            let s = i * nw + j;
-            if xi < flo || xi > fhi {
-                continue;
-            }
-            let ys = shell_intersections(&patches, xi, zj, scale);
-            if ys.is_empty() {
-                // Unknown geometry, not zero beam: exclude from the loft.
-                failed += 1;
-                weight[s] = 0.0;
-                continue;
-            }
-            if ys.len() > 2 {
-                ambiguous += 1;
-            }
-            let outer = ys
-                .iter()
-                .max_by(|a, b| (a.y - y_c).abs().total_cmp(&(b.y - y_c).abs()))
-                .expect("non-empty");
-            let folded = (outer.y - y_c).abs();
-            if two_sided && ys.len() >= 2 {
-                let stb = (ys[ys.len() - 1].y - y_c).abs();
-                let prt = (ys[0].y - y_c).abs();
-                max_asym = max_asym.max((stb - prt).abs());
-            }
-            grid[s] = folded;
-            // Half-beam is |y - y_c|: fold the slope's sign with y. At the
-            // fold itself (keel/stem lines) the derivative is one-sided;
-            // leave it unconstrained there.
-            if outer.deriv_ok && folded > 1e-9 * scale {
-                let sign = if outer.y >= y_c { 1.0 } else { -1.0 };
-                fx[s] = sign * outer.y_x;
-                fz[s] = sign * outer.y_z;
-            } else {
-                deriv_gaps += 1;
-            }
-        }
-        progress((j + 1) as f32 / nw as f32);
-    }
-
-    let sample_grid = SampleGrid::new(stations, waterlines, grid)?
-        .with_fx(fx)?
-        .with_fz(fz)?
-        .with_weights(weight)?;
-    let (hull, fit_report) = fit_grid(&sample_grid, &opts.fit)?;
-    Ok((
-        hull,
-        ImportReport {
-            units_scale,
-            patches: patches.len(),
-            two_sided,
-            centerplane: y_c,
-            mirrored,
-            draft,
-            x_range: (x_min, x_max),
-            max_asymmetry: max_asym,
-            ambiguous_samples: ambiguous,
-            failed_inversions: failed,
-            derivative_gaps: deriv_gaps,
-            fit: fit_report,
-        },
-        sample_grid,
-    ))
-}
-
-/// A hull cluster's wetted extent and centreplane, shared by the lofted
-/// and sectional importers.
+/// A hull cluster's wetted extent and centreplane.
 struct ClusterFrame {
     draft: f64,
     x_min: f64,
     x_max: f64,
-    length: f64,
     /// Largest wetted extent, for tolerances.
     scale: f64,
     y_c: f64,
     two_sided: bool,
     /// One-sided shell on the port side of its centreplane.
     mirrored: bool,
-}
-
-/// Wetted statistics of a cluster and its centreplane: given, or detected
-/// by probing interior depths for shell intersections — a two-sided shell
-/// folds about the midplane of its intersections, a one-sided one measures
-/// from y = 0 (and must reach it).
-fn cluster_frame(patches: &[Patch], centerplane: Option<f64>) -> Result<ClusterFrame> {
-    cluster_frame_with(patches, centerplane, None, None)
 }
 
 /// What a previous pose's frame lets the next one skip: its centreplane
@@ -1580,7 +1214,11 @@ struct FrameMemo {
     x_hi: f64,
 }
 
-/// [`cluster_frame`], warm-started from a nearby pose's frame when given.
+/// Wetted statistics of a cluster and its centreplane: given, or detected
+/// by probing interior depths for shell intersections — a two-sided shell
+/// folds about the midplane of its intersections, a one-sided one measures
+/// from y = 0 (and must reach it). Warm-started from a nearby pose's frame
+/// when given.
 fn cluster_frame_with(
     patches: &[Patch],
     centerplane: Option<f64>,
@@ -1647,7 +1285,6 @@ fn cluster_frame_with(
             draft,
             x_min,
             x_max,
-            length: x_max - x_min,
             scale,
             y_c: m.y_c,
             two_sided: m.two_sided,
@@ -1687,10 +1324,7 @@ fn cluster_frame_with(
         for t in targets.iter().step_by(step) {
             let ys: Vec<f64> = match (patches.is_empty(), mesh) {
                 (true, Some(m)) => m.transverse(t.0, t.1, scale),
-                _ => shell_intersections(patches, t.0, t.1, scale)
-                    .iter()
-                    .map(|h| h.y)
-                    .collect(),
+                _ => shell_intersections(patches, t.0, t.1, scale),
             };
             if !ys.is_empty() {
                 probe_counts.push(ys.len());
@@ -1759,7 +1393,6 @@ fn cluster_frame_with(
         draft,
         x_min,
         x_max,
-        length: x_max - x_min,
         scale,
         y_c,
         two_sided,
@@ -1793,100 +1426,14 @@ fn frame_sides(two_sided: bool, mirrored: bool) -> &'static [f64] {
     }
 }
 
-/// Longitudinal footprint [x_lo, x_hi] of the hull at depth `z`: union over
-/// patches of level-set crossings of the presample grids, plus exact-plateau
-/// points (so flat bottoms at maximum draft and sheer lines at z = 0 keep
-/// their extent).
-fn footprint(patches: &[Patch], z: f64, draft: f64) -> Option<(f64, f64)> {
-    let tol = 1e-9 * draft.max(1e-300);
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut found = false;
-    for p in patches {
-        for q in &p.pts {
-            if (q.4 - z).abs() <= tol {
-                lo = lo.min(q.2);
-                hi = hi.max(q.2);
-                found = true;
-            }
-        }
-        let n = p.grid_n;
-        let mut cross = |a: &(f64, f64, f64, f64, f64), b: &(f64, f64, f64, f64, f64)| {
-            if (a.4 - z) * (b.4 - z) < 0.0 {
-                let t = (z - a.4) / (b.4 - a.4);
-                let x = a.2 + t * (b.2 - a.2);
-                lo = lo.min(x);
-                hi = hi.max(x);
-                found = true;
-            }
-        };
-        for i in 0..n {
-            for j in 0..n {
-                let idx = i * n + j;
-                if j + 1 < n {
-                    cross(&p.pts[idx], &p.pts[idx + 1]);
-                }
-                if i + 1 < n {
-                    cross(&p.pts[idx], &p.pts[idx + n]);
-                }
-            }
-        }
-    }
-    found.then_some((lo, hi))
-}
-
-/// One shell intersection along y at a target `(x, z)`.
-#[derive(Debug, Clone, Copy)]
-struct ShellHit {
-    y: f64,
-    /// Surface slopes `∂y/∂x`, `∂y/∂z` (hull frame, z down) at the
-    /// intersection; meaningful only when `deriv_ok`.
-    y_x: f64,
-    y_z: f64,
-    deriv_ok: bool,
-}
-
-/// Slopes beyond this magnitude carry no loftable information at realistic
-/// sample densities (the shell is effectively tangent-vertical there); the
-/// sample keeps its value but drops its derivative.
-const MAX_USEFUL_SLOPE: f64 = 1e2;
-
-/// Build a hit at a converged parameter point, recovering `∂y/∂x`, `∂y/∂z`
-/// from the surface partials by the implicit function theorem.
-fn hit_at(surf: &NurbsSurface3, u: f64, v: f64) -> ShellHit {
-    let (s, du, dv) = surf.eval1(u, v);
-    // (x, z)(u, v) Jacobian determinant — the same one Newton inverts.
-    let det = du[0] * dv[2] - dv[0] * du[2];
-    let det_scale = du[0].abs() * dv[2].abs() + dv[0].abs() * du[2].abs();
-    if det.abs() <= 1e-9 * det_scale.max(1e-300) {
-        return ShellHit {
-            y: s[1],
-            y_x: 0.0,
-            y_z: 0.0,
-            deriv_ok: false,
-        };
-    }
-    let y_x = (du[1] * dv[2] - dv[1] * du[2]) / det;
-    let y_z = (dv[1] * du[0] - du[1] * dv[0]) / det;
-    let ok = y_x.is_finite()
-        && y_z.is_finite()
-        && y_x.abs() < MAX_USEFUL_SLOPE
-        && y_z.abs() < MAX_USEFUL_SLOPE;
-    ShellHit {
-        y: s[1],
-        y_x,
-        y_z,
-        deriv_ok: ok,
-    }
-}
-
 /// All shell intersections along y at `(x, z)`: per patch, Newton from the
 /// nearest presample seeds; converged hits deduped across patches and
 /// returned sorted by y.
-fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec<ShellHit> {
+fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec<f64> {
     let tol = 1e-11 * scale;
     let loose = 1e-7 * scale;
     let margin = 0.05 * scale;
-    let mut ys: Vec<ShellHit> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
     let mut best_loose: Option<(f64, f64)> = None; // (residual, y)
     for p in patches {
         if x_t < p.bbox.0 - margin
@@ -1906,9 +1453,9 @@ fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec
             }
         }
         for &(_, su, sv) in &seeds {
-            let (res, y, u, v) = newton_on(&p.surf, su, sv, x_t, z_t, tol);
+            let (res, y) = newton_on(&p.surf, su, sv, x_t, z_t, tol);
             if res < tol {
-                ys.push(hit_at(&p.surf, u, v));
+                ys.push(y);
                 break;
             }
             if best_loose.is_none_or(|(r, _)| res < r) {
@@ -1918,26 +1465,20 @@ fn shell_intersections(patches: &[Patch], x_t: f64, z_t: f64, scale: f64) -> Vec
     }
     if ys.is_empty() {
         // Accept a boundary-clamped near-miss (footprint edge) as a single
-        // intersection; its parameters don't hit the target, so no slope.
+        // intersection.
         if let Some((r, y)) = best_loose {
             if r < loose {
-                ys.push(ShellHit {
-                    y,
-                    y_x: 0.0,
-                    y_z: 0.0,
-                    deriv_ok: false,
-                });
+                ys.push(y);
             }
         }
     }
-    ys.sort_by(|a, b| a.y.total_cmp(&b.y));
-    ys.dedup_by(|a, b| (a.y - b.y).abs() <= 1e-6 * scale);
+    ys.sort_by(|a, b| a.total_cmp(b));
+    ys.dedup_by(|a, b| (*a - *b).abs() <= 1e-6 * scale);
     ys
 }
 
 /// 2-D Newton on `(x(u,v), z(u,v)) = (x_t, z_t)` from one seed; returns the
-/// best residual reached and the y value and parameters there. Stops early
-/// below `tol`.
+/// best residual reached and the y value there. Stops early below `tol`.
 fn newton_on(
     surf: &NurbsSurface3,
     mut u: f64,
@@ -1945,16 +1486,16 @@ fn newton_on(
     x_t: f64,
     z_t: f64,
     tol: f64,
-) -> (f64, f64, f64, f64) {
+) -> (f64, f64) {
     let (u0, u1) = surf.u_domain();
     let (v0, v1) = surf.v_domain();
-    let mut best = (f64::INFINITY, 0.0f64, u, v);
+    let mut best = (f64::INFINITY, 0.0f64);
     for _ in 0..60 {
         let (s, du, dv) = surf.eval1(u, v);
         let (fx, fz) = (s[0] - x_t, s[2] - z_t);
         let res = fx.abs() + fz.abs();
         if res < best.0 {
-            best = (res, s[1], u, v);
+            best = (res, s[1]);
         }
         if res < tol {
             break;
@@ -1976,14 +1517,16 @@ fn newton_on(
 // ---------------------------------------------------------------------------
 
 /// Options for a sectional import: the hull is cut at stations and each
-/// section integrated along rays, instead of being sampled on a waterline
-/// grid and lofted.
+/// section integrated along rays.
 #[derive(Debug, Clone, Copy)]
 pub struct SectionalOptions {
-    /// Design waterline height in the file's frame [m], as for
-    /// [`ImportOptions::waterline_z`].
+    /// Height of the design waterline in the file's frame (z up), in
+    /// **metres** (i.e. after unit conversion).
     pub waterline_z: f64,
-    /// Centreplane override, as for [`ImportOptions::centerplane`].
+    /// Transverse position of the hull's centreplane in the file frame [m].
+    /// `None` auto-detects: a two-sided (full) shell folds about the midplane
+    /// of its shell intersections; a one-sided (half-hull) file measures from
+    /// y = 0.
     pub centerplane: Option<f64>,
     /// Stations along the hull, cosine-spaced with both ends included.
     pub stations: usize,
@@ -2029,7 +1572,7 @@ pub struct SectionalReport {
     pub max_asymmetry: f64,
     /// The transom the aft end presents, if immersed (see
     /// [`SectionalHull::transom`]).
-    pub transom: Option<crate::hull::Transom>,
+    pub transom: Option<crate::sectional::Transom>,
 }
 
 /// One hull imported by sections.
@@ -2107,9 +1650,9 @@ pub struct SectionalState {
 }
 
 impl SourceFleet {
-    /// Situate one hull (pose and platform state as for
-    /// [`SourceFleet::situate_one`]) and build it by sections; `Ok(None)`
-    /// when it is dry.
+    /// Situate one hull — apply its design pose and the platform state, clip
+    /// at the effective waterline `waterline_z + sinkage` — and build it by
+    /// sections; `Ok(None)` when it is dry.
     pub fn situate_sectional(
         &self,
         idx: usize,
@@ -2345,7 +1888,7 @@ fn sectional_cluster(
 /// tessellation of the patches is available ([`PosedMesh`]), the plane's cut
 /// through it gives every place a ray can meet the shell — with the patch and
 /// parameters already known, so each hit is one or two Newton steps on the
-/// exact surface away. Without one (the lofted importer), hits are searched
+/// exact surface away. Without one (or when a polish strays), hits are searched
 /// for from presample seeds. Patch-edge crossings are found up front either
 /// way, because a section's defining points often lie *on* an edge — a keel
 /// or stem line where the half-breadth is exactly zero, a seam, an open rim —
@@ -2457,8 +2000,7 @@ impl<'a> Station<'a> {
 
     /// Distance from `(y_c, z0)` along the ray at angle `θ` below the
     /// horizontal, toward side `sd = ±1`, to the boundary of the hull's
-    /// section — the region defined, as the lofted importer defines it, by
-    /// the **outermost fold**: at each depth the section reaches as far from
+    /// section — the region defined by the **outermost fold**: at each depth the section reaches as far from
     /// the centreplane as the farthest shell there. The reach is where the ray
     /// first *leaves* that region: at each hit in turn, the ray's point
     /// midway to the next hit is tested against the fold at its depth. Past
@@ -2696,8 +2238,7 @@ impl<'a> Station<'a> {
     /// stem face, a bulb top) or an edge crossing (an open shell's rim that
     /// has gone under, on a trimmed or deeply immersed hull with no deck).
     /// Rays hang from `(y_c, top)`, which for an open rim lies on the lid
-    /// closing it — as the lofted importer's outermost-fold half-breadths
-    /// have always implied.
+    /// closing it — as outermost-fold half-breadths imply.
     fn top(&self) -> Option<f64> {
         let mut best = self.centerplane_top();
         for &(_, z) in &self.edges {
@@ -3412,6 +2953,18 @@ pub fn write(surfaces: &[NurbsSurface3], product: &str) -> Result<String> {
     Ok(out)
 }
 
+/// The Wigley parabolic hull `y = ±(B/2)(1 − (2x/L)²)(1 − (z/T)²)` as its
+/// **exact** mirrored pair of CAD patches (x along the hull, `x ∈ [−L/2,
+/// L/2]`; z up, the design waterline at `z = 0` and the keel at
+/// `z = −draft`; centreplane `y = 0`), returned as `[starboard (+y), port
+/// (−y)]`. Write it out with [`write`], or cut it directly through
+/// [`source_fleet_from_surfaces`]. The classic proportions are `L/B = 10`,
+/// `B/T = 1.6`, e.g. `wigley_surfaces(10.0, 1.0, 0.625)`.
+pub fn wigley_surfaces(length: f64, beam: f64, draft: f64) -> Result<[NurbsSurface3; 2]> {
+    let s = crate::hulls::wigley_surface(length, beam, draft)?;
+    Ok(halfbreadth_surfaces(&s, 0.0, 0.0))
+}
+
 /// Convert a half-breadth spline `y = f(x, z')` (the crate's hull frame,
 /// z' downward) into the mirrored pair of CAD-frame (z up) patches its graph
 /// describes — **exact**, because linear precision puts the Greville
@@ -3420,7 +2973,7 @@ pub fn write(surfaces: &[NurbsSurface3], product: &str) -> Result<String> {
 /// wetted hull; the band top for a full-band body); `centerplane` is the
 /// transverse position the two sides mirror about. Returned as
 /// `[starboard (+y), port (−y)]`.
-pub fn halfbreadth_surfaces(
+pub(crate) fn halfbreadth_surfaces(
     s: &BSplineSurface,
     centerplane: f64,
     z_top_cad: f64,
@@ -3613,40 +3166,10 @@ mod tests {
                 let ys = shell_intersections(&patches, s[0], s[2], 12.0);
                 assert_eq!(ys.len(), 1, "u={fu} v={fv}: {ys:?}");
                 assert!(
-                    (ys[0].y - s[1]).abs() < 1e-9,
+                    (ys[0] - s[1]).abs() < 1e-9,
                     "u={fu} v={fv}: y {} vs {}",
-                    ys[0].y,
+                    ys[0],
                     s[1]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn inversion_recovers_surface_slopes() {
-        // x = L(0.7u + 0.3u³), z = T·v, y = (1 + u)(2 − v)/4, so
-        // ∂y/∂x = ((2 − v)/4) / (L(0.7 + 0.9u²)) and ∂y/∂z = −(1 + u)/(4T).
-        let (l, t) = (12.0, 2.0);
-        let surf = nonlinear_surface();
-        let patches = vec![as_patch(surf.clone(), 33)];
-        for &fu in &[0.03, 0.31, 0.5, 0.77, 0.95] {
-            for &fv in &[0.05, 0.4, 0.9] {
-                let (s, _, _) = surf.eval1(fu, fv);
-                let ys = shell_intersections(&patches, s[0], s[2], 12.0);
-                assert_eq!(ys.len(), 1, "u={fu} v={fv}: {ys:?}");
-                let hit = ys[0];
-                assert!(hit.deriv_ok, "u={fu} v={fv}");
-                let want_yx = (2.0 - fv) / 4.0 / (l * (0.7 + 0.9 * fu * fu));
-                let want_yz = -(1.0 + fu) / (4.0 * t);
-                assert!(
-                    (hit.y_x - want_yx).abs() < 1e-8,
-                    "u={fu} v={fv}: y_x {} vs {want_yx}",
-                    hit.y_x
-                );
-                assert!(
-                    (hit.y_z - want_yz).abs() < 1e-8,
-                    "u={fu} v={fv}: y_z {} vs {want_yz}",
-                    hit.y_z
                 );
             }
         }
@@ -3672,10 +3195,7 @@ mod tests {
         let patches = vec![as_patch(wall(1.0), 9), as_patch(wall(-1.0), 9)];
         let ys = shell_intersections(&patches, 5.0, 1.0, 10.0);
         assert_eq!(ys.len(), 2, "{ys:?}");
-        assert!((ys[0].y + 1.0).abs() < 1e-9 && (ys[1].y - 1.0).abs() < 1e-9);
-        // A vertical wall has zero slope in both directions.
-        assert!(ys.iter().all(|h| h.deriv_ok));
-        assert!(ys.iter().all(|h| h.y_x.abs() < 1e-9 && h.y_z.abs() < 1e-9));
+        assert!((ys[0] + 1.0).abs() < 1e-9 && (ys[1] - 1.0).abs() < 1e-9);
     }
 
     #[test]
@@ -3706,6 +3226,43 @@ mod tests {
         for &v in &[0.1, -123.456, 1e-9, 6.02e23, 12.0] {
             assert_eq!(parse_number(&fmt_real(v)).unwrap(), v);
         }
+    }
+
+    /// The Wigley helper written out and read back: one two-sided hull on
+    /// the centreplane, the draft below CAD z = 0, and the analytic volume
+    /// `∇ = (4/9) L B T`.
+    #[test]
+    fn wigley_surfaces_roundtrip_through_write_and_source_fleet() {
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let text = write(&wigley_surfaces(l, b, t).unwrap(), "wigley").unwrap();
+        let src = source_fleet(&text, 0.0).unwrap();
+        assert_eq!(src.len(), 1);
+        assert!((src.hull_z_bottom(0) + t).abs() < 1e-12);
+        let cut = src
+            .situate_sectional(
+                0,
+                0.0,
+                &HullPose::default(),
+                &Platform::default(),
+                &SectionalOptions::default(),
+            )
+            .unwrap()
+            .expect("the Wigley is wet at its design waterline");
+        assert!(cut.report.two_sided);
+        assert!(
+            cut.report.centerplane.abs() < 1e-9,
+            "{}",
+            cut.report.centerplane
+        );
+        assert!(
+            (cut.report.draft - t).abs() < 1e-9,
+            "draft {}",
+            cut.report.draft
+        );
+        let want = 4.0 / 9.0 * l * b * t;
+        let got = cut.hull.displaced_volume();
+        assert!((got - want).abs() < 1e-6 * want, "volume {got} vs {want}");
+        assert!(wigley_surfaces(0.0, 1.0, 1.0).is_err());
     }
 
     #[test]

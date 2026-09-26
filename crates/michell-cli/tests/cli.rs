@@ -43,11 +43,22 @@ fn run_err(cmd: &mut Command) -> String {
 }
 
 /// A wigley control net to hang the viscous tests off.
-/// The exact Wigley cut into sections at its Greville stations, and its
-/// resistance, as the library computes it.
+/// The exact Wigley cut into sections through the public library API, as
+/// the CLI cuts `michell wigley`'s IGES.
 fn sectional_wigley() -> michell::sectional::SectionalHull {
-    let w = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-    michell::sectional::SectionalHull::from_hull(&w, &Default::default()).unwrap()
+    use michell::iges::{self, HullPose, Platform, SectionalOptions};
+    let surfaces = iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+    let src = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
+    src.situate_sectional(
+        0,
+        0.0,
+        &HullPose::default(),
+        &Platform::default(),
+        &SectionalOptions::default(),
+    )
+    .unwrap()
+    .unwrap()
+    .hull
 }
 
 fn library_resistance(
@@ -84,7 +95,7 @@ fn roughness_is_separate_from_the_form_factor() {
     // C_V = (1+k)·C_F + ΔC_F. The two knobs must be independent, and the
     // roughness must sit *outside* the form factor: doubling k must not
     // change the roughness share of the total.
-    let hull = wigley_hull("visc.hull");
+    let hull = wigley_hull("visc.igs");
     let h = hull.to_str().unwrap();
     let rv = |args: &[&str]| -> f64 {
         let mut c = bin();
@@ -131,7 +142,7 @@ fn sand_grain_roughness_is_smooth_until_it_is_not() {
     // A finish inside the viscous sublayer costs exactly nothing; a coarse
     // one costs something; and the penalty grows with speed, because the
     // fully-rough branch is Re-independent while the smooth line falls.
-    let hull = wigley_hull("visc2.hull");
+    let hull = wigley_hull("visc2.igs");
     let h = hull.to_str().unwrap();
     let rv = |ks: &str, u: &str| -> f64 {
         let mut c = bin();
@@ -161,7 +172,7 @@ fn sand_grain_roughness_is_smooth_until_it_is_not() {
 
 #[test]
 fn rejects_bad_roughness_specs() {
-    let hull = wigley_hull("visc3.hull");
+    let hull = wigley_hull("visc3.igs");
     let h = hull.to_str().unwrap();
     for spec in ["ks=-1um", "cf=-1e-4", "banana", "ks=", "cf=abc"] {
         let err = run_err(bin().args(["resistance", h, "--speeds", "3", "--roughness", spec]));
@@ -186,7 +197,7 @@ fn rejects_bad_roughness_specs() {
 
 #[test]
 fn wigley_roundtrip_matches_library() {
-    let hull_path = tmp("wigley.hull");
+    let hull_path = tmp("wigley.igs");
     run_ok(bin().args([
         "wigley",
         "--length",
@@ -217,8 +228,6 @@ fn wigley_roundtrip_matches_library() {
         "freshwater",
         "--json",
     ]));
-    // The CLI cuts the spline's exact surfaces at its own stations; the
-    // library reference samples it at the Greville stations.
     let cond = michell::Conditions::freshwater(3.0);
     let want = library_resistance(&[(&reference, michell::Placement::default())], &cond);
     let rw = json_num(&out, "rw");
@@ -259,7 +268,7 @@ fn wigley_roundtrip_matches_library() {
 
 #[test]
 fn froude_range_produces_table() {
-    let hull_path = tmp("wigley_table.hull");
+    let hull_path = tmp("wigley_table.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let out = run_ok(bin().args([
         "resistance",
@@ -288,7 +297,7 @@ fn offsets_and_loft_are_rejected() {
 
 #[test]
 fn knots_flag_scales_speeds() {
-    let hull_path = tmp("wigley_kn.hull");
+    let hull_path = tmp("wigley_kn.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let kn = run_ok(bin().args([
         "resistance",
@@ -310,7 +319,7 @@ fn knots_flag_scales_speeds() {
 
 #[test]
 fn catamaran_fleet_matches_library() {
-    let hull_path = tmp("wigley_cat.hull");
+    let hull_path = tmp("wigley_cat.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let spec_a = format!("{}@y=1.0", hull_path.to_str().unwrap());
     let spec_b = format!("{}@y=-1.0", hull_path.to_str().unwrap());
@@ -598,7 +607,7 @@ fn manifest_sweeps_iges_hulls() {
 /// swept axis) — fail loudly rather than being silently ignored.
 #[test]
 fn heel_inputs_are_rejected() {
-    let hull = wigley_hull("noheel.hull");
+    let hull = wigley_hull("noheel.igs");
     let err = run_err(bin().args([
         "resistance",
         hull.to_str().unwrap(),
@@ -879,7 +888,7 @@ fn errors_are_clean() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot determine the format"));
 
     // Missing speed selection.
-    let hull_path = tmp("wigley_err.hull");
+    let hull_path = tmp("wigley_err.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let out = bin()
         .args(["resistance", hull_path.to_str().unwrap()])
@@ -891,7 +900,7 @@ fn errors_are_clean() {
 
 #[test]
 fn spectrum_cross_checks_resistance() {
-    let hull_path = tmp("wigley_spectrum.hull");
+    let hull_path = tmp("wigley_spectrum.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let out = run_ok(bin().args([
         "spectrum",
@@ -933,7 +942,7 @@ fn spectrum_cross_checks_resistance() {
 
 #[test]
 fn wake_writes_png_and_json() {
-    let hull_path = tmp("wigley_wake.hull");
+    let hull_path = tmp("wigley_wake.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let png_path = tmp("wake.png");
     run_ok(bin().args([
@@ -977,7 +986,7 @@ fn wake_writes_png_and_json() {
 
 #[test]
 fn render_writes_png() {
-    let hull_path = tmp("wigley_render.hull");
+    let hull_path = tmp("wigley_render.igs");
     run_ok(bin().args(["wigley", "-o", hull_path.to_str().unwrap()]));
     let png_path = tmp("render.png");
     run_ok(bin().args([

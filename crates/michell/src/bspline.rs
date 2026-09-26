@@ -1,9 +1,10 @@
 //! Clamped, polynomial (non-rational) tensor-product B-spline surfaces.
 //!
-//! This is the canonical hull representation: `y = S(x, z)` with `y` the local
-//! half-beam. Rational surfaces (NURBS with non-unit weights) are deliberately
-//! not supported — polynomial spans are what make the Michell inner integrals
-//! evaluable in closed form (see [`crate::moments`]).
+//! A half-breadth graph `y = S(x, z)` with `y` the local half-beam: the exact
+//! Wigley fixture ([`crate::iges::wigley_surfaces`]) and, in tests, the exact
+//! B-spline kernel's hulls. Rational surfaces (NURBS with non-unit weights)
+//! are not supported — polynomial spans are what make that kernel's inner
+//! integrals evaluable in closed form (see [`crate::moments`]).
 
 use crate::error::{Error, Result};
 
@@ -94,22 +95,26 @@ impl BSplineSurface {
     }
 
     /// Parametric domain in x: `[knots_x[p], knots_x[n]]`.
+    #[cfg(test)]
     pub fn x_domain(&self) -> (f64, f64) {
         (self.knots_x[self.degree_x], self.knots_x[self.n_ctrl_x])
     }
 
     /// Parametric domain in z: `[knots_z[q], knots_z[n]]`.
+    #[cfg(test)]
     pub fn z_domain(&self) -> (f64, f64) {
         (self.knots_z[self.degree_z], self.knots_z[self.n_ctrl_z])
     }
 
     /// Surface value. Arguments outside the domain are clamped to it.
+    #[cfg(test)]
     pub fn eval(&self, x: f64, z: f64) -> f64 {
         self.eval_deriv(x, z, 0, 0)
     }
 
     /// Mixed partial derivative `∂^{dx+dz} S / ∂x^{dx} ∂z^{dz}`.
     /// Arguments outside the domain are clamped to it.
+    #[cfg(test)]
     pub fn eval_deriv(&self, x: f64, z: f64, dx: usize, dz: usize) -> f64 {
         let (x0, x1) = self.x_domain();
         let (z0, z1) = self.z_domain();
@@ -136,10 +141,12 @@ impl BSplineSurface {
     }
 
     /// Indices `s` of non-empty knot spans `[knots_x[s], knots_x[s+1])`.
+    #[cfg(test)]
     pub(crate) fn x_span_indices(&self) -> Vec<usize> {
         span_indices(&self.knots_x, self.degree_x, self.n_ctrl_x)
     }
 
+    #[cfg(test)]
     pub(crate) fn z_span_indices(&self) -> Vec<usize> {
         span_indices(&self.knots_z, self.degree_z, self.n_ctrl_z)
     }
@@ -148,6 +155,7 @@ impl BSplineSurface {
     /// `a = 0..=degree_x`, `b = 0..=degree_z`, evaluated at the lower-left
     /// corner of the given (non-empty) span pair. Together with Taylor's
     /// theorem this yields the exact local polynomial on the span rectangle.
+    #[cfg(test)]
     pub(crate) fn corner_partials(&self, span_x: usize, span_z: usize) -> Vec<Vec<f64>> {
         let p = self.degree_x;
         let q = self.degree_z;
@@ -241,20 +249,6 @@ fn validate_knots(knots: &[f64], degree: usize, dir: &str) -> Result<usize> {
     Ok(n)
 }
 
-/// Non-zero B-spline basis values and first derivatives at `u`: returns the
-/// index of the first non-zero basis function and two rows of `degree + 1`
-/// entries — `rows[0]` the basis values, `rows[1]` their first derivatives.
-pub(crate) fn basis_rows1(
-    knots: &[f64],
-    degree: usize,
-    n_ctrl: usize,
-    u: f64,
-) -> (usize, Vec<Vec<f64>>) {
-    let span = find_span(knots, degree, n_ctrl, u);
-    let ders = ders_basis(knots, degree, span, u, 1);
-    (span - degree, (0..=1).map(|k| ders[k].to_vec()).collect())
-}
-
 /// Index `s` such that `knots[s] <= u < knots[s+1]` within the domain,
 /// with the right end mapped into the last non-empty span.
 pub(crate) fn find_span(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> usize {
@@ -281,6 +275,7 @@ pub(crate) fn find_span(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> 
     lo
 }
 
+#[cfg(test)]
 fn span_indices(knots: &[f64], degree: usize, n_ctrl: usize) -> Vec<usize> {
     (degree..n_ctrl)
         .filter(|&s| knots[s + 1] > knots[s])

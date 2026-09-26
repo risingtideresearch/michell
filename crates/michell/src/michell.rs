@@ -11,16 +11,26 @@
 //! turns the outer integral into `∫_0^{π/2} (I² + J²) sec³θ dθ`, removing the
 //! integrable singularity at λ = 1.
 //!
-//! Because the hull is piecewise polynomial, I and J are evaluated **exactly**
-//! per knot span via the closed-form moments in [`crate::moments`]; the only
-//! numerical error lives in the smooth outer θ-integral, which is integrated
+//! This module holds what every hull representation shares: the options and
+//! results, the transom closure, and the smooth outer θ-integral, integrated
 //! with Gauss–Legendre panels sized to the local oscillation rate and then
-//! refined until the requested tolerance is met.
+//! refined until the requested tolerance is met. The amplitudes come from
+//! [`crate::sectional`].
+//!
+//! In tests it also carries the **exact B-spline kernel** ([`InnerIntegral`]):
+//! for a half-breadth spline `f(x, z)` I and J are evaluated exactly per knot
+//! span via the closed-form moments in [`crate::moments`]. It is the oracle
+//! the sectional kernel is validated against.
 
+#[cfg(test)]
 use crate::conditions::Conditions;
+#[cfg(test)]
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::hull::Hull;
-use crate::moments::{exp_moments, osc_moments, C64};
+#[cfg(test)]
+use crate::moments::exp_moments;
+use crate::moments::{osc_moments, C64};
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -146,13 +156,9 @@ pub struct Placement {
     pub y: f64,
 }
 
-/// Compute Michell wave resistance with default options.
-pub fn wave_resistance(hull: &Hull, cond: &Conditions) -> Result<WaveResistance> {
-    wave_resistance_with(hull, cond, &WaveOptions::default())
-}
-
+#[cfg(test)]
 /// Compute Michell wave resistance with explicit quadrature options.
-pub fn wave_resistance_with(
+pub(crate) fn wave_resistance_with(
     hull: &Hull,
     cond: &Conditions,
     opts: &WaveOptions,
@@ -160,15 +166,17 @@ pub fn wave_resistance_with(
     multihull_wave_resistance_with(&[(hull, Placement::default())], cond, opts)
 }
 
+#[cfg(test)]
 /// Combined wave resistance of several thin hulls (multihull), with default
 /// options. See [`multihull_wave_resistance_with`].
-pub fn multihull_wave_resistance(
+pub(crate) fn multihull_wave_resistance(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
 ) -> Result<WaveResistance> {
     multihull_wave_resistance_with(members, cond, &WaveOptions::default())
 }
 
+#[cfg(test)]
 /// Combined wave resistance of several thin hulls.
 ///
 /// In thin-ship theory the far-field free-wave amplitudes superpose: hull `j`
@@ -180,7 +188,7 @@ pub fn multihull_wave_resistance(
 /// mirror-symmetric about their mean centerplane, e.g. staggered pairs). For
 /// two identical hulls separated by `s` this reduces to the classical
 /// catamaran interference factor `4 cos²(½ ν s λ √(λ²−1))`.
-pub fn multihull_wave_resistance_with(
+pub(crate) fn multihull_wave_resistance_with(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     opts: &WaveOptions,
@@ -207,19 +215,21 @@ pub fn multihull_wave_resistance_with(
     Ok(run_outer(&params, opts, coeff, mem))
 }
 
+#[cfg(test)]
 /// The Michell inner integrals `(I(λ), J(λ))` — the free-wave amplitude
 /// functions — evaluated exactly (per-span closed forms) for `λ >= 1`.
 ///
 /// Phases are taken relative to the hull's x-midpoint, so I and J individually
 /// depend on that (physically irrelevant) choice of origin while `I² + J²`
 /// does not.
-pub fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f64, f64)> {
+pub(crate) fn inner_integrals(hull: &Hull, cond: &Conditions, lambda: f64) -> Result<(f64, f64)> {
     inner_integrals_with(hull, cond, lambda, &WaveOptions::default())
 }
 
+#[cfg(test)]
 /// [`inner_integrals`] with an explicit transom closure (the rest of
 /// [`WaveOptions`] governs the outer quadrature and does not apply here).
-pub fn inner_integrals_with(
+pub(crate) fn inner_integrals_with(
     hull: &Hull,
     cond: &Conditions,
     lambda: f64,
@@ -499,6 +509,7 @@ pub(crate) fn run_outer<M: MemberWave>(
     }
 }
 
+#[cfg(test)]
 /// Shared validation for the multihull entry points.
 fn validate_fleet(
     members: &[(&Hull, Placement)],
@@ -527,6 +538,7 @@ fn validate_fleet(
     Ok(())
 }
 
+#[cfg(test)]
 /// Fleet phase references: the mean hull x-centre and mean transverse position.
 /// Constant overall phase is irrelevant; centring the oscillatory arguments
 /// keeps them small.
@@ -537,6 +549,7 @@ fn fleet_phase_refs(members: &[(&Hull, Placement)]) -> (f64, f64) {
     (cx_ref, y_ref)
 }
 
+#[cfg(test)]
 /// Outer-integral panel-sizing parameters for a fleet.
 fn fleet_outer_params(
     members: &[(&Hull, Placement)],
@@ -558,6 +571,7 @@ fn fleet_outer_params(
     }
 }
 
+#[cfg(test)]
 /// Source (thickness) member: its free-wave amplitude, the same for the ±θ
 /// systems before the placement phase.
 #[derive(Clone)]
@@ -567,6 +581,7 @@ struct SourceMember<'h> {
     dy: f64,
 }
 
+#[cfg(test)]
 impl MemberWave for SourceMember<'_> {
     fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
         let f = self.inner.eval(lambda);
@@ -577,7 +592,6 @@ impl MemberWave for SourceMember<'_> {
     }
 }
 
-/// Exact (per-span closed-form) evaluation of I + iJ at λ.
 /// Near-field hull transforms at one wavenumber pair, in the `e^{−i k_x x}`
 /// convention with `x` measured from the hull's x-centre:
 ///
@@ -610,6 +624,7 @@ pub(crate) struct SquatTransforms {
     pub q1_wl: C64,
 }
 
+#[cfg(test)]
 /// A hull's coefficient nets contracted against the z-moments at one decay
 /// rate `κ` (see [`InnerIntegral::contract_z`]).
 #[derive(Debug, Clone, Default)]
@@ -624,6 +639,7 @@ pub(crate) struct ZContracted {
     pub any: bool,
 }
 
+#[cfg(test)]
 impl ZContracted {
     /// Reset without releasing the buffers (they are reused per k-node).
     fn clear(&mut self) {
@@ -648,6 +664,7 @@ impl Default for SquatTransforms {
     }
 }
 
+#[cfg(test)]
 impl SquatTransforms {
     fn conj_in_place(&mut self) {
         let conj = |v: C64| C64::new(v.re, -v.im);
@@ -682,15 +699,16 @@ pub(crate) fn appendage_source(phase: C64, m: &[C64]) -> C64 {
 
 /// What the near-field (sinkage/trim) quadrature needs from a hull: every
 /// `κ`-dependent quantity once per decay rate, then the six transforms at
-/// any number of `k_x` from it. Implemented by the lofted kernel
-/// ([`InnerIntegral`]) and the sectional one
-/// ([`crate::sectional::SectionalKernel`]).
+/// any number of `k_x` from it. Implemented by the sectional kernel
+/// ([`crate::sectional::SectionalKernel`]) and, in tests, the exact B-spline
+/// oracle (`InnerIntegral`).
 pub(crate) trait NearFieldKernel: Clone + Send + Sync {
     type Contracted: Clone + Default + Send + Sync;
     fn contract_z(&mut self, kappa: f64, out: &mut Self::Contracted);
     fn transforms_at(&mut self, zc: &Self::Contracted, kx: f64) -> SquatTransforms;
 }
 
+#[cfg(test)]
 impl NearFieldKernel for InnerIntegral<'_> {
     type Contracted = ZContracted;
     fn contract_z(&mut self, kappa: f64, out: &mut ZContracted) {
@@ -701,6 +719,7 @@ impl NearFieldKernel for InnerIntegral<'_> {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct InnerIntegral<'h> {
     hull: &'h Hull,
@@ -721,6 +740,7 @@ pub(crate) struct InnerIntegral<'h> {
     q: usize,
 }
 
+#[cfg(test)]
 /// Relative size below which a z-span's `e^{−κ z₀}` factor cannot matter.
 ///
 /// The amplitude is a sum over z-spans whose shallowest term carries factor
@@ -731,6 +751,7 @@ pub(crate) struct InnerIntegral<'h> {
 /// most of its evaluations out there.
 const Z_DECAY_FLOOR: f64 = 1e-20;
 
+#[cfg(test)]
 impl<'h> InnerIntegral<'h> {
     pub(crate) fn new(hull: &'h Hull, nu: f64, transom: TransomClosure) -> Self {
         let p = hull.surface().degree_x();
@@ -1066,7 +1087,8 @@ mod tests {
         let knots_x = vec![0.0, 0.0, 8.0, 8.0];
         let knots_z = vec![0.0, 0.0, 0.25, 0.25];
         let wedge = Hull::new(
-            crate::BSplineSurface::new(1, 1, knots_x, knots_z, vec![0.4, 0.0, 0.0, 0.0]).unwrap(),
+            crate::bspline::BSplineSurface::new(1, 1, knots_x, knots_z, vec![0.4, 0.0, 0.0, 0.0])
+                .unwrap(),
         )
         .unwrap();
         assert!(wedge.transom().is_some());

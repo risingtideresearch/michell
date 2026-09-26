@@ -18,7 +18,7 @@ mod report;
 mod scene;
 
 use fleet::{describe, max_beam, LoadSettings};
-use formats::{parse_pair, parse_range, write_hull_file};
+use formats::{parse_pair, parse_range};
 pub use formats::parse_units;
 use michell::{Conditions, Fluid, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
@@ -72,7 +72,7 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         Some("render") => cmd_render(&args[1..]),
         Some("view") => Err("`michell view` was removed; use the web viewer (michell-web)".into()),
         Some("loft") => Err("`michell loft` was removed: every command cuts hulls into \
-                             sections straight from the IGES or .hull file"
+                             sections straight from the IGES or STL file"
             .into()),
         Some("place") => cmd_place(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
@@ -95,7 +95,7 @@ USAGE
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
   michell field <hull>... --speed U -o scene.json [options]   3-D scene: sections, closure, wave field
   michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
-  michell wigley [-o OUT.hull] [--length L --beam B --draft T]
+  michell wigley [-o OUT.igs] [--length L --beam B --draft T]   exact Wigley hull as IGES
 
 HULL INPUTS (sniffed by header / extension)
   Every hull is cut into sections (stations along x, each integrated along
@@ -103,13 +103,10 @@ HULL INPUTS (sniffed by header / extension)
   and re-cut at every pose a sweep or equilibrium solve visits.
   *.igs, *.iges     NURBS surfaces (types 128/143/141), clustered into hulls
   *.stl             triangle mesh, binary or ASCII; requires --units
-  *.hull            B-spline half-breadth control net, as its exact surfaces;
-                    with a `waterline` key, a full-band body floating at
-                    that depth below its band top
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
-      michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
+      michell resistance vaka.igs ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
   Suffix keys: y=Y  places the hull's centerplane absolutely (single-hull
   files only); dy=S shifts transversely; x=DX / dx=DX shifts longitudinally
   (added to the file's own x coordinates).
@@ -140,8 +137,7 @@ SPEED SELECTION (resistance, squat)
 
 IMPORT OPTIONS
   --waterline Z         IGES/STL: design waterline height in the file frame,
-                        metres after unit conversion (z up; default 0). A
-                        .hull floats at its own design waterline
+                        metres after unit conversion (z up; default 0)
   --centerplane Y       transverse position of the hull centerplane
                         (default: auto-detect; full shells fold about their
                         midplane, half hulls measure from y = 0)
@@ -213,7 +209,7 @@ WAVE FIELD (spectrum, wake)
 
 SWEEPS
   michell sweep study.json      preferred: a JSON manifest referencing hull
-                                files (IGES/STL/.hull; `hull: N` picks one
+                                files (IGES/STL; `hull: N` picks one
                                 of a multihull file's hulls), with
                                 speed/waterline axes, per-hull load
                                 (mass/lcg/vcg), point loads (mass at an
@@ -225,12 +221,10 @@ PLACE (reconstruct CAD geometry from a studied configuration)
   Writes the input geometry, posed, as a new IGES file (untrimmed 128
   surfaces, metres) for import back into CAD — e.g. amas at the dx/dy/dz a
   sweep found good. Inputs: IGES files (surfaces pass through exactly, with
-  each spec's pose applied to every hull in that file) and .hull control
-  nets or bodies (the half-breadth spline converts exactly to a mirrored
-  pair of surfaces). Suffix keys, all optional:
+  each spec's pose applied to every hull in that file). Suffix keys, all
+  optional:
       dx / x    longitudinal shift [m]        dy  transverse shift [m]
-      dz        immersion [m], + is deeper    y   absolute centerplane
-                                                  (.hull inputs only)
+      dz        immersion [m], + is deeper
       trim      design trim [deg], + raises the +x end, about pivot=X
                 (default: the hull's x mid) at the waterline
   --waterline Z         CAD height of the design waterline (default 0);
@@ -2075,7 +2069,7 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
 /// One `place` input: a path plus the pose to apply to every hull in it.
 struct PlaceSpec {
     path: String,
-    /// Absolute centerplane (`y=`); `.hull` inputs only.
+    /// Absolute centerplane (`y=`): rejected, IGES carries none.
     y_abs: Option<f64>,
     pose: michell::iges::HullPose,
 }
@@ -2144,72 +2138,34 @@ fn cmd_place(args: &[String]) -> Result<(), String> {
 
     // Each input file is parsed once; a spec's pose applies rigidly to every
     // hull the file contains.
-    enum Loaded {
-        Fleet(iges::SourceFleet),
-        Spline(formats::HullFileData),
-    }
-    let mut cache: HashMap<String, Loaded> = HashMap::new();
+    let mut cache: HashMap<String, iges::SourceFleet> = HashMap::new();
     let mut surfaces: Vec<michell::iges::NurbsSurface3> = Vec::new();
     for raw in &p.positional {
         let spec = parse_place_spec(raw)?;
+        if spec.y_abs.is_some() {
+            return Err(format!(
+                "{raw:?}: absolute y placement needs a recorded centerplane, \
+                 which IGES inputs don't carry; use dy=SHIFT"
+            ));
+        }
         if !cache.contains_key(&spec.path) {
             let path = &spec.path;
             let text =
                 std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-            let first = text
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .trim_end();
-            let lower = path.to_ascii_lowercase();
-            let loaded = if first.starts_with("michell-hull") {
-                Loaded::Spline(formats::parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?)
-            } else if lower.ends_with(".igs")
-                || lower.ends_with(".iges")
-                || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G')
-            {
-                Loaded::Fleet(
-                    iges::source_fleet(&text, waterline_z).map_err(|e| format!("{path}: {e}"))?,
-                )
-            } else {
-                return Err(format!(
-                    "{path}: place takes IGES files and .hull control nets or \
-                     bodies; loft other formats first (michell loft)"
-                ));
-            };
-            cache.insert(spec.path.clone(), loaded);
+            let fleet =
+                iges::source_fleet(&text, waterline_z).map_err(|e| format!("{path}: {e}"))?;
+            cache.insert(spec.path.clone(), fleet);
         }
         let before = surfaces.len();
-        let hulls = match &cache[&spec.path] {
-            Loaded::Fleet(fleet) => {
-                if spec.y_abs.is_some() {
-                    return Err(format!(
-                        "{raw:?}: absolute y placement needs a recorded centerplane, \
-                         which IGES inputs don't carry; use dy=SHIFT"
-                    ));
-                }
-                for i in 0..fleet.len() {
-                    surfaces.extend(
-                        fleet
-                            .posed_surfaces(i, waterline_z, &spec.pose, &platform)
-                            .map_err(|e| format!("{}: {e}", spec.path))?,
-                    );
-                }
-                fleet.len()
-            }
-            Loaded::Spline(data) => {
-                let centerplane = data.centerplane.unwrap_or(0.0);
-                let z_top_cad = waterline_z + data.waterline.unwrap_or(0.0);
-                let mut pose = spec.pose;
-                if let Some(y) = spec.y_abs {
-                    pose.dy = y - centerplane;
-                }
-                let mut pair = iges::halfbreadth_surfaces(&data.surface, centerplane, z_top_cad);
-                iges::apply_pose(&mut pair, waterline_z, &pose, &platform);
-                surfaces.extend(pair);
-                1
-            }
-        };
+        let fleet = &cache[&spec.path];
+        for i in 0..fleet.len() {
+            surfaces.extend(
+                fleet
+                    .posed_surfaces(i, waterline_z, &spec.pose, &platform)
+                    .map_err(|e| format!("{}: {e}", spec.path))?,
+            );
+        }
+        let hulls = fleet.len();
         eprintln!(
             "{}: {} hull{}, {} patch{}",
             raw,
@@ -2242,12 +2198,12 @@ fn cmd_wigley(args: &[String]) -> Result<(), String> {
     let l = p.f64_flag("length")?.unwrap_or(10.0);
     let b = p.f64_flag("beam")?.unwrap_or(l / 10.0);
     let t = p.f64_flag("draft")?.unwrap_or(b * 0.625);
-    let hull = michell::hulls::wigley(l, b, t).map_err(|e| format!("{e}"))?;
-    let text = write_hull_file(&hull);
+    let surfaces = michell::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
+    let text = michell::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
     match p.flag("output") {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}"))?;
-            println!("wrote {path} (Wigley L={l} B={b} T={t})");
+            println!("wrote {path} (Wigley L={l} B={b} T={t}, IGES, design waterline at z = 0)");
         }
         None => print!("{text}"),
     }

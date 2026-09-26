@@ -1,9 +1,8 @@
 //! `michell-web` — a browser front end for the `michell` tools.
 //!
 //! Upload a hull and see it the way the physics sees it: cut into sections.
-//! IGES and STL hulls are cut straight from their patches or triangles, and
-//! exact B-spline `.hull` files from their exact surfaces — the same loader
-//! the CLI uses ([`michell_cli::fleet`]). The page is sent each
+//! IGES and STL hulls are cut straight from their patches or triangles —
+//! the same loader the CLI uses ([`michell_cli::fleet`]). The page is sent each
 //! station's section curve (what the depth integral integrates), the CAD
 //! ray hits it was interpolated from, the
 //! depth-integral curve the kernel interpolates along x, the hydrostatics,
@@ -120,7 +119,6 @@ fn sectioned_json(imp: &SectionalImport, kind: Kind) -> Value {
     let what = match kind {
         Kind::Iges => format!("IGES, {} patches", r.patches),
         Kind::Stl => format!("STL, {} triangles", r.patches),
-        Kind::Spline => "exact B-spline control net".to_string(),
     };
     let mut lines = vec![format!(
         "source: {what}, cut at {} stations over x {:.4}..{:.4} m ({sides})",
@@ -258,46 +256,17 @@ fn by_girth(o: &[(f64, f64)], rows: usize) -> Vec<(f64, f64)> {
 mod tests {
     use super::*;
 
-    /// The Wigley as a native `.hull` file, shown by sections.
-    fn wigley_file(hull: &michell::Hull) -> String {
-        let s = hull.surface();
-        let join = |v: &[f64]| {
-            v.iter()
-                .map(|x| format!("{x}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let mut out = format!(
-            "michell-hull v1\ndegree-x {}\ndegree-z {}\nknots-x {}\nknots-z {}\n",
-            s.degree_x(),
-            s.degree_z(),
-            join(s.knots_x()),
-            join(s.knots_z())
-        );
-        let nz = s.n_ctrl_z();
-        for i in 0..s.n_ctrl_x() {
-            out.push_str(&format!(
-                "row {}\n",
-                join(&s.control()[i * nz..(i + 1) * nz])
-            ));
-        }
-        out
-    }
-
+    /// The exact Wigley as IGES, shown by sections.
     #[test]
-    fn a_native_wigley_is_shown_in_sections() {
-        let hull = michell::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-        let v = loft(
-            "w.hull",
-            wigley_file(&hull).into_bytes(),
-            &LoftRequest::default(),
-        )
-        .unwrap();
+    fn a_wigley_is_shown_in_sections() {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let v = loft("w.igs", text.into_bytes(), &LoftRequest::default()).unwrap();
         let h = &v["hulls"][0];
         let vol = h["displaced_volume"].as_f64().unwrap();
         // The Wigley's exact volume, 4/9 L B T.
         let exact = 4.0 / 9.0 * 10.0 * 0.625;
-        assert!((vol - exact).abs() < 1e-8 * exact, "{vol}");
+        assert!((vol - exact).abs() < 1e-6 * exact, "{vol}");
         assert!(h["transom"].is_null());
         assert!(!h["stations"].as_array().unwrap().is_empty());
     }

@@ -105,7 +105,7 @@
   <section>
     <div id="drop">
       <strong>Drop a hull file</strong>
-      or click to choose — IGES, or a michell-hull .hull
+      or click to choose — IGES or STL
       <div class="fname" id="fname"></div>
     </div>
     <input type="file" id="file" hidden>
@@ -130,7 +130,7 @@
         <input id="units" type="text" placeholder="mm, m, in…">
       </label>
     </div>
-    <p class="hint">IGES and STL: the waterline is the design waterline height in the file's frame, in metres. STL carries no units, so give its scale. A .hull floats at its own design waterline.</p>
+    <p class="hint">IGES and STL: the waterline is the design waterline height in the file's frame, in metres. STL carries no units, so give its scale.</p>
     <button class="primary" id="go" disabled style="width:100%;margin-top:10px">Cut into sections</button>
   </section>
 

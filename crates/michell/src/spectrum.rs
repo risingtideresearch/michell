@@ -44,8 +44,11 @@
 
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement, TransomClosure};
+#[cfg(test)]
+use crate::michell::InnerIntegral;
+use crate::michell::{Placement, TransomClosure};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use crate::sectional::{SectionalContracted, SectionalHull};
@@ -77,10 +80,11 @@ struct Member<'h> {
     y: f64,
 }
 
-/// Where a member's amplitude `F(λ)` comes from: a lofted hull's exact
-/// span kernel, or a sectional hull's (with the transom closure applied in
-/// either).
+/// Where a member's amplitude `F(λ)` comes from: a sectional hull's kernel
+/// (with the transom closure applied), or, in tests, the exact B-spline
+/// oracle the sectional one is checked against.
 enum Kernel<'h> {
+    #[cfg(test)]
     Lofted(InnerIntegral<'h>),
     Sectional {
         hull: &'h SectionalHull,
@@ -93,6 +97,7 @@ enum Kernel<'h> {
 impl Kernel<'_> {
     fn eval(&mut self, lambda: f64) -> C64 {
         match self {
+            #[cfg(test)]
             Kernel::Lofted(inner) => inner.eval(lambda),
             Kernel::Sectional {
                 hull,
@@ -153,28 +158,10 @@ fn grid_coord(a: f64, b: f64, n: usize, i: usize) -> f64 {
 }
 
 impl<'h> FreeWaveSpectrum<'h> {
-    /// Build the spectrum of a fleet (same member format as
-    /// [`crate::multihull_wave_resistance`]). Uses the default transom
-    /// closure ([`TransomClosure::default`]); see [`Self::new_with_transom`]
-    /// to override it.
-    pub fn new(members: &[(&'h Hull, Placement)], cond: &Conditions) -> Result<Self> {
-        Self::new_with_transom(members, cond, TransomClosure::default())
-    }
-
-    /// As [`Self::new`], with explicit control over how a wet transom is
-    /// handled.
-    ///
-    /// The wave-resistance and dynamic-squat force integrals default to the
-    /// virtual-appendage closure because it is load-bearing there: dropping
-    /// it (`TransomClosure::None`) misses the transom's contribution to the
-    /// force entirely. A *displayed* wake is a different use: the closure is
-    /// a numerical device that fixes up an integrated force, not a model of
-    /// the actual near-transom sea surface (real transom flow separates and
-    /// breaks, which linear theory cannot represent either way), so a caller
-    /// drawing "what does the wave field look like" more often wants
-    /// `TransomClosure::None` — the plain thin-ship field of the wetted hull
-    /// alone, with no added closure shape behind the transom.
-    pub fn new_with_transom(
+    /// The spectrum of a fleet of B-spline hulls on the exact kernel: the
+    /// test oracle for [`Self::new_sectional`].
+    #[cfg(test)]
+    pub(crate) fn new_with_transom(
         members: &[(&'h Hull, Placement)],
         cond: &Conditions,
         transom: TransomClosure,
@@ -219,8 +206,18 @@ impl<'h> FreeWaveSpectrum<'h> {
     }
 
     /// The spectrum of a fleet of sectional hulls, with `transom` closing any
-    /// wet transom (see [`Self::new_with_transom`] on why a displayed wake
-    /// may want [`TransomClosure::None`]).
+    /// wet transom.
+    ///
+    /// The wave-resistance and dynamic-squat force integrals default to the
+    /// virtual-appendage closure because it is load-bearing there: dropping
+    /// it (`TransomClosure::None`) misses the transom's contribution to the
+    /// force entirely. A *displayed* wake is a different use: the closure is
+    /// a numerical device that fixes up an integrated force, not a model of
+    /// the actual near-transom sea surface (real transom flow separates and
+    /// breaks, which linear theory cannot represent either way), so a caller
+    /// drawing "what does the wave field look like" more often wants
+    /// `TransomClosure::None` — the plain thin-ship field of the wetted hull
+    /// alone, with no added closure shape behind the transom.
     pub fn new_sectional(
         members: &[(&'h SectionalHull, Placement)],
         cond: &Conditions,
@@ -553,16 +550,16 @@ mod sectional_spectrum_tests {
     use crate::sectional::{DepthQuadrature, SectionalHull};
 
     /// The sectional spectrum of a hull built from its own spline (the
-    /// exact harness) reproduces the lofted one: the wave field is a
+    /// exact harness) reproduces the exact B-spline kernel's: the wave field is a
     /// function of the amplitudes alone.
     #[test]
-    fn sectional_wake_matches_the_lofted_one() {
+    fn sectional_wake_matches_the_exact_kernel() {
         let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
         let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
         let cond = Conditions::seawater(3.0);
         let p = Placement::default();
-        let mut a = FreeWaveSpectrum::new_with_transom(&[(&hull, p)], &cond, TransomClosure::None)
-            .unwrap();
+        let mut a =
+            FreeWaveSpectrum::new_with_transom(&[(&hull, p)], &cond, TransomClosure::None).unwrap();
         let mut b =
             FreeWaveSpectrum::new_sectional(&[(&sec, p)], &cond, TransomClosure::None).unwrap();
         let ga = a.elevation_grid(-40.0, -6.0, -12.0, 12.0, 60, 41).unwrap();

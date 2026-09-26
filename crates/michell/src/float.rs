@@ -16,13 +16,9 @@
 //! and trim); [`solve_equilibrium_dynamic_with`] folds a caller-supplied
 //! [`DynamicLoad`] into the same Newton core as a forcing term.
 
-use crate::body::{Body, BodyOptions};
 use crate::conditions::STANDARD_GRAVITY;
 use crate::error::{Error, Result};
-use crate::hull::Hull;
-use crate::iges::{
-    HullPose, ImportOptions, Platform, SectionalOptions, SectionalState, SourceFleet,
-};
+use crate::iges::{HullPose, Platform, SectionalOptions, SectionalState};
 use crate::michell::Placement;
 use crate::sectional::SectionalHull;
 use crate::source::SourceHull;
@@ -142,9 +138,8 @@ pub fn fleet_cg(midships: &[f64], loads: &[HullLoad], poses: &[HullPose]) -> Fle
 }
 
 /// What the equilibrium solver reads from a wetted hull: its buoyancy and
-/// its waterplane (in the hull's own x coordinates). Both representations
-/// provide it — a lofted [`Hull`] and a [`SectionalHull`] cut from CAD — so
-/// the same Newton core floats either.
+/// its waterplane (in the hull's own x coordinates), as a [`SectionalHull`]
+/// provides it.
 pub trait Floating {
     fn displaced_volume(&self) -> f64;
     fn lcb_x(&self) -> f64;
@@ -182,27 +177,19 @@ macro_rules! floating {
         }
     };
 }
-floating!(Hull);
 floating!(SectionalHull);
 
 /// The wetted fleet at some state: what the solver (and resistance) consume.
 #[derive(Debug)]
-pub struct FleetState<M = Hull> {
+pub struct FleetState<M = SectionalHull> {
     pub members: Vec<(M, Placement)>,
     /// Number of source hulls entirely above the water.
     pub dry: usize,
-    /// Total wetted samples that fell above the members' modelled bands
-    /// (bodies only): non-zero means missing topside geometry and
-    /// under-counted buoyancy at this state.
-    pub band_exceeded: usize,
-    /// Worst distance any wetted sample rose above a member's band top [m].
-    /// Re-loft with `--band` raised by at least this much to cover the state.
-    pub band_overshoot: f64,
 }
 
 /// A solved floating condition.
 #[derive(Debug)]
-pub struct Equilibrium<M = Hull> {
+pub struct Equilibrium<M = SectionalHull> {
     /// Solved additional immersion of the platform [m] (relative to the base
     /// waterline; negative = riding higher).
     pub sinkage: f64,
@@ -272,7 +259,7 @@ pub struct DynamicLoad {
 /// A solved floating condition at speed: the hydrostatics of [`Equilibrium`]
 /// balanced against a [`DynamicLoad`] (see [`solve_equilibrium_dynamic_with`]).
 #[derive(Debug)]
-pub struct DynamicEquilibrium<M = Hull> {
+pub struct DynamicEquilibrium<M = SectionalHull> {
     /// Solved additional immersion of the platform [m] (relative to the base
     /// waterline; negative = riding higher).
     pub sinkage: f64,
@@ -404,7 +391,7 @@ fn equilibrium_core<M: Floating>(
         let mut last_sign = 0.0f64;
         // Every phase but the very first, from-scratch one starts from a
         // state that was converged *somewhere else* — the coarse phase here
-        // (a coarsened loft cannot resolve fine stern detail, a transom or a
+        // (a coarsened cut cannot resolve fine stern detail, a transom or a
         // chine, the way the full-resolution one does, so `situate` can hand
         // back a visibly different fleet at the very same `(s, tau)`), or a
         // warm start from a *different* speed's solution, whose dynamic
@@ -419,7 +406,7 @@ fn equilibrium_core<M: Floating>(
         let is_handoff_phase = phase_idx > 0 || warm_start.is_some();
         let mut first_iter_of_phase = true;
         // Best state seen this phase, by tolerance-normalised residual.
-        // The situate → loft model carries small-scale roughness (~0.1% of
+        // The situate → cut model carries small-scale roughness (~0.1% of
         // volume), so Newton can stall dithering across a tolerance edge; a
         // near-miss is accepted with its residuals reported rather than
         // failing the whole point.
@@ -766,164 +753,6 @@ pub fn solve_equilibrium_dynamic_with<M: Floating>(
     })
 }
 
-/// Equilibrium of an IGES source fleet at design poses (see
-/// [`SourceFleet::situate`]). `waterline_z` is the base waterline the sinkage
-/// is measured from.
-pub fn solve_equilibrium(
-    src: &SourceFleet,
-    waterline_z: f64,
-    poses: &[HullPose],
-    load: &LoadCase,
-    density: f64,
-    opts: &ImportOptions,
-) -> Result<Equilibrium> {
-    let pivot_x = load.lcg.unwrap_or(0.0);
-    let mut coarse_opts = *opts;
-    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
-    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
-    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
-    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
-    solve_equilibrium_with(
-        |s, tau, coarse| {
-            let fl = src.situate(
-                waterline_z,
-                poses,
-                &Platform {
-                    sinkage: s,
-                    trim: tau,
-                    pivot_x,
-                },
-                if coarse { &coarse_opts } else { opts },
-            )?;
-            Ok(FleetState {
-                dry: fl.dry.len(),
-                band_exceeded: 0, // IGES situates carry the full geometry
-                band_overshoot: 0.0,
-                members: fl
-                    .members
-                    .into_iter()
-                    .map(|m| (m.hull, m.placement))
-                    .collect(),
-            })
-        },
-        load,
-        density,
-    )
-}
-
-/// One pose per body, or the mismatch as an error.
-fn check_poses(bodies: &[&Body], poses: &[HullPose]) -> Result<()> {
-    if bodies.len() != poses.len() {
-        return Err(Error::InvalidInput(format!(
-            "{} poses supplied for {} bodies",
-            poses.len(),
-            bodies.len()
-        )));
-    }
-    Ok(())
-}
-
-/// The reduced sampling the Newton iterations run on: about half the
-/// stations and waterlines (never below 31 × 11) over a capped control net.
-fn coarse_body_options(opts: &BodyOptions) -> BodyOptions {
-    let mut coarse_opts = *opts;
-    coarse_opts.stations = (opts.stations / 2).clamp(31, opts.stations.max(31));
-    coarse_opts.waterlines = (opts.waterlines / 2).clamp(11, opts.waterlines.max(11));
-    coarse_opts.fit.n_ctrl_x = opts.fit.n_ctrl_x.min(10).max(opts.fit.degree_x + 1);
-    coarse_opts.fit.n_ctrl_z = opts.fit.n_ctrl_z.min(7).max(opts.fit.degree_z + 1);
-    coarse_opts
-}
-
-/// The `situate` closure over a body fleet that the equilibrium solvers run
-/// on: every body at its pose under the platform state, the dry ones counted
-/// rather than lofted; coarsened options for the iterations, the caller's
-/// for the polish.
-fn body_situator<'a>(
-    bodies: &'a [&'a Body],
-    water_offset: f64,
-    poses: &'a [HullPose],
-    pivot_x: f64,
-    opts: &'a BodyOptions,
-) -> impl FnMut(f64, f64, bool) -> Result<FleetState> + 'a {
-    let coarse_opts = coarse_body_options(opts);
-    move |s, tau, coarse| {
-        let platform = Platform {
-            sinkage: s,
-            trim: tau,
-            pivot_x,
-        };
-        let o = if coarse { &coarse_opts } else { opts };
-        let mut members = Vec::new();
-        let mut dry = 0usize;
-        let mut band_exceeded = 0usize;
-        let mut band_overshoot = 0.0f64;
-        for (body, pose) in bodies.iter().zip(poses) {
-            match body.situate(water_offset, pose, &platform, o)? {
-                Some(sb) => {
-                    band_exceeded += sb.band_exceeded;
-                    band_overshoot = band_overshoot.max(sb.band_overshoot);
-                    members.push((sb.hull, sb.placement));
-                }
-                None => dry += 1,
-            }
-        }
-        Ok(FleetState {
-            members,
-            dry,
-            band_exceeded,
-            band_overshoot,
-        })
-    }
-}
-
-/// Equilibrium of an assembly of full-band bodies at design poses.
-/// `water_offset` is the base water position below the design floatplane
-/// (normally 0) that the solved sinkage is measured from.
-pub fn solve_equilibrium_bodies(
-    bodies: &[&Body],
-    water_offset: f64,
-    poses: &[HullPose],
-    load: &LoadCase,
-    density: f64,
-    opts: &BodyOptions,
-) -> Result<Equilibrium> {
-    check_poses(bodies, poses)?;
-    let pivot_x = load.lcg.unwrap_or(0.0);
-    solve_equilibrium_with(
-        body_situator(bodies, water_offset, poses, pivot_x, opts),
-        load,
-        density,
-    )
-}
-
-/// [`solve_equilibrium_bodies`] at speed: the same body fleet balanced
-/// against the caller's [`DynamicLoad`] (see
-/// [`solve_equilibrium_dynamic_with`] for the balance, the closure contract,
-/// and `warm_start`).
-#[allow(clippy::too_many_arguments)]
-pub fn solve_equilibrium_bodies_dynamic(
-    bodies: &[&Body],
-    water_offset: f64,
-    poses: &[HullPose],
-    load: &LoadCase,
-    density: f64,
-    gravity: f64,
-    opts: &BodyOptions,
-    dynamic: impl FnMut(&FleetState) -> Result<DynamicLoad>,
-    warm_start: Option<(f64, f64)>,
-) -> Result<DynamicEquilibrium> {
-    check_poses(bodies, poses)?;
-    let pivot_x = load.lcg.unwrap_or(0.0);
-    solve_equilibrium_dynamic_with(
-        body_situator(bodies, water_offset, poses, pivot_x, opts),
-        dynamic,
-        load,
-        density,
-        gravity,
-        warm_start,
-    )
-}
-
 /// The `situate` closure for hulls cut into sections from their source
 /// geometry: each of `hulls` re-cut at the platform state, warm-started from
 /// its last cut. The coarse phase of the solve runs on half the stations and
@@ -950,20 +779,19 @@ pub fn sectional_situator<'a>(
         let mut dry = 0usize;
         for (h, st) in hulls.iter().zip(states.iter_mut()) {
             let state = if coarse { &mut st.0 } else { &mut st.1 };
-            match h
-                .source
-                .situate_sectional_warm(h.index, h.waterline_z, &h.pose, &platform, o, state)?
-            {
+            match h.source.situate_sectional_warm(
+                h.index,
+                h.waterline_z,
+                &h.pose,
+                &platform,
+                o,
+                state,
+            )? {
                 Some(h) => members.push((h.hull, h.placement)),
                 None => dry += 1,
             }
         }
-        Ok(FleetState {
-            members,
-            dry,
-            band_exceeded: 0,
-            band_overshoot: 0.0,
-        })
+        Ok(FleetState { members, dry })
     }
 }
 
@@ -976,11 +804,7 @@ pub fn solve_equilibrium_sectional(
     opts: &SectionalOptions,
 ) -> Result<Equilibrium<SectionalHull>> {
     let pivot_x = load.lcg.unwrap_or(0.0);
-    solve_equilibrium_with(
-        sectional_situator(hulls, pivot_x, opts),
-        load,
-        density,
-    )
+    solve_equilibrium_with(sectional_situator(hulls, pivot_x, opts), load, density)
 }
 
 /// [`solve_equilibrium_sectional`] at speed, against the caller's
@@ -1011,9 +835,7 @@ pub fn solve_equilibrium_sectional_dynamic(
 #[cfg(test)]
 mod sectional_tests {
     use super::*;
-    use crate::conditions::Conditions;
-    use crate::michell::{TransomClosure, WaveOptions};
-    use crate::squat::SquatOptions;
+    use crate::iges::SourceFleet;
 
     fn e12() -> Option<(SourceFleet, f64, usize)> {
         let text = crate::cad_fixture("e12.igs")?;
