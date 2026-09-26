@@ -101,6 +101,11 @@
   table.cmp tr { cursor: pointer; }
   .vplabel { position: absolute; left: 12px; font-size: 12px; font-weight: 600; background: var(--panel);
     border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px; pointer-events: none; display: none; }
+  #area { position: absolute; left: 12px; bottom: 44px; width: min(560px, calc(100% - 24px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 4px;
+    font-size: 11px; display: none; }
+  #area svg { width: 100%; height: 120px; display: block; }
+  #area .key { display: flex; gap: 12px; color: var(--muted); }
   .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
 </style>
 <script type="importmap">
@@ -206,6 +211,11 @@
     </div>
   </div>
   <div id="readout"></div>
+  <div id="area">
+    <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots) and its interpolant (line), each scaled to its peak</span></div>
+    <svg id="areasvg" viewBox="0 0 560 120" preserveAspectRatio="none"></svg>
+    <div class="key"><span style="color:#1f6feb">— κ = 0 (sectional area)</span><span style="color:#d6336c">— κ of a short wave (λ = 2 at Fn 0.15)</span></div>
+  </div>
   <div id="legend">
     <div>Loft − sample (half-beam)</div>
     <div class="bar"></div>
@@ -422,6 +432,7 @@ const scene3d = (() => {
         addLines(g.layers.lines, h, v);
         if (v.keel) addKeel(g.layers.keel, h, v.keel);
         if (h.grid && v.residual) addSamples(g.layers.samples, h, v.residual);
+        if (v.rays) addRayHits(g.layers.samples, h, v);
         addControl(g.layers.control, h, v.control);
         const px = h.placement.x, py = h.placement.y, half = Math.max(...v.mesh.y);
         box.expandByPoint(new THREE.Vector3(Math.min(...v.mesh.x) + px, -h.draft, py - half));
@@ -472,6 +483,9 @@ const scene3d = (() => {
       const mat = new THREE.MeshStandardMaterial({
         color, roughness: 0.65, metalness: 0, side: THREE.DoubleSide,
         polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1,
+        // A sectional hull has no surface between stations; this one is for
+        // orientation only.
+        transparent: !!v.ghost, opacity: v.ghost ? 0.28 : 1, depthWrite: !v.ghost,
       });
       if (side < 0) mat.color.multiplyScalar(0.93);
       const mesh = new THREE.Mesh(geo, mat);
@@ -485,6 +499,7 @@ const scene3d = (() => {
   // parameter (waterlines for the (x, z) lofts, constant s for the
   // keel-following one), plus the DWL outline.
   function addLines(layer, h, v) {
+    if (v.stations) return addStationCurves(layer, h, v);
     const m = v.mesh, nx = m.nx, nz = m.nz;
     const eps = 1e-6 * Math.max(...m.y);
     const pickN = (n, count) => {
@@ -525,6 +540,41 @@ const scene3d = (() => {
     };
     layer.add(seg(pts, 0x3b3f45, 0.45));
     layer.add(seg(dwl, 0x1f6feb, 1));
+  }
+
+  // A sectional hull as the physics uses it: every station's curve at its
+  // quadrature nodes, both sides, and the waterline through their tops.
+  function addStationCurves(layer, h, v) {
+    const pts = [], dwl = [];
+    for (const side of [1, -1]) {
+      let prev = null;
+      for (const [x, outline] of v.stations) {
+        for (let k = 0; k + 1 < outline.length; k++) {
+          pts.push(...P(h, x, outline[k][1], side * outline[k][0]), ...P(h, x, outline[k + 1][1], side * outline[k + 1][0]));
+        }
+        if (outline.length && outline[0][1] === 0) {
+          const q = P(h, x, 0, side * outline[0][0]);
+          if (prev) dwl.push(...prev, ...q);
+          prev = q;
+        } else prev = null;
+      }
+    }
+    const seg = (arr, color, opacity) => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.Float32BufferAttribute(arr, 3));
+      return new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color, transparent: true, opacity }));
+    };
+    layer.add(seg(pts, 0x5b2a4a, 0.85));
+    layer.add(seg(dwl, 0x1f6feb, 1));
+  }
+
+  // CAD ray hits a sectional hull's stations were interpolated from.
+  function addRayHits(layer, h, v) {
+    const pos = [];
+    for (const [x, outline] of v.rays) for (const [y, z] of outline) pos.push(...P(h, x, z, y));
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    layer.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xe8590c, size: 3, sizeAttenuation: false, depthTest: false })));
   }
 
   // The piecewise-linear keel on the centreplane, breakpoints marked.
@@ -718,17 +768,47 @@ const scene3d = (() => {
   });
   renderer.domElement.addEventListener("pointerleave", () => { $("readout").style.display = "none"; });
 
+  // The residual legend only means something for a loft of the samples.
+  function showLegend() {
+    const withResiduals = (k) => hulls.some((h) => variantsOf(h)[k]?.residual);
+    const any = active === "all" ? groups.some((_, k) => withResiduals(k)) : withResiduals(active);
+    $("legend").style.display = layerOn.samples && any ? "block" : "none";
+  }
+
   function toggle(name, on) {
     layerOn[name] = on;
     if (name === "water") water.visible = on;
     else for (const g of groups) g.layers[name].visible = on;
-    if (name === "samples") $("legend").style.display = on && hulls.some((h) => h.grid) ? "block" : "none";
+    if (name === "samples") showLegend();
     render();
   }
 
   function setVariant(k) {
     active = k;
     resize();
+    drawArea();
+    showLegend();
+  }
+
+  // The depth-integral curves of the active sectional variant, if any.
+  function drawArea() {
+    const panel = $("area"), svg = $("areasvg");
+    const v = active === "all" ? null : hulls.map((h) => variantsOf(h)[active]).find((v) => v?.area);
+    if (!v) { panel.style.display = "none"; return; }
+    panel.style.display = "block";
+    const xs = v.area.flatMap((a) => a.curve.map((p) => p[0]));
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const W = 560, H = 120, pad = 6;
+    const X = (x) => pad + (W - 2 * pad) * (x - x0) / (x1 - x0 || 1);
+    let out = "";
+    v.area.forEach((a, i) => {
+      const peak = Math.max(...a.curve.map((p) => Math.abs(p[1])), 1e-300);
+      const Y = (z) => H - pad - (H - 2 * pad) * z / peak;
+      const col = i === 0 ? "#1f6feb" : "#d6336c";
+      out += `<polyline fill="none" stroke="${col}" stroke-width="1.2" points="${a.curve.map((p) => `${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join(" ")}"/>`;
+      out += a.stations.map((p) => `<circle cx="${X(p[0]).toFixed(1)}" cy="${Y(p[1]).toFixed(1)}" r="1.6" fill="${col}"/>`).join("");
+    });
+    svg.innerHTML = out;
   }
 
   return {

@@ -55,6 +55,9 @@ pub struct SectionNodes {
     waterline: f64,
     /// Depth of the section's lowest point.
     depth: f64,
+    /// `(half-beam, depth)` at each quadrature node, in node order: the
+    /// section exactly as the depth integral sees it.
+    outline: Vec<(f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,19 +114,24 @@ impl SectionNodes {
         let cuts = graded_cuts(depth, breaks, opts);
         let (gx, gw) = gauss_legendre(opts.points);
         let (mut z, mut w) = (Vec::new(), Vec::new());
+        let mut outline = vec![(half_beam(0.0), 0.0)];
         for c in cuts.windows(2) {
             let (a, b) = (c[0], c[1]);
             let half = 0.5 * (b - a);
             for (&t, &wt) in gx.iter().zip(&gw) {
                 let zj = a + half * (t + 1.0);
+                let h = half_beam(zj);
                 z.push(zj);
-                w.push(half * wt * half_beam(zj));
+                w.push(half * wt * h);
+                outline.push((h, zj));
             }
         }
+        outline.push((half_beam(depth), depth));
         SectionNodes {
             nodes: Nodes::Depth { z, w },
             waterline: half_beam(0.0),
             depth,
+            outline,
         }
     }
 
@@ -149,21 +157,27 @@ impl SectionNodes {
         let cuts = graded_cuts(half_pi, &[], opts);
         let (gx, gw) = gauss_legendre(opts.points);
         let (mut sin, mut r, mut w) = (Vec::new(), Vec::new(), Vec::new());
+        let at = |th: f64, rr: f64| (beam * rr * th.cos(), z0 + depth * rr * th.sin());
+        let mut outline = vec![at(0.0, radius(0.0))];
         for c in cuts.windows(2) {
             let (a, b) = (c[0], c[1]);
             let half = 0.5 * (b - a);
             for (&t, &wt) in gx.iter().zip(&gw) {
                 let th = a + half * (t + 1.0);
+                let rr = radius(th);
                 // Physical depth along the scaled ray is depth·r·sin θ.
                 sin.push(depth * th.sin());
-                r.push(radius(th));
+                r.push(rr);
                 w.push(half * wt * beam * depth);
+                outline.push(at(th, rr));
             }
         }
+        outline.push(at(half_pi, radius(half_pi)));
         SectionNodes {
             nodes: Nodes::Polar { z0, sin, r, w },
             waterline: if z0 == 0.0 { beam * radius(0.0) } else { 0.0 },
             depth: z0 + depth * radius(half_pi),
+            outline,
         }
     }
 
@@ -176,7 +190,15 @@ impl SectionNodes {
             },
             waterline: 0.0,
             depth: 0.0,
+            outline: Vec::new(),
         }
+    }
+
+    /// The section at its quadrature nodes, `(half-beam, depth)` from the
+    /// waterline (or the section's top) round to the keel: exactly what the
+    /// depth integral integrates, for display.
+    pub fn outline(&self) -> &[(f64, f64)] {
+        &self.outline
     }
 
     /// `Z(κ)`.
@@ -285,6 +307,7 @@ pub struct SectionalHull {
     length: f64,
     draft: f64,
     volume: f64,
+    xs: Vec<f64>,
 }
 
 /// A sectional hull's depth integrals at one `κ`, in each x-span's local
@@ -364,6 +387,7 @@ impl SectionalHull {
             length: knots[n] - knots[p],
             draft: 0.0,
             volume: 0.0,
+            xs: xs.to_vec(),
         };
         hull.draft = hull.sections.iter().map(|s| s.depth).fold(0.0, f64::max);
         // Displaced volume 2∬ f = 2∫ Z(x; 0) dx, from the interpolant.
@@ -536,6 +560,54 @@ impl SectionalHull {
     /// Displaced volume `2∬ f dx dz` [m³].
     pub fn displaced_volume(&self) -> f64 {
         self.volume
+    }
+
+    /// The stations: each one's x and its section at the quadrature nodes
+    /// (see [`SectionNodes::outline`]).
+    pub fn sections(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {
+        self.xs
+            .iter()
+            .copied()
+            .zip(self.sections.iter().map(|s| s.outline()))
+    }
+
+    /// Each station's depth integral `Z(xᵢ; κ)`, and the interpolant the
+    /// kernel actually integrates along x, sampled `per_span` times per
+    /// x-span: `(stations, curve)` as `(x, Z)` pairs. At `κ = 0` this is the
+    /// sectional-area curve (half-areas).
+    pub fn depth_integral_curve(
+        &self,
+        kappa: f64,
+        per_span: usize,
+    ) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+        let at_st = self
+            .xs
+            .iter()
+            .zip(&self.sections)
+            .map(|(&x, s)| (x, s.integrate(kappa)))
+            .collect();
+        let mut zc = SectionalContracted::default();
+        self.contract(kappa, &mut zc);
+        let p = self.p;
+        let mut curve = Vec::new();
+        for (s, sx) in self.spans.iter().enumerate() {
+            for k in 0..per_span {
+                let t = sx.len * k as f64 / per_span as f64;
+                let v = if zc.any {
+                    (0..=p)
+                        .rev()
+                        .fold(0.0, |acc, a| acc * t + zc.g_f[s * (p + 1) + a])
+                } else {
+                    0.0
+                };
+                curve.push((sx.start + t, v));
+            }
+        }
+        // Close the curve at the last station.
+        if let (Some(&xe), Some(se)) = (self.xs.last(), self.sections.last()) {
+            curve.push((xe, se.integrate(kappa)));
+        }
+        (at_st, curve)
     }
 
     /// Number of stations.

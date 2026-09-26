@@ -20,6 +20,7 @@
 //!   parameter line, so a small net can hold both.
 
 use michell::fit::{fit_scattered, quantile_knots};
+use michell::sectional::{DepthQuadrature, SectionNodes, SectionalHull};
 use michell::{BSplineSurface, Hull, SampleGrid};
 use serde_json::{json, Value};
 
@@ -509,8 +510,12 @@ fn trimmed_variant(
     })
 }
 
-fn keel_variant(s: &Samples, opts: &VariantOptions) -> Result<Variant, String> {
-    let t0 = std::time::Instant::now();
+/// The keel-following surface `f(x, s)`, `s = z/d(x)`, and the
+/// piecewise-linear keel `d(x)` it is lofted against.
+fn keel_fit(
+    s: &Samples,
+    opts: &VariantOptions,
+) -> Result<(BSplineSurface, Vec<(f64, f64)>), String> {
     let g = s.g;
     let (st, wl) = (g.stations(), g.waterlines());
     let (nx, ns) = opts.keel_net;
@@ -544,6 +549,53 @@ fn keel_variant(s: &Samples, opts: &VariantOptions) -> Result<Variant, String> {
     }
     let (surf, _) = fit_scattered(&pts, (px, ps), kx, ks, opts.fairing.max(1e-9), true, None)
         .map_err(|e| e.to_string())?;
+    Ok((surf, keel))
+}
+
+/// The keel-following loft as a [`SectionalHull`], for the physics: each of
+/// `stations` cosine-spaced stations integrates its section in `s` (where
+/// `f(x, s)` is smooth, the keel being `s = 1`), and the sectional kernel
+/// interpolates along x — so it can be compared with the sectional import
+/// cut straight from CAD on equal terms.
+pub fn keel_following_hull(
+    grid: &SampleGrid,
+    opts: &VariantOptions,
+    stations: usize,
+) -> Result<SectionalHull, String> {
+    let s = Samples::new(grid);
+    let (surf, keel) = keel_fit(&s, opts)?;
+    let (x0, x1) = surf.x_domain();
+    let xs: Vec<f64> = (0..stations)
+        .map(|i| {
+            let c = (std::f64::consts::PI * i as f64 / (stations - 1) as f64).cos();
+            x0 + (x1 - x0) * (1.0 - c) / 2.0
+        })
+        .collect();
+    let quad = DepthQuadrature::default();
+    let s_breaks: Vec<f64> = distinct(surf.knots_z());
+    let sections = xs
+        .iter()
+        .map(|&x| {
+            let d = keel_at(&keel, x);
+            if d <= 0.0 {
+                return SectionNodes::empty();
+            }
+            let breaks: Vec<f64> = s_breaks.iter().map(|b| b * d).collect();
+            SectionNodes::from_depth_function(d, &breaks, |z| surf.eval(x, (z / d).min(1.0)), &quad)
+        })
+        .collect();
+    let n = xs.len();
+    let mut knots = vec![xs[0]; 4];
+    knots.extend_from_slice(&xs[2..n - 2]);
+    knots.extend(std::iter::repeat_n(xs[n - 1], 4));
+    SectionalHull::new(3, knots, &xs, sections).map_err(|e| e.to_string())
+}
+
+fn keel_variant(s: &Samples, opts: &VariantOptions) -> Result<Variant, String> {
+    let t0 = std::time::Instant::now();
+    let (nx, ns) = opts.keel_net;
+    let (px, ps) = (3usize, 3usize);
+    let (surf, keel) = keel_fit(s, opts)?;
     let (x0, x1) = surf.x_domain();
     let xs = display_axis(x0, x1, &distinct(surf.knots_x()), 240);
     let ts = display_axis(0.0, 1.0, &distinct(surf.knots_z()), 48);
@@ -623,37 +675,57 @@ fn variant_json(v: &Variant, s: &Samples) -> Value {
     })
 }
 
-/// The sectional import as a comparison variant: its surface drawn straight
-/// from the sampled section outlines (stations × rays), its keel from each
-/// section's lowest point. It is not a loft of the samples, so it carries
-/// no residuals.
+/// The sectional import as a comparison variant, drawn as the physics uses
+/// it: each station at its depth-quadrature nodes (the curve the integral
+/// sees), the CAD ray hits those were interpolated from, a see-through
+/// surface between stations for orientation only (the kernel interpolates
+/// each station's depth integral along x, not a surface), and the
+/// interpolated depth-integral curve itself at κ = 0 (sectional area) and at
+/// a short wave's decay rate. Not a loft of the samples, so no residuals.
 pub fn sectional_variant(imp: &michell::iges::SectionalImport, seconds: f64) -> Value {
-    let rays = imp.sections.iter().map(|(_, o)| o.len()).max().unwrap_or(0);
+    let hull = &imp.hull;
+    let stations: Vec<(f64, Vec<(f64, f64)>)> =
+        hull.sections().map(|(x, o)| (x, o.to_vec())).collect();
+    let nodes = stations.iter().map(|(_, o)| o.len()).max().unwrap_or(0);
     let (mut x, mut z, mut y) = (Vec::new(), Vec::new(), Vec::new());
-    let mut keel = Vec::new();
-    for (xs, outline) in &imp.sections {
-        for k in 0..rays {
+    for (xs, outline) in &stations {
+        for k in 0..nodes {
+            // An empty end station collapses to a point on the waterline.
             let (hb, depth) = outline.get(k).copied().unwrap_or((0.0, 0.0));
             x.push(*xs);
             z.push(depth);
             y.push(hb);
         }
-        keel.push((*xs, outline.last().map_or(0.0, |p| p.1)));
     }
+    let keel: Vec<(f64, f64)> = stations
+        .iter()
+        .map(|(x, o)| (*x, o.last().map_or(0.0, |p| p.1)))
+        .collect();
+    let curve = |kappa: f64| {
+        let (st, c) = hull.depth_integral_curve(kappa, 8);
+        json!({ "kappa": kappa, "stations": st, "curve": c })
+    };
+    // A short wave at low speed: λ = 2 at Fn 0.15, κ = νλ² with
+    // ν = g/U² = 1/(0.0225 L) — where the weight has moved toward the surface.
+    let kappa_short = 4.0 / (0.0225 * hull.length());
     let r = &imp.report;
     json!({
         "key": "sectional",
         "label": "Sectional (CAD)",
-        "net": [imp.sections.len(), rays],
-        "mesh": { "nx": imp.sections.len(), "nz": rays, "x": x, "z": z, "y": y },
+        "net": [stations.len(), imp.sections.first().map_or(0, |s| s.1.len())],
+        "mesh": { "nx": stations.len(), "nz": nodes, "x": x, "z": z, "y": y },
+        "ghost": true,
         "cull_dry": false,
         "control": { "nx": 0, "nz": 0, "x": [], "z": [], "y": [] },
         "residual": null,
         "keel": keel,
+        "stations": stations,
+        "rays": imp.sections,
+        "area": [curve(0.0), curve(kappa_short)],
         "stats": {
             "wetted_rms": null,
             "inflections": null,
-            "volume": imp.hull.displaced_volume(),
+            "volume": hull.displaced_volume(),
             "phantom_volume": 0.0,
             "min_beam": 0.0,
             "seconds": seconds,
@@ -666,4 +738,81 @@ pub fn sectional_variant(imp: &michell::iges::SectionalImport, seconds: f64) -> 
             "x_range": [r.x_range.0, r.x_range.1],
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use michell::{Conditions, TransomClosure, WaveOptions};
+
+    /// Keel-following loft against the sectional import on the same CAD
+    /// files: resistance per Froude number. A report, not a check.
+    #[test]
+    #[ignore = "comparison report"]
+    fn keel_following_against_cad_sections() {
+        let wave = WaveOptions {
+            transom: TransomClosure::None,
+            ..WaveOptions::default()
+        };
+        for (file, wl) in [("ama.igs", 0.0), ("e12.igs", -0.95)] {
+            let text =
+                std::fs::read_to_string(format!("{}/../../{file}", env!("CARGO_MANIFEST_DIR")))
+                    .unwrap();
+            let so = michell::iges::SectionalOptions {
+                waterline_z: wl,
+                ..Default::default()
+            };
+            let cad = michell::iges::import_sectional(&text, &so)
+                .unwrap()
+                .hulls
+                .remove(0)
+                .hull;
+            let io = michell::iges::ImportOptions {
+                waterline_z: wl,
+                ..Default::default()
+            };
+            let fleet = michell::iges::import_fleet(&text, &io).unwrap();
+            let lofted = fleet
+                .iter()
+                .max_by(|a, b| a.hull.length().total_cmp(&b.hull.length()))
+                .unwrap();
+            let mut kfs = Vec::new();
+            for (net, fairing) in [((20, 12), 1e-7), ((40, 16), 1e-7), ((20, 12), 1e-9)] {
+                let o = VariantOptions {
+                    fairing,
+                    keel_net: net,
+                    keel_subdiv: 1,
+                };
+                kfs.push((
+                    format!("KF {}x{} λ{fairing:e}", net.0, net.1),
+                    keel_following_hull(&lofted.grid, &o, 121).unwrap(),
+                ));
+            }
+            eprintln!(
+                "{file}: volume CAD-sectional {:.5}  {}",
+                cad.displaced_volume(),
+                kfs.iter()
+                    .map(|(n, h)| format!("{n} {:.5}", h.displaced_volume()))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            );
+            let l = cad.length();
+            for fnum in [0.15, 0.2, 0.3, 0.4, 0.5] {
+                let cond = Conditions::seawater(fnum * (9.81 * l).sqrt());
+                let r0 = michell::sectional::wave_resistance(&cad, &cond, &wave)
+                    .unwrap()
+                    .resistance;
+                let rs: Vec<String> = kfs
+                    .iter()
+                    .map(|(n, h)| {
+                        let r = michell::sectional::wave_resistance(h, &cond, &wave)
+                            .unwrap()
+                            .resistance;
+                        format!("{n} {r:.4} ({:+.1}%)", 100.0 * (r / r0 - 1.0))
+                    })
+                    .collect();
+                eprintln!("{file} Fn {fnum}: CAD-sectional {r0:.4}  {}", rs.join("  "));
+            }
+        }
+    }
 }
