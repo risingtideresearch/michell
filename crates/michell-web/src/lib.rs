@@ -218,14 +218,107 @@ impl FlowRequest {
     }
 }
 
+/// Where a [`flow_with_progress`] computation has got to.
+#[derive(Debug, Clone)]
+pub struct Progress {
+    /// The stage under way, e.g. "Floating at speed".
+    pub stage: &'static str,
+    /// Stage number (1-based) and how many there are.
+    pub step: usize,
+    pub steps: usize,
+    /// What the stage is doing, e.g. the force evaluation count.
+    pub detail: String,
+    /// The whole computation's estimated fraction done, `0..=1`. Stages are
+    /// weighted by their typical cost; the equilibrium's iteration count is
+    /// not known in advance, so its share approaches its end asymptotically.
+    pub fraction: f64,
+}
+
+/// The stages of a flow and their typical shares of its time: floating the
+/// hull at speed dominates when it is solved; otherwise the free surface
+/// and the dynamic force (then computed at the forces stage) do.
+fn flow_stages(dynamic: bool) -> [(&'static str, f64); 5] {
+    // Measured on e12 (Fn 0.3, dynamic: 0.04 / 8.4 / 0.6 / 3.6 / 7.2 s):
+    // the forces stage also encodes the hull meshes into the answer.
+    if dynamic {
+        [
+            ("Cutting sections", 0.01),
+            ("Floating at speed", 0.5),
+            ("Hull pressure", 0.04),
+            ("Free surface", 0.2),
+            ("Forces", 0.25),
+        ]
+    } else {
+        [
+            ("Cutting sections", 0.02),
+            ("Floating at speed", 0.0),
+            ("Hull pressure", 0.08),
+            ("Free surface", 0.35),
+            ("Forces", 0.55),
+        ]
+    }
+}
+
+/// Reports progress through the caller's callback, and turns its refusal
+/// (the client has gone) into an error that stops the computation.
+struct Tracker<'a> {
+    stages: [(&'static str, f64); 5],
+    report: &'a mut dyn FnMut(&Progress) -> bool,
+}
+
+/// The error a flow stops with when its progress callback asks it to.
+pub const CANCELLED: &str = "cancelled";
+
+impl Tracker<'_> {
+    /// Stage `i` (0-based) is `within` (0..1) of the way through.
+    fn at(&mut self, i: usize, within: f64, detail: String) -> Result<(), String> {
+        let total: f64 = self.stages.iter().map(|s| s.1).sum();
+        let before: f64 = self.stages[..i].iter().map(|s| s.1).sum();
+        let p = Progress {
+            stage: self.stages[i].0,
+            step: i + 1,
+            steps: self.stages.len(),
+            detail,
+            fraction: ((before + self.stages[i].1 * within.clamp(0.0, 1.0)) / total).min(1.0),
+        };
+        if (self.report)(&p) {
+            Ok(())
+        } else {
+            Err(CANCELLED.into())
+        }
+    }
+}
+
 /// The steady flow at one speed: each hull's near-field pressure, the free
 /// surface around the fleet (local field and waves), and the forces.
 pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, String> {
+    flow_with_progress(name, bytes, req, &mut |_| true)
+}
+
+/// [`flow`], reporting each stage (and each force evaluation of the
+/// equilibrium solve) through `report`; returning `false` from it stops the
+/// computation with the error [`CANCELLED`].
+pub fn flow_with_progress(
+    name: &str,
+    bytes: Vec<u8>,
+    req: &FlowRequest,
+    report: &mut dyn FnMut(&Progress) -> bool,
+) -> Result<Value, String> {
     use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
     use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
     use michell::source::SourceHull;
     let t0 = std::time::Instant::now();
+    let mut track = Tracker {
+        stages: flow_stages(req.dynamic),
+        report,
+    };
+    track.at(0, 0.0, name.to_string())?;
     let cut = cut(name, bytes, &req.cut)?;
+    track.at(
+        0,
+        1.0,
+        format!("{} hull{}", cut.hulls.len(), if cut.hulls.len() == 1 { "" } else { "s" }),
+    )?;
     let design: Vec<(&SectionalHull, Placement)> =
         cut.hulls.iter().map(|h| (&h.hull, h.placement)).collect();
     let l_ref = design.iter().map(|(h, _)| h.length()).fold(0.0f64, f64::max);
@@ -264,6 +357,32 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
                 pose: HullPose::default(),
             })
             .collect();
+        track.at(1, 0.0, "starting the Newton solve".into())?;
+        // Count the solve's force evaluations (each is most of an
+        // iteration's cost) and report the latest lift; the count is open
+        // ended, so the stage's share fills asymptotically.
+        let mut inner = michell::sectional::dynamic_load_closure(&cond, lcg, &squat);
+        let mut evaluations = 0usize;
+        let weight = mass * cond.gravity;
+        let track_ref = &mut track;
+        let counted = move |fleet: &michell::float::FleetState<SectionalHull>| {
+            let d = inner(fleet)?;
+            evaluations += 1;
+            let vol: f64 = fleet.members.iter().map(|(h, _)| h.displaced_volume()).sum();
+            track_ref
+                .at(
+                    1,
+                    1.0 - (-(evaluations as f64) / 10.0).exp(),
+                    format!(
+                        "force evaluation {evaluations} · lift {:.1}% of weight · \
+                         displacing {:.1}% of the load",
+                        100.0 * d.force_up / weight,
+                        100.0 * rho * vol / mass,
+                    ),
+                )
+                .map_err(michell::Error::InvalidInput)?;
+            Ok(d)
+        };
         let eq = solve_equilibrium_sectional_dynamic(
             &sources,
             &LoadCase {
@@ -273,10 +392,13 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
             rho,
             cond.gravity,
             &cut.opts,
-            michell::sectional::dynamic_load_closure(&cond, lcg, &squat),
+            counted,
             req.warm,
         )
         .map_err(|e| {
+            if e.to_string().contains(CANCELLED) {
+                return CANCELLED.to_string();
+            }
             let hint = if e.to_string().contains("waterplane") {
                 " — if the geometry ends at the waterline (no topsides), it cannot sink or \
                  trim; choose the design-waterline attitude"
@@ -303,6 +425,7 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
         closure: req.closure,
         ..NearFieldOptions::default()
     };
+    track.at(2, 0.0, format!("{} rows deep per hull", nf.depth_rows))?;
     let pressures = hull_pressure(&members, &cond, &nf).map_err(|e| e.to_string())?;
 
     // The free surface: from ahead of the bows to ~1.5 lengths astern.
@@ -317,7 +440,17 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
     let yh = (yh + 0.45 * l_ref).max(0.3 * (x1 - x0));
     let nx = req.grid;
     let ny = ((nx as f64) * 2.0 * yh / (x1 - x0)).round().clamp(16.0, 400.0) as usize;
+    track.at(3, 0.0, format!("{nx} × {ny} grid over {:.0} × {:.0} m", x1 - x0, 2.0 * yh))?;
     let g = free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny).map_err(|e| e.to_string())?;
+    track.at(
+        4,
+        0.0,
+        if req.dynamic {
+            "resistance, then the hull meshes".into()
+        } else {
+            "resistance, dynamic force, then the hull meshes".into()
+        },
+    )?;
     let t_field = t0.elapsed().as_secs_f64() - t_attitude;
 
     let res = michell::sectional::multihull_resistance(
@@ -651,6 +784,41 @@ mod tests {
         let f = &v["forces"];
         assert!(f["fz"].as_f64().unwrap() < 0.0 && f["sinkage"].as_f64().unwrap() > 0.0, "{f}");
         assert!(f["rw"].as_f64().unwrap() > 0.0);
+    }
+
+    fn wigley_flow_request() -> (Vec<u8>, FlowRequest) {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let pairs: Vec<(String, String)> =
+            [("froude", "0.35"), ("grid", "40"), ("attitude", "design")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        (text.into_bytes(), FlowRequest::from_query(&pairs).unwrap())
+    }
+
+    /// Progress walks every stage in order, its fraction never goes back,
+    /// and a refusal from the callback stops the flow.
+    #[test]
+    fn flow_progress_advances_and_can_be_cancelled() {
+        let (bytes, req) = wigley_flow_request();
+        let mut seen: Vec<(usize, f64)> = Vec::new();
+        flow_with_progress("w.igs", bytes.clone(), &req, &mut |p| {
+            seen.push((p.step, p.fraction));
+            true
+        })
+        .unwrap();
+        assert!(seen.windows(2).all(|w| w[1].1 >= w[0].1), "{seen:?}");
+        assert_eq!(seen.first().map(|s| s.0), Some(1));
+        assert_eq!(seen.last().map(|s| s.0), Some(5));
+        let mut calls = 0;
+        let e = flow_with_progress("w.igs", bytes, &req, &mut |_| {
+            calls += 1;
+            calls < 3
+        })
+        .unwrap_err();
+        assert_eq!(e, CANCELLED);
+        assert_eq!(calls, 3);
     }
 
     #[test]

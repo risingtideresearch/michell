@@ -55,6 +55,18 @@
   .hint { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   .readout { font-family: var(--mono); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
   #status { font-size: 13px; min-height: 1.4em; }
+  #flowprog { margin-top: 10px; }
+  #flowprog .head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+  #flowprog .head b { font-weight: 600; }
+  #flowprog .head span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 5px 0 4px; }
+  .fill { height: 100%; width: 0; border-radius: 4px; background: var(--accent); }
+  .fill.busy { background-image: linear-gradient(90deg, transparent 0 40%, rgba(255,255,255,.35) 50%, transparent 60% 100%);
+    background-size: 200% 100%; animation: sweep 1.2s linear infinite; }
+  @keyframes sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+  #flowprog .detail { font-family: var(--mono); font-size: 11px; color: var(--muted); min-height: 1.3em; }
+  #topbar { position: absolute; top: 0; left: 0; right: 0; height: 3px; z-index: 5; display: none; }
+  #topbar div { height: 100%; width: 0; background: var(--accent); }
   #status.err { color: var(--err); background: var(--err-bg); padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; }
   .hull { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
   .hull + .hull { margin-top: 8px; }
@@ -180,6 +192,11 @@
       </label>
     </div>
     <button class="primary" id="flowgo" disabled style="width:100%">Compute flow at this speed</button>
+    <div id="flowprog" hidden>
+      <div class="head"><b id="fpstage"></b><span id="fptime"></span></div>
+      <div class="track"><div class="fill busy" id="fpfill"></div></div>
+      <div class="detail" id="fpdetail"></div>
+    </div>
     <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. With a dynamic attitude the hull is first floated at speed — the load defaults to its design displacement at its LCB — and re-cut there. Recomputes when you release the Froude slider; a monohull takes about ten seconds.</p>
     <div id="flowout"></div>
   </section>
@@ -189,6 +206,7 @@
 </aside>
 
 <main id="view">
+  <div id="topbar"><div id="topfill"></div></div>
   <div id="empty">No hull loaded</div>
   <div class="toolbar">
     <div class="group" id="views">
@@ -239,7 +257,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
-let file = null, hulls = [], flowData = null, flowSeq = 0;
+let file = null, hulls = [], flowData = null, flowSeq = 0, flowAbort = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
 // ---------------------------------------------------------------- upload
@@ -278,6 +296,9 @@ async function run() {
     renderResults(data.notes || []);
     scene3d.load(hulls);
     flowData = null;
+    flowSeq++;
+    flowAbort?.abort();
+    progress.stop();
     scene3d.flow(null);
     $("flowout").innerHTML = "";
     $("flowgo").disabled = false;
@@ -348,13 +369,35 @@ async function computeFlow() {
   const w = flowData && flowData.forces;
   if (w && w.solved && flowData.key === flowKey()) q.set("warm", `${w.sinkage},${w.trim_rad}`);
   for (const id of ["mass", "lcg"]) { const v = $(id).value.trim(); if (v) q.set(id, v); }
-  $("flowgo").disabled = true;
-  $("flowout").innerHTML = `<p class="hint">${$("attitude").value === "dynamic" ? "Floating the hull at" : "Computing the flow at"} Fn ${Number($("froude").value).toFixed(2)}…</p>`;
+  // A newer request supersedes this one: abort the old fetch (the server
+  // notices the closed connection and stops too).
+  flowAbort?.abort();
+  const ctl = new AbortController();
+  flowAbort = ctl;
+  progress.start(`${$("attitude").value === "dynamic" ? "Floating the hull at" : "Computing the flow at"} Fn ${Number($("froude").value).toFixed(2)}`);
+  q.set("progress", "1");
   try {
-    const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file });
-    const data = await r.json();
+    const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file, signal: ctl.signal });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+    // Newline-delimited JSON: progress lines, then the result.
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "", data = null;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (value) buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.progress) { if (seq === flowSeq) progress.update(msg.progress); }
+        else data = msg;
+      }
+      if (done) break;
+    }
     if (seq !== flowSeq) return;
-    if (!r.ok) throw new Error(data.error || r.statusText);
+    if (!data) throw new Error("the server closed the connection before the result");
+    if (data.error) throw new Error(data.error);
     if (!flowData) {
       areaOn = false;
       $("layers").querySelector("button[data-layer=area]").classList.remove("on");
@@ -365,11 +408,46 @@ async function computeFlow() {
     scene3d.flow(data);
     renderFlow();
   } catch (e) {
-    if (seq === flowSeq) $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`;
+    if (e.name === "AbortError" || seq !== flowSeq) return;
+    $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`;
   } finally {
-    if (seq === flowSeq) $("flowgo").disabled = false;
+    if (seq === flowSeq) { progress.stop(); flowAbort = null; }
   }
 }
+
+// The flow's progress: the stage, its detail and the elapsed time, over a
+// bar that shows the server's estimate and creeps on between reports (a
+// long stage — the free surface, say — reports only when it starts).
+const progress = (() => {
+  let t0 = 0, target = 0, shown = 0, timer = null;
+  const set = (f) => { $("fpfill").style.width = `${(100 * f).toFixed(1)}%`; $("topfill").style.width = `${(100 * f).toFixed(1)}%`; };
+  function tick() {
+    // Creep toward (but never past) a little beyond the last estimate.
+    const ceiling = Math.min(0.99, target + 0.06);
+    shown = Math.max(shown, target);
+    shown += (ceiling - shown) * 0.01;
+    set(shown);
+    $("fptime").textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s`;
+  }
+  return {
+    start(title) {
+      t0 = performance.now(); target = shown = 0; set(0);
+      $("fpstage").textContent = title; $("fpdetail").textContent = "sending the hull…";
+      $("flowprog").hidden = false; $("topbar").style.display = "block";
+      clearInterval(timer); timer = setInterval(tick, 100);
+    },
+    update(p) {
+      target = Math.max(target, p.fraction);
+      $("fpstage").textContent = `${p.step}/${p.steps} · ${p.stage}`;
+      $("fpdetail").textContent = p.detail;
+      tick();
+    },
+    stop() {
+      clearInterval(timer); timer = null;
+      $("flowprog").hidden = true; $("topbar").style.display = "none";
+    },
+  };
+})();
 // What a warm start must share with the flow it starts from.
 function flowKey() {
   return [file && file.name, ...FIELDS.map((id) => $(id).value), $("attitude").value, $("mass").value, $("lcg").value, $("closure").value, $("param").value].join("|");
