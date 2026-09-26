@@ -109,6 +109,26 @@
   .legend .ends { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; }
   #lgzeta { bottom: 70px; }
   .stale { color: var(--warn); }
+  #secpanel.collapsed #secbody { display: none; }
+  #secpanel.collapsed #sechead { cursor: pointer; }
+  #sechead #secsum { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
+  #secpanel.collapsed #sechead #secsum::after { content: " · edit"; color: var(--accent); }
+  #cases { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+  .case { display: grid; grid-template-columns: 12px 1fr 18px; gap: 2px 8px; align-items: center;
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 12px; cursor: default; }
+  .case.done { cursor: pointer; }
+  .case.done:hover { border-color: var(--accent); }
+  .case.viewing { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .case .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .case.running .dot { background: var(--accent); animation: pulse 1s infinite alternate; }
+  .case.done .dot { background: #2f9e44; }
+  .case.error .dot { background: var(--err); }
+  @keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
+  .case .what { font-variant-numeric: tabular-nums; }
+  .case .res { grid-column: 2 / 3; grid-row: 2; color: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .case .x { border: 0; background: none; padding: 0; color: var(--muted); font-size: 14px; line-height: 1; }
+  .case .x:hover { color: var(--err); }
+  .case .why { grid-column: 2 / -1; color: var(--err); font-size: 11px; }
   #empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; }
 </style>
 <script type="importmap">
@@ -131,8 +151,9 @@
     <input type="file" id="file" hidden>
   </section>
 
-  <section>
-    <h2>Sections</h2>
+  <section id="secpanel">
+    <h2 id="sechead">Sections <span id="secsum"></span></h2>
+    <div id="secbody">
     <div class="fields">
       <label>Waterline z [m]
         <input id="waterline" type="number" step="any" placeholder="0">
@@ -152,6 +173,7 @@
     </div>
     <p class="hint">IGES and STL: the waterline is the design waterline height in the file's frame, in metres. STL carries no units, so give its scale.</p>
     <button class="primary" id="go" disabled style="width:100%;margin-top:10px">Cut into sections</button>
+    </div>
   </section>
 
   <section>
@@ -176,28 +198,33 @@
   </section>
 
   <section>
-    <h2>Flow</h2>
+    <h2>Cases</h2>
     <div class="fields" style="margin-bottom:10px">
-      <label class="wide">Attitude
+      <label>Froude number(s)
+        <input id="cfroude" type="text" placeholder="slider value">
+      </label>
+      <label>Attitude
         <select id="attitude">
-          <option value="dynamic">Dynamic equilibrium (sinkage &amp; trim at speed)</option>
+          <option value="dynamic">Floated at speed</option>
           <option value="design">Design waterline</option>
         </select>
       </label>
       <label>Mass [kg]
-        <input id="mass" type="number" step="any" min="0" placeholder="design">
+        <input id="mass" type="text" placeholder="design">
       </label>
       <label>LCG x [m]
-        <input id="lcg" type="number" step="any" placeholder="at LCB">
+        <input id="lcg" type="text" placeholder="at LCB">
       </label>
     </div>
-    <button class="primary" id="flowgo" disabled style="width:100%">Compute flow at this speed</button>
+    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case, with the transom closure above. Cases run one at a time; click a finished one to view it.</p>
+    <button class="primary" id="flowgo" disabled style="width:100%">Add cases</button>
+    <div id="cases"></div>
     <div id="flowprog" hidden>
       <div class="head"><b id="fpstage"></b><span id="fptime"></span></div>
       <div class="track"><div class="fill busy" id="fpfill"></div></div>
       <div class="detail" id="fpdetail"></div>
     </div>
-    <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. With a dynamic attitude the hull is first floated at speed — the load defaults to its design displacement at its LCB — and re-cut there. Recomputes when you release the Froude slider; a monohull takes about ten seconds.</p>
+    <p class="hint">Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around the fleet, local field and waves together. Floated at speed, the hull is first put at its dynamic equilibrium — the load defaults to its design displacement at its LCB — and re-cut there. A monohull case takes 5–40 s.</p>
     <div id="flowout"></div>
   </section>
 
@@ -228,18 +255,6 @@
       <button data-layer="pressure" class="on" hidden>Pressure</button>
       <button data-layer="waves" class="on" hidden>Free surface</button>
     </div>
-    <div class="group" id="wavegroup" hidden>
-      <label title="Vertical exaggeration of the free surface">Waves
-        <input id="wavex" type="range" min="0" max="40" step="1" value="10">
-        <span id="wavexv" style="font-variant-numeric:tabular-nums;width:2.5em">10×</span>
-      </label>
-    </div>
-    <div class="group">
-      <label title="Exaggerate beam and draft relative to length">Stretch
-        <input id="stretch" type="range" min="1" max="10" step="0.5" value="1">
-        <span id="stretchv" style="font-variant-numeric:tabular-nums;width:2.5em">1×</span>
-      </label>
-    </div>
   </div>
   <div id="readout3d"></div>
   <div class="legend" id="lgcp"><div id="cpname">Hull pressure C<sub>p</sub></div><div class="bar"></div><div class="ends"><span id="cplo"></span><span>0</span><span id="cphi"></span></div></div>
@@ -257,7 +272,9 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
-let file = null, hulls = [], flowData = null, flowSeq = 0, flowAbort = null;
+let file = null, hulls = [], flowData = null, flowAbort = null;
+// The case queue: {id, froude, mass, lcg, attitude, closure, status, data, error}.
+let cases = [], nextCase = 1, viewing = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
 // ---------------------------------------------------------------- upload
@@ -277,6 +294,7 @@ function choose(f) {
   run();
 }
 $("go").onclick = run;
+$("sechead").onclick = () => $("secpanel").classList.remove("collapsed");
 for (const id of FIELDS) $(id).addEventListener("keydown", (e) => e.key === "Enter" && file && run());
 
 function status(msg, err = false) { const s = $("status"); s.textContent = msg; s.className = err ? "err" : ""; }
@@ -292,12 +310,18 @@ async function run() {
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
     status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · sectioned in ${data.seconds.toFixed(2)} s`);
+    // Out of the way once cut: a summary line reopens it.
+    const wl = $("waterline").value.trim() || "0";
+    $("secsum").textContent = `— waterline ${wl} m, ${data.hulls[0].stations.length} stations`;
+    $("secpanel").classList.add("collapsed");
     hulls = data.hulls;
     renderResults(data.notes || []);
     scene3d.load(hulls);
+    // A new cut: the old cases were for other geometry.
     flowData = null;
-    flowSeq++;
     flowAbort?.abort();
+    cases = []; viewing = null;
+    renderCases();
     progress.stop();
     scene3d.flow(null);
     $("flowout").innerHTML = "";
@@ -355,27 +379,90 @@ function updateClosure() {
 // ---------------------------------------------------------------- flow
 // The near field at the slider's speed. Requests carry a sequence number so
 // a slow answer for an old speed never overwrites a newer one.
-async function computeFlow() {
+// A field's values: blank (the default), `a`, `a, b, …`, or `a:b:step`.
+function values(id, fallback) {
+  const t = $(id).value.trim();
+  if (!t) return [fallback];
+  const out = [];
+  for (const part of t.split(/[,\s]+/).filter(Boolean)) {
+    const r = part.split(":").map(Number);
+    if (r.length === 3 && r.every(Number.isFinite) && r[2] > 0 && r[1] >= r[0]) {
+      for (let k = 0; r[0] + k * r[2] <= r[1] + 1e-9 * Math.abs(r[2]); k++) out.push(+(r[0] + k * r[2]).toPrecision(12));
+    } else if (r.length === 1 && Number.isFinite(r[0])) out.push(r[0]);
+    else throw new Error(`${$(id).closest("label").firstChild.textContent.trim()}: cannot read ${JSON.stringify(part)}`);
+  }
+  return out;
+}
+
+function addCases() {
   if (!file || !hulls.length) return;
-  const seq = ++flowSeq;
-  const q = new URLSearchParams({ name: file.name, froude: $("froude").value });
+  let fns, masses, lcgs;
+  try {
+    fns = values("cfroude", Number($("froude").value));
+    masses = values("mass", null);
+    lcgs = values("lcg", null);
+  } catch (e) { $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
+  if (fns.some((f) => !(f > 0 && f < 5))) { $("flowout").innerHTML = `<div class="note">Froude numbers must lie in (0, 5)</div>`; return; }
+  if (masses.some((m) => m != null && !(m > 0))) { $("flowout").innerHTML = `<div class="note">Masses must be positive</div>`; return; }
+  const n = fns.length * masses.length * lcgs.length;
+  if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
+  const closure = closureSpec(), attitude = $("attitude").value;
+  for (const mass of masses) for (const lcg of lcgs) for (const froude of fns) {
+    cases.push({ id: nextCase++, froude, mass, lcg, attitude, closure: { ...closure }, status: "queued", data: null, error: null });
+  }
+  renderCases();
+  pump();
+}
+$("flowgo").onclick = addCases;
+for (const id of ["cfroude", "mass", "lcg"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
+
+// What makes two cases' attitudes comparable, for warm starts.
+const loadKey = (c) => JSON.stringify([c.mass, c.lcg, c.attitude, c.closure]);
+
+// Run the queue, one case at a time: each one uses every core.
+let pumping = false;
+async function pump() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (let c; (c = cases.find((c) => c.status === "queued")); ) {
+      c.status = "running";
+      renderCases();
+      try {
+        c.data = await runCase(c);
+        c.status = "done";
+        // The first result shows itself; later ones wait to be clicked.
+        if (viewing == null) view(c.id);
+      } catch (e) {
+        if (!cases.includes(c)) continue; // removed while it ran
+        c.status = "error";
+        c.error = e.name === "AbortError" ? "cancelled" : e.message;
+      }
+      renderCases();
+    }
+  } finally {
+    pumping = false;
+  }
+}
+
+async function runCase(c) {
+  const q = new URLSearchParams({ name: file.name, froude: String(c.froude), attitude: c.attitude, closure: c.closure.kind, progress: "1" });
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
-  const { kind, param } = closureSpec();
-  q.set("closure", kind);
-  if (kind !== "off") q.set("param", String(param));
-  q.set("attitude", $("attitude").value);
-  // Start from the last solved attitude of this hull and load: speeds move
-  // in small steps, and the solver then skips its coarse search.
-  const w = flowData && flowData.forces;
-  if (w && w.solved && flowData.key === flowKey()) q.set("warm", `${w.sinkage},${w.trim_rad}`);
-  for (const id of ["mass", "lcg"]) { const v = $(id).value.trim(); if (v) q.set(id, v); }
-  // A newer request supersedes this one: abort the old fetch (the server
-  // notices the closed connection and stops too).
-  flowAbort?.abort();
+  if (c.closure.kind !== "off") q.set("param", String(c.closure.param));
+  if (c.mass != null) q.set("mass", String(c.mass));
+  if (c.lcg != null) q.set("lcg", String(c.lcg));
+  // Start from the nearest finished attitude with the same load: the solver
+  // then skips its coarse search.
+  if (c.attitude === "dynamic") {
+    const near = cases
+      .filter((o) => o.status === "done" && o.data.forces.solved && loadKey(o) === loadKey(c))
+      .sort((a, b) => Math.abs(a.froude - c.froude) - Math.abs(b.froude - c.froude))[0];
+    if (near) q.set("warm", `${near.data.forces.sinkage},${near.data.forces.trim_rad}`);
+  }
   const ctl = new AbortController();
   flowAbort = ctl;
-  progress.start(`${$("attitude").value === "dynamic" ? "Floating the hull at" : "Computing the flow at"} Fn ${Number($("froude").value).toFixed(2)}`);
-  q.set("progress", "1");
+  c.abort = ctl;
+  progress.start(`Case ${c.id}: ${caseLabel(c)}`);
   try {
     const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file, signal: ctl.signal });
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
@@ -390,29 +477,71 @@ async function computeFlow() {
         const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
-        if (msg.progress) { if (seq === flowSeq) progress.update(msg.progress); }
+        if (msg.progress) progress.update(msg.progress);
         else data = msg;
       }
       if (done) break;
     }
-    if (seq !== flowSeq) return;
     if (!data) throw new Error("the server closed the connection before the result");
     if (data.error) throw new Error(data.error);
-    if (!flowData) {
-      areaOn = false;
-      $("layers").querySelector("button[data-layer=area]").classList.remove("on");
-      drawArea();
-    }
-    data.key = flowKey();
-    flowData = data;
-    scene3d.flow(data);
-    renderFlow();
-  } catch (e) {
-    if (e.name === "AbortError" || seq !== flowSeq) return;
-    $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`;
+    return data;
   } finally {
-    if (seq === flowSeq) { progress.stop(); flowAbort = null; }
+    progress.stop();
+    flowAbort = null;
+    c.abort = null;
   }
+}
+
+function caseLabel(c) {
+  const load = c.mass == null && c.lcg == null ? "design load"
+    : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg"}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
+  return `Fn ${c.froude.toFixed(2)} · ${load}${c.attitude === "design" ? " · design WL" : ""}`;
+}
+
+function renderCases() {
+  $("cases").innerHTML = cases.map((c) => {
+    const f = c.data && c.data.forces;
+    const res = f ? `R<sub>t</sub> ${fmt(f.rt, 1)} N · ${fmt(1000 * f.sinkage, 1)} mm · ${fmt(f.trim_deg, 2)}°`
+      : c.status === "running" ? "running…" : c.status === "queued" ? "queued" : "";
+    return `<div class="case ${c.status}${viewing === c.id ? " viewing" : ""}" data-id="${c.id}">
+      <span class="dot"></span><span class="what">${c.id}. ${esc(caseLabel(c))}</span>
+      <button class="x" title="${c.status === "error" ? "retry" : "remove"}" data-act="${c.status === "error" ? "retry" : "remove"}">${c.status === "error" ? "↻" : "×"}</button>
+      <span class="res">${res}</span>
+      ${c.error ? `<span class="why">${esc(c.error)}</span>` : ""}
+    </div>`;
+  }).join("");
+}
+$("cases").addEventListener("click", (e) => {
+  const row = e.target.closest(".case");
+  if (!row) return;
+  const c = cases.find((c) => c.id === Number(row.dataset.id));
+  const act = e.target.dataset.act;
+  if (act === "remove") {
+    cases = cases.filter((o) => o !== c);
+    c.abort?.abort();
+    if (viewing === c.id) { viewing = null; flowData = null; scene3d.flow(null); $("flowout").innerHTML = ""; }
+    renderCases();
+  } else if (act === "retry") {
+    c.status = "queued"; c.error = null;
+    renderCases();
+    pump();
+  } else if (c.status === "done") view(c.id);
+});
+
+function view(id) {
+  const c = cases.find((c) => c.id === id);
+  if (!c || !c.data) return;
+  if (!flowData) {
+    areaOn = false;
+    $("layers").querySelector("button[data-layer=area]").classList.remove("on");
+    drawArea();
+  }
+  viewing = id;
+  flowData = c.data;
+  flowData.case = c;
+  scene3d.flow(c.data);
+  renderFlow();
+  renderCases();
 }
 
 // The flow's progress: the stage, its detail and the elapsed time, over a
@@ -448,25 +577,13 @@ const progress = (() => {
     },
   };
 })();
-// What a warm start must share with the flow it starts from.
-function flowKey() {
-  return [file && file.name, ...FIELDS.map((id) => $(id).value), $("attitude").value, $("mass").value, $("lcg").value, $("closure").value, $("param").value].join("|");
-}
-$("flowgo").onclick = computeFlow;
-$("froude").addEventListener("change", () => flowData && computeFlow());
-$("closure").addEventListener("change", () => flowData && computeFlow());
-$("param").addEventListener("change", () => flowData && computeFlow());
-for (const id of ["attitude", "mass", "lcg"]) $(id).addEventListener("change", () => flowData && computeFlow());
-$("froude").addEventListener("input", () => renderFlow());
-
 function renderFlow() {
   const d = flowData;
   if (!d) return;
   const f = d.forces;
-  const stale = Math.abs(Number($("froude").value) - d.froude) > 1e-9;
   $("flowout").innerHTML = `
-    ${stale ? `<p class="hint stale">Showing Fn ${d.froude.toFixed(2)}; release the slider to recompute.</p>` : ""}
-    <dl style="margin-top:8px">
+    <h3 style="margin:12px 0 0;font-size:13px">Case ${d.case.id}: ${esc(caseLabel(d.case))}</h3>
+    <dl style="margin-top:6px">
       <dt>Speed</dt><dd>${fmt(d.speed, 2)} m/s · Fn ${d.froude.toFixed(2)}</dd>
       <dt>Wave resistance R<sub>w</sub></dt><dd>${fmt(f.rw, 2)} N</dd>
       <dt>Viscous R<sub>v</sub> (ITTC-57)</dt><dd>${fmt(f.rv, 2)} N</dd>
@@ -557,7 +674,7 @@ const scene3d = (() => {
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   layers.rays.visible = false;
-  let bounds = null, hullBounds = null, wakeBounds = null, stretch = 1, view = "iso", surfaces = [], probes = [], waveScale = 10;
+  let bounds = null, hullBounds = null, wakeBounds = null, view = "iso", surfaces = [], probes = [];
 
   const clear = (g) => { for (const c of [...g.children]) { g.remove(c); c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); } };
   const P = (h, x, z, y) => [x + h.placement.x, -z, h.placement.y + y];
@@ -707,7 +824,6 @@ const scene3d = (() => {
     probes = []; waveMesh = null;
     const has = !!d;
     for (const id of ["lgcp", "lgzeta"]) $(id).style.display = has ? "block" : "none";
-    $("wavegroup").hidden = !has;
     for (const b of $("layers").querySelectorAll("button[data-layer=pressure],button[data-layer=waves],button[data-layer=hull]")) b.hidden = !has;
     $("views").querySelector("button[data-view=wake]").hidden = !has;
     if (!has) { wakeBounds = null; bounds = hullBounds; if (view === "wake") pick("iso"); else setView(view, true); return; }
@@ -757,13 +873,8 @@ const scene3d = (() => {
     }
 
     const g = d.surface, zmax = range99(g.zeta);
-    // First flow: exaggerate so the largest crest is about half the draft.
-    if (!wakeBounds) {
-      const draft = Math.max(...hulls.map((h) => h.draft));
-      waveScale = Math.max(1, Math.min(40, Math.round(0.5 * draft / zmax)));
-      $("wavex").value = waveScale; $("wavexv").textContent = `${waveScale}×`;
-    }
-    $("zlo").textContent = `−${(1000 * zmax).toPrecision(2)} mm`; $("zhi").textContent = `+${(1000 * zmax).toPrecision(2)} mm`;
+    const mm = (1000 * zmax) >= 100 ? (1000 * zmax).toFixed(0) : (1000 * zmax).toPrecision(2);
+    $("zlo").textContent = `−${mm} mm`; $("zhi").textContent = `+${mm} mm`;
     const pos = new Float32Array(g.nx * g.ny * 3), inside = new Uint8Array(g.nx * g.ny);
     for (let iy = 0; iy < g.ny; iy++) for (let ix = 0; ix < g.nx; ix++) {
       const n = iy * g.nx + ix;
@@ -780,7 +891,6 @@ const scene3d = (() => {
     // See-through, so the hull's pressure shows beneath it.
     waveMesh = colored(pos, index, g.zeta, zmax, { what: "zeta" }, 0.72);
     waveMesh.renderOrder = 1;
-    waveMesh.scale.y = waveScale;
     layers.waves.add(waveMesh); probes.push(waveMesh);
     layers.water.visible = false;
     $("layers").querySelector("button[data-layer=water]").classList.remove("on");
@@ -795,15 +905,13 @@ const scene3d = (() => {
     for (const m of layers.hull.children) m.material.clippingPlanes = layers.pressure.visible ? [aboveWater] : [];
     render();
   }
-  function setWaveScale(k) { waveScale = k; if (waveMesh) waveMesh.scale.y = k; render(); }
 
-  function setStretch(k) { stretch = k; model.scale.set(1, k, k); setView(view, true); }
 
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
     if (!bounds) return render();
-    const box = (name === "wake" && wakeBounds ? wakeBounds : bounds).clone().applyMatrix4(new THREE.Matrix4().makeScale(1, stretch, stretch));
+    const box = (name === "wake" && wakeBounds ? wakeBounds : bounds).clone();
     const mid = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
     const dirs = { wake: new THREE.Vector3(0.9, 0.7, 0.9), iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1), plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0) };
     const dir = keepDir ? camera.position.clone().sub(controls.target).normalize() : dirs[name].clone().normalize();
@@ -881,7 +989,7 @@ const scene3d = (() => {
     if (name === "pressure") clipHull();
     render();
   }
-  return { load, closure, flow, setView, setStretch, setWaveScale, toggle };
+  return { load, closure, flow, setView, toggle };
 })();
 
 // ---------------------------------------------------------------- area panel
@@ -923,8 +1031,6 @@ for (const b of $("views").querySelectorAll("button")) b.onclick = () => pick(b.
 for (const b of $("layers").querySelectorAll("button")) {
   b.onclick = () => { b.classList.toggle("on"); scene3d.toggle(b.dataset.layer, b.classList.contains("on")); };
 }
-$("wavex").oninput = (e) => { const k = Number(e.target.value); $("wavexv").textContent = `${k}×`; scene3d.setWaveScale(k); };
-$("stretch").oninput = (e) => { const k = Number(e.target.value); $("stretchv").textContent = `${k}×`; scene3d.setStretch(k); };
 updateClosure();
 </script>
 </body>
