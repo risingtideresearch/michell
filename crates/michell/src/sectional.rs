@@ -1,0 +1,1001 @@
+//! **Sectional** hull transforms: the Michell and near-field wavenumber
+//! transforms evaluated from a hull's stations rather than from a lofted
+//! half-breadth spline `f(x, z)`.
+//!
+//! Every quantity the wave and sinkage/trim integrals need is a transform of
+//! the form `∬ f(x, z) e^{−κz} e^{ik_x x} dx dz` (or its `∂f/∂x` and
+//! `(x − x_c) ∂f/∂x` variants). Write it as
+//!
+//! ```text
+//! ∫ Z(x; κ) e^{ik_x x} dx,      Z(x; κ) = ∫ f(x, z) e^{−κz} dz,
+//! ```
+//!
+//! and do the depth integral **per station**, along the station's own section
+//! curve. The keel is then just the end of that curve: the crease a lofted
+//! `f(x, z)` has along a rockered keel line, and the square-root closure of a
+//! round bilge onto it, are both inside a 1-D integral that absorbs them, and
+//! `Z(x; κ)` is smooth in `x` wherever the hull's sections vary smoothly.
+//!
+//! What keeps this affordable is that the split preserves the separability
+//! the near-field quadrature depends on. Everything that depends on `κ` is
+//! one pass over the stations' depth nodes (`Σ_j w_j e^{−κ z_j}` per station)
+//! followed by one banded solve for the B-spline interpolant of `Z(·; κ)`
+//! along `x`; each `k_x` at that `κ` then costs one closed-form
+//! oscillatory-moment call per x-span, exactly as the lofted kernel's does.
+//!
+//! This module is the kernel only. [`SectionalHull::from_hull`] builds one
+//! from an existing lofted hull — stations at the Greville points of its own
+//! x knots, where the interpolant reproduces `Z(x; κ)` exactly — which is the
+//! reference harness: any difference from [`crate::michell::InnerIntegral`] is
+//! the depth quadrature's.
+
+use crate::bspline::{ders_basis, find_span};
+use crate::conditions::Conditions;
+use crate::error::{Error, Result};
+use crate::hull::{Hull, Span};
+use crate::michell::{
+    run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms, WaveOptions,
+    WaveResistance,
+};
+use crate::moments::{osc_moments, C64};
+use crate::quadrature::gauss_legendre;
+use crate::squat::{integrate_force, DynamicForce, Fleet, Member, SquatOptions};
+use std::f64::consts::PI;
+
+/// Below this, `e^{−κz}` cannot matter against the shallowest node's weight
+/// (the same floor the lofted kernel drops z-spans at).
+const DECAY_EXPONENT_FLOOR: f64 = 46.0; // e^{-46} ≈ 1e-20
+
+/// One station's depth integral `Z(κ) = ∫ f(x_i, z) e^{−κz} dz`, as a
+/// quadrature that costs one exponential per node at each `κ`.
+#[derive(Debug, Clone)]
+pub struct SectionNodes {
+    nodes: Nodes,
+    /// Half-beam at the waterline, `f(x_i, 0)`.
+    waterline: f64,
+    /// Depth of the section's lowest point.
+    depth: f64,
+}
+
+#[derive(Debug, Clone)]
+enum Nodes {
+    /// `Σ_j w_j e^{−κ z_j}`, nodes sorted by depth: a half-beam sampled as
+    /// a function of depth.
+    Depth { z: Vec<f64>, w: Vec<f64> },
+    /// `e^{−κ z₀} Σ_k w_k F(κ d sin θ_k, R_k)` with `F(a, R) = ∫_0^R e^{−ar} r dr`
+    /// (`sin` stores `d sin θ_k`, `w` carries the scales `b·d`):
+    /// the section as a region swept by rays from its top centreplane point
+    /// `(0, z₀)`, the ray at angle `θ` below the horizontal reaching the shell
+    /// at distance `R(θ)`. The depth integral is then an area integral in
+    /// polar coordinates whose radial part is closed form, and `R(θ)` is
+    /// smooth right into the keel — where a half-beam as a function of depth
+    /// closes like a square root on any round bilge.
+    Polar {
+        z0: f64,
+        sin: Vec<f64>,
+        r: Vec<f64>,
+        w: Vec<f64>,
+    },
+}
+
+/// `∫_0^R e^{−ar} r dr = R²·(1 − e^{−x}(1 + x))/x²`, `x = aR`, by series where
+/// the closed form cancels.
+fn polar_radial(a: f64, r: f64) -> f64 {
+    let x = a * r;
+    if x < 0.1 {
+        // Σ_n (−1)ⁿ (n+1) xⁿ/(n+2)!
+        let (mut term, mut sum, mut fact) = (1.0f64, 0.5f64, 2.0f64);
+        for n in 1..12 {
+            term *= -x;
+            fact *= (n + 2) as f64;
+            sum += (n + 1) as f64 * term / fact;
+        }
+        r * r * sum
+    } else {
+        r * r * (1.0 - (-x).exp() * (1.0 + x)) / (x * x)
+    }
+}
+
+impl SectionNodes {
+    /// Nodes for a section given as a half-beam function of depth on
+    /// `[0, depth]`: Gauss–Legendre panels between the `breaks` (kinks,
+    /// chines, knot lines — anywhere the half-beam is not smooth), further
+    /// split geometrically toward the waterline so that `e^{−κz}` stays
+    /// resolved when a large `κ` confines it to a sliver under the surface.
+    pub fn from_depth_function(
+        depth: f64,
+        breaks: &[f64],
+        half_beam: impl Fn(f64) -> f64,
+        opts: &DepthQuadrature,
+    ) -> SectionNodes {
+        let cuts = graded_cuts(depth, breaks, opts);
+        let (gx, gw) = gauss_legendre(opts.points);
+        let (mut z, mut w) = (Vec::new(), Vec::new());
+        for c in cuts.windows(2) {
+            let (a, b) = (c[0], c[1]);
+            let half = 0.5 * (b - a);
+            for (&t, &wt) in gx.iter().zip(&gw) {
+                let zj = a + half * (t + 1.0);
+                z.push(zj);
+                w.push(half * wt * half_beam(zj));
+            }
+        }
+        SectionNodes {
+            nodes: Nodes::Depth { z, w },
+            waterline: half_beam(0.0),
+            depth,
+        }
+    }
+
+    /// Nodes for a section swept by rays from `(0, z0)` on the centreplane,
+    /// in the section's own proportions: with half-beam scaled by `beam` and
+    /// depth by `depth`, `radius(θ)` is the scaled distance to the shell
+    /// along the scaled ray `θ` below the horizontal, `θ ∈ [0, π/2]` (`π/2`
+    /// runs down the centreplane to the keel). Sweeping the scaled plane
+    /// keeps rays spread over a thin section (a fine entry is millimetres
+    /// wide and the full draft deep), where rays even in physical angle
+    /// would crowd its whole outline into a sliver of angle beside the
+    /// keel. Requires the section to be star-shaped about `(0, z0)`. Graded
+    /// toward `θ = 0`, where a large `κ` concentrates the integrand against
+    /// the surface.
+    pub fn from_polar(
+        z0: f64,
+        beam: f64,
+        depth: f64,
+        radius: impl Fn(f64) -> f64,
+        opts: &DepthQuadrature,
+    ) -> SectionNodes {
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let cuts = graded_cuts(half_pi, &[], opts);
+        let (gx, gw) = gauss_legendre(opts.points);
+        let (mut sin, mut r, mut w) = (Vec::new(), Vec::new(), Vec::new());
+        for c in cuts.windows(2) {
+            let (a, b) = (c[0], c[1]);
+            let half = 0.5 * (b - a);
+            for (&t, &wt) in gx.iter().zip(&gw) {
+                let th = a + half * (t + 1.0);
+                // Physical depth along the scaled ray is depth·r·sin θ.
+                sin.push(depth * th.sin());
+                r.push(radius(th));
+                w.push(half * wt * beam * depth);
+            }
+        }
+        SectionNodes {
+            nodes: Nodes::Polar { z0, sin, r, w },
+            waterline: if z0 == 0.0 { beam * radius(0.0) } else { 0.0 },
+            depth: z0 + depth * radius(half_pi),
+        }
+    }
+
+    /// A station with no wetted section (beyond the hull's ends).
+    pub fn empty() -> SectionNodes {
+        SectionNodes {
+            nodes: Nodes::Depth {
+                z: Vec::new(),
+                w: Vec::new(),
+            },
+            waterline: 0.0,
+            depth: 0.0,
+        }
+    }
+
+    /// `Z(κ)`.
+    fn integrate(&self, kappa: f64) -> f64 {
+        match &self.nodes {
+            Nodes::Depth { z, w } => {
+                let mut s = 0.0;
+                for (&z, &w) in z.iter().zip(w) {
+                    let e = kappa * z;
+                    if e > DECAY_EXPONENT_FLOOR {
+                        break;
+                    }
+                    s += w * (-e).exp();
+                }
+                s
+            }
+            Nodes::Polar { z0, sin, r, w } => {
+                let e0 = kappa * z0;
+                if e0 > DECAY_EXPONENT_FLOOR {
+                    return 0.0;
+                }
+                let s: f64 = sin
+                    .iter()
+                    .zip(r)
+                    .zip(w)
+                    .map(|((&sn, &r), &w)| w * polar_radial(kappa * sn, r))
+                    .sum();
+                s * (-e0).exp()
+            }
+        }
+    }
+
+    /// Number of quadrature nodes.
+    pub fn len(&self) -> usize {
+        match &self.nodes {
+            Nodes::Depth { z, .. } => z.len(),
+            Nodes::Polar { r, .. } => r.len(),
+        }
+    }
+
+    /// True when the section has no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// Panel edges on `[0, extent]`: the `breaks`, plus a geometric sequence
+/// toward 0 with ratio `opts.grading` down to `opts.finest · extent`.
+fn graded_cuts(extent: f64, breaks: &[f64], opts: &DepthQuadrature) -> Vec<f64> {
+    let mut cuts = vec![0.0, extent];
+    let mut t = extent;
+    while t > opts.finest * extent {
+        t *= opts.grading;
+        cuts.push(t);
+    }
+    cuts.extend(breaks.iter().copied().filter(|&b| b > 0.0 && b < extent));
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * extent);
+    cuts
+}
+
+/// How finely each station's depth integral is resolved.
+#[derive(Debug, Clone, Copy)]
+pub struct DepthQuadrature {
+    /// Gauss–Legendre points per panel.
+    pub points: usize,
+    /// Ratio between successive panel edges toward the waterline.
+    pub grading: f64,
+    /// Shallowest panel edge, as a fraction of the section depth.
+    pub finest: f64,
+}
+
+impl Default for DepthQuadrature {
+    fn default() -> Self {
+        // 8 points on panels graded by 0.35 toward the waterline hold the
+        // transforms to ~1e-11 of the lofted kernel's exact values on the
+        // Wigley (one z-span: the deepest panel is ~0.4 T long) and ~1e-12
+        // on a CAD import, for κ up to ~1e4·ν. Six points leave ~1e-8.
+        DepthQuadrature {
+            points: 8,
+            grading: 0.35,
+            finest: 1e-7,
+        }
+    }
+}
+
+/// A hull as stations along `x`, each with its section's depth quadrature,
+/// and the B-spline space along `x` its depth integrals are interpolated in.
+#[derive(Debug, Clone)]
+pub struct SectionalHull {
+    p: usize,
+    n: usize,
+    sections: Vec<SectionNodes>,
+    /// Banded LU of the collocation matrix (interpolation at the stations).
+    lu: BandLu,
+    spans: Vec<Span>,
+    /// First basis index active on each span.
+    span_first: Vec<usize>,
+    /// Per span, `(p+1) × (p+1)`: `N_{first+r}^{(a)}(x_s) / a!` at `[a][r]` —
+    /// maps B-spline coefficients to the span's local power basis.
+    taylor: Vec<f64>,
+    /// Waterline `f(x, 0)` and `∂f/∂x(x, 0)` in each span's power basis.
+    wl_f: Vec<f64>,
+    wl_fx: Vec<f64>,
+    x_center: f64,
+    length: f64,
+    draft: f64,
+    volume: f64,
+}
+
+/// A sectional hull's depth integrals at one `κ`, in each x-span's local
+/// power basis (the layout the lofted kernel's `ZContracted` uses).
+#[derive(Debug, Clone, Default)]
+pub struct SectionalContracted {
+    g_f: Vec<f64>,
+    g_fx: Vec<f64>,
+    any: bool,
+}
+
+impl SectionalHull {
+    /// A sectional hull from stations `xs` (strictly increasing) and their
+    /// sections, interpolated along `x` by a clamped B-spline of degree `p`
+    /// on `knots` (which must satisfy Schoenberg–Whitney against `xs`: one
+    /// station per basis function, each inside its support).
+    pub fn new(p: usize, knots: Vec<f64>, xs: &[f64], sections: Vec<SectionNodes>) -> Result<Self> {
+        let n = knots.len() - p - 1;
+        if xs.len() != n || sections.len() != n {
+            return Err(Error::InvalidInput(format!(
+                "sectional hull: {} stations and {} sections for {n} basis functions",
+                xs.len(),
+                sections.len()
+            )));
+        }
+        // Collocation: row i holds the basis functions alive at station i.
+        let mut lu = BandLu::new(n, p);
+        for (i, &x) in xs.iter().enumerate() {
+            let span = find_span(&knots, p, n, x);
+            let d = ders_basis(&knots, p, span, x, 0);
+            for r in 0..=p {
+                lu.set(i, span - p + r, d[0][r]);
+            }
+        }
+        if !lu.factor() {
+            return Err(Error::InvalidInput(
+                "sectional hull: stations do not interpolate the x knots \
+                 (Schoenberg–Whitney violated)"
+                    .into(),
+            ));
+        }
+        let mut spans = Vec::new();
+        let mut span_first = Vec::new();
+        let mut taylor = Vec::new();
+        for s in p..n {
+            let (a, b) = (knots[s], knots[s + 1]);
+            if b <= a {
+                continue;
+            }
+            spans.push(Span {
+                start: a,
+                len: b - a,
+            });
+            span_first.push(s - p);
+            let d = ders_basis(&knots, p, s, a, p);
+            let mut fact = 1.0;
+            for k in 0..=p {
+                if k > 0 {
+                    fact *= k as f64;
+                }
+                for r in 0..=p {
+                    taylor.push(d[k][r] / fact);
+                }
+            }
+        }
+        let mut hull = SectionalHull {
+            p,
+            n,
+            sections,
+            lu,
+            spans,
+            span_first,
+            taylor,
+            wl_f: Vec::new(),
+            wl_fx: Vec::new(),
+            x_center: 0.5 * (knots[p] + knots[n]),
+            length: knots[n] - knots[p],
+            draft: 0.0,
+            volume: 0.0,
+        };
+        hull.draft = hull.sections.iter().map(|s| s.depth).fold(0.0, f64::max);
+        // Displaced volume 2∬ f = 2∫ Z(x; 0) dx, from the interpolant.
+        let mut z0 = SectionalContracted::default();
+        hull.contract(0.0, &mut z0);
+        hull.volume = 2.0
+            * hull
+                .spans
+                .iter()
+                .enumerate()
+                .map(|(s, sx)| {
+                    (0..=p)
+                        .map(|a| {
+                            z0.g_f[s * (p + 1) + a] * sx.len.powi(a as i32 + 1) / (a + 1) as f64
+                        })
+                        .sum::<f64>()
+                })
+                .sum::<f64>();
+        let wl: Vec<f64> = hull.sections.iter().map(|s| s.waterline).collect();
+        let (f, fx) = hull.to_power_basis(wl);
+        hull.wl_f = f;
+        hull.wl_fx = fx;
+        Ok(hull)
+    }
+
+    /// The reference construction: sections of a lofted hull at the Greville
+    /// points of its own x knots, depth-integrated panel by panel between
+    /// its z knots. `Z(x; κ)` is then exactly in the interpolating space, so
+    /// the only approximation is the depth quadrature.
+    pub fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self> {
+        let s = hull.surface();
+        let (p, n) = (s.degree_x(), s.n_ctrl_x());
+        let kx = s.knots_x();
+        let xs: Vec<f64> = (0..n)
+            .map(|i| kx[i + 1..=i + p].iter().sum::<f64>() / p.max(1) as f64)
+            .collect();
+        let depth = s.z_domain().1;
+        let sections = xs
+            .iter()
+            .map(|&x| SectionNodes::from_depth_function(depth, s.knots_z(), |z| s.eval(x, z), opts))
+            .collect();
+        SectionalHull::new(p, kx.to_vec(), &xs, sections)
+    }
+
+    /// B-spline interpolant of per-station values, as power coefficients of
+    /// the value (`[s·(p+1) + a]`) and its x-derivative (`[s·p + a]`) on
+    /// each span.
+    fn to_power_basis(&self, mut v: Vec<f64>) -> (Vec<f64>, Vec<f64>) {
+        let mut f = vec![0.0; self.spans.len() * (self.p + 1)];
+        let mut fx = vec![0.0; self.spans.len() * self.p];
+        self.lu.solve(&mut v);
+        self.power_into(&v, &mut f, &mut fx);
+        (f, fx)
+    }
+
+    fn power_into(&self, c: &[f64], f: &mut [f64], fx: &mut [f64]) {
+        let p = self.p;
+        for (s, &first) in self.span_first.iter().enumerate() {
+            let t = &self.taylor[s * (p + 1) * (p + 1)..(s + 1) * (p + 1) * (p + 1)];
+            for a in 0..=p {
+                let row = &t[a * (p + 1)..(a + 1) * (p + 1)];
+                f[s * (p + 1) + a] = row
+                    .iter()
+                    .zip(&c[first..=first + p])
+                    .map(|(m, c)| m * c)
+                    .sum();
+            }
+            for a in 0..p {
+                fx[s * p + a] = (a + 1) as f64 * f[s * (p + 1) + a + 1];
+            }
+        }
+    }
+
+    /// Everything that depends on `κ`: each station's depth integral, and
+    /// their interpolant along `x` in each span's power basis.
+    pub fn contract(&self, kappa: f64, out: &mut SectionalContracted) {
+        let mut v: Vec<f64> = self.sections.iter().map(|s| s.integrate(kappa)).collect();
+        out.any = v.iter().any(|&x| x != 0.0);
+        out.g_f.resize(self.spans.len() * (self.p + 1), 0.0);
+        out.g_fx.resize(self.spans.len() * self.p, 0.0);
+        if !out.any {
+            out.g_f.fill(0.0);
+            out.g_fx.fill(0.0);
+            return;
+        }
+        self.lu.solve(&mut v);
+        self.power_into(&v, &mut out.g_f, &mut out.g_fx);
+    }
+
+    /// The source free-wave amplitude `∬ ∂f/∂x e^{−κz} e^{ik_x(x−x_c)}` at
+    /// `λ` (the lofted kernel's `InnerIntegral::eval` convention, no transom
+    /// closure).
+    pub fn amplitude(&self, nu: f64, lambda: f64, scratch: &mut SectionalContracted) -> C64 {
+        let kx = nu * lambda;
+        self.contract(nu * lambda * lambda, scratch);
+        if !scratch.any {
+            return C64::ZERO;
+        }
+        let p = self.p;
+        let mut xm = Vec::with_capacity(p + 1);
+        let mut f = C64::ZERO;
+        for (s, sx) in self.spans.iter().enumerate() {
+            osc_moments(kx, sx.len, p - 1, &mut xm);
+            let phase = C64::cis(kx * (sx.start - self.x_center));
+            let mut sum = C64::ZERO;
+            for (a, &m) in xm.iter().enumerate() {
+                sum = sum + m.scale(scratch.g_fx[s * p + a]);
+            }
+            f = f + phase * sum;
+        }
+        f
+    }
+
+    /// The six near-field transforms at `k_x` from a contraction at some `κ`
+    /// — the same quantities, convention and x origin as the lofted kernel's
+    /// `InnerIntegral::transforms_at` (no transom closure).
+    pub(crate) fn transforms_at(&self, zc: &SectionalContracted, kx: f64) -> SquatTransforms {
+        let p = self.p;
+        let mut t = SquatTransforms::default();
+        if !zc.any {
+            return t;
+        }
+        let mut xm = Vec::with_capacity(p + 1);
+        for (s, sx) in self.spans.iter().enumerate() {
+            osc_moments(kx, sx.len, p, &mut xm);
+            let d = sx.start - self.x_center;
+            let phase = C64::cis(kx * d);
+            let (mut q_s, mut q1_s, mut w_s, mut q1w_s) =
+                (C64::ZERO, C64::ZERO, C64::ZERO, C64::ZERO);
+            for a in 0..p {
+                let (g, gw) = (zc.g_fx[s * p + a], self.wl_fx[s * p + a]);
+                q_s = q_s + xm[a].scale(g);
+                w_s = w_s + xm[a].scale(gw);
+                let shifted = xm[a + 1] + xm[a].scale(d);
+                q1_s = q1_s + shifted.scale(g);
+                q1w_s = q1w_s + shifted.scale(gw);
+            }
+            let (mut p_s, mut pw_s) = (C64::ZERO, C64::ZERO);
+            for a in 0..=p {
+                p_s = p_s + xm[a].scale(zc.g_f[s * (p + 1) + a]);
+                pw_s = pw_s + xm[a].scale(self.wl_f[s * (p + 1) + a]);
+            }
+            t.q = t.q + phase * q_s;
+            t.q1 = t.q1 + phase * q1_s;
+            t.w = t.w + phase * w_s;
+            t.q1_wl = t.q1_wl + phase * q1w_s;
+            t.p = t.p + phase * p_s;
+            t.p_wl = t.p_wl + phase * pw_s;
+        }
+        let conj = |v: C64| C64::new(v.re, -v.im);
+        t.q = conj(t.q);
+        t.p = conj(t.p);
+        t.q1 = conj(t.q1);
+        t.w = conj(t.w);
+        t.p_wl = conj(t.p_wl);
+        t.q1_wl = conj(t.q1_wl);
+        t
+    }
+
+    /// Length between the end stations' knots [m].
+    pub fn length(&self) -> f64 {
+        self.length
+    }
+
+    /// Deepest depth node's section depth [m] (the deepest section).
+    pub fn draft(&self) -> f64 {
+        self.draft
+    }
+
+    /// Displaced volume `2∬ f dx dz` [m³].
+    pub fn displaced_volume(&self) -> f64 {
+        self.volume
+    }
+
+    /// Number of stations.
+    pub fn stations(&self) -> usize {
+        self.n
+    }
+
+    /// Total depth nodes over all stations.
+    pub fn depth_nodes(&self) -> usize {
+        self.sections.iter().map(SectionNodes::len).sum()
+    }
+
+    /// Number of x-spans (what each `k_x` evaluation walks).
+    pub fn x_spans(&self) -> usize {
+        self.spans.len()
+    }
+}
+
+/// The sectional hull as a near-field kernel, for [`crate::squat`].
+#[derive(Clone)]
+pub(crate) struct SectionalKernel<'h>(pub(crate) &'h SectionalHull);
+
+impl NearFieldKernel for SectionalKernel<'_> {
+    type Contracted = SectionalContracted;
+    fn contract_z(&mut self, kappa: f64, out: &mut SectionalContracted) {
+        self.0.contract(kappa, out)
+    }
+    fn transforms_at(&mut self, zc: &SectionalContracted, kx: f64) -> SquatTransforms {
+        self.0.transforms_at(zc, kx)
+    }
+}
+
+/// The sectional hull as a wave-resistance member, for the shared outer
+/// quadrature.
+#[derive(Clone)]
+struct SectionalMember<'h> {
+    hull: &'h SectionalHull,
+    scratch: SectionalContracted,
+}
+
+impl MemberWave for SectionalMember<'_> {
+    fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64) {
+        let f = self.hull.amplitude(nu, lambda, &mut self.scratch);
+        (f, f)
+    }
+    fn offsets(&self) -> (f64, f64) {
+        (0.0, 0.0)
+    }
+}
+
+/// Michell wave resistance of a single sectional hull, by the same outer
+/// quadrature the lofted hulls use. The transom closure is not yet carried
+/// (`opts.transom` is ignored): compare against lofted hulls run with
+/// `TransomClosure::None`.
+pub fn wave_resistance(
+    hull: &SectionalHull,
+    cond: &Conditions,
+    opts: &WaveOptions,
+) -> Result<WaveResistance> {
+    cond.validate()?;
+    let (u, g) = (cond.speed, cond.gravity);
+    let nu = g / (u * u);
+    let params = OuterParams {
+        nu,
+        x_half: 0.5 * hull.length,
+        y_half: 0.0,
+        t_max: hull.draft,
+    };
+    let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
+    let member = SectionalMember {
+        hull,
+        scratch: SectionalContracted::default(),
+    };
+    Ok(run_outer(&params, opts, coeff, vec![member]))
+}
+
+/// Near-field vertical force and pitch moment on a single sectional hull
+/// about `x_ref`, by the same wavenumber quadrature as
+/// [`crate::squat::dynamic_force`] (transom closure not yet carried).
+pub fn dynamic_force(
+    hull: &SectionalHull,
+    cond: &Conditions,
+    x_ref: f64,
+    opts: &SquatOptions,
+) -> Result<DynamicForce> {
+    cond.validate()?;
+    let nu = cond.gravity / (cond.speed * cond.speed);
+    let fleet = Fleet {
+        members: vec![Member {
+            inner: SectionalKernel(hull),
+            cx: hull.x_center,
+            y: 0.0,
+        }],
+        nu,
+        x_ref,
+        scratch: vec![SquatTransforms::default()],
+        zc_tmp: vec![SectionalContracted::default()],
+    };
+    Ok(integrate_force(
+        fleet,
+        cond,
+        hull.length,
+        hull.draft,
+        hull.volume,
+        opts,
+    ))
+}
+
+/// LU of a banded matrix without pivoting — B-spline collocation matrices
+/// are totally positive, for which elimination without pivoting is stable
+/// (de Boor). Dense storage, band-limited loops: stations number in the
+/// hundreds.
+#[derive(Debug, Clone)]
+struct BandLu {
+    n: usize,
+    /// Half-bandwidth: entries with `|i − j| > w` are zero.
+    w: usize,
+    a: Vec<f64>,
+}
+
+impl BandLu {
+    fn new(n: usize, p: usize) -> Self {
+        BandLu {
+            n,
+            w: p + 1,
+            a: vec![0.0; n * n],
+        }
+    }
+
+    fn set(&mut self, i: usize, j: usize, v: f64) {
+        self.a[i * self.n + j] = v;
+    }
+
+    fn factor(&mut self) -> bool {
+        let (n, w) = (self.n, self.w);
+        for k in 0..n {
+            let piv = self.a[k * n + k];
+            if piv.abs() < 1e-14 {
+                return false;
+            }
+            for i in k + 1..(k + w + 1).min(n) {
+                let l = self.a[i * n + k] / piv;
+                if l == 0.0 {
+                    continue;
+                }
+                self.a[i * n + k] = l;
+                for j in k + 1..(k + w + 1).min(n) {
+                    self.a[i * n + j] -= l * self.a[k * n + j];
+                }
+            }
+        }
+        true
+    }
+
+    fn solve(&self, b: &mut [f64]) {
+        let (n, w) = (self.n, self.w);
+        for i in 0..n {
+            let mut s = b[i];
+            for k in i.saturating_sub(w)..i {
+                s -= self.a[i * n + k] * b[k];
+            }
+            b[i] = s;
+        }
+        for i in (0..n).rev() {
+            let mut s = b[i];
+            for j in i + 1..(i + w + 1).min(n) {
+                s -= self.a[i * n + j] * b[j];
+            }
+            b[i] = s / self.a[i * n + i];
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::michell::{InnerIntegral, TransomClosure};
+    use crate::squat::SquatOptions;
+
+    fn ama() -> Hull {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ama.igs")).unwrap();
+        let fleet =
+            crate::iges::import_fleet(&text, &crate::iges::ImportOptions::default()).unwrap();
+        fleet.into_iter().next().unwrap().hull
+    }
+
+    /// Largest relative disagreement of the six transforms over a (k_x, κ)
+    /// grid spanning the near-field quadrature's range, each transform
+    /// against its own largest magnitude on the grid.
+    fn transform_error(hull: &Hull, sec: &SectionalHull, nu: f64) -> f64 {
+        let mut inner = InnerIntegral::new(hull, nu, TransomClosure::None);
+        let mut zc = SectionalContracted::default();
+        let parts = |t: &SquatTransforms| [t.q, t.p, t.q1, t.w, t.p_wl, t.q1_wl];
+        let (mut worst_abs, mut scale) = ([0.0f64; 6], [0.0f64; 6]);
+        for ik in 0..40 {
+            let kappa = nu * 1e-3 * 10f64.powf(ik as f64 * 0.15); // up to ~1e3·ν
+            sec.contract(kappa, &mut zc);
+            for ix in 0..40 {
+                let kx = nu * (ix as f64 * 0.5 - 10.0);
+                let a = parts(&inner.eval_transforms(kx, kappa));
+                let b = parts(&sec.transforms_at(&zc, kx));
+                for k in 0..6 {
+                    worst_abs[k] = worst_abs[k].max((a[k] - b[k]).abs());
+                    scale[k] = scale[k].max(a[k].abs());
+                }
+            }
+        }
+        (0..6).map(|k| worst_abs[k] / scale[k]).fold(0.0, f64::max)
+    }
+
+    fn amplitude_error(hull: &Hull, sec: &SectionalHull, nu: f64) -> f64 {
+        let mut inner = InnerIntegral::new(hull, nu, TransomClosure::None);
+        let mut zc = SectionalContracted::default();
+        let (mut worst, mut scale) = (0.0f64, 0.0f64);
+        for i in 0..400 {
+            let lambda = 1.0 + i as f64 * 0.25; // κ up to ~1e4·ν
+            let a = inner.eval(lambda);
+            let b = sec.amplitude(nu, lambda, &mut zc);
+            worst = worst.max((a - b).abs());
+            scale = scale.max(a.abs());
+        }
+        worst / scale
+    }
+
+    #[test]
+    fn reproduces_the_lofted_kernel_on_wigley() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
+        for nu in [0.3, 1.1, 4.0] {
+            let (t, a) = (
+                transform_error(&hull, &sec, nu),
+                amplitude_error(&hull, &sec, nu),
+            );
+            assert!(
+                t < 1e-9 && a < 1e-9,
+                "ν {nu}: transforms {t:.1e}, amplitude {a:.1e}"
+            );
+        }
+    }
+
+    #[test]
+    fn reproduces_the_lofted_kernel_on_a_cad_import() {
+        let hull = ama();
+        let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
+        for nu in [0.25, 1.0] {
+            let (t, a) = (
+                transform_error(&hull, &sec, nu),
+                amplitude_error(&hull, &sec, nu),
+            );
+            eprintln!("ama ν {nu}: transforms {t:.1e}, amplitude {a:.1e}");
+            assert!(
+                t < 1e-8 && a < 1e-8,
+                "ν {nu}: transforms {t:.1e}, amplitude {a:.1e}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "timing report, not a check"]
+    fn cost_against_the_lofted_kernel() {
+        let hull = ama();
+        let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
+        let nu = 9.81 / 25.0;
+        let mut inner = InnerIntegral::new(&hull, nu, TransomClosure::None);
+        let n = 2000;
+        let mut zl = crate::michell::ZContracted::default();
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            inner.contract_z(nu * (1.0 + i as f64 * 0.01), &mut zl);
+        }
+        let lofted_k = t.elapsed().as_secs_f64() / n as f64;
+        let mut zs = SectionalContracted::default();
+        let t = std::time::Instant::now();
+        for i in 0..n {
+            sec.contract(nu * (1.0 + i as f64 * 0.01), &mut zs);
+        }
+        let sec_k = t.elapsed().as_secs_f64() / n as f64;
+        inner.contract_z(nu * 2.0, &mut zl);
+        sec.contract(nu * 2.0, &mut zs);
+        let m = 20_000;
+        let mut acc = C64::ZERO;
+        let t = std::time::Instant::now();
+        for i in 0..m {
+            acc = acc + inner.transforms_at(&zl, nu * (1.0 + i as f64 * 1e-3)).q;
+        }
+        let lofted_x = t.elapsed().as_secs_f64() / m as f64;
+        let t = std::time::Instant::now();
+        for i in 0..m {
+            acc = acc + sec.transforms_at(&zs, nu * (1.0 + i as f64 * 1e-3)).q;
+        }
+        let sec_x = t.elapsed().as_secs_f64() / m as f64;
+        eprintln!(
+            "lofted {}x{} spans: {:.1} us/κ, {:.1} us/kx\n\
+             sectional {} stations, {} depth nodes, {} x-spans: {:.1} us/κ, {:.1} us/kx ({acc:?})",
+            hull.spans_x().len(),
+            hull.spans_z().len(),
+            lofted_k * 1e6,
+            lofted_x * 1e6,
+            sec.stations(),
+            sec.depth_nodes(),
+            sec.x_spans(),
+            sec_k * 1e6,
+            sec_x * 1e6
+        );
+    }
+
+    /// Speeds spanning Fn ≈ 0.15–0.5 for a hull of length `l`.
+    fn speeds(l: f64) -> Vec<f64> {
+        [0.15, 0.25, 0.35, 0.5]
+            .iter()
+            .map(|fn_| fn_ * (9.81 * l).sqrt())
+            .collect()
+    }
+
+    fn untransomed() -> WaveOptions {
+        WaveOptions {
+            transom: TransomClosure::None,
+            ..WaveOptions::default()
+        }
+    }
+
+    fn compare_end_to_end(hull: &Hull, name: &str, tol: f64) {
+        let sec = SectionalHull::from_hull(hull, &DepthQuadrature::default()).unwrap();
+        let wave = untransomed();
+        let squat = SquatOptions {
+            wave,
+            ..SquatOptions::default()
+        };
+        let x_ref = hull.x_center();
+        for u in speeds(hull.length()) {
+            let cond = Conditions::seawater(u);
+            let t = std::time::Instant::now();
+            let a = crate::michell::wave_resistance_with(hull, &cond, &wave).unwrap();
+            let fa = crate::squat::dynamic_force(hull, &cond, x_ref, &squat).unwrap();
+            let t_lofted = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let b = wave_resistance(&sec, &cond, &wave).unwrap();
+            let fb = dynamic_force(&sec, &cond, x_ref, &squat).unwrap();
+            let t_sec = t.elapsed().as_secs_f64();
+            let rel = |x: f64, y: f64| (x - y).abs() / x.abs().max(1e-300);
+            let (er, ef, em) = (
+                rel(a.resistance, b.resistance),
+                rel(fa.force_up, fb.force_up),
+                rel(fa.moment_bow_up, fb.moment_bow_up),
+            );
+            eprintln!(
+                "{name} U {u:.2}: Rw {:.4e}/{:.4e} ({er:.1e}), Fz {:.4e} ({ef:.1e}), M {:.4e} ({em:.1e}); \
+                 {t_lofted:.3} s lofted, {t_sec:.3} s sectional",
+                a.resistance, b.resistance, fa.force_up, fa.moment_bow_up
+            );
+            assert!(er < tol && ef < tol && em < tol, "{name} U {u}");
+        }
+        let vol = rel_vol(hull, &sec);
+        assert!(vol < 1e-10, "{name} volume {vol:.1e}");
+    }
+
+    fn rel_vol(hull: &Hull, sec: &SectionalHull) -> f64 {
+        (hull.displaced_volume() - sec.displaced_volume()).abs() / hull.displaced_volume()
+    }
+
+    #[test]
+    fn wave_resistance_and_squat_match_the_lofted_hull_on_wigley() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        compare_end_to_end(&hull, "wigley", 1e-7);
+    }
+
+    #[test]
+    fn wave_resistance_and_squat_match_the_lofted_hull_on_a_cad_import() {
+        compare_end_to_end(&ama(), "ama", 1e-7);
+    }
+
+    /// The sectional importer end to end on geometry with an exact answer:
+    /// the Wigley hull written out as CAD patches and cut back into
+    /// sections. Its sections are smooth all the way to the keel and its
+    /// depth integral is quadratic in x, so the rays and the x interpolant
+    /// should both be essentially exact.
+    #[test]
+    fn iges_sections_of_a_wigley_reproduce_the_exact_hull() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let surfs = crate::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
+        let text = crate::iges::write(&surfs, "wigley").unwrap();
+        let imp = crate::iges::import_sectional(&text, &crate::iges::SectionalOptions::default())
+            .unwrap()
+            .hulls
+            .remove(0);
+        eprintln!("{:?}", imp.report);
+        let sec = &imp.hull;
+        let vol = rel_vol(&hull, sec);
+        let wave = untransomed();
+        let squat = SquatOptions {
+            wave,
+            ..SquatOptions::default()
+        };
+        let rel = |x: f64, y: f64| (x - y).abs() / x.abs();
+        for u in speeds(hull.length()) {
+            let cond = Conditions::seawater(u);
+            let a = crate::michell::wave_resistance_with(&hull, &cond, &wave).unwrap();
+            let b = wave_resistance(sec, &cond, &wave).unwrap();
+            let fa = crate::squat::dynamic_force(&hull, &cond, 0.0, &squat).unwrap();
+            let fb = dynamic_force(sec, &cond, 0.0, &squat).unwrap();
+            let (er, ef, em) = (
+                rel(a.resistance, b.resistance),
+                rel(fa.force_up, fb.force_up),
+                rel(fa.moment_bow_up, fb.moment_bow_up),
+            );
+            eprintln!("U {u:.2}: Rw {er:.1e}, Fz {ef:.1e}, M {em:.1e}");
+            assert!(
+                er < 1e-8 && ef < 1e-9 && em < 1e-7,
+                "U {u}: {er:.1e} {ef:.1e} {em:.1e}"
+            );
+        }
+        eprintln!("volume {vol:.1e}");
+        assert!(vol < 1e-8);
+    }
+
+    /// A real CAD hull with every awkward end at once — a wet transom whose
+    /// side skins run on past it, a separately-patched stem, a fine entry —
+    /// imported by sections at two resolutions: the transom is carried as a
+    /// section (not closed to nothing), and resistance has converged.
+    #[test]
+    fn cad_sections_converge_and_keep_the_transom() {
+        let text =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../e12.igs")).unwrap();
+        let wave = untransomed();
+        let import = |stations: usize, rays: usize| {
+            let so = crate::iges::SectionalOptions {
+                waterline_z: -0.95,
+                stations,
+                rays,
+                ..Default::default()
+            };
+            let mut fleet = crate::iges::import_sectional(&text, &so).unwrap();
+            assert!(fleet.failed.is_empty(), "{:?}", fleet.failed);
+            assert_eq!(fleet.hulls.len(), 1, "the stem is part of the hull");
+            fleet.hulls.remove(0)
+        };
+        let (coarse, fine) = (import(61, 17), import(121, 33));
+        // The aft end station is the transom, 8–9 mm deep and 0.37 m wide.
+        let (x_aft, aft) = &fine.sections[0];
+        assert!((x_aft - 0.1799).abs() < 1e-3, "aft end at {x_aft}");
+        let wl_half = aft.first().unwrap().0;
+        let depth = aft.last().unwrap().1;
+        assert!(
+            wl_half > 0.18 && depth > 0.008,
+            "transom {wl_half} x {depth}"
+        );
+        let rel = (coarse.hull.displaced_volume() - fine.hull.displaced_volume()).abs()
+            / fine.hull.displaced_volume();
+        assert!(rel < 1e-4, "volume {rel:.1e}");
+        let l = fine.hull.length();
+        for fnum in [0.2, 0.3] {
+            let cond = Conditions::seawater(fnum * (9.81 * l).sqrt());
+            let a = wave_resistance(&coarse.hull, &cond, &wave)
+                .unwrap()
+                .resistance;
+            let b = wave_resistance(&fine.hull, &cond, &wave)
+                .unwrap()
+                .resistance;
+            assert!((a - b).abs() / b < 2e-3, "Fn {fnum}: {a} vs {b}");
+        }
+    }
+}

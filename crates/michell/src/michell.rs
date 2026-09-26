@@ -563,14 +563,14 @@ fn dipole_weight(lambda: f64) -> f64 {
 }
 
 /// Geometry-derived phase-rate parameters for the outer quadrature.
-struct OuterParams {
-    nu: f64,
+pub(crate) struct OuterParams {
+    pub(crate) nu: f64,
     /// Half-extent of the whole fleet about its longitudinal phase centre.
-    x_half: f64,
+    pub(crate) x_half: f64,
     /// Largest transverse offset from the fleet's phase centre.
-    y_half: f64,
+    pub(crate) y_half: f64,
     /// Deepest draft in the fleet.
-    t_max: f64,
+    pub(crate) t_max: f64,
 }
 
 /// Marching-panel Gauss–Legendre integration of
@@ -758,7 +758,7 @@ fn integrate_outer<M: MemberWave>(
 /// One fleet member's contribution to the far-field free-wave amplitude.
 /// `Clone + Send` so the outer quadrature can hand each worker thread its own
 /// copy (the scratch buffers are per-member; the hull itself is shared).
-trait MemberWave: Clone + Send + Sync {
+pub(crate) trait MemberWave: Clone + Send + Sync {
     /// `(A₊, A₋)` — the amplitudes this member carries into the +θ and −θ wave
     /// systems at `λ` (before the placement phase).
     fn amps(&mut self, nu: f64, lambda: f64) -> (C64, C64);
@@ -791,7 +791,7 @@ fn superpose<M: MemberWave>(members: &mut [M], nu: f64, lambda: f64) -> f64 {
 /// [`WaveResistance`]; `coeff = 4ρg²/(πU²)` is the Michell prefactor and
 /// `members` the fleet whose combined amplitude is integrated. Shared by
 /// every wave-resistance entry point.
-fn run_outer<M: MemberWave>(
+pub(crate) fn run_outer<M: MemberWave>(
     params: &OuterParams,
     opts: &WaveOptions,
     coeff: f64,
@@ -1024,6 +1024,27 @@ impl SquatTransforms {
         self.w = conj(self.w);
         self.p_wl = conj(self.p_wl);
         self.q1_wl = conj(self.q1_wl);
+    }
+}
+
+/// What the near-field (sinkage/trim) quadrature needs from a hull: every
+/// `κ`-dependent quantity once per decay rate, then the six transforms at
+/// any number of `k_x` from it. Implemented by the lofted kernel
+/// ([`InnerIntegral`]) and the sectional one
+/// ([`crate::sectional::SectionalKernel`]).
+pub(crate) trait NearFieldKernel: Clone + Send + Sync {
+    type Contracted: Clone + Default + Send + Sync;
+    fn contract_z(&mut self, kappa: f64, out: &mut Self::Contracted);
+    fn transforms_at(&mut self, zc: &Self::Contracted, kx: f64) -> SquatTransforms;
+}
+
+impl NearFieldKernel for InnerIntegral<'_> {
+    type Contracted = ZContracted;
+    fn contract_z(&mut self, kappa: f64, out: &mut ZContracted) {
+        InnerIntegral::contract_z(self, kappa, out)
+    }
+    fn transforms_at(&mut self, zc: &ZContracted, kx: f64) -> SquatTransforms {
+        InnerIntegral::transforms_at(self, zc, kx)
     }
 }
 

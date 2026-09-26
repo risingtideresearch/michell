@@ -44,6 +44,7 @@ use crate::fit::{fit_grid, FitOptions, FitReport};
 use crate::grid::SampleGrid;
 use crate::hull::Hull;
 use crate::michell::Placement;
+use crate::sectional::{DepthQuadrature, SectionNodes, SectionalHull};
 
 // ---------------------------------------------------------------------------
 // Parsed geometry
@@ -1233,16 +1234,33 @@ fn presample_surfaces(surfaces: &[NurbsSurface3], waterline_z: f64) -> Vec<Patch
                 bbox.1 = bbox.1.max(x);
                 bbox.2 = bbox.2.min(zd);
                 bbox.3 = bbox.3.max(zd);
-                if zd >= -1e-12 {
-                    let b = wet_box.get_or_insert([x, x, y, y, zd, zd]);
-                    b[0] = b[0].min(x);
-                    b[1] = b[1].max(x);
-                    b[2] = b[2].min(y);
-                    b[3] = b[3].max(y);
-                    b[4] = b[4].min(zd);
-                    b[5] = b[5].max(zd);
-                }
                 pts.push((u, v, x, y, zd));
+            }
+        }
+        // Wetted box: every presample cell with a wet corner, all four of its
+        // corners included. Wet points alone understate it by up to a cell —
+        // on a long patch that is decimetres of bow (enough, on one CAD file,
+        // to split the stem off as a separate "hull" and truncate the rest).
+        for i in 0..GRID_N - 1 {
+            for j in 0..GRID_N - 1 {
+                let corners = [
+                    pts[i * GRID_N + j],
+                    pts[i * GRID_N + j + 1],
+                    pts[(i + 1) * GRID_N + j],
+                    pts[(i + 1) * GRID_N + j + 1],
+                ];
+                if corners.iter().all(|q| q.4 < -1e-12) {
+                    continue;
+                }
+                for q in corners {
+                    let b = wet_box.get_or_insert([q.2, q.2, q.3, q.3, q.4, q.4]);
+                    b[0] = b[0].min(q.2);
+                    b[1] = b[1].max(q.2);
+                    b[2] = b[2].min(q.3);
+                    b[3] = b[3].max(q.3);
+                    b[4] = b[4].min(q.4.max(0.0));
+                    b[5] = b[5].max(q.4);
+                }
             }
         }
         patches.push(Patch {
@@ -1346,79 +1364,16 @@ fn import_cluster(
     units_scale: f64,
     progress: &mut dyn FnMut(f32),
 ) -> Result<(Hull, ImportReport, SampleGrid)> {
-    // Wetted statistics of this cluster.
-    let mut draft = 0.0f64;
-    let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
-    let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    let mut y_sum = 0.0f64;
-    let mut wet_count = 0usize;
-    for p in &patches {
-        for q in &p.pts {
-            if q.4 >= -1e-12 {
-                draft = draft.max(q.4);
-                x_min = x_min.min(q.2);
-                x_max = x_max.max(q.2);
-                y_lo = y_lo.min(q.3);
-                y_hi = y_hi.max(q.3);
-                y_sum += q.3;
-                wet_count += 1;
-            }
-        }
-    }
-    if wet_count == 0 || !(draft > 0.0 && x_max > x_min) {
-        return Err(Error::InvalidGeometry(
-            "a detected hull's wetted geometry is degenerate (zero draft or length)".into(),
-        ));
-    }
-    let length = x_max - x_min;
-    let scale = length.max(draft).max(y_hi - y_lo);
-
-    // Centerplane: probe interior depths and count shell intersections.
-    let mut probe_counts: Vec<usize> = Vec::new();
-    let mut probe_mids: Vec<f64> = Vec::new();
-    {
-        let targets: Vec<(f64, f64)> = patches
-            .iter()
-            .flat_map(|p| p.pts.iter())
-            .filter(|q| q.4 >= 0.3 * draft && q.4 <= 0.7 * draft)
-            .map(|q| (q.2, q.4))
-            .collect();
-        let step = (targets.len() / 48).max(1);
-        for t in targets.iter().step_by(step) {
-            let ys = shell_intersections(&patches, t.0, t.1, scale);
-            if !ys.is_empty() {
-                probe_counts.push(ys.len());
-                if ys.len() >= 2 {
-                    probe_mids.push((ys[0].y + ys[ys.len() - 1].y) / 2.0);
-                }
-            }
-        }
-    }
-    probe_counts.sort_unstable();
-    let two_sided = !probe_counts.is_empty()
-        && probe_counts[probe_counts.len() / 2] >= 2
-        && !probe_mids.is_empty();
-    let y_c = opts.centerplane.unwrap_or(if two_sided {
-        probe_mids.iter().sum::<f64>() / probe_mids.len() as f64
-    } else {
-        0.0
-    });
-    let mirrored = !two_sided && y_sum / wet_count as f64 <= y_c;
-    if !two_sided {
-        // A half hull must actually reach its centerplane (keel/stem lines).
-        let nearest = patches
-            .iter()
-            .flat_map(|p| p.pts.iter())
-            .filter(|q| q.4 >= -1e-12)
-            .fold(f64::INFINITY, |m, q| m.min((q.3 - y_c).abs()));
-        if nearest > 0.2 * (y_hi - y_lo).max(1e-12) {
-            return Err(Error::InvalidGeometry(format!(
-                "the surface is one-sided but never approaches the centerplane \
-                 y = {y_c}; if this is an offset hull, supply the centerplane \
-                 position explicitly"
-            )));
-        }
-    }
+    let ClusterFrame {
+        draft,
+        x_min,
+        x_max,
+        length,
+        scale,
+        y_c,
+        two_sided,
+        mirrored,
+    } = cluster_frame(&patches, opts.centerplane)?;
 
     // Sample grid: cosine-spaced stations, uniform waterlines to the draft.
     let ns = opts.stations;
@@ -1508,6 +1463,150 @@ fn import_cluster(
         },
         sample_grid,
     ))
+}
+
+/// A hull cluster's wetted extent and centreplane, shared by the lofted
+/// and sectional importers.
+struct ClusterFrame {
+    draft: f64,
+    x_min: f64,
+    x_max: f64,
+    length: f64,
+    /// Largest wetted extent, for tolerances.
+    scale: f64,
+    y_c: f64,
+    two_sided: bool,
+    /// One-sided shell on the port side of its centreplane.
+    mirrored: bool,
+}
+
+/// Wetted statistics of a cluster and its centreplane: given, or detected
+/// by probing interior depths for shell intersections — a two-sided shell
+/// folds about the midplane of its intersections, a one-sided one measures
+/// from y = 0 (and must reach it).
+fn cluster_frame(patches: &[Patch], centerplane: Option<f64>) -> Result<ClusterFrame> {
+    // Wetted statistics of this cluster.
+    let mut draft = 0.0f64;
+    let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut y_sum = 0.0f64;
+    let mut wet_count = 0usize;
+    for p in patches {
+        for q in &p.pts {
+            if q.4 >= -1e-12 {
+                draft = draft.max(q.4);
+                x_min = x_min.min(q.2);
+                x_max = x_max.max(q.2);
+                y_lo = y_lo.min(q.3);
+                y_hi = y_hi.max(q.3);
+                y_sum += q.3;
+                wet_count += 1;
+            }
+        }
+    }
+    if wet_count == 0 || !(draft > 0.0 && x_max > x_min) {
+        return Err(Error::InvalidGeometry(
+            "a detected hull's wetted geometry is degenerate (zero draft or length)".into(),
+        ));
+    }
+    let length = x_max - x_min;
+    let scale = length.max(draft).max(y_hi - y_lo);
+
+    // Centerplane: probe interior depths and count shell intersections.
+    let mut probe_counts: Vec<usize> = Vec::new();
+    let mut probe_mids: Vec<f64> = Vec::new();
+    {
+        let targets: Vec<(f64, f64)> = patches
+            .iter()
+            .flat_map(|p| p.pts.iter())
+            .filter(|q| q.4 >= 0.3 * draft && q.4 <= 0.7 * draft)
+            .map(|q| (q.2, q.4))
+            .collect();
+        let step = (targets.len() / 48).max(1);
+        for t in targets.iter().step_by(step) {
+            let ys = shell_intersections(patches, t.0, t.1, scale);
+            if !ys.is_empty() {
+                probe_counts.push(ys.len());
+                if ys.len() >= 2 {
+                    probe_mids.push((ys[0].y + ys[ys.len() - 1].y) / 2.0);
+                }
+            }
+        }
+    }
+    probe_counts.sort_unstable();
+    let two_sided = !probe_counts.is_empty()
+        && probe_counts[probe_counts.len() / 2] >= 2
+        && !probe_mids.is_empty();
+    let y_c = centerplane.unwrap_or(if two_sided {
+        probe_mids.iter().sum::<f64>() / probe_mids.len() as f64
+    } else {
+        0.0
+    });
+    let mirrored = !two_sided && y_sum / wet_count as f64 <= y_c;
+    if !two_sided {
+        // A half hull must actually reach its centerplane (keel/stem lines).
+        let nearest = patches
+            .iter()
+            .flat_map(|p| p.pts.iter())
+            .filter(|q| q.4 >= -1e-12)
+            .fold(f64::INFINITY, |m, q| m.min((q.3 - y_c).abs()));
+        if nearest > 0.2 * (y_hi - y_lo).max(1e-12) {
+            return Err(Error::InvalidGeometry(format!(
+                "the surface is one-sided but never approaches the centerplane \
+                 y = {y_c}; if this is an offset hull, supply the centerplane \
+                 position explicitly"
+            )));
+        }
+    }
+
+    // The presample only brackets the ends (by up to a cell, which on a long
+    // patch is decimetres); find where closed sections actually stop.
+    let sides = frame_sides(two_sided, mirrored);
+    let x_lo = hull_end(
+        patches,
+        x_min + 0.02 * length,
+        -1.0,
+        y_c,
+        sides,
+        length,
+        scale,
+    );
+    let x_hi = hull_end(
+        patches,
+        x_max - 0.02 * length,
+        1.0,
+        y_c,
+        sides,
+        length,
+        scale,
+    );
+    let (x_min, x_max) = if x_hi > x_lo {
+        (x_lo, x_hi)
+    } else {
+        (x_min, x_max)
+    };
+    Ok(ClusterFrame {
+        draft,
+        x_min,
+        x_max,
+        length: x_max - x_min,
+        scale,
+        y_c,
+        two_sided,
+        mirrored,
+    })
+}
+
+/// Which side(s) of the centreplane carry shell: both for a full shell,
+/// else the one a half hull lies on.
+fn frame_sides(two_sided: bool, mirrored: bool) -> &'static [f64] {
+    if two_sided {
+        &[1.0, -1.0]
+    } else if mirrored {
+        &[-1.0]
+    } else {
+        &[1.0]
+    }
 }
 
 /// Longitudinal footprint [x_lo, x_hi] of the hull at depth `z`: union over
@@ -1686,6 +1785,686 @@ fn newton_on(
         v = (v - step_v).clamp(v0, v1);
     }
     best
+}
+
+// ---------------------------------------------------------------------------
+// Sectional import
+// ---------------------------------------------------------------------------
+
+/// Options for a sectional import: the hull is cut at stations and each
+/// section integrated along rays, instead of being sampled on a waterline
+/// grid and lofted.
+#[derive(Debug, Clone, Copy)]
+pub struct SectionalOptions {
+    /// Design waterline height in the file's frame [m], as for
+    /// [`ImportOptions::waterline_z`].
+    pub waterline_z: f64,
+    /// Centreplane override, as for [`ImportOptions::centerplane`].
+    pub centerplane: Option<f64>,
+    /// Stations along the hull, cosine-spaced with both ends included.
+    pub stations: usize,
+    /// Rays sampled across each section (Chebyshev–Lobatto in angle); the
+    /// depth quadrature evaluates their interpolant.
+    pub rays: usize,
+    pub quadrature: DepthQuadrature,
+}
+
+impl Default for SectionalOptions {
+    fn default() -> Self {
+        SectionalOptions {
+            waterline_z: 0.0,
+            centerplane: None,
+            stations: 121,
+            rays: 33,
+            quadrature: DepthQuadrature::default(),
+        }
+    }
+}
+
+/// Diagnostics of a sectional import.
+#[derive(Debug, Clone)]
+pub struct SectionalReport {
+    pub units_scale: f64,
+    pub patches: usize,
+    pub two_sided: bool,
+    pub centerplane: f64,
+    pub mirrored: bool,
+    pub draft: f64,
+    pub x_range: (f64, f64),
+    /// Stations the hull was built from.
+    pub stations: usize,
+    /// Interior stations dropped because a ray found no shell.
+    pub dropped_stations: usize,
+    /// Rays that met the shell more than once (the section is not
+    /// star-shaped about its top centreplane point there, or other shell
+    /// lies beyond it; the nearest hit is used).
+    pub ambiguous_rays: usize,
+    /// Largest port/starboard disagreement of a ray's reach [m], for a
+    /// two-sided shell (the sides are averaged: the symmetric thickness).
+    pub max_asymmetry: f64,
+}
+
+/// One hull imported by sections.
+#[derive(Debug, Clone)]
+pub struct SectionalImport {
+    pub hull: SectionalHull,
+    pub placement: Placement,
+    pub report: SectionalReport,
+    /// Each station's x and its sampled outline, `(half-beam, depth)` from
+    /// the waterline (or the section's top) round to the keel — for display.
+    pub sections: Vec<(f64, Vec<(f64, f64)>)>,
+}
+
+/// Every hull of an IGES file imported by sections: those that could be, and
+/// why the others could not (a sliver of appendage geometry, say), so one
+/// bad fragment does not sink the import of the rest.
+#[derive(Debug, Clone)]
+pub struct SectionalFleet {
+    pub hulls: Vec<SectionalImport>,
+    /// `(source hull index, reason)` for each hull that failed.
+    pub failed: Vec<(usize, String)>,
+}
+
+/// Import every hull in an IGES file by sections, at the fixed waterline in
+/// `opts`.
+pub fn import_sectional(text: &str, opts: &SectionalOptions) -> Result<SectionalFleet> {
+    let fleet = source_fleet(text, opts.waterline_z)?;
+    let mut out = SectionalFleet {
+        hulls: Vec::new(),
+        failed: Vec::new(),
+    };
+    for i in 0..fleet.len() {
+        match fleet.situate_sectional(
+            i,
+            opts.waterline_z,
+            &HullPose::default(),
+            &Platform::default(),
+            opts,
+        ) {
+            Ok(Some(h)) => out.hulls.push(h),
+            Ok(None) => {}
+            Err(e) => out.failed.push((i, e.to_string())),
+        }
+    }
+    if out.hulls.is_empty() {
+        return Err(Error::InvalidGeometry(match out.failed.first() {
+            Some((_, e)) => format!("no hull could be sectioned: {e}"),
+            None => "no hull is wetted at this waterline".into(),
+        }));
+    }
+    Ok(out)
+}
+
+impl SourceFleet {
+    /// Situate one hull (pose and platform state as for
+    /// [`SourceFleet::situate_one`]) and build it by sections; `Ok(None)`
+    /// when it is dry.
+    pub fn situate_sectional(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+        opts: &SectionalOptions,
+    ) -> Result<Option<SectionalImport>> {
+        if idx >= self.hulls.len() {
+            return Err(Error::InvalidInput(format!(
+                "hull index {idx} out of range ({} hulls)",
+                self.hulls.len()
+            )));
+        }
+        if opts.stations < 8 || opts.rays < 5 {
+            return Err(Error::InvalidInput(
+                "need at least 8 stations and 5 rays per section".into(),
+            ));
+        }
+        let wl = waterline_z + platform.sinkage;
+        let mut moved = self.hulls[idx].clone();
+        pose_ctrl(&mut moved, waterline_z, pose, platform);
+        let patches = presample_surfaces(&moved, wl);
+        if patches.iter().all(|p| p.wet_box.is_none()) {
+            return Ok(None);
+        }
+        sectional_cluster(&patches, opts, self.units_scale).map(Some)
+    }
+}
+
+fn sectional_cluster(
+    patches: &[Patch],
+    opts: &SectionalOptions,
+    units_scale: f64,
+) -> Result<SectionalImport> {
+    let frame = cluster_frame(patches, opts.centerplane)?;
+    let (scale, y_c) = (frame.scale, frame.y_c);
+    // Which side(s) of the centreplane carry shell.
+    let sides = frame_sides(frame.two_sided, frame.mirrored);
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let nr = opts.rays;
+    let thetas: Vec<f64> = (0..nr)
+        .map(|k| 0.5 * half_pi * (1.0 - (std::f64::consts::PI * k as f64 / (nr - 1) as f64).cos()))
+        .collect();
+
+    let ns = opts.stations;
+    // End stations exactly where closed sections stop (see
+    // [`cluster_frame`]): a station a hair inside a pointed end would carry a
+    // small section the interpolant then drops to nothing — a spurious
+    // microscopic transom, visible at low speed, where the amplitude is a
+    // small residue of bow–stern cancellation.
+    let (lo, hi) = (frame.x_min, frame.x_max);
+    let xs: Vec<f64> = (0..ns)
+        .map(|i| {
+            let c = (std::f64::consts::PI * i as f64 / (ns - 1) as f64).cos();
+            lo + (hi - lo) * (1.0 - c) / 2.0
+        })
+        .collect();
+
+    let (mut ambiguous, mut dropped, mut max_asym) = (0usize, 0usize, 0.0f64);
+    let mut kept_x = Vec::with_capacity(ns);
+    let mut sections = Vec::with_capacity(ns);
+    let mut outlines = Vec::with_capacity(ns);
+    for (i, &x) in xs.iter().enumerate() {
+        let end = i == 0 || i + 1 == ns;
+        let sampled = sample_section(patches, x, y_c, sides, &thetas, scale, &mut ambiguous);
+        match sampled {
+            Some((z0, beam, depth, radii, asym)) => {
+                max_asym = max_asym.max(asym);
+                let interp = Lobatto::new(&thetas, &radii);
+                sections.push(SectionNodes::from_polar(
+                    z0,
+                    beam,
+                    depth,
+                    |t| interp.eval(t),
+                    &opts.quadrature,
+                ));
+                outlines.push((
+                    x,
+                    thetas
+                        .iter()
+                        .zip(&radii)
+                        .map(|(&t, &r)| (beam * r * t.cos(), z0 + depth * r * t.sin()))
+                        .collect(),
+                ));
+                kept_x.push(x);
+            }
+            None if end => {
+                // Past the hull's tip: no section.
+                sections.push(SectionNodes::empty());
+                outlines.push((x, Vec::new()));
+                kept_x.push(x);
+            }
+            None => dropped += 1,
+        }
+    }
+    let n = kept_x.len();
+    if n < 8 {
+        return Err(Error::InvalidGeometry(format!(
+            "only {n} of {ns} stations could be sectioned"
+        )));
+    }
+    // Cubic interpolation along x, not-a-knot: interior knots at every
+    // station but the second and second-to-last.
+    let p = 3;
+    let mut knots = vec![kept_x[0]; p + 1];
+    knots.extend_from_slice(&kept_x[2..n - 2]);
+    knots.extend(std::iter::repeat_n(kept_x[n - 1], p + 1));
+    let hull = SectionalHull::new(p, knots, &kept_x, sections)?;
+    Ok(SectionalImport {
+        hull,
+        placement: Placement { x: 0.0, y: y_c },
+        report: SectionalReport {
+            units_scale,
+            patches: patches.len(),
+            two_sided: frame.two_sided,
+            centerplane: y_c,
+            mirrored: frame.mirrored,
+            draft: frame.draft,
+            x_range: (lo, hi),
+            stations: n,
+            dropped_stations: dropped,
+            ambiguous_rays: ambiguous,
+            max_asymmetry: max_asym,
+        },
+        sections: outlines,
+    })
+}
+
+/// One station plane `x = const` through a cluster's patches, with where the
+/// patch edges cross it found once up front. Edges matter because a
+/// section's defining points often lie *on* them — a keel or stem line
+/// where the half-breadth is exactly zero, a seam, an open rim — where a
+/// Newton solve in the parameter domain has nowhere to go but the boundary.
+struct Station<'a> {
+    patches: &'a [Patch],
+    x: f64,
+    y_c: f64,
+    scale: f64,
+    /// `(y, z)` (hull frame, z down) of every patch-edge crossing.
+    edges: Vec<(f64, f64)>,
+}
+
+impl<'a> Station<'a> {
+    fn new(patches: &'a [Patch], x: f64, y_c: f64, scale: f64) -> Self {
+        let mut edges = Vec::new();
+        for p in patches {
+            if x < p.bbox.0 || x > p.bbox.1 {
+                continue;
+            }
+            let g = p.grid_n;
+            let runs: [Vec<usize>; 4] = [
+                (0..g).collect(),
+                (0..g).map(|j| (g - 1) * g + j).collect(),
+                (0..g).map(|i| i * g).collect(),
+                (0..g).map(|i| i * g + g - 1).collect(),
+            ];
+            for run in &runs {
+                for w in run.windows(2) {
+                    let (a, b) = (p.pts[w[0]], p.pts[w[1]]);
+                    if (a.2 - x) * (b.2 - x) > 0.0 {
+                        continue;
+                    }
+                    let at = |t: f64| p.surf.point(a.0 + t * (b.0 - a.0), a.1 + t * (b.1 - a.1));
+                    let (mut ta, mut tb) = (0.0f64, 1.0f64);
+                    let fa = at(ta)[0] - x;
+                    for _ in 0..60 {
+                        let tm = 0.5 * (ta + tb);
+                        if (at(tm)[0] - x) * fa > 0.0 {
+                            ta = tm;
+                        } else {
+                            tb = tm;
+                        }
+                    }
+                    let q = at(0.5 * (ta + tb));
+                    edges.push((q[1], q[2]));
+                }
+            }
+        }
+        Station {
+            patches,
+            x,
+            y_c,
+            scale,
+            edges,
+        }
+    }
+
+    /// Whether the plane cuts a **closed** wetted section: one its rays can
+    /// sweep — reaching the shell along the waterline (or hanging from the
+    /// section's top below it) and down the centreplane to a keel. Bare
+    /// skins with nothing between them (side shells running on past a
+    /// recessed transom, say) enclose no hull and do not count.
+    fn has_section(&self, sides: &[f64]) -> bool {
+        let mut amb = 0;
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let sweeps = |z0: f64, amb: &mut usize| {
+            (z0 > 0.0
+                || sides
+                    .iter()
+                    .all(|&sd| self.reach(sd, z0, 0.0, amb).is_some()))
+                && self.reach(sides[0], z0, half_pi, amb).is_some()
+        };
+        if sweeps(0.0, &mut amb) {
+            return true;
+        }
+        self.top()
+            .is_some_and(|z0| z0 > 0.0 && sweeps(z0, &mut amb))
+    }
+
+    /// Distance from `(y_c, z0)` along the ray at angle `θ` below the
+    /// horizontal, toward side `sd = ±1`, to the boundary of the hull's
+    /// section — defined, as the lofted importer defines it, by the
+    /// **outermost fold**: at each depth the section reaches as far from the
+    /// centreplane as the farthest shell there. Internal geometry (a floor, a
+    /// beam, a bulkhead the ray crosses first) is inside that and ignored:
+    /// the reach is the farthest hit that lies on the outer fold at its own
+    /// depth. Straight down the centreplane (`θ = π/2`) it is the deepest hit
+    /// — the keel. More than one distinct hit counts as ambiguous.
+    fn reach(&self, sd: f64, z0: f64, theta: f64, ambiguous: &mut usize) -> Option<f64> {
+        let hits = self.hits(sd, z0, theta);
+        if hits.len() > 1 {
+            *ambiguous += 1;
+        }
+        let (st, ct) = theta.sin_cos();
+        if hits.len() <= 1 || ct < 1e-12 {
+            return hits.last().copied();
+        }
+        let tol = 1e-6 * self.scale;
+        for &r in hits.iter().rev() {
+            let (yb, z) = (r * ct, z0 + r * st);
+            // The fold's outermost reach at this depth.
+            let outer = self.hits(sd, z, 0.0).last().copied().unwrap_or(0.0);
+            if yb >= outer - tol {
+                return Some(r);
+            }
+        }
+        hits.last().copied()
+    }
+
+    /// Every distinct distance along the ray from `(y_c, z0)` at angle `θ`
+    /// toward side `sd` at which it meets the shell, nearest first: patch
+    /// hits (Newton on `(u, v)` for `x(u,v) = x` and the point lying on the
+    /// ray, from the nearest presample seeds ahead of the origin) and the
+    /// edge crossings that lie on the ray.
+    fn hits(&self, sd: f64, z0: f64, theta: f64) -> Vec<f64> {
+        let (st, ct) = theta.sin_cos();
+        let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
+        let tol = 1e-11 * scale;
+        let margin = 0.05 * scale;
+        let min_reach = 1e-12 * scale;
+        let off = |y: f64, z: f64| sd * (y - y_c) * st - (z - z0) * ct;
+        let along = |y: f64, z: f64| sd * (y - y_c) * ct + (z - z0) * st;
+        let mut hits: Vec<f64> = self
+            .edges
+            .iter()
+            .filter(|&&(y, z)| off(y, z).abs() <= 1e-9 * scale && along(y, z) > min_reach)
+            .map(|&(y, z)| along(y, z))
+            .collect();
+        for p in self.patches {
+            if x_t < p.bbox.0 - margin || x_t > p.bbox.1 + margin {
+                continue;
+            }
+            // Seeds ahead of the origin only: the shell behind it (a stem
+            // head above the water on a trimmed hull, say) converges to hits
+            // the ray never reaches.
+            let mut seeds = [(f64::INFINITY, 0.0f64, 0.0f64); 3];
+            for q in &p.pts {
+                if along(q.3, q.4) <= 0.0 {
+                    continue;
+                }
+                let d = (q.2 - x_t).powi(2) + off(q.3, q.4).powi(2);
+                if d < seeds[2].0 {
+                    seeds[2] = (d, q.0, q.1);
+                    seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
+                }
+            }
+            for &(d, u, v) in &seeds {
+                if !d.is_finite() {
+                    break;
+                }
+                let solved = newton_in_domain(&p.surf, u, v, tol, |s, du, dv| {
+                    (
+                        [s[0] - x_t, off(s[1], s[2])],
+                        [
+                            [du[0], dv[0]],
+                            [sd * du[1] * st - du[2] * ct, sd * dv[1] * st - dv[2] * ct],
+                        ],
+                    )
+                });
+                if let Some(s) = solved {
+                    let r = along(s[1], s[2]);
+                    if r > min_reach {
+                        hits.push(r);
+                    }
+                }
+            }
+        }
+        hits.sort_by(f64::total_cmp);
+        hits.dedup_by(|a, b| (*a - *b).abs() <= 1e-6 * scale);
+        hits
+    }
+
+    /// Shallowest wetted point of the section: its top on the centreplane (a
+    /// stem face, a bulb top) or an edge crossing (an open shell's rim that
+    /// has gone under, on a trimmed or deeply immersed hull with no deck).
+    /// Rays hang from `(y_c, top)`, which for an open rim lies on the lid
+    /// closing it — as the lofted importer's outermost-fold half-breadths
+    /// have always implied.
+    fn top(&self) -> Option<f64> {
+        let mut best = self.centerplane_top();
+        for &(_, z) in &self.edges {
+            if z >= 0.0 {
+                best = Some(best.map_or(z, |m: f64| m.min(z)));
+            }
+        }
+        best
+    }
+
+    /// Shallowest wetted point on the centreplane, by Newton on
+    /// `x(u,v) = x`, `y(u,v) = y_c`, and among edge crossings there (keel and
+    /// stem lines are usually patch edges).
+    fn centerplane_top(&self) -> Option<f64> {
+        let (x_t, y_c, scale) = (self.x, self.y_c, self.scale);
+        let tol = 1e-11 * scale;
+        let margin = 0.05 * scale;
+        let mut best: Option<f64> = None;
+        let mut take = |z: f64| {
+            if z >= 0.0 {
+                best = Some(best.map_or(z, |b: f64| b.min(z)));
+            }
+        };
+        for &(y, z) in &self.edges {
+            if (y - y_c).abs() <= 1e-9 * scale {
+                take(z);
+            }
+        }
+        for p in self.patches {
+            if x_t < p.bbox.0 - margin || x_t > p.bbox.1 + margin {
+                continue;
+            }
+            let mut seeds: Vec<(f64, f64, f64)> = p
+                .pts
+                .iter()
+                .filter(|q| q.4 >= -margin)
+                .map(|q| ((q.2 - x_t).powi(2) + (q.3 - y_c).powi(2), q.0, q.1))
+                .collect();
+            seeds.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for &(_, u, v) in seeds.iter().take(4) {
+                let solved = newton_in_domain(&p.surf, u, v, tol, |s, du, dv| {
+                    ([s[0] - x_t, s[1] - y_c], [[du[0], dv[0]], [du[1], dv[1]]])
+                });
+                if let Some(s) = solved {
+                    take(s[2]);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// 2-D Newton on a patch for `F(S(u,v)) = 0`, with `F` and its Jacobian with
+/// respect to `(u, v)` supplied from the point and partials. Steps are cut
+/// back along their own direction to stay inside the parameter domain —
+/// clamping each coordinate separately bends the step off course, and
+/// cannot settle on a solution that lies on the domain's edge. Returns the
+/// converged point.
+fn newton_in_domain(
+    surf: &NurbsSurface3,
+    mut u: f64,
+    mut v: f64,
+    tol: f64,
+    f: impl Fn([f64; 3], [f64; 3], [f64; 3]) -> ([f64; 2], [[f64; 2]; 2]),
+) -> Option<[f64; 3]> {
+    let (u0, u1) = surf.u_domain();
+    let (v0, v1) = surf.v_domain();
+    for _ in 0..60 {
+        let (s, du, dv) = surf.eval1(u, v);
+        let (r, j) = f(s, du, dv);
+        if r[0].abs() + r[1].abs() < tol {
+            return Some(s);
+        }
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        if det.abs() < 1e-30 {
+            return None;
+        }
+        let su = (r[0] * j[1][1] - r[1] * j[0][1]) / det;
+        let sv = (-r[0] * j[1][0] + r[1] * j[0][0]) / det;
+        // Largest fraction of the step that stays in the domain.
+        let mut t = 1.0f64;
+        for (x, dx, lo, hi) in [(u, -su, u0, u1), (v, -sv, v0, v1)] {
+            if x + dx > hi {
+                t = t.min((hi - x) / dx);
+            } else if x + dx < lo {
+                t = t.min((lo - x) / dx);
+            }
+        }
+        if t <= 0.0 {
+            // Pinned against the boundary: slide along it.
+            u = (u - su).clamp(u0, u1);
+            v = (v - sv).clamp(v0, v1);
+        } else {
+            u = (u - t * su).clamp(u0, u1);
+            v = (v - t * sv).clamp(v0, v1);
+        }
+    }
+    None
+}
+
+/// The hull's end in direction `dir = ±1` from a station `x_in` known to
+/// have a section: step outward until sections stop, then bisect the
+/// transition to ~1e-13 of the length. Returns the **inside** end of the
+/// final bracket, so the end station always has its section — which at a
+/// transom is the whole transom, and must not be read as empty (that would
+/// close the hull over one span: a spurious cliff in `Z(x)`).
+fn hull_end(
+    patches: &[Patch],
+    x_in: f64,
+    dir: f64,
+    y_c: f64,
+    sides: &[f64],
+    length: f64,
+    scale: f64,
+) -> f64 {
+    // Start from a station that has a section (the presample's bracket can
+    // sit in a recess or an open skin), moving inward if need be.
+    let mut inside = x_in;
+    for k in 1..=20 {
+        if Station::new(patches, inside, y_c, scale).has_section(sides) {
+            break;
+        }
+        inside = x_in - dir * 0.01 * length * k as f64;
+    }
+    let mut step = 0.02 * length;
+    let mut outside = None;
+    for _ in 0..40 {
+        let x = inside + dir * step;
+        if Station::new(patches, x, y_c, scale).has_section(sides) {
+            inside = x;
+        } else {
+            outside = Some(x);
+            break;
+        }
+        step *= 1.5;
+    }
+    let Some(mut outside) = outside else {
+        return inside;
+    };
+    for _ in 0..60 {
+        if (outside - inside).abs() <= 1e-13 * length {
+            break;
+        }
+        let mid = 0.5 * (inside + outside);
+        if Station::new(patches, mid, y_c, scale).has_section(sides) {
+            inside = mid;
+        } else {
+            outside = mid;
+        }
+    }
+    inside
+}
+
+/// One station's section, sampled for [`SectionNodes::from_polar`]: the ray
+/// origin depth `z₀` (0 when the section reaches the waterline, else its top
+/// centreplane point), the section's beam and depth scales, each scaled
+/// ray's scaled reach averaged over the shell's sides, and the largest
+/// side-to-side difference [m]. `None` when the plane misses the hull or
+/// some ray finds no shell.
+fn sample_section(
+    patches: &[Patch],
+    x: f64,
+    y_c: f64,
+    sides: &[f64],
+    thetas: &[f64],
+    scale: f64,
+    ambiguous: &mut usize,
+) -> Option<(f64, f64, f64, Vec<f64>, f64)> {
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let station = Station::new(patches, x, y_c, scale);
+    // Physical-angle reach, averaged over the sides.
+    let reach = |z0: f64, t: f64, amb: &mut usize, asym: &mut f64| -> Option<f64> {
+        let mut rs = [0.0f64; 2];
+        for (k, &sd) in sides.iter().enumerate() {
+            rs[k] = station.reach(sd, z0, t, amb)?;
+        }
+        if sides.len() == 2 {
+            *asym = asym.max((rs[0] - rs[1]).abs());
+        }
+        Some(rs[..sides.len()].iter().sum::<f64>() / sides.len() as f64)
+    };
+    let mut asym = 0.0f64;
+    // A section that reaches the waterline is swept from the centreplane at
+    // the surface; one that doesn't (forefoot ahead of the waterline entry,
+    // a bulb, an open shell whose rims are under) from its shallowest point.
+    let wl = reach(0.0, 0.0, ambiguous, &mut asym);
+    let z0 = if wl.is_some() { 0.0 } else { station.top()? };
+    let Some(depth) = reach(z0, half_pi, ambiguous, &mut asym) else {
+        if std::env::var("RAY_DEBUG").is_ok() {
+            eprintln!("x {x:.6}: depth ray failed; z0 {z0}, wl {wl:?}");
+        }
+        return None;
+    };
+    // Beam scale: the widest of a coarse fan (the waterline, usually).
+    let mut beam = wl.unwrap_or(0.0);
+    for k in 1..8 {
+        let t = half_pi * k as f64 / 8.0;
+        if let Some(r) = reach(z0, t, ambiguous, &mut asym) {
+            beam = beam.max(r * t.cos());
+        }
+    }
+    if !(beam > 1e-12 * scale && depth > 1e-12 * scale) {
+        return None;
+    }
+    let mut radii = Vec::with_capacity(thetas.len());
+    for &t in thetas {
+        let (st, ct) = t.sin_cos();
+        let (dy, dz) = (beam * ct, depth * st);
+        let phys = dz.atan2(dy);
+        let Some(r) = reach(z0, phys, ambiguous, &mut asym) else {
+            if std::env::var("RAY_DEBUG").is_ok() {
+                eprintln!("x {x:.6}: ray θ̃ {t:.4} (phys {phys:.4}) failed; z0 {z0}, beam {beam:.4}, depth {depth:.5}");
+            }
+            return None;
+        };
+        radii.push(r / dy.hypot(dz));
+    }
+    Some((z0, beam, depth, radii, asym))
+}
+
+/// Barycentric interpolation on Chebyshev–Lobatto points (as `thetas` are
+/// laid out in [`sectional_cluster`]): spectrally accurate for the smooth
+/// ray reach of a fair section.
+struct Lobatto<'a> {
+    t: &'a [f64],
+    f: &'a [f64],
+    w: Vec<f64>,
+}
+
+impl<'a> Lobatto<'a> {
+    fn new(t: &'a [f64], f: &'a [f64]) -> Self {
+        let n = t.len();
+        let w = (0..n)
+            .map(|k| {
+                let s = if k % 2 == 0 { 1.0 } else { -1.0 };
+                if k == 0 || k + 1 == n {
+                    0.5 * s
+                } else {
+                    s
+                }
+            })
+            .collect();
+        Lobatto { t, f, w }
+    }
+
+    fn eval(&self, x: f64) -> f64 {
+        let (mut num, mut den) = (0.0, 0.0);
+        for ((&tk, &fk), &wk) in self.t.iter().zip(self.f).zip(&self.w) {
+            let d = x - tk;
+            if d == 0.0 {
+                return fk;
+            }
+            num += wk * fk / d;
+            den += wk / d;
+        }
+        num / den
+    }
 }
 
 // ---------------------------------------------------------------------------
