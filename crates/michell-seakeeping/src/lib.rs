@@ -36,8 +36,7 @@
 //! - [`sea`]: Bretschneider and JONSWAP spectra, significant motions and
 //!   accelerations, mean added resistance in a sea.
 //!
-//! Still to come: a short-wave added-resistance correction; oblique-sea Froude–Krylov with
-//! its transverse variation.
+//! Still to come: a short-wave added-resistance correction.
 //!
 //! Checks: the source's principal value against quadrature, the section
 //! damping against the energy its waves carry, the exact infinite-frequency
