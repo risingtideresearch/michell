@@ -118,7 +118,9 @@ SEAKEEPING
   k_yy to 0.25 L. --sea adds significant motions, bow and LCG vertical
   accelerations and mean added resistance in a Bretschneider (or, with
   gamma, JONSWAP) sea. Multihulls move as one rigid platform, without
-  hull-to-hull wave interaction.
+  hull-to-hull wave interaction. --dynamic first floats the platform at
+  its thin-ship dynamic sinkage and trim at that speed, and takes the
+  motions about that attitude.
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
@@ -287,7 +289,7 @@ struct Parsed {
 }
 
 // `--sections` is accepted and ignored: every hull is sectional now.
-const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--sections"];
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--sections", "--dynamic"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {

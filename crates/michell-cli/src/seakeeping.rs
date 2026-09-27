@@ -3,6 +3,12 @@
 //! statistics in an irregular sea.
 
 use super::{fleet, parse_args, parse_range, KNOT};
+use michell::sectional::dynamic_load_closure;
+use michell::squat::SquatOptions;
+use michell_geometry::float::{solve_equilibrium_sectional_dynamic, FleetState, LoadCase};
+use michell_geometry::iges::HullPose;
+use michell_geometry::source::SourceHull;
+use michell_geometry::{Placement, SectionalHull};
 use michell_seakeeping::sea::{sea_response_fleet, Spectrum};
 use michell_seakeeping::strip::{added_resistance_fleet, MassProperties, StripOptions, Wave};
 use std::f64::consts::PI;
@@ -10,15 +16,17 @@ use std::f64::consts::PI;
 pub(crate) const USAGE: &str =
     "usage: michell seakeeping <hull>[@x=DX,y=Y]... (--speed U | --froude F) \
 [--heading DEG] [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N] \
-[--sea hs=H,tp=T[,gamma=G]]";
+[--sea hs=H,tp=T[,gamma=G]] [--dynamic]";
 
 pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
         return Err(USAGE.into());
     }
-    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
-    let members = fleet.hulls();
+    let settings = p.load_settings()?;
+    let fleet = fleet::load(&p.positional, &settings)?;
+    let static_members = fleet.hulls();
+    let members = &static_members;
     let cond = p.conditions(0.0)?;
     let (rho, g) = (cond.fluid.density, cond.gravity);
     let l_ref = members
@@ -56,6 +64,58 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         lcg: p.f64_flag("lcg")?.unwrap_or(lcb),
         radius_of_gyration: p.f64_flag("kyy")?.unwrap_or(0.25) * l_ref,
         bg: 0.0,
+    };
+    // With --dynamic, float the platform at its dynamic attitude at this
+    // speed (thin-ship sinkage and trim, `michell::squat`) and take the
+    // motions about that attitude rather than the loaded waterline.
+    let dynamic_state: Option<FleetState<SectionalHull>> = if p.switch("--dynamic") {
+        let posed: Vec<SourceHull> = fleet
+            .members
+            .iter()
+            .map(|m| SourceHull {
+                source: fleet.source(m),
+                index: m.index,
+                waterline_z: fleet.files[m.file].waterline_z,
+                pose: HullPose {
+                    dx: m.shift.x,
+                    dy: m.shift.y,
+                    ..HullPose::default()
+                },
+            })
+            .collect();
+        let cond = p.conditions(speed)?;
+        let squat = SquatOptions::default();
+        let eq = solve_equilibrium_sectional_dynamic(
+            &posed,
+            &LoadCase {
+                mass: mass.mass,
+                lcg: Some(mass.lcg),
+            },
+            rho,
+            g,
+            &settings.sectional(0.0),
+            dynamic_load_closure(&cond, mass.lcg, &squat),
+            None,
+        )
+        .map_err(|e| format!("dynamic equilibrium: {e}"))?;
+        println!(
+            "dynamic attitude: sinkage {:.1} mm, trim {:.3}° bow up (dynamic lift {:.1}% of weight)",
+            1000.0 * eq.sinkage,
+            eq.trim.to_degrees(),
+            100.0 * eq.lift_fraction
+        );
+        Some(eq.fleet)
+    } else {
+        None
+    };
+    let dynamic_members: Vec<(&SectionalHull, Placement)> = dynamic_state
+        .as_ref()
+        .map(|st| st.members.iter().map(|(h, pl)| (h, *pl)).collect())
+        .unwrap_or_default();
+    let members = if dynamic_state.is_some() {
+        &dynamic_members
+    } else {
+        members
     };
     let opts = StripOptions {
         panels: p.f64_flag("panels")?.map_or(20, |n| n.max(4.0) as usize),
