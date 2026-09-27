@@ -121,6 +121,12 @@
   .legend .ends { display: flex; justify-content: space-between; color: var(--muted); font-variant-numeric: tabular-nums; }
   #lgzeta { bottom: 70px; }
   .stale { color: var(--warn); }
+  #bigrt { position: absolute; right: 16px; top: 60px; text-align: right; pointer-events: none;
+    background: color-mix(in srgb, var(--panel) 82%, transparent); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 14px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  #bigrt .v { font-size: 38px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  #bigrt .v small { font-size: 18px; font-weight: 500; color: var(--muted); }
+  #bigrt .what { font-size: 12px; color: var(--muted); }
   #secpanel.collapsed #secbody { display: none; }
   #secpanel.collapsed #sechead { cursor: pointer; }
   #sechead #secsum { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--muted); }
@@ -167,8 +173,11 @@
     <h2 id="sechead">Sections <span id="secsum"></span></h2>
     <div id="secbody">
     <div class="fields">
-      <label>Waterline z [m]
-        <input id="waterline" type="number" step="any" placeholder="0">
+      <label class="wide">Waterline z [m] — drag, then release to re-cut
+        <span style="display:flex;gap:8px;align-items:center">
+          <input id="wlslider" type="range" step="any" style="flex:1" disabled>
+          <input id="waterline" type="number" step="any" placeholder="0" style="width:88px">
+        </span>
       </label>
       <label>Centreplane y [m]
         <input id="centerplane" type="number" step="any" placeholder="auto">
@@ -257,6 +266,7 @@
     </div>
   </div>
   <div id="readout3d"></div>
+  <div id="bigrt" hidden><div class="v"></div><div class="what"></div></div>
   <div class="legend" id="lgcp"><div id="cpname">Hull pressure C<sub>p</sub></div><div class="bar"></div><div class="ends"><span id="cplo"></span><span>0</span><span id="cphi"></span></div></div>
   <div class="legend" id="lgzeta"><div>Free-surface elevation ζ</div><div class="bar"></div><div class="ends"><span id="zlo"></span><span>0</span><span id="zhi"></span></div></div>
   <div id="plot" hidden>
@@ -293,6 +303,8 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
 let file = null, hulls = [], flowData = null, flowAbort = null;
+// The whole geometry's z range in the file frame, once fetched.
+let geomRange = null;
 // The case queue: {id, froude, value, unit, mass, lcg, span, status, data, error}.
 let cases = [], nextCase = 1, nextGroup = 1, viewing = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
@@ -307,14 +319,80 @@ drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.
 document.body.ondragover = (e) => e.preventDefault();
 document.body.ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); };
 
-function choose(f) {
+async function choose(f) {
   file = f;
+  geomRange = null;
   $("fname").textContent = `${f.name} · ${fmtBytes(f.size)}`;
   $("go").disabled = false;
+  if (await loadGeometry()) run();
+}
+$("go").onclick = async () => { if (geomRange || await loadGeometry()) run(); };
+
+// The whole hull, topsides and all, for setting the waterline against:
+// its z range bounds the slider, which starts at the file's 0 if that lies
+// within the hull, else a fifth of the way up from the keel.
+async function loadGeometry() {
+  const q = new URLSearchParams({ name: file.name });
+  const u = $("units").value.trim();
+  if (u) q.set("units", u);
+  status(`Reading ${file.name}…`);
+  try {
+    const r = await fetch(`/api/geometry?${q}`, { method: "POST", body: file });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.statusText);
+    const [lo, hi] = data.z_range;
+    geomRange = [lo, hi];
+    const sl = $("wlslider");
+    Object.assign(sl, { min: lo, max: hi, step: (hi - lo) / 2000, disabled: false });
+    const typed = Number($("waterline").value);
+    const wl = $("waterline").value.trim() && typed > lo && typed < hi ? typed
+      : lo < 0 && 0 < hi ? 0 : lo + 0.2 * (hi - lo);
+    sl.value = wl;
+    $("waterline").value = wl.toFixed(4);
+    scene3d.geometry(data.meshes, wl);
+    $("secpanel").classList.remove("collapsed");
+    return true;
+  } catch (e) {
+    status(e.message, true);
+    return false;
+  }
+}
+
+// Re-cutting makes new geometry: say so before it clears finished cases.
+function recut() {
+  if (hasCases() && !confirm("Re-cutting the hull clears its cases. Continue?")) return;
   run();
 }
-$("go").onclick = run;
-$("sechead").onclick = () => $("secpanel").classList.remove("collapsed");
+// A cut takes a few hundredths of a second, so the sections follow the
+// slider live — one cut in flight, catching up to the latest value — while
+// there are no cases a re-cut would clear; with cases, on release, asked.
+let cutting = false, cutAgain = false;
+async function liveCut() {
+  if (cutting) { cutAgain = true; return; }
+  cutting = true;
+  try { do { cutAgain = false; await run(); } while (cutAgain); } finally { cutting = false; }
+}
+const hasCases = () => cases.some((c) => c.status !== "queued");
+$("wlslider").addEventListener("input", (e) => {
+  const wl = Number(e.target.value);
+  $("waterline").value = wl.toFixed(4);
+  scene3d.setWater(wl);
+  if (!hasCases()) liveCut();
+});
+$("wlslider").addEventListener("change", () => { if (hasCases()) recut(); else liveCut(); });
+$("waterline").addEventListener("change", () => {
+  const wl = Number($("waterline").value);
+  if (!Number.isFinite(wl)) return;
+  $("wlslider").value = wl;
+  scene3d.setWater(wl);
+});
+// The panel open is the sections view; folded, the viewed case's flow.
+function editSections(open) {
+  $("secpanel").classList.toggle("collapsed", !open);
+  scene3d.mode(open || !flowData ? "cut" : "flow");
+  $("bigrt").hidden = open || !flowData;
+}
+$("sechead").onclick = () => editSections($("secpanel").classList.contains("collapsed"));
 for (const id of FIELDS) $(id).addEventListener("keydown", (e) => e.key === "Enter" && file && run());
 
 function status(msg, err = false) { const s = $("status"); s.textContent = msg; s.className = err ? "err" : ""; }
@@ -324,21 +402,21 @@ async function run() {
   const q = new URLSearchParams({ name: file.name });
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
   $("go").disabled = true;
-  status(`Cutting ${file.name} into sections…`);
+  if (!cutting) status(`Cutting ${file.name} into sections…`);
   try {
     const r = await fetch(`/api/loft?${q}`, { method: "POST", body: file });
     const data = await r.json();
     if (!r.ok) throw new Error(data.error || r.statusText);
     status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · sectioned in ${data.seconds.toFixed(2)} s`);
-    // Out of the way once cut: a summary line reopens it.
-    const wl = $("waterline").value.trim() || "0";
-    $("secsum").textContent = `— waterline ${wl} m, ${data.hulls[0].stations.length} stations`;
-    $("secpanel").classList.add("collapsed");
+    // The summary line the folded panel shows (it folds when cases start).
+    const wl = Number($("waterline").value.trim() || "0");
+    $("secsum").textContent = `— waterline ${wl.toFixed(3)} m, ${data.hulls[0].stations.length} stations`;
     hulls = data.hulls;
     renderResults(data.notes || []);
-    scene3d.load(hulls);
+    scene3d.load(hulls, wl);
     // A new cut: the old cases were for other geometry.
     flowData = null;
+    $("bigrt").hidden = true;
     flowAbort?.abort();
     cases = []; viewing = null;
     renderCases();
@@ -428,6 +506,7 @@ function addCases() {
     }
   }
   renderCases();
+  editSections(false);
   pump();
 }
 $("flowgo").onclick = addCases;
@@ -594,7 +673,7 @@ $("cases").addEventListener("click", (e) => {
   if (act === "remove") {
     cases = cases.filter((o) => o !== c);
     c.abort?.abort();
-    if (viewing === c.id) { viewing = null; flowData = null; scene3d.flow(null); $("flowout").innerHTML = ""; }
+    if (viewing === c.id) { viewing = null; flowData = null; $("bigrt").hidden = true; scene3d.flow(null); $("flowout").innerHTML = ""; }
     renderCases();
   } else if (act === "retry") {
     c.status = "queued"; c.error = null;
@@ -703,6 +782,7 @@ function view(id) {
   viewing = id;
   flowData = c.data;
   flowData.case = c;
+  $("secpanel").classList.add("collapsed");
   scene3d.flow(c.data);
   renderFlow();
   renderCases();
@@ -744,7 +824,10 @@ const progress = (() => {
 })();
 function renderFlow() {
   const d = flowData;
+  $("bigrt").hidden = !d;
   if (!d) return;
+  $("bigrt").querySelector(".v").innerHTML = `R<sub>t</sub> ${fmt(d.forces.rt, 1)} <small>N</small>`;
+  $("bigrt").querySelector(".what").textContent = `Case ${d.case.id}: ${caseLabel(d.case)}`;
   const f = d.forces;
   $("flowout").innerHTML = `
     <h3 style="margin:12px 0 0;font-size:13px">Case ${d.case.id}: ${esc(caseLabel(d.case))}</h3>
@@ -838,15 +921,60 @@ const scene3d = (() => {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "hull", "pressure", "waves"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   // What is shown: the sections before any case, the case's flow after.
-  const SHOWN = { cut: ["surface", "stations"], flow: ["hull", "pressure", "waves"] };
+  // The sections view is in the file's frame (z up): the whole hull above
+  // the waterline, the cut below it — the cut's layers, relative to the
+  // waterline they were cut at, raised by it. The flow view is relative to
+  // the solved waterline.
+  const SHOWN = { cut: ["surface", "stations", "geom", "water"], flow: ["hull", "pressure", "waves"] };
+  const CUT_FRAME = ["surface", "stations", "keel", "rays", "closure"];
+  let mode = "cut", wlCut = 0, wlNow = 0, geomBounds = null;
   function show(which) {
-    for (const [name, g] of Object.entries(layers)) g.visible = SHOWN[which].includes(name);
+    mode = which;
+    for (const [name, g] of Object.entries(layers)) {
+      g.visible = SHOWN[which].includes(name);
+      if (CUT_FRAME.includes(name)) g.position.y = which === "cut" ? wlCut : 0;
+    }
   }
   show("cut");
+  // Keeps what is above the chosen waterline (the geometry's topsides).
+  const aboveWl = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  function geometry(meshes, wl) {
+    clear(layers.geom); clear(layers.water);
+    const gb = new THREE.Box3();
+    for (const m of meshes) {
+      const v = new Float32Array(b64(m.vertices)), t = new Uint32Array(b64(m.triangles));
+      const pos = new Float32Array(v.length);
+      for (let i = 0; i < v.length; i += 3) { pos[i] = v[i]; pos[i + 1] = v[i + 2]; pos[i + 2] = v[i + 1]; }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      geo.setIndex(new THREE.BufferAttribute(t, 1));
+      geo.computeVertexNormals();
+      geo.computeBoundingBox();
+      gb.union(geo.boundingBox);
+      layers.geom.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xe9e5db, roughness: 0.7, side: THREE.DoubleSide, clippingPlanes: [aboveWl] })));
+    }
+    geomBounds = gb;
+    const size = gb.getSize(new THREE.Vector3()), mid = gb.getCenter(new THREE.Vector3());
+    const wgeo = new THREE.PlaneGeometry(size.x * 1.25, Math.max(size.z * 1.6, size.x * 0.25));
+    wgeo.rotateX(-Math.PI / 2);
+    const water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }));
+    water.position.set(mid.x, 0, mid.z);
+    layers.water.add(water);
+    setWater(wl);
+    $("empty").style.display = "none";
+    show("cut");
+    setView(view);
+  }
+  function setWater(wl) {
+    wlNow = wl;
+    aboveWl.constant = -wl;
+    layers.water.position.y = wl;
+    render();
+  }
   let bounds = null, hullBounds = null, wakeBounds = null, view = "iso", surfaces = [], probes = [];
 
   const clear = (g) => { for (const c of [...g.children]) { g.remove(c); c.traverse((o) => { o.geometry?.dispose(); o.material?.dispose(); }); } };
@@ -884,8 +1012,9 @@ const scene3d = (() => {
     return group;
   }
 
-  function load(hs) {
-    for (const g of Object.values(layers)) clear(g);
+  function load(hs, wl = 0) {
+    wlCut = wl;
+    for (const [name, g] of Object.entries(layers)) if (name !== "geom" && name !== "water") clear(g);
     surfaces = [];
     const box = new THREE.Box3();
     for (const h of hs) {
@@ -924,13 +1053,6 @@ const scene3d = (() => {
     if (hs.some((h) => h.transom)) box.min.x -= 0.1 * (box.max.x - box.min.x);
     bounds = box;
     hullBounds = box.clone();
-    clear(layers.water);
-    const size = box.getSize(new THREE.Vector3()), mid = box.getCenter(new THREE.Vector3());
-    const wgeo = new THREE.PlaneGeometry(size.x * 1.25, Math.max(size.z * 1.6, size.x * 0.25));
-    wgeo.rotateX(-Math.PI / 2);
-    const water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false }));
-    water.position.set(mid.x, 0, mid.z);
-    layers.water.add(water);
     $("empty").style.display = hs.length ? "none" : "";
     setView(view);
   }
@@ -1096,8 +1218,9 @@ const scene3d = (() => {
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
-    if (!bounds) return render();
-    const box = (name === "wake" && wakeBounds ? wakeBounds : bounds).clone();
+    if (!bounds && !geomBounds) return render();
+    const box = (mode === "cut" && geomBounds ? geomBounds
+      : name === "wake" && wakeBounds ? wakeBounds : bounds).clone();
     const mid = box.getCenter(new THREE.Vector3()), size = box.getSize(new THREE.Vector3());
     const dirs = { wake: new THREE.Vector3(0.9, 0.7, 0.9), iso: new THREE.Vector3(0.8, 0.55, 1.0), profile: new THREE.Vector3(0, 0, 1), plan: new THREE.Vector3(0, 1, 0), body: new THREE.Vector3(1, 0, 0) };
     const dir = keepDir ? camera.position.clone().sub(controls.target).normalize() : dirs[name].clone().normalize();
@@ -1170,7 +1293,7 @@ const scene3d = (() => {
   renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
 
-  return { load, closure, flow, setView };
+  return { load, closure, flow, setView, geometry, setWater, mode: (m) => { show(m); setView(view, true); } };
 })();
 
 // ---------------------------------------------------------------- area panel

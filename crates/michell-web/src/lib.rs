@@ -80,6 +80,37 @@ pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, Stri
     }))
 }
 
+/// The whole of an upload's geometry for display, topsides and all, in the
+/// file's own frame (z up, metres): each hull's tessellation as base64
+/// little-endian arrays, and the geometry's z range — what the waterline
+/// can be set within.
+pub fn geometry(name: &str, bytes: Vec<u8>, units: Option<f64>) -> Result<Value, String> {
+    let settings = LoadSettings {
+        units,
+        ..LoadSettings::default()
+    };
+    let file = michell_cli::fleet::open_geometry(name, bytes, &settings)?;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut meshes = Vec::new();
+    for i in 0..file.source.len() {
+        let (v, t) = file
+            .source
+            .posed_tessellation(i, 0.0, &HullPose::default(), &Platform::default())
+            .map_err(|e| e.to_string())?;
+        for p in &v {
+            lo = lo.min(p[2]);
+            hi = hi.max(p[2]);
+        }
+        let flat: Vec<f32> = v.iter().flat_map(|p| p.map(|c| c as f32)).collect();
+        let idx: Vec<u32> = t.iter().flatten().copied().collect();
+        meshes.push(json!({
+            "vertices": b64(bytemuck_f32(&flat)),
+            "triangles": b64(bytemuck_u32(&idx)),
+        }));
+    }
+    Ok(json!({ "z_range": [lo, hi], "meshes": meshes }))
+}
+
 /// An upload cut into sections at its design pose, with the source kept so
 /// its hulls can be re-cut at another attitude.
 struct Cut {

@@ -231,6 +231,47 @@ pub fn open_source_bytes(
     ))
 }
 
+/// A file opened for display rather than for cutting: its hulls clustered
+/// with the water notionally above everything, so the whole geometry shows
+/// whatever the waterline (even one that misses the hull entirely). The
+/// returned source's `waterline_z` is 0: tessellations come back in the
+/// file's own frame.
+pub fn open_geometry(path: &str, bytes: Vec<u8>, settings: &LoadSettings) -> Result<SourceFile, String> {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || std::str::from_utf8(&bytes).is_err() {
+        let scale = settings.units.ok_or_else(|| {
+            format!("{path}: STL files carry no units; give their scale (mm, m, in, …)")
+        })?;
+        let tris = michell::stl::parse_stl(&bytes, scale).map_err(|e| format!("{path}: {e}"))?;
+        let top = tris.iter().flatten().fold(f64::NEG_INFINITY, |m, v| m.max(v[2]));
+        let src = michell::stl::mesh_fleet(&bytes, scale, top + 1.0)
+            .map_err(|e| format!("{path}: STL import failed: {e}"))?;
+        return Ok(SourceFile {
+            path: path.into(),
+            kind: Kind::Stl,
+            source: Box::new(src),
+            waterline_z: 0.0,
+        });
+    }
+    let text = String::from_utf8(bytes).expect("checked utf8");
+    let file = michell::iges::parse(&text).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
+    let top = file
+        .surfaces
+        .iter()
+        .flat_map(|s| s.ctrl.iter())
+        .fold(f64::NEG_INFINITY, |m, p| m.max(p[2]));
+    if !top.is_finite() {
+        return Err(format!("{path}: no surfaces to show"));
+    }
+    let src = source_fleet(&text, top + 1.0).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
+    Ok(SourceFile {
+        path: path.into(),
+        kind: Kind::Iges,
+        source: Box::new(src),
+        waterline_z: 0.0,
+    })
+}
+
 /// Load a fleet of hull specs, reading each unique file once. A file
 /// containing several hulls contributes all of them, each at its detected
 /// placement plus the spec's offset. Hulls that cannot be sectioned (a sliver

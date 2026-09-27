@@ -19,7 +19,7 @@
 //!                               line; a client that goes away stops it
 
 use michell_web::{
-    flow, flow_with_progress, loft, span_sweep_with_progress, FlowRequest, LoftRequest,
+    flow, flow_with_progress, geometry, loft, span_sweep_with_progress, FlowRequest, LoftRequest,
     CANCELLED, MAX_UPLOAD,
 };
 use std::io::{Read, Write};
@@ -74,6 +74,22 @@ fn handle(mut req: Request) {
     let resp = match (req.method(), path) {
         (Method::Get, "/") => Response::from_string(PAGE)
             .with_header(header("Content-Type", "text/html; charset=utf-8")),
+        (Method::Post, "/api/geometry") => {
+            let name = pairs
+                .iter()
+                .find(|(k, _)| k == "name")
+                .map_or("upload", |(_, v)| v.as_str())
+                .to_string();
+            let units = pairs
+                .iter()
+                .find(|(k, v)| k == "units" && !v.trim().is_empty())
+                .map(|(_, v)| michell_cli::parse_units(v.trim()))
+                .transpose();
+            match read_body(&mut req).and_then(|bytes| geometry(&name, bytes, units?)) {
+                Ok(v) => json_response(200, v.to_string()),
+                Err(e) => json_response(400, serde_json::json!({ "error": e }).to_string()),
+            }
+        }
         (Method::Post, "/api/loft") => {
             let name = pairs
                 .iter()
