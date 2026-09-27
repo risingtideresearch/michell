@@ -23,7 +23,7 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
 |---|---|---|
 | `michell-geometry` | IGES/STL import, hulls cut into sections (`SectionalHull`), hydrostatics, hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions` | — |
 | `michell` | thin-ship theory: Michell wave resistance, squat (dynamic sinkage/trim), near field, far-field spectrum, ITTC-57 friction | `michell-geometry` |
-| `michell-seakeeping` | linear strip-theory seakeeping (heave/pitch): restoring, Froude–Krylov loads; radiation/diffraction to come | `michell-geometry` |
+| `michell-seakeeping` | linear strip-theory seakeeping: heave/pitch RAOs, added resistance, irregular seas (see [Seakeeping](#seakeeping)) | `michell-geometry` |
 | `michell-cli`, `michell-web` | front ends | all of the above |
 
 The geometry crate knows no flow theory. `michell` hands the equilibrium
@@ -676,6 +676,50 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 `waterlines`, row-major `half_beams` (waterline index fastest), optional
 `dfdx`/`dfdz` (JSON `null` = unknown at that sample), optional `weights`,
 optional `centerplane`.
+
+## Seakeeping
+
+`michell-seakeeping` computes heave and pitch in waves by **strip theory**
+(Salvesen, Tuck & Faltinsen 1970) on the same sectional hulls. Each
+station's section curve is solved in two dimensions by Frank's close-fit
+source method — added mass, damping, radiated waves, and the diffraction
+force through the Haskind relation — at the encounter frequency; the
+hull's coefficients are their integrals along the length with the
+forward-speed and transom terms. The Froude–Krylov force comes in closed
+form from the hull's depth integrals. Mean added resistance uses
+Gerritsma & Beukelman's radiated energy; irregular-sea statistics use
+Bretschneider or JONSWAP spectra. Multihulls move as one rigid platform
+(no hull-to-hull wave interaction).
+
+```text
+michell seakeeping e12.igs --waterline -0.95 --froude 0.4 --lambda 0.6:2.4:0.3 --sea hs=0.5,tp=4
+michell seakeeping e12.igs@y=1.4 e12.igs@y=-1.4 --waterline -0.95 --froude 0.4 --heading 150 --dynamic
+```
+
+`--dynamic` floats the platform at its thin-ship dynamic sinkage and trim
+(above) before taking the motions about that attitude — the one place the
+two theories meet. Mass defaults to the displacement at the loaded
+waterline (LCG over the LCB), the pitch radius of gyration to 0.25 L;
+`--csv` gives a machine-readable table.
+
+What has been checked: the 2-D source against quadrature of its
+principal-value integral; section damping against the energy its far field
+carries; the Haskind diffraction force against the solved diffraction
+problem; the exact infinite-frequency added mass of a semicircle; long-wave
+limits of the full response (heave → 1, pitch → wave slope); far-apart twin
+hulls moving exactly like one. Not yet checked against experiment: the
+reference data (Journée 1992, Wigley hulls) was not reachable when this was
+written. On the parabolic Wigley at Fn 0.3 the added-resistance peak
+(`R_aw/(ρgζ²B²/L)` ≈ 44 at λ/L = 1) looks high against recalled
+measurements of ~5–10, as expected of the radiated-energy method at a
+lightly damped strip-theory resonance; treat added resistance near
+resonance as indicative. There is no short-wave added-resistance
+correction, and in oblique seas the Froude–Krylov pressure is taken as
+uniform across each section.
+
+The section solver's irregular frequencies (the interior sloshing modes of
+any source method) are detected by the energy check and bridged by
+interpolation.
 
 ## Web front end
 

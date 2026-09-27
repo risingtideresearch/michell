@@ -16,13 +16,22 @@ use std::f64::consts::PI;
 pub(crate) const USAGE: &str =
     "usage: michell seakeeping <hull>[@x=DX,y=Y]... (--speed U | --froude F) \
 [--heading DEG] [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N] \
-[--sea hs=H,tp=T[,gamma=G]] [--dynamic]";
+[--sea hs=H,tp=T[,gamma=G]] [--dynamic] [--csv]";
 
 pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
         return Err(USAGE.into());
     }
+    let csv = p.switch("--csv");
+    // In --csv mode stdout carries only the table; notes go to stderr.
+    let note = |line: String| {
+        if csv {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    };
     let settings = p.load_settings()?;
     let fleet = fleet::load(&p.positional, &settings)?;
     let static_members = fleet.hulls();
@@ -98,12 +107,12 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             None,
         )
         .map_err(|e| format!("dynamic equilibrium: {e}"))?;
-        println!(
+        note(format!(
             "dynamic attitude: sinkage {:.1} mm, trim {:.3}° bow up (dynamic lift {:.1}% of weight)",
             1000.0 * eq.sinkage,
             eq.trim.to_degrees(),
             100.0 * eq.lift_fraction
-        );
+        ));
         Some(eq.fleet)
     } else {
         None
@@ -131,7 +140,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                 .fold(0.0f64, f64::max)
         })
         .fold(0.0f64, f64::max);
-    println!(
+    note(format!(
         "platform: {} hull(s), L {:.3} m, B(hull) {:.3} m, mass {:.1} kg, LCG {:.3} m, k_yy {:.3} m; \
          U {:.3} m/s (Fn {:.3}), heading {:.0}°",
         members.len(),
@@ -143,19 +152,23 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         speed,
         speed / (g * l_ref).sqrt(),
         heading.to_degrees()
-    );
-    println!(
-        "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>11} {:>9}",
-        "λ/L",
-        "ω[r/s]",
-        "ωe[r/s]",
-        "heave",
-        "ph3[deg]",
-        "pitch",
-        "ph5[deg]",
-        "Raw/ζ²[N/m²]",
-        "σ_aw"
-    );
+    ));
+    if csv {
+        println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,raw_per_zeta2,sigma_aw");
+    } else {
+        println!(
+            "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>11} {:>9}",
+            "λ/L",
+            "ω[r/s]",
+            "ωe[r/s]",
+            "heave",
+            "ph3[deg]",
+            "pitch",
+            "ph5[deg]",
+            "Raw/ζ²[N/m²]",
+            "σ_aw"
+        );
+    }
     for &lam in &lambdas {
         let k = 2.0 * PI / (lam * l_ref);
         let wave = Wave {
@@ -166,8 +179,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         match added_resistance_fleet(&members, &mass, &wave, &opts) {
             Ok(r) => {
                 let resp = r.response;
-                println!(
-                    "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:11.2} {:9.3}",
+                let row = [
                     lam,
                     wave.omega,
                     resp.omega_e,
@@ -176,14 +188,24 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                     resp.pitch_rao(),
                     resp.pitch.im.atan2(resp.pitch.re).to_degrees(),
                     r.per_amplitude_sq,
-                    r.coefficient(rho, g, beam, l_ref)
-                );
+                    r.coefficient(rho, g, beam, l_ref),
+                ];
+                if csv {
+                    let cells: Vec<String> = row.iter().map(|v| format!("{v:.6}")).collect();
+                    println!("{}", cells.join(","));
+                } else {
+                    println!(
+                        "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:11.2} {:9.3}",
+                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8]
+                    );
+                }
             }
-            Err(e) => println!("{lam:7.3} {:8.3}  — {e}", wave.omega),
+            Err(e) => note(format!("{lam:7.3} {:8.3}  — {e}", wave.omega)),
         }
     }
-    println!(
+    note(
         "heave per unit wave amplitude; pitch as |η5|/(kζ); phases relative to a crest at the LCG"
+            .into(),
     );
     if let Some(sea) = p.flag("sea") {
         let spectrum = parse_sea(sea)?;
@@ -198,25 +220,25 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             &members, &mass, &spectrum, heading, speed, &stations, 41, &opts,
         )
         .map_err(|e| format!("{e}"))?;
-        println!("irregular sea {spectrum:?}:");
-        println!("  significant heave amplitude   {:.3} m", r.heave);
-        println!(
+        note(format!("irregular sea {spectrum:?}:"));
+        note(format!("  significant heave amplitude   {:.3} m", r.heave));
+        note(format!(
             "  significant pitch amplitude   {:.2}°",
             r.pitch.to_degrees()
-        );
-        println!(
+        ));
+        note(format!(
             "  significant vertical accel.   {:.2} m/s² at the bow, {:.2} m/s² at the LCG",
             r.accelerations[0], r.accelerations[1]
-        );
-        println!(
+        ));
+        note(format!(
             "  mean added resistance         {:.1} N",
             r.added_resistance
-        );
+        ));
         if r.skipped_energy > 0.0 {
-            println!(
+            note(format!(
                 "  ({:.0}% of the sea's energy was overtaken and left out)",
                 100.0 * r.skipped_energy
-            );
+            ));
         }
     }
     Ok(())
