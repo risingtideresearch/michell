@@ -76,7 +76,9 @@ pub struct SeaResponse {
 }
 
 /// The response of `hull` at `speed` and `heading` to the sea `spectrum`,
-/// sampled at `samples` frequencies from 0.3 to 4 times the peak frequency.
+/// sampled at `samples` frequencies from 0.3 to 4 times the peak frequency
+/// (stopping at waves a quarter of the hull long, below which the response
+/// is negligible).
 /// `stations` are hull-x positions for vertical accelerations (e.g. bow and
 /// helm).
 #[allow(clippy::too_many_arguments)]
@@ -107,7 +109,11 @@ pub fn sea_response_fleet(
     opts: &StripOptions,
 ) -> Result<SeaResponse> {
     let wp = spectrum.peak_frequency();
-    let (lo, hi) = (0.3 * wp, 4.0 * wp);
+    // Waves shorter than a quarter of the longest hull barely move it and
+    // radiate nothing to speak of; strip theory has nothing to say there.
+    let l_max = members.iter().map(|(h, _)| h.length()).fold(0.0f64, f64::max);
+    let short = (opts.gravity * 2.0 * PI / (0.25 * l_max)).sqrt();
+    let (lo, hi) = (0.3 * wp, (4.0 * wp).min(short).max(0.6 * wp));
     let n = samples.max(3) | 1; // odd, for Simpson's rule
     let h = (hi - lo) / (n - 1) as f64;
     let (mut m_heave, mut m_pitch, mut raw, mut total, mut skipped) = (0.0, 0.0, 0.0, 0.0, 0.0);

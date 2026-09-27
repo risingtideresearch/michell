@@ -16,6 +16,7 @@ mod png;
 mod render;
 mod report;
 mod scene;
+mod seakeeping;
 
 use fleet::{describe, max_beam, LoadSettings};
 use formats::{parse_pair, parse_range};
@@ -46,6 +47,7 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         Some("resistance") => cmd_resistance(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
         Some("squat") => cmd_squat(&args[1..]),
+        Some("seakeeping") => seakeeping::cmd_seakeeping(&args[1..]),
         Some("sweep") => {
             // A JSON manifest is the preferred sweep interface.
             if let Some(path) = args.get(1).filter(|a| a.ends_with(".json")) {
@@ -90,6 +92,7 @@ michell — thin-ship wave resistance (Michell's integral) + ITTC-57 friction
 USAGE
   michell resistance <hull>... --speeds A[:B:STEP] [options]  resistance curve
   michell squat <hull>... --speeds A[:B:STEP] [options]       dynamic sinkage/trim force
+  michell seakeeping <hull>... --froude F [options]           heave/pitch RAOs, added resistance
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
@@ -103,6 +106,19 @@ HULL INPUTS (sniffed by header / extension)
   and re-cut at every pose a sweep or equilibrium solve visits.
   *.igs, *.iges     NURBS surfaces (types 128/143/141), clustered into hulls
   *.stl             triangle mesh, binary or ASCII; requires --units
+
+SEAKEEPING
+  michell seakeeping <hull>... (--speed U | --froude F) [--heading DEG]
+      [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N]
+      [--sea hs=H,tp=T[,gamma=G]]
+  Heave and pitch RAOs and added resistance by strip theory (Salvesen–
+  Tuck–Faltinsen; Gerritsma–Beukelman) over wave lengths λ/L (default
+  0.5:3:0.125), head seas (180) by default; mass defaults to the
+  displacement at the loaded waterline with the LCG over the LCB, and
+  k_yy to 0.25 L. --sea adds significant motions, bow and LCG vertical
+  accelerations and mean added resistance in a Bretschneider (or, with
+  gamma, JONSWAP) sea. Multihulls move as one rigid platform, without
+  hull-to-hull wave interaction.
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
