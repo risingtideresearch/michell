@@ -9,12 +9,9 @@ use michell_geometry::float::{solve_equilibrium_sectional_dynamic, FleetState, L
 use michell_geometry::iges::HullPose;
 use michell_geometry::source::SourceHull;
 use michell_geometry::{Placement, SectionalHull};
-use michell_seakeeping::restoring::{buoyancy_depth, transverse_metacentric_height};
+use michell_seakeeping::platform::{self, Loading};
 use michell_seakeeping::sea::{sea_response_fleet, Spectrum};
-use michell_seakeeping::strip::{
-    added_resistance_both, response_fleet, MassProperties, StripOptions, Wave,
-};
-use std::f64::consts::PI;
+use michell_seakeeping::strip::StripOptions;
 
 pub(crate) const USAGE: &str =
     "usage: michell seakeeping <hull>[@x=DX,y=Y]... (--speed U | --froude F) \
@@ -66,45 +63,21 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
     if !(volume > 0.0) {
         return Err("the hulls are dry at this waterline".into());
     }
-    let lcb = members
-        .iter()
-        .map(|(h, pl)| h.displaced_volume() * (h.lcb_x() + pl.x))
-        .sum::<f64>()
-        / volume;
     // Vertical centre of gravity: --vcg metres above the waterline (default
     // on it), giving BG against the platform's centre of buoyancy.
     let vcg = p.f64_flag("vcg")?.unwrap_or(0.0);
-    let bg = vcg + buoyancy_depth(members);
-    let hull_beam = members
-        .iter()
-        .map(|(h, _)| {
-            let (a, b) = h.x_range();
-            (0..=200)
-                .map(|i| 2.0 * h.waterline_half_beam(a + (b - a) * i as f64 / 200.0))
-                .fold(0.0f64, f64::max)
-        })
-        .fold(0.0f64, f64::max);
-    // Hull offsets set a multihull's roll and yaw inertia: mass at each
-    // hull's centreplane (weighted by displacement), plus its own spread.
-    let spread_sq = members
-        .iter()
-        .map(|(h, pl)| h.displaced_volume() * pl.y * pl.y)
-        .sum::<f64>()
-        / volume;
-    let k_yy = p.f64_flag("kyy")?.unwrap_or(0.25) * l_ref;
-    let mass = MassProperties {
-        mass: p.f64_flag("mass")?.unwrap_or(rho * volume),
-        lcg: p.f64_flag("lcg")?.unwrap_or(lcb),
-        radius_of_gyration: k_yy,
-        bg,
-        roll_radius_of_gyration: p
-            .f64_flag("kxx")?
-            .unwrap_or((spread_sq + (0.35 * hull_beam).powi(2)).sqrt()),
-        yaw_radius_of_gyration: p
-            .f64_flag("kzz")?
-            .unwrap_or((spread_sq + k_yy * k_yy).sqrt()),
-    };
-    let gm = transverse_metacentric_height(members, bg);
+    let mass = platform::mass_properties(
+        members,
+        rho,
+        &Loading {
+            mass: p.f64_flag("mass")?,
+            lcg: p.f64_flag("lcg")?,
+            vcg: Some(vcg),
+            k_yy: p.f64_flag("kyy")?.map(|f| f * l_ref),
+            k_xx: p.f64_flag("kxx")?,
+            k_zz: p.f64_flag("kzz")?,
+        },
+    );
     // With --dynamic, float the platform at its dynamic attitude at this
     // speed (thin-ship sinkage and trim, `michell::squat`) and take the
     // motions about that attitude rather than the loaded waterline.
@@ -163,15 +136,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         gravity: g,
         roll_damping: p.f64_flag("roll-damping")?.unwrap_or(0.0),
     };
-    let beam = members
-        .iter()
-        .map(|(h, _)| {
-            let (a, b) = h.x_range();
-            (0..=200)
-                .map(|i| 2.0 * h.waterline_half_beam(a + (b - a) * i as f64 / 200.0))
-                .fold(0.0f64, f64::max)
-        })
-        .fold(0.0f64, f64::max);
+    let beam = platform::hull_beam(members);
     note(format!(
         "platform: {} hull(s), L {:.3} m, B(hull) {:.3} m, mass {:.1} kg, LCG {:.3} m, k_yy {:.3} m; \
          U {:.3} m/s (Fn {:.3}), heading {:.0}°",
@@ -185,46 +150,23 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         speed / (g * l_ref).sqrt(),
         heading.to_degrees()
     ));
+    let roll = platform::roll_stability(members, &mass, &opts);
+    let gm = roll.gm;
     note(format!(
         "roll: VCG {vcg:.3} m above the waterline, BG {:.3} m, GM_T {gm:.3} m, k_xx {:.3} m, k_zz {:.3} m; \
          natural roll period {} (without added inertia)",
         mass.bg,
         mass.roll_radius_of_gyration,
         mass.yaw_radius_of_gyration,
-        if gm > 0.0 {
-            format!("{:.2} s", 2.0 * PI * mass.roll_radius_of_gyration / (g * gm).sqrt())
-        } else {
-            "— unstable (GM_T ≤ 0)".into()
+        match roll.period_dry {
+            Some(t) => format!("{t:.2} s"),
+            None => "— unstable (GM_T ≤ 0)".into(),
         }
     ));
-    if gm > 0.0 {
-        let c44 = rho * g * volume * gm;
-        let i44 = mass.mass * mass.roll_radius_of_gyration.powi(2);
-        let mut w = (c44 / i44).sqrt();
-        let mut ok = true;
-        for _ in 0..4 {
-            let beam_wave = Wave {
-                omega: w,
-                heading: 0.5 * PI,
-                speed: 0.0,
-            };
-            match response_fleet(&members, &mass, &beam_wave, &opts) {
-                Ok(r) => {
-                    let a44 = r.coefficients.full.added_mass[2][2];
-                    w = (c44 / (i44 + a44.max(0.0))).sqrt();
-                }
-                Err(_) => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if ok {
-            note(format!(
-                "natural roll period with added inertia {:.2} s (at rest)",
-                2.0 * PI / w
-            ));
-        }
+    if let Some(t) = roll.period {
+        note(format!(
+            "natural roll period with added inertia {t:.2} s (at rest)"
+        ));
     }
     if csv {
         println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,sway,roll_over_k,yaw_over_k,raw_gb_per_zeta2,sigma_aw_gb,raw_maruo_per_zeta2,sigma_aw_maruo");
@@ -247,31 +189,28 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             "σ_aw far"
         );
     }
-    for &lam in &lambdas {
-        let k = 2.0 * PI / (lam * l_ref);
-        let wave = Wave {
-            omega: (k * g).sqrt(),
-            heading,
-            speed,
-        };
-        match added_resistance_both(&members, &mass, &wave, &opts) {
-            Ok((resp, gb, far)) => {
+    let points = platform::rao_sweep(members, &mass, heading, speed, &lambdas, &opts, &mut |_| {
+        true
+    });
+    for (&lam, point) in lambdas.iter().zip(points) {
+        match point {
+            Ok(pt) => {
                 let sigma = |raw: f64| raw / (rho * g * beam * beam / l_ref);
                 let row = [
                     lam,
-                    wave.omega,
-                    resp.omega_e,
-                    resp.heave_rao(),
-                    resp.heave.im.atan2(resp.heave.re).to_degrees(),
-                    resp.pitch_rao(),
-                    resp.pitch.im.atan2(resp.pitch.re).to_degrees(),
-                    resp.sway_rao(),
-                    resp.roll_rao(),
-                    resp.yaw_rao(),
-                    gb,
-                    sigma(gb),
-                    far,
-                    sigma(far),
+                    pt.omega,
+                    pt.omega_e,
+                    pt.heave.abs(),
+                    pt.heave.im.atan2(pt.heave.re).to_degrees(),
+                    pt.pitch.abs() / pt.k,
+                    pt.pitch.im.atan2(pt.pitch.re).to_degrees(),
+                    pt.sway.abs(),
+                    pt.roll.abs() / pt.k,
+                    pt.yaw.abs() / pt.k,
+                    pt.added_resistance,
+                    sigma(pt.added_resistance),
+                    pt.added_resistance_far_field,
+                    sigma(pt.added_resistance_far_field),
                 ];
                 if csv {
                     let cells: Vec<String> = row.iter().map(|v| format!("{v:.6}")).collect();
@@ -283,7 +222,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                     );
                 }
             }
-            Err(e) => note(format!("{lam:7.3} {:8.3}  — {e}", wave.omega)),
+            Err(e) => note(format!("{lam:7.3}  — {e}")),
         }
     }
     note(
@@ -291,7 +230,8 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
          to a crest at the LCG; roll is potential-flow damped only (plus --roll-damping), so its \
          resonance is overstated on a monohull; \
          added resistance by radiated energy (GB, Gerritsma–Beukelman) and far-field momentum \
-         (far, Maruo) — on Journée's Wigley hulls GB is nearer the tank at Fn 0.2, the far field \
+         (far, Maruo; head and following seas only — oblique, it lacks the antisymmetric \
+         diffraction) — on Journée's Wigley hulls GB is nearer the tank at Fn 0.2, the far field \
          at Fn 0.3–0.4; neither ranks hulls reliably"
             .into(),
     );
@@ -333,7 +273,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
 }
 
 /// `hs=H,tp=T[,gamma=G]`: Bretschneider, or JONSWAP when `gamma` is given.
-fn parse_sea(s: &str) -> Result<Spectrum, String> {
+pub fn parse_sea(s: &str) -> Result<Spectrum, String> {
     let (mut hs, mut tp, mut gamma) = (None, None, None);
     for part in s.split(',') {
         let (k, v) = part

@@ -19,9 +19,10 @@ mod scene;
 mod seakeeping;
 
 use fleet::{describe, max_beam, LoadSettings};
-pub use formats::parse_units;
-use formats::{parse_pair, parse_range};
+use formats::parse_pair;
+pub use formats::{parse_range, parse_units};
 use michell::{Conditions, Fluid, Placement, WaveOptions, STANDARD_GRAVITY};
+pub use seakeeping::parse_sea;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 

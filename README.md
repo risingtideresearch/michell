@@ -783,6 +783,19 @@ above the keel), and a **keel-following** loft in `s = z/d(x)`, pinned to zero
 at the keel. Neither feeds the physics yet; they are there to judge which is
 worth building the kernel for.
 
+**Seakeeping** is an option on each flow case ("Also compute seakeeping in
+waves"): at the case's load and attitude, its motions in regular waves at the
+listed headings and wavelengths, and, given `H_s` and `T_p`, its statistics in
+that sea — the `michell seakeeping` computation (`michell_seakeeping::platform`),
+sent back with the flow as a `seakeeping` block (`/api/flow?…&sk=1&sk_heading=…`;
+see `SeakeepingRequest`). The case shows GM_T, the roll period and the sea
+table; its **response plot** draws heave, pitch, roll, sway, yaw or added
+resistance against λ/L, λ or ω_e, overlaid across the finished cases, each
+with how far the validation (`docs/seakeeping-findings.md`) says to trust it.
+Added resistance is drawn as the band between the Gerritsma–Beukelman and
+far-field estimates; the far field is left out away from head and following
+seas.
+
 ```text
 cargo run --release -p michell-web          # http://127.0.0.1:8080/
 michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)

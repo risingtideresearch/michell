@@ -72,6 +72,7 @@ dependencies = [
  "michell",
  "michell-cli",
  "michell-geometry",
+ "michell-seakeeping",
  "serde_json",
  "tiny_http",
 ]

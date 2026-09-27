@@ -89,6 +89,7 @@
 pub mod froude_krylov;
 pub mod green;
 pub mod linalg;
+pub mod platform;
 pub mod restoring;
 pub mod sea;
 pub mod section2d;
