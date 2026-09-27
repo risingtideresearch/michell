@@ -19,7 +19,7 @@
 use crate::conditions::STANDARD_GRAVITY;
 use crate::error::{Error, Result};
 use crate::iges::{HullPose, Platform, SectionalOptions, SectionalState};
-use crate::michell::Placement;
+use crate::Placement;
 use crate::sectional::SectionalHull;
 use crate::source::SourceHull;
 

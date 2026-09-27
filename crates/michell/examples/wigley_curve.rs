@@ -3,7 +3,7 @@
 //!
 //! Run with: cargo run --release --example wigley_curve
 
-use michell::iges::{self, HullPose, Platform, SectionalOptions};
+use michell_geometry::iges::{self, HullPose, Platform, SectionalOptions};
 use michell::{sectional, Conditions, STANDARD_GRAVITY};
 
 fn main() {

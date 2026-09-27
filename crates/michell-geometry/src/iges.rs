@@ -35,7 +35,7 @@
 
 use crate::bspline::{ders_basis, find_span, BSplineSurface};
 use crate::error::{Error, Result};
-use crate::michell::Placement;
+use crate::Placement;
 use crate::sectional::{DepthQuadrature, SectionNodes, SectionalHull};
 
 // ---------------------------------------------------------------------------
@@ -825,9 +825,8 @@ impl SourceFleet {
     /// spline's top (z' = 0) at CAD height `top_z`: 0 for a wetted surface,
     /// or the freeboard for one carried up above the design waterline —
     /// either way the design waterline lands at CAD height 0, and the hull
-    /// re-poses like any CAD hull. Test support.
-    #[cfg(test)]
-    pub(crate) fn from_halfbreadth(
+    /// re-poses like any CAD hull.
+    pub fn from_halfbreadth(
         surface: &BSplineSurface,
         centerplane: f64,
         top_z: f64,
@@ -845,6 +844,11 @@ impl SourceFleet {
     /// Number of hulls detected.
     pub fn len(&self) -> usize {
         self.hulls.len()
+    }
+
+    /// Number of surface patches in hull `idx`.
+    pub fn patch_count(&self, idx: usize) -> usize {
+        self.hulls[idx].len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -3026,7 +3030,7 @@ pub fn wigley_surfaces(length: f64, beam: f64, draft: f64) -> Result<[NurbsSurfa
 /// wetted hull; the band top for a full-band body); `centerplane` is the
 /// transverse position the two sides mirror about. Returned as
 /// `[starboard (+y), port (−y)]`.
-pub(crate) fn halfbreadth_surfaces(
+pub fn halfbreadth_surfaces(
     s: &BSplineSurface,
     centerplane: f64,
     z_top_cad: f64,
@@ -3405,112 +3409,6 @@ mod tests {
         assert!((after[0] - (before[0] + 1.0)).abs() < 1e-12);
         assert!((after[1] - (before[1] - 0.5)).abs() < 1e-12);
         assert!((after[2] - (before[2] - 0.3)).abs() < 1e-12);
-    }
-}
-
-#[cfg(test)]
-mod sectional_ends {
-    use super::*;
-
-    fn e12() -> Option<SourceFleet> {
-        let text = crate::cad_fixture("e12.igs")?;
-        Some(source_fleet(&text, -0.95).unwrap())
-    }
-
-    /// Steeply trimmed at speed (Fn 0.68 floats e12 about 1.5° bow up), the
-    /// leaning transom leaves only a wedge of hull aft of its full section,
-    /// and the bow's plumb stem a thin wide sliver forward. Whether an end
-    /// station caught those or nothing once decided whether the hull ended
-    /// on a transom — the lift jumped 6× between neighbouring trims, and
-    /// the dynamic equilibrium never converged. The ends are now pulled in
-    /// to the full sections, and the end steps are always in the force, so
-    /// the lift moves smoothly with trim.
-    #[test]
-    fn a_steeply_trimmed_cut_keeps_its_ends_and_a_smooth_lift() {
-        let Some(src) = e12() else {
-            return;
-        };
-        let opts = SectionalOptions {
-            waterline_z: -0.95,
-            ..Default::default()
-        };
-        let design = src
-            .situate_sectional(0, -0.95, &HullPose::default(), &Platform::default(), &opts)
-            .unwrap()
-            .unwrap()
-            .hull;
-        let cond =
-            crate::Conditions::seawater(0.68 * (9.81f64 * design.length()).sqrt());
-        let mut last: Option<f64> = None;
-        for k in 0..=5 {
-            let trim = (1.0 + 0.2 * k as f64).to_radians();
-            let pf = Platform {
-                sinkage: 0.0,
-                trim,
-                pivot_x: design.lcb_x(),
-            };
-            let h = src
-                .situate_sectional(0, -0.95, &HullPose::default(), &pf, &opts)
-                .unwrap()
-                .unwrap();
-            assert!(h.hull.transom().is_some(), "trim {k}: transom lost");
-            let f = crate::sectional::multihull_dynamic_force(
-                &[(&h.hull, h.placement)],
-                &cond,
-                design.lcb_x(),
-                &Default::default(),
-            )
-            .unwrap()
-            .force_up;
-            if let Some(prev) = last {
-                assert!((f / prev - 1.0).abs() < 0.1, "lift {prev} -> {f} at step {k}");
-            }
-            last = Some(f);
-        }
-    }
-
-    /// e12's transom is a flat face its side skins run on past. Trimmed bow
-    /// up, the face tilts across the aft station plane; read as section
-    /// boundary it collapsed the end section to a sliver, closing the hull
-    /// over one span (the near-field force doubled from trim 0 to +0.02°).
-    /// Faces are end caps, not shell: the aft station keeps the full
-    /// transom section at every trim.
-    #[test]
-    fn a_trimmed_transom_keeps_its_section() {
-        let Some(fleet) = e12() else {
-            return;
-        };
-        let idx = (0..fleet.len())
-            .max_by_key(|&i| fleet.hulls[i].len())
-            .unwrap();
-        let so = SectionalOptions {
-            waterline_z: -0.95,
-            stations: 61,
-            rays: 17,
-            ..Default::default()
-        };
-        let mut last_vol = 0.0;
-        for trim_deg in [-0.1f64, 0.0, 0.02, 0.05, 0.1] {
-            let plat = Platform {
-                sinkage: 0.012,
-                trim: trim_deg.to_radians(),
-                pivot_x: 4.5,
-            };
-            let h = fleet
-                .situate_sectional(idx, -0.95, &HullPose::default(), &plat, &so)
-                .unwrap()
-                .unwrap();
-            let (st, _) = h.hull.depth_integral_curve(0.0, 1);
-            assert!(
-                st[0].1 > 0.9 * st[1].1,
-                "trim {trim_deg}°: end section {:.3e} against its neighbour's {:.3e}",
-                st[0].1,
-                st[1].1
-            );
-            let vol = h.hull.displaced_volume();
-            assert!(vol > last_vol, "bow-up trim sinks this stern deeper: {vol}");
-            last_vol = vol;
-        }
     }
 }
 

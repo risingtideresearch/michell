@@ -54,16 +54,18 @@
 //! dynamic lift carries a real share of the weight (volumetric Froude ≳ 3);
 //! [`DynamicForce::lift_fraction`] is reported so that boundary is visible.
 
-use crate::conditions::Conditions;
+use michell_geometry::Conditions;
 #[cfg(test)]
-use crate::error::{Error, Result};
+use michell_geometry::{Error, Result};
 #[cfg(test)]
 use crate::hull::Hull;
 #[cfg(test)]
-use crate::michell::{InnerIntegral, Placement};
+use crate::michell::InnerIntegral;
+#[cfg(test)]
+use michell_geometry::Placement;
 use crate::michell::{NearFieldKernel, SquatTransforms, WaveOptions};
-use crate::moments::C64;
-use crate::quadrature::gauss_legendre;
+use michell_geometry::moments::C64;
+use michell_geometry::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 /// Near-field vertical force and pitching moment on a fleet.
@@ -481,7 +483,7 @@ impl<K: NearFieldKernel> Fleet<K> {
         // contractions; each worker runs on its own clone of the fleet.
         let this: &Self = self;
         let at_theta = &at_theta;
-        let per_node: Vec<(f64, f64, usize)> = crate::parallel::map_indexed(
+        let per_node: Vec<(f64, f64, usize)> = michell_geometry::parallel::map_indexed(
             nodes.len(),
             || this.clone(),
             |fleet, i| {
@@ -521,7 +523,7 @@ impl<K: NearFieldKernel> Fleet<K> {
             }
         }
         let this: &Self = self;
-        let vals: Vec<f64> = crate::parallel::map_indexed(
+        let vals: Vec<f64> = michell_geometry::parallel::map_indexed(
             nodes.len(),
             || this.clone(),
             |fleet, i| {

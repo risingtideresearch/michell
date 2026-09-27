@@ -9,13 +9,14 @@ use crate::archive::{
 };
 use crate::fleet::{open_source, LoadSettings, SourceFile};
 use crate::json::{parse as parse_json, Json};
-use michell::float::{
+use michell_geometry::float::{
     fleet_cg, solve_equilibrium_sectional, solve_equilibrium_sectional_dynamic, FleetState,
     HullLoad, LoadCase, PointLoad,
 };
-use michell::iges::{HullPose, Platform, SectionalOptions};
-use michell::sectional::{dynamic_load_closure, SectionalHull};
-use michell::source::SourceHull;
+use michell_geometry::iges::{HullPose, Platform, SectionalOptions};
+use michell::sectional::dynamic_load_closure;
+use michell_geometry::SectionalHull;
+use michell_geometry::source::SourceHull;
 use michell::squat::SquatOptions;
 use michell::{Conditions, FreeWaveSpectrum, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::sync::Arc;
@@ -581,7 +582,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
     // afterwards, so the output is independent of scheduling.
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
-    let cores = michell::parallel::available();
+    let cores = michell_geometry::parallel::available();
     let workers = cores.min(points).max(1);
     let inner_threads = (cores / workers).max(1);
     let next = AtomicUsize::new(0);
@@ -593,7 +594,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
             let tx = tx.clone();
             let next = &next;
             scope.spawn(move || {
-                michell::parallel::set_threads(inner_threads);
+                michell_geometry::parallel::set_threads(inner_threads);
                 loop {
                     let point = next.fetch_add(1, Ordering::Relaxed);
                     if point >= points {

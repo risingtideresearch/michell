@@ -19,19 +19,19 @@
 //!
 //! In tests it also carries the **exact B-spline kernel** ([`InnerIntegral`]):
 //! for a half-breadth spline `f(x, z)` I and J are evaluated exactly per knot
-//! span via the closed-form moments in [`crate::moments`]. It is the oracle
+//! span via the closed-form moments in [`michell_geometry::moments`]. It is the oracle
 //! the sectional kernel is validated against.
 
 #[cfg(test)]
-use crate::conditions::Conditions;
+use michell_geometry::Conditions;
 #[cfg(test)]
-use crate::error::{Error, Result};
+use michell_geometry::{Error, Result};
 #[cfg(test)]
 use crate::hull::Hull;
 #[cfg(test)]
-use crate::moments::exp_moments;
-use crate::moments::{osc_moments, C64};
-use crate::quadrature::gauss_legendre;
+use michell_geometry::moments::exp_moments;
+use michell_geometry::moments::{osc_moments, C64};
+use michell_geometry::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 /// How the wave integral closes a hull whose half-breadth does not vanish at
@@ -146,15 +146,8 @@ pub struct WaveResistance {
     pub max_lambda: f64,
 }
 
-/// Position of one hull of a multihull, in the global (fleet) frame.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Placement {
-    /// Longitudinal shift **added** to the hull's own x coordinates [m]
-    /// (0 keeps the coordinates from the hull's file).
-    pub x: f64,
-    /// Transverse position of the hull's centerplane [m].
-    pub y: f64,
-}
+#[cfg(test)]
+use michell_geometry::Placement;
 
 #[cfg(test)]
 /// Compute Michell wave resistance with explicit quadrature options.
@@ -265,7 +258,7 @@ pub(crate) struct OuterParams {
 /// **Parallel structure.** The panel schedule depends only on the geometry
 /// (`params`) and `frac` — never on integrand values — so it is generated
 /// ahead in batches, every panel of a batch is evaluated independently
-/// (each worker on its own clone of the members, see [`crate::parallel`]),
+/// (each worker on its own clone of the members, see [`michell_geometry::parallel`]),
 /// and the truncation test is then applied to the panels *in θ order*. The
 /// accumulation order and every per-panel operation are those of the plain
 /// serial march, so the result is bit-for-bit independent of the thread
@@ -342,7 +335,7 @@ fn integrate_outer<M: MemberWave>(
     // With a single worker there is nothing to batch: march panel by panel
     // on one private copy of the members, exactly as the serial loop did,
     // so no panel past the truncation point is ever evaluated.
-    let workers = crate::parallel::threads();
+    let workers = michell_geometry::parallel::threads();
     let serial = workers == 1;
     let mut local: Vec<M> = if serial { members.to_vec() } else { Vec::new() };
 
@@ -388,7 +381,7 @@ fn integrate_outer<M: MemberWave>(
         let sums: Vec<f64> = if serial {
             panels.iter().map(|p| panel_sum(&mut local, p)).collect()
         } else {
-            crate::parallel::map_indexed(
+            michell_geometry::parallel::map_indexed(
                 panels.len(),
                 || members.to_vec(),
                 |mem, i| panel_sum(mem, &panels[i]),
@@ -1087,7 +1080,7 @@ mod tests {
         let knots_x = vec![0.0, 0.0, 8.0, 8.0];
         let knots_z = vec![0.0, 0.0, 0.25, 0.25];
         let wedge = Hull::new(
-            crate::bspline::BSplineSurface::new(1, 1, knots_x, knots_z, vec![0.4, 0.0, 0.0, 0.0])
+            michell_geometry::bspline::BSplineSurface::new(1, 1, knots_x, knots_z, vec![0.4, 0.0, 0.0, 0.0])
                 .unwrap(),
         )
         .unwrap();
@@ -1106,7 +1099,7 @@ mod tests {
         // physical system; the resistance must not change. (Regression: the
         // integrand once used only the +θ wave system, which broke this.)
         let hull = wigley(8.0, 0.8, 0.5).unwrap();
-        let cond = crate::Conditions::seawater(2.5);
+        let cond = michell_geometry::Conditions::seawater(2.5);
         let a = [
             (&hull, Placement { x: 0.0, y: 1.4 }),
             (&hull, Placement { x: 1.7, y: -1.4 }),
@@ -1129,7 +1122,7 @@ mod tests {
         let hull = wigley(l, 1.0, 0.625).unwrap();
         // Same hull, shifted +37 m in x.
         let s = hull.surface();
-        let shifted = crate::bspline::BSplineSurface::new(
+        let shifted = michell_geometry::bspline::BSplineSurface::new(
             s.degree_x(),
             s.degree_z(),
             s.knots_x().iter().map(|k| k + 37.0).collect(),

@@ -1,7 +1,7 @@
 //! Loading hull specs into a working fleet of sectional hulls.
 //!
 //! Every input becomes source geometry that can be re-posed and re-cut
-//! ([`michell::source::HullSource`]), and each of its hulls is cut into
+//! ([`michell_geometry::source::HullSource`]), and each of its hulls is cut into
 //! sections at the design waterline:
 //!
 //! * `*.igs` / `*.iges`: NURBS patches, clustered into hulls;
@@ -9,11 +9,11 @@
 //!   clustered likewise.
 
 use crate::formats::looks_binary_stl;
-use michell::iges::{
+use michell_geometry::iges::{
     source_fleet, HullPose, Platform, SectionalOptions, SectionalReport,
 };
-use michell::sectional::SectionalHull;
-use michell::source::{HullSource, SourceHull};
+use michell_geometry::SectionalHull;
+use michell_geometry::source::{HullSource, SourceHull};
 use michell::Placement;
 use std::collections::HashMap;
 
@@ -189,7 +189,7 @@ pub fn open_source_bytes(
                  (or a scale to metres)"
             )
         })?;
-        let src = michell::stl::mesh_fleet(&bytes, scale, settings.waterline_z)
+        let src = michell_geometry::stl::mesh_fleet(&bytes, scale, settings.waterline_z)
             .map_err(|e| format!("{path}: STL import failed: {e}"))?;
         return Ok(SourceFile {
             path: path.into(),
@@ -238,7 +238,7 @@ pub fn open_source_bytes(
 /// fleet with none left is an error.
 pub fn load(specs: &[String], settings: &LoadSettings) -> Result<Fleet, String> {
     let mut files: Vec<SourceFile> = Vec::new();
-    let mut cut: Vec<Vec<(usize, michell::iges::SectionalImport)>> = Vec::new();
+    let mut cut: Vec<Vec<(usize, michell_geometry::iges::SectionalImport)>> = Vec::new();
     let mut by_path: HashMap<String, usize> = HashMap::new();
     let mut members = Vec::new();
     for spec in specs {

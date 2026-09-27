@@ -60,7 +60,7 @@ impl Conditions {
         self.speed / (self.gravity * length).sqrt()
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         let ok = |v: f64| v.is_finite() && v > 0.0;
         if !ok(self.speed) {
             return Err(Error::InvalidConditions(format!(

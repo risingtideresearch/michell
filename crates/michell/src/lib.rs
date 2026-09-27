@@ -2,24 +2,11 @@
 //!
 //! Thin-ship **wave resistance** (Michell's integral), **dynamic sinkage and
 //! trim**, the far-field **wave pattern**, and **viscous resistance**
-//! (ITTC-57) for **sectional hulls**: a hull described by its stations, each
-//! a section curve integrated in depth, the whole interpolated along the
-//! length.
-//!
-//! ## Where hulls come from
-//!
-//! A [`SectionalHull`] is cut from source geometry kept in its own frame, so
-//! it can be re-posed and re-cut as often as a sweep or an equilibrium solve
-//! needs ([`source::HullSource`]):
-//!
-//! - **IGES** B-spline surfaces ([`iges::source_fleet`], or surfaces already
-//!   in hand through [`iges::source_fleet_from_surfaces`] — e.g. the exact
-//!   Wigley test hull, [`iges::wigley_surfaces`]),
-//! - **STL** triangle meshes ([`stl::mesh_fleet`]).
-//!
-//! Frames: CAD sources are `x` along the hull, `y` transverse, `z` **up**;
-//! a cut hull's sections measure `z` downward from the effective waterline.
-//! All quantities are SI.
+//! (ITTC-57) for **sectional hulls** — hulls described by their stations,
+//! cut from IGES or STL geometry by [`michell_geometry`], which also owns
+//! the hydrostatics and the equilibrium solver. This crate is the flow
+//! theory on top: [`sectional::dynamic_load_closure`] hands the equilibrium
+//! solver its speed-dependent load.
 //!
 //! ## Theory
 //!
@@ -51,8 +38,8 @@
 //! ## Example
 //!
 //! ```
-//! use michell::iges::{self, HullPose, Platform, SectionalOptions};
 //! use michell::{sectional, Conditions};
+//! use michell_geometry::iges::{self, HullPose, Platform, SectionalOptions};
 //!
 //! let surfaces = iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
 //! let source = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
@@ -78,37 +65,29 @@
 //! assert!(r.total > r.wave.resistance);
 //! ```
 
-mod bspline;
-mod conditions;
-mod error;
-pub mod float;
 mod friction;
 #[cfg(test)]
+mod cut_tests;
+#[cfg(test)]
 mod hull;
+#[cfg(test)]
 mod hulls;
-pub mod iges;
 mod michell;
-mod moments;
 pub mod nearfield;
-pub mod parallel;
-mod quadrature;
 pub mod sectional;
-pub mod source;
 pub mod spectrum;
 pub mod squat;
-pub mod stl;
 #[cfg(test)]
 mod validation;
 
-pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
-pub use error::{Error, Result};
+// The geometry vocabulary this crate's signatures speak.
+pub use michell_geometry::{Conditions, Error, Fluid, Placement, Result, SectionalHull, Transom, C64, STANDARD_GRAVITY};
 pub use friction::{
     ittc57_cf, roughness_delta_cf, roughness_reynolds, schlichting_rough_cf,
     viscous_resistance_for, Roughness, ViscousOptions, ViscousResistance,
 };
-pub use michell::{Placement, TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF};
-pub use moments::C64;
-pub use sectional::{SectionalHull, Transom};
+pub use michell::{TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF};
+pub use sectional::SectionalWave;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
 
 /// Combined resistance breakdown for a multihull.

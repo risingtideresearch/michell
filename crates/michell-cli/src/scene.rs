@@ -22,9 +22,9 @@
 //! and, for a closed transom, the virtual appendage. For the fleet: the
 //! far-field free-wave elevation ζ(x, y) as a height-field mesh.
 
-use michell::iges::{HullPose, Platform};
-use michell::sectional::SectionalHull;
-use michell::source::HullSource;
+use michell_geometry::iges::{HullPose, Platform};
+use michell_geometry::SectionalHull;
+use michell_geometry::source::HullSource;
 use michell::{Conditions, FreeWaveSpectrum, Placement, TransomClosure};
 use std::fmt::Write as _;
 

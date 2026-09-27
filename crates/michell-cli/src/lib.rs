@@ -987,9 +987,9 @@ fn cmd_report(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_sweep(args: &[String]) -> Result<(), String> {
-    use michell::float::{solve_equilibrium_sectional, LoadCase};
-    use michell::iges::{HullPose, Platform};
-    use michell::source::SourceHull;
+    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
+    use michell_geometry::iges::{HullPose, Platform};
+    use michell_geometry::source::SourceHull;
 
     let p = parse_args(args)?;
     if p.positional.is_empty() {
@@ -1292,7 +1292,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         }
 
         // Situate (raw) or solve (float).
-        let mut members: Vec<(michell::sectional::SectionalHull, Placement)> = Vec::new();
+        let mut members: Vec<(michell_geometry::SectionalHull, Placement)> = Vec::new();
         let (sinkage, trim_deg, volume, lcb, dry) = if let Some(mass) = weight {
             let f = &files[0];
             let hulls: Vec<SourceHull> = poses[0]
@@ -1346,7 +1346,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (0.0, 0.0, volume, lcb, dry)
         };
-        let members: Vec<(&michell::sectional::SectionalHull, Placement)> =
+        let members: Vec<(&michell_geometry::SectionalHull, Placement)> =
             members.iter().map(|(h, p)| (h, *p)).collect();
 
         let mut rows = Vec::with_capacity(speeds.len());
@@ -1984,8 +1984,8 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
             .posed_tessellation(
                 m.index,
                 file.waterline_z,
-                &michell::iges::HullPose::default(),
-                &michell::iges::Platform::default(),
+                &michell_geometry::iges::HullPose::default(),
+                &michell_geometry::iges::Platform::default(),
             )
             .map_err(|e| format!("{}: {e}", m.path))?;
         render::add_mesh(&mut scene, &verts, &tris, m.shift.x, m.shift.y);
@@ -2071,7 +2071,7 @@ struct PlaceSpec {
     path: String,
     /// Absolute centerplane (`y=`): rejected, IGES carries none.
     y_abs: Option<f64>,
-    pose: michell::iges::HullPose,
+    pose: michell_geometry::iges::HullPose,
 }
 
 /// Parse `path` or `path@key=V,...` (keys: dx/x, dy, y, dz, trim [deg],
@@ -2084,7 +2084,7 @@ fn parse_place_spec(spec: &str) -> Result<PlaceSpec, String> {
     let mut out = PlaceSpec {
         path: path.to_string(),
         y_abs: None,
-        pose: michell::iges::HullPose::default(),
+        pose: michell_geometry::iges::HullPose::default(),
     };
     for part in rest.split(',').filter(|s| !s.trim().is_empty()) {
         let (k, v) = part
@@ -2117,7 +2117,7 @@ fn parse_place_spec(spec: &str) -> Result<PlaceSpec, String> {
 }
 
 fn cmd_place(args: &[String]) -> Result<(), String> {
-    use michell::iges::{self, Platform};
+    use michell_geometry::iges::{self, Platform};
     let p = parse_args(args)?;
     if p.positional.is_empty() {
         return Err(
@@ -2139,7 +2139,7 @@ fn cmd_place(args: &[String]) -> Result<(), String> {
     // Each input file is parsed once; a spec's pose applies rigidly to every
     // hull the file contains.
     let mut cache: HashMap<String, iges::SourceFleet> = HashMap::new();
-    let mut surfaces: Vec<michell::iges::NurbsSurface3> = Vec::new();
+    let mut surfaces: Vec<michell_geometry::iges::NurbsSurface3> = Vec::new();
     for raw in &p.positional {
         let spec = parse_place_spec(raw)?;
         if spec.y_abs.is_some() {
@@ -2198,8 +2198,8 @@ fn cmd_wigley(args: &[String]) -> Result<(), String> {
     let l = p.f64_flag("length")?.unwrap_or(10.0);
     let b = p.f64_flag("beam")?.unwrap_or(l / 10.0);
     let t = p.f64_flag("draft")?.unwrap_or(b * 0.625);
-    let surfaces = michell::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
-    let text = michell::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
+    let surfaces = michell_geometry::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
+    let text = michell_geometry::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
     match p.flag("output") {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}"))?;

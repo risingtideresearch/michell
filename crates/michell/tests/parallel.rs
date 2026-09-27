@@ -4,13 +4,13 @@
 //! tests pin that, entry point by entry point, by running each once with a
 //! budget of one worker and once with many and demanding exact equality.
 
-use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
-use michell::iges::{self, HullPose, Platform, SectionalOptions, SourceFleet};
-use michell::parallel::with_threads;
+use michell_geometry::float::{solve_equilibrium_sectional_dynamic, LoadCase};
+use michell_geometry::iges::{self, HullPose, Platform, SectionalOptions, SourceFleet};
+use michell_geometry::parallel::with_threads;
 use michell::sectional::{
     dynamic_load_closure, multihull_dynamic_force, multihull_wave_resistance,
 };
-use michell::source::SourceHull;
+use michell_geometry::source::SourceHull;
 use michell::squat::SquatOptions;
 use michell::{Conditions, Placement, SectionalHull, WaveOptions};
 

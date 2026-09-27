@@ -1,0 +1,8 @@
+[package]
+name = "michell-geometry"
+version = "0.1.0"
+edition = "2021"
+description = "Sectional hulls cut from IGES and STL geometry: sections, hydrostatics and hydrostatic equilibrium"
+license = "MIT"
+
+[dependencies]

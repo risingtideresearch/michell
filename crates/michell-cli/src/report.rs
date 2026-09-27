@@ -10,10 +10,11 @@ use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState, KNOT
 use crate::pdf::{Document, Page};
 use crate::png;
 use crate::manifest::source_hulls;
-use michell::float::{fleet_cg, solve_equilibrium_sectional_dynamic, LoadCase};
-use michell::iges::{HullPose, Platform};
-use michell::sectional::{dynamic_load_closure, multihull_resistance, SectionalHull};
-use michell::source::SourceHull;
+use michell_geometry::float::{fleet_cg, solve_equilibrium_sectional_dynamic, LoadCase};
+use michell_geometry::iges::{HullPose, Platform};
+use michell::sectional::{dynamic_load_closure, multihull_resistance};
+use michell_geometry::SectionalHull;
+use michell_geometry::source::SourceHull;
 use michell::{Conditions, FreeWaveSpectrum, Placement, TransomClosure};
 
 const PAGE_W: f64 = 792.0;
@@ -375,11 +376,11 @@ fn write_cache(path: &str, rows: &[CachedRow]) -> Result<(), String> {
 fn situate_at(
     hulls: &[SourceHull],
     platform: &Platform,
-    opts: &michell::iges::SectionalOptions,
+    opts: &michell_geometry::iges::SectionalOptions,
 ) -> Result<Vec<(SectionalHull, Placement)>, String> {
     let mut members = Vec::new();
     for h in hulls {
-        let o = michell::iges::SectionalOptions {
+        let o = michell_geometry::iges::SectionalOptions {
             waterline_z: h.waterline_z,
             ..*opts
         };

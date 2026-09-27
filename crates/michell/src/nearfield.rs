@@ -36,12 +36,14 @@
 //! The pressure is `p = ρUφ_x` (reported as `C_p = 2φ_x/U`) on the
 //! centreplane, and the elevation `ζ = (U/g)φ_x` at `z = 0`, positive up.
 
-use crate::conditions::Conditions;
-use crate::error::{Error, Result};
-use crate::michell::{Placement, TransomClosure};
-use crate::moments::C64;
-use crate::quadrature::gauss_legendre;
-use crate::sectional::{SectionalContracted, SectionalHull};
+use michell_geometry::Conditions;
+use michell_geometry::{Error, Result};
+use michell_geometry::Placement;
+use crate::michell::{TransomClosure};
+use michell_geometry::moments::C64;
+use michell_geometry::quadrature::gauss_legendre;
+use crate::sectional::NearFieldTransforms;
+use michell_geometry::sectional::{SectionalContracted, SectionalHull};
 use crate::spectrum::WaveGrid;
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -317,7 +319,7 @@ fn build_nodes(
             })
             .collect()
     };
-    let zcs: Vec<Vec<SectionalContracted>> = crate::parallel::map_indexed(
+    let zcs: Vec<Vec<SectionalContracted>> = michell_geometry::parallel::map_indexed(
         knodes.len(),
         || (),
         |_, i| contract_all(knodes[i].0),
@@ -346,7 +348,7 @@ fn build_nodes(
         panel(a, b, &mut thetas);
     }
     let pref = 2.0 * u * nu / (PI * PI);
-    let per_theta: Vec<Vec<(f64, f64, f64, Vec<C64>)>> = crate::parallel::map_indexed(
+    let per_theta: Vec<Vec<(f64, f64, f64, Vec<C64>)>> = michell_geometry::parallel::map_indexed(
         thetas.len(),
         || (),
         |_, it| {
@@ -433,7 +435,7 @@ fn build_nodes(
         panel(a, b, &mut rthetas);
     }
     let res_pref = RADIATION_SIGN * 2.0 * u * nu / PI;
-    let res: Vec<(f64, f64, f64, Vec<C64>)> = crate::parallel::map_indexed(
+    let res: Vec<(f64, f64, f64, Vec<C64>)> = michell_geometry::parallel::map_indexed(
         rthetas.len(),
         || (),
         |_, it| {
@@ -521,7 +523,7 @@ fn hull_pressure_with(
         // Columns midway between the real hull's stations.
         let first = if with_appendage { 0 } else { sh.real_from };
         let cols: Vec<usize> = (first..sh.xs.len() - 1).collect();
-        let per_col: Vec<Vec<f64>> = crate::parallel::map_indexed(
+        let per_col: Vec<Vec<f64>> = michell_geometry::parallel::map_indexed(
             cols.len(),
             || vec![0.0f64; nz1],
             |acc, ci| {
@@ -643,7 +645,7 @@ pub fn free_surface(
                 }
             }
         }
-        let rows: Vec<Vec<f64>> = crate::parallel::map_indexed(
+        let rows: Vec<Vec<f64>> = michell_geometry::parallel::map_indexed(
             ny,
             || (),
             |_, iy| {
@@ -691,12 +693,12 @@ mod tests {
 
     fn wigley() -> SectionalHull {
         let w = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-        let text = crate::iges::write(
-            &crate::iges::halfbreadth_surfaces(w.surface(), 0.0, 0.0),
+        let text = michell_geometry::iges::write(
+            &michell_geometry::iges::halfbreadth_surfaces(w.surface(), 0.0, 0.0),
             "wigley",
         )
         .unwrap();
-        let f = crate::iges::import_sectional(&text, &Default::default()).unwrap();
+        let f = michell_geometry::iges::import_sectional(&text, &Default::default()).unwrap();
         f.hulls[0].hull.clone()
     }
 
@@ -799,11 +801,11 @@ mod tests {
         let Some(text) = crate::cad_fixture("e12.igs") else {
             return;
         };
-        let so = crate::iges::SectionalOptions {
+        let so = michell_geometry::iges::SectionalOptions {
             waterline_z: -0.95,
             ..Default::default()
         };
-        let f = crate::iges::import_sectional(&text, &so).unwrap();
+        let f = michell_geometry::iges::import_sectional(&text, &so).unwrap();
         let h = &f.hulls[0].hull;
         let cond = Conditions::seawater(0.3 * (9.81f64 * h.length()).sqrt());
         let sq = SquatOptions {

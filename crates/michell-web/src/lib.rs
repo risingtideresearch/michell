@@ -9,8 +9,8 @@
 //! and the transom with what the closure needs to draw its virtual appendage
 //! at any speed.
 
-use michell::iges::{HullPose, Platform, SectionalImport};
-use michell::sectional::SectionalHull;
+use michell_geometry::iges::{HullPose, Platform, SectionalImport};
+use michell_geometry::SectionalHull;
 use michell::{Conditions, Placement, TransomClosure, WaveOptions, STANDARD_GRAVITY};
 use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
 use serde_json::{json, Value};
@@ -88,7 +88,7 @@ struct Cut {
     /// Each cut hull's index in the file.
     index: Vec<usize>,
     hulls: Vec<SectionalImport>,
-    opts: michell::iges::SectionalOptions,
+    opts: michell_geometry::iges::SectionalOptions,
     notes: Vec<String>,
 }
 
@@ -146,14 +146,14 @@ struct Counted<'a, R> {
     report: R,
 }
 
-impl<R> michell::float::DynamicModel<SectionalHull> for Counted<'_, R>
+impl<R> michell_geometry::float::DynamicModel<SectionalHull> for Counted<'_, R>
 where
-    R: FnMut(&michell::float::DynamicLoad, f64) -> michell::Result<()>,
+    R: FnMut(&michell_geometry::float::DynamicLoad, f64) -> michell::Result<()>,
 {
     fn load(
         &mut self,
-        fleet: &michell::float::FleetState<SectionalHull>,
-    ) -> michell::Result<michell::float::DynamicLoad> {
+        fleet: &michell_geometry::float::FleetState<SectionalHull>,
+    ) -> michell::Result<michell_geometry::float::DynamicLoad> {
         let d = self.inner.load(fleet)?;
         let vol: f64 = fleet.members.iter().map(|(h, _)| h.displaced_volume()).sum();
         (self.report)(&d, vol)?;
@@ -162,8 +162,8 @@ where
 
     fn probe(
         &mut self,
-        fleet: &michell::float::FleetState<SectionalHull>,
-    ) -> Option<michell::Result<michell::float::DynamicLoad>> {
+        fleet: &michell_geometry::float::FleetState<SectionalHull>,
+    ) -> Option<michell::Result<michell_geometry::float::DynamicLoad>> {
         self.inner.probe(fleet)
     }
 }
@@ -393,9 +393,9 @@ fn flow_inner(
     report: &mut dyn FnMut(&Progress) -> bool,
     mut shared: Option<&mut SweepField>,
 ) -> Result<Value, String> {
-    use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
+    use michell_geometry::float::{solve_equilibrium_sectional_dynamic, LoadCase};
     use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
-    use michell::source::SourceHull;
+    use michell_geometry::source::SourceHull;
     let t0 = std::time::Instant::now();
     let mut track = Tracker {
         stages: flow_stages(req.dynamic),
@@ -556,7 +556,7 @@ fn flow_inner(
         let mut evaluations = 0usize;
         let weight = mass * cond.gravity;
         let track_ref = &mut track;
-        let report = move |d: &michell::float::DynamicLoad, vol: f64| {
+        let report = move |d: &michell_geometry::float::DynamicLoad, vol: f64| {
             evaluations += 1;
             track_ref
                 .at(
@@ -1128,8 +1128,8 @@ mod tests {
     /// The exact Wigley as IGES, shown by sections.
     #[test]
     fn a_wigley_is_shown_in_sections() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let v = loft("w.igs", text.into_bytes(), &LoftRequest::default()).unwrap();
         let h = &v["hulls"][0];
         let vol = h["displaced_volume"].as_f64().unwrap();
@@ -1144,8 +1144,8 @@ mod tests {
     /// and a dynamic lift that sinks the hull.
     #[test]
     fn a_wigley_flow_has_pressure_waves_and_lift() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         // This Wigley ends at its waterline (no topsides to sink into), so
         // at the design attitude.
         let pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
@@ -1164,8 +1164,8 @@ mod tests {
     }
 
     fn wigley_flow_request() -> (Vec<u8>, FlowRequest) {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let pairs: Vec<(String, String)> =
             [("froude", "0.35"), ("grid", "40"), ("attitude", "design")]
                 .iter()
@@ -1202,8 +1202,8 @@ mod tests {
     /// by ±span/2, is the two-hull field computed directly.
     #[test]
     fn a_catamaran_field_is_its_demihulls_summed() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let pairs: Vec<(String, String)> =
             [("froude", "0.35"), ("grid", "60"), ("attitude", "design"), ("span", "3.1")]
                 .iter()
@@ -1220,7 +1220,7 @@ mod tests {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
             .collect();
         // The same two hulls, directly, on the same grid.
-        let hull = michell::iges::source_fleet(&text, 0.0)
+        let hull = michell_geometry::iges::source_fleet(&text, 0.0)
             .unwrap()
             .situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &Default::default())
             .unwrap()
@@ -1269,8 +1269,8 @@ mod tests {
     /// cube root of the mass ratio (x, y, z) or kept (beam and draft only).
     #[test]
     fn a_mass_carried_by_scaling_keeps_the_waterline() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let rho = Conditions::seawater(1.0).fluid.density;
         let v0 = 4.0 / 9.0 * 10.0 * 0.625;
         let mass = 1.2 * rho * v0;
@@ -1300,8 +1300,8 @@ mod tests {
     /// but the cost.
     #[test]
     fn a_span_sweep_is_its_spans_flows() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let q = |extra: &[(&str, &str)]| -> FlowRequest {
             let mut pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
                 .iter()

@@ -3,14 +3,14 @@
 //! against the hydrostatic solver and against closed-form shifts on a
 //! fore-aft symmetric Wigley hull with freeboard.
 
-use michell::float::{
+use michell_geometry::float::{
     DynamicModel,
     solve_equilibrium_dynamic_with, solve_equilibrium_sectional,
     solve_equilibrium_sectional_dynamic, DynamicEquilibrium, DynamicLoad, FleetState, LoadCase,
 };
-use michell::iges::{self, HullPose, NurbsSurface3, Platform, SectionalOptions, SourceFleet};
-use michell::sectional::SectionalHull;
-use michell::source::SourceHull;
+use michell_geometry::iges::{self, HullPose, NurbsSurface3, Platform, SectionalOptions, SourceFleet};
+use michell_geometry::SectionalHull;
+use michell_geometry::source::SourceHull;
 use michell::{Result, STANDARD_GRAVITY};
 
 const RHO: f64 = 1000.0;
