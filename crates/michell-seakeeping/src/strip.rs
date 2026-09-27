@@ -187,6 +187,93 @@ pub fn response(
     wave: &Wave,
     opts: &StripOptions,
 ) -> Result<Response> {
+    solve(hull, mass, wave, opts).map(|(r, _)| r)
+}
+
+/// Mean added resistance in a regular wave, with the response it comes
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AddedResistance {
+    pub response: Response,
+    /// Mean added resistance per unit wave amplitude squared,
+    /// `R_aw/ζ_a²` [N/m²].
+    pub per_amplitude_sq: f64,
+}
+
+impl AddedResistance {
+    /// The usual non-dimensional form `R_aw / (ρ g ζ_a² B²/L)`.
+    pub fn coefficient(&self, density: f64, gravity: f64, beam: f64, length: f64) -> f64 {
+        self.per_amplitude_sq / (density * gravity * beam * beam / length)
+    }
+}
+
+/// Mean added resistance by the **radiated-energy** method of Gerritsma &
+/// Beukelman (1972): the work the ship does radiating waves, through each
+/// section's damping, as it moves relative to the local water,
+///
+/// ```text
+/// R_aw = −(k cos β / 2ω_e) ∫ b*(x) |V(x)|² dx,     b* = b − U da/dx,
+/// V = −iω_e [η₃ + (x − x_G) η₅ − ζ*(x)]
+/// ```
+///
+/// with `ζ*` the incident wave reduced by the section-mean Smith factor
+/// `Z(x; k)/Z(x; 0)` (the mean of `e^{−kz}` over the section's area).
+/// Radiated energy vanishes with the motions, so in waves much shorter than
+/// the hull — where the real added resistance is the bow's reflection — the
+/// method falls to zero; it has no short-wave correction.
+pub fn added_resistance(
+    hull: &SectionalHull,
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<AddedResistance> {
+    let (response, strips) = solve(hull, mass, wave, opts)?;
+    let (k, we, u) = (response.k, response.omega_e, wave.speed);
+    let cb = wave.heading.cos();
+    let smith: Vec<f64> = hull
+        .section_nodes()
+        .iter()
+        .map(|n| {
+            let z0 = n.depth_integral(0.0);
+            if z0 > 0.0 {
+                n.depth_integral(k) / z0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let n = strips.len();
+    let dadx = |i: usize| -> f64 {
+        let (lo, hi) = (i.saturating_sub(1), (i + 1).min(n - 1));
+        if hi == lo {
+            return 0.0;
+        }
+        (strips[hi].a() - strips[lo].a()) / (strips[hi].x - strips[lo].x)
+    };
+    let integrand: Vec<f64> = (0..n)
+        .map(|i| {
+            let s = &strips[i];
+            let zeta = C64::cis(k * cb * s.x).scale(smith.get(i).copied().unwrap_or(0.0));
+            let rel = response.heave + response.pitch.scale(s.x) - zeta;
+            let b_star = s.b() - u * dadx(i);
+            b_star * we * we * rel.abs_sq()
+        })
+        .collect();
+    let integral: f64 = (0..n.saturating_sub(1))
+        .map(|i| 0.5 * (integrand[i] + integrand[i + 1]) * (strips[i + 1].x - strips[i].x))
+        .sum();
+    Ok(AddedResistance {
+        response,
+        per_amplitude_sq: -k * cb / (2.0 * we) * integral,
+    })
+}
+
+fn solve(
+    hull: &SectionalHull,
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<(Response, Vec<Strip>)> {
     let (rho, g) = (opts.density, opts.gravity);
     let w0 = wave.omega;
     let k = w0 * w0 / g;
@@ -279,14 +366,15 @@ pub fn response(
         froude_krylov: [fk3.conj(), -fk5.conj()],
         diffraction: [fd3.conj(), -fd5.conj()],
     };
-    Ok(Response {
+    let response = Response {
         wave: *wave,
         omega_e: we,
         k,
         heave: eta3.conj(),
         pitch: -eta5.conj(),
         coefficients,
-    })
+    };
+    Ok((response, strips))
 }
 
 #[cfg(test)]
@@ -377,6 +465,49 @@ mod tests {
             (with_speed.damping[0][1] - with_speed.damping[1][0]).abs()
                 > 1e-3 * with_speed.damping[0][0] * l
         );
+    }
+
+    /// Gerritsma–Beukelman added resistance in head seas at Fn 0.3: positive
+    /// throughout, peaking with the motions (λ/L ≈ 1–1.2) and vanishing in
+    /// long waves, where the hull follows the water. The peak here,
+    /// `R_aw/(ρgζ²B²/L)` ≈ 44 at λ/L = 1, sits well above the ~5–10 recalled
+    /// from Wigley experiments: the method goes with the square of the
+    /// relative motion, and strip theory overshoots this lightly damped
+    /// resonance. Not yet checked against data; the magnitude bound is a
+    /// sanity guard only.
+    #[test]
+    fn added_resistance_peaks_with_the_motions() {
+        let l = 3.0;
+        let hull = wigley(l);
+        let mass = MassProperties::floating(&hull, RHO, 0.25 * l);
+        let u = 0.3 * (G * l).sqrt();
+        let mut rows = Vec::new();
+        for i in 0..10 {
+            let lam = l * (0.8 + 0.2 * i as f64);
+            let k = 2.0 * PI / lam;
+            let wave = Wave {
+                omega: (k * G).sqrt(),
+                heading: PI,
+                speed: u,
+            };
+            let r = added_resistance(&hull, &mass, &wave, &opts()).unwrap();
+            let sigma = r.coefficient(RHO, G, 0.1 * l, l);
+            eprintln!(
+                "λ/L {:.2}: heave {:.3} pitch {:.3} σ_aw {:.3}",
+                lam / l,
+                r.response.heave_rao(),
+                r.response.pitch_rao(),
+                sigma
+            );
+            rows.push((lam / l, sigma));
+        }
+        assert!(rows.iter().all(|r| r.1 > 0.0), "{rows:?}");
+        let peak = rows
+            .iter()
+            .cloned()
+            .fold((0.0, 0.0), |a, r| if r.1 > a.1 { r } else { a });
+        assert!((1.0..=1.6).contains(&peak.0), "peak at {peak:?}");
+        assert!(peak.1 > 1.0 && peak.1 < 80.0, "peak {peak:?}");
     }
 
     /// Head seas. At rest the heave resonance lies in short waves that
