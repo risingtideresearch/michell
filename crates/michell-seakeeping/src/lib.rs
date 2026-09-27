@@ -46,7 +46,10 @@
 //! pitch RAOs and added resistance at Fn 0.2, 0.3 and 0.4.
 
 pub mod froude_krylov;
+pub mod green;
+pub mod linalg;
 pub mod restoring;
+pub mod section2d;
 pub mod waves;
 
 pub use froude_krylov::{froude_krylov, WaveLoad};
