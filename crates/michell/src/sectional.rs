@@ -1143,6 +1143,93 @@ impl MemberWave for SectionalMember<'_> {
     }
 }
 
+/// One hull's free-wave amplitude `A(λ)` on `[1, λ_max]`, tabulated on
+/// panels of Chebyshev points and read back by barycentric interpolation.
+/// `A` is smooth in `λ` — it oscillates at the hull's own half-length phase,
+/// ~`ν L/2` per unit `λ`, under a decaying envelope — so panels a few
+/// radians of that phase wide interpolate it spectrally.
+struct AmplitudeTable {
+    lo: f64,
+    h: f64,
+    lam_max: f64,
+    /// `NODES` values per panel.
+    vals: Vec<C64>,
+}
+
+const NODES: usize = 17;
+
+/// Chebyshev (second-kind) points on `[-1, 1]`, ascending.
+fn cheb(j: usize) -> f64 {
+    -(PI * j as f64 / (NODES - 1) as f64).cos()
+}
+
+impl AmplitudeTable {
+    fn new(hull: &SectionalHull, nu: f64, closure: TransomClosure, lam_max: f64) -> Self {
+        let lo = 1.0;
+        // Panels ~3 radians of the amplitude's own phase wide.
+        let h = (3.0 / (nu * 0.5 * hull.length).max(1e-9)).min(0.5);
+        let panels = (((lam_max - lo) / h).ceil() as usize).max(1);
+        let per_panel = crate::parallel::map_indexed(
+            panels,
+            SectionalContracted::default,
+            |scratch, p| {
+                (0..NODES)
+                    .map(|j| {
+                        let lam = lo + h * (p as f64 + 0.5 * (1.0 + cheb(j)));
+                        hull.amplitude_closed(nu, lam, closure, scratch)
+                    })
+                    .collect::<Vec<_>>()
+            },
+        );
+        AmplitudeTable {
+            lo,
+            h,
+            lam_max: lo + h * panels as f64,
+            vals: per_panel.into_iter().flatten().collect(),
+        }
+    }
+
+    fn eval(&self, lam: f64) -> C64 {
+        if !(lam >= self.lo && lam < self.lam_max) {
+            return C64::ZERO;
+        }
+        let u = (lam - self.lo) / self.h;
+        let p = (u.floor() as usize).min(self.vals.len() / NODES - 1);
+        let t = 2.0 * (u - p as f64) - 1.0;
+        let v = &self.vals[p * NODES..(p + 1) * NODES];
+        let (mut num, mut den) = (C64::ZERO, 0.0);
+        for (j, &vj) in v.iter().enumerate() {
+            let d = t - cheb(j);
+            if d == 0.0 {
+                return vj;
+            }
+            let sign = if j % 2 == 0 { 1.0 } else { -1.0 };
+            let w = sign * if j == 0 || j == NODES - 1 { 0.5 } else { 1.0 } / d;
+            num = num + vj.scale(w);
+            den += w;
+        }
+        num.scale(1.0 / den)
+    }
+}
+
+/// A fleet member reading its amplitude from a shared table.
+#[derive(Clone)]
+struct Tabulated<'t> {
+    table: &'t AmplitudeTable,
+    dx: f64,
+    dy: f64,
+}
+
+impl MemberWave for Tabulated<'_> {
+    fn amps(&mut self, _nu: f64, lambda: f64) -> (C64, C64) {
+        let f = self.table.eval(lambda);
+        (f, f)
+    }
+    fn offsets(&self) -> (f64, f64) {
+        (self.dx, self.dy)
+    }
+}
+
 /// Michell wave resistance of a single sectional hull: an adaptive outer
 /// quadrature over `λ`, the transom (if any) closed by `opts.transom`.
 pub fn wave_resistance(
@@ -1185,6 +1272,26 @@ pub fn multihull_wave_resistance(
         t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
     };
     let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
+    // Copies of one hull (a catamaran): the pair's integrand oscillates with
+    // the spacing and needs many λ-nodes, but every copy carries the same
+    // smooth amplitude. Integrate the hull alone (which finds how far in λ
+    // it matters), tabulate its amplitude that far, and let the fleet
+    // integral interpolate the table — exact to the interpolation's ~1e-10.
+    let tw = twins(members);
+    if members.len() > 1 && tw[1..].iter().all(|t| *t == Some(0)) {
+        let (h0, _) = members[0];
+        let solo = multihull_wave_resistance(&[(h0, Placement::default())], cond, opts)?;
+        let table = AmplitudeTable::new(h0, nu, opts.transom, 1.1 * solo.max_lambda);
+        let mem = members
+            .iter()
+            .map(|(h, p)| Tabulated {
+                table: &table,
+                dx: h.x_center + p.x - cx_ref,
+                dy: p.y - y_ref,
+            })
+            .collect();
+        return Ok(run_outer(&params, opts, coeff, mem));
+    }
     let mem = members
         .iter()
         .map(|(h, p)| SectionalMember {
@@ -1208,10 +1315,17 @@ pub fn multihull_resistance(
     viscous_opts: &ViscousOptions,
 ) -> Result<MultihullResistance> {
     let wave = multihull_wave_resistance(members, cond, wave_opts)?;
-    let mut solo_wave_total = 0.0;
-    for m in members {
-        solo_wave_total += multihull_wave_resistance(&[*m], cond, wave_opts)?.resistance;
+    // A copy of an earlier member has its resistance alone.
+    let tw = twins(members);
+    let mut solo: Vec<f64> = Vec::with_capacity(members.len());
+    for (i, m) in members.iter().enumerate() {
+        let r = match tw[i] {
+            Some(j) => solo[j],
+            None => multihull_wave_resistance(&[*m], cond, wave_opts)?.resistance,
+        };
+        solo.push(r);
     }
+    let solo_wave_total: f64 = solo.iter().sum();
     let viscous: Vec<ViscousResistance> = members
         .iter()
         .map(|(h, _)| viscous_resistance_for(h.length, h.wetted_surface, cond, viscous_opts))
@@ -1713,6 +1827,76 @@ mod tests {
             "{area} {m2} {m1} {lcb}"
         );
         assert!(s < 1e-3, "wetted surface {s:.1e}");
+    }
+}
+
+#[cfg(test)]
+mod twin_tests {
+    use super::*;
+
+    /// The direct fleet integral: every member evaluates its own amplitude.
+    fn direct(members: &[(&SectionalHull, Placement)], cond: &Conditions, opts: &WaveOptions) -> f64 {
+        let (u, g) = (cond.speed, cond.gravity);
+        let nu = g / (u * u);
+        let n = members.len() as f64;
+        let cx_ref = members.iter().map(|(h, p)| h.x_center + p.x).sum::<f64>() / n;
+        let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
+        let params = OuterParams {
+            nu,
+            x_half: members
+                .iter()
+                .map(|(h, p)| (h.x_center + p.x - cx_ref).abs() + 0.5 * h.length)
+                .fold(0.0, f64::max),
+            y_half: members.iter().map(|(_, p)| (p.y - y_ref).abs()).fold(0.0, f64::max),
+            t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
+        };
+        let mem = members
+            .iter()
+            .map(|(h, p)| SectionalMember {
+                hull: h,
+                scratch: SectionalContracted::default(),
+                dx: h.x_center + p.x - cx_ref,
+                dy: p.y - y_ref,
+                closure: opts.transom,
+            })
+            .collect();
+        run_outer(&params, opts, 4.0 * cond.fluid.density * g * g / (PI * u * u), mem).resistance
+    }
+
+    /// A catamaran's resistance from one tabulated demihull amplitude is the
+    /// direct two-hull integral's, for a closed hull and a transom hull.
+    #[test]
+    fn a_catamaran_from_a_tabulated_amplitude_is_exact() {
+        let wigley = {
+            let surfaces = crate::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+            crate::iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0)
+                .unwrap()
+                .situate_sectional(0, 0.0, &Default::default(), &Default::default(), &Default::default())
+                .unwrap()
+                .unwrap()
+                .hull
+        };
+        let e12 = crate::cad_fixture("e12.igs").map(|t| {
+            let o = crate::iges::SectionalOptions { waterline_z: -0.95, ..Default::default() };
+            crate::iges::import_sectional(&t, &o).unwrap().hulls.remove(0).hull
+        });
+        let opts = WaveOptions::default();
+        for h in std::iter::once(&wigley).chain(e12.as_ref()) {
+            for (fnum, span) in [(0.3, 2.0 * h.length / 10.0), (0.45, 3.5 * h.length / 10.0)] {
+                let cond = Conditions::seawater(fnum * (9.81 * h.length).sqrt());
+                let pair = [
+                    (h, Placement { x: 0.0, y: 0.5 * span }),
+                    (h, Placement { x: 0.0, y: -0.5 * span }),
+                ];
+                let fast = multihull_wave_resistance(&pair, &cond, &opts).unwrap().resistance;
+                let slow = direct(&pair, &cond, &opts);
+                assert!(
+                    (fast - slow).abs() < 1e-5 * slow,
+                    "L {} Fn {fnum} span {span}: tabulated {fast} vs direct {slow}",
+                    h.length
+                );
+            }
+        }
     }
 }
 
