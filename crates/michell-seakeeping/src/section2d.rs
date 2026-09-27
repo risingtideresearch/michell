@@ -18,8 +18,10 @@
 //!
 //! Like every source method it fails at the **irregular frequencies** of
 //! the interior (the sloshing modes of the fluid the section would enclose,
-//! the first near `ν ≈ (π/B) coth(πT/B)` for a box of beam `B`, draft `T`);
-//! below the first one the results converge.
+//! the first near `ν ≈ (π/B) coth(πT/B)` for a box of beam `B`, draft `T`).
+//! They are narrow, and betray themselves: the damping stops matching the
+//! energy the far field carries. [`Section::heave`] checks that balance on
+//! every solve and bridges a failure by interpolating across it.
 
 use crate::green::{far_factor, wave_part};
 use crate::linalg::solve;
@@ -57,10 +59,20 @@ pub struct HeaveSolution {
     /// Far-field amplitude: `ψ → C e^{νz} e^{iν|y|}` per unit heave
     /// velocity as `|y| → ∞`.
     pub far: C64,
+    /// Whether this solution was interpolated across an irregular
+    /// frequency (see [`Section::heave`]).
+    pub interpolated: bool,
+    density: f64,
     panels: Vec<Panel>,
     /// `ψ` at the panel midpoints (starboard; port is equal).
     psi: Vec<C64>,
 }
+
+/// Largest relative disagreement between the near-field damping and the
+/// radiated energy `ρω|C|²` a solution may have before it is taken to be
+/// polluted by an irregular frequency. Converged solutions away from those
+/// agree to about a percent.
+pub const ENERGY_TOLERANCE: f64 = 0.05;
 
 impl Section {
     /// A section from its curve as the sectional hull samples it —
@@ -169,7 +181,41 @@ impl Section {
     }
 
     /// The heave radiation problem at frequency `omega`.
+    ///
+    /// Near an irregular frequency the source method's solution is wrong
+    /// but still finite; the tell is that its damping no longer matches the
+    /// energy its far field carries. When the two disagree by more than
+    /// [`ENERGY_TOLERANCE`], the problem is re-solved a little below and
+    /// above `omega` and the two interpolated — the irregular frequencies
+    /// of a section are narrow — and [`HeaveSolution::interpolated`] says so.
     pub fn heave(&self, omega: f64, gravity: f64, density: f64) -> Option<HeaveSolution> {
+        let sol = self.heave_at(omega, gravity, density)?;
+        if sol.energy_error() <= ENERGY_TOLERANCE {
+            return Some(sol);
+        }
+        for eps in [0.02, 0.04, 0.08] {
+            let lo = self.heave_at(omega * (1.0 - eps), gravity, density)?;
+            let hi = self.heave_at(omega * (1.0 + eps), gravity, density)?;
+            if lo.energy_error() <= ENERGY_TOLERANCE && hi.energy_error() <= ENERGY_TOLERANCE {
+                let mix = |a: C64, b: C64| (a + b).scale(0.5);
+                return Some(HeaveSolution {
+                    omega,
+                    added_mass: 0.5 * (lo.added_mass + hi.added_mass),
+                    // Damping scales with frequency through b = ρω|C|²:
+                    // interpolate |C|² and ψ, rebuild b at ω.
+                    damping: 0.5 * (lo.damping / lo.omega + hi.damping / hi.omega) * omega,
+                    far: mix(lo.far, hi.far),
+                    psi: lo.psi.iter().zip(&hi.psi).map(|(&a, &b)| mix(a, b)).collect(),
+                    panels: lo.panels,
+                    interpolated: true,
+                    density,
+                });
+            }
+        }
+        Some(sol)
+    }
+
+    fn heave_at(&self, omega: f64, gravity: f64, density: f64) -> Option<HeaveSolution> {
         let panels = self.panels();
         let nu = omega * omega / gravity;
         let (s, d) = influence(&panels, nu);
@@ -189,6 +235,8 @@ impl Section {
             far,
             panels,
             psi,
+            interpolated: false,
+            density,
         })
     }
 
@@ -217,6 +265,19 @@ impl Section {
 }
 
 impl HeaveSolution {
+    /// Relative disagreement between the damping and the radiated energy,
+    /// `|b/(ρω|C|²) − 1|`.
+    pub fn energy_error(&self) -> f64 {
+        let far = self.density * self.omega * self.far.abs_sq();
+        if far > 0.0 {
+            (self.damping / far - 1.0).abs()
+        } else if self.damping.abs() > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        }
+    }
+
     /// Radiated wave amplitude per unit heave amplitude,
     /// `|ζ/η| = ω²|C|/g`.
     pub fn wave_ratio(&self, gravity: f64) -> f64 {
@@ -444,6 +505,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A Wigley midship section's first irregular frequency (ν ≈ 12/m for
+    /// B = 0.3 m, T = 0.1875 m) is detected by its energy mismatch and
+    /// bridged: the result lies between its neighbours.
+    #[test]
+    fn an_irregular_frequency_is_bridged() {
+        let (b, t) = (0.15, 0.1875);
+        let para: Vec<(f64, f64)> = (0..=64)
+            .map(|i| {
+                let z = t * i as f64 / 64.0;
+                (b * (1.0 - (z / t).powi(2)), z)
+            })
+            .collect();
+        let sec = Section::from_curve(&para, 24).unwrap();
+        let at = |nu: f64| sec.heave((nu * G).sqrt(), G, RHO).unwrap();
+        let raw = sec.heave_at((12.0 * G).sqrt(), G, RHO).unwrap();
+        assert!(raw.energy_error() > ENERGY_TOLERANCE, "the raw solve should be polluted: {}", raw.energy_error());
+        let (lo, mid, hi) = (at(11.0), at(12.0), at(13.0));
+        assert!(mid.interpolated && !lo.interpolated && !hi.interpolated);
+        let between = |a: f64, m: f64, c: f64| m > a.min(c) - 0.05 * a.abs() && m < a.max(c) + 0.05 * a.abs();
+        assert!(between(lo.added_mass, mid.added_mass, hi.added_mass), "{} {} {}", lo.added_mass, mid.added_mass, hi.added_mass);
+        let bw = |s: &HeaveSolution| s.damping / s.omega;
+        assert!(between(bw(&lo), bw(&mid), bw(&hi)), "{} {} {}", bw(&lo), bw(&mid), bw(&hi));
     }
 
     #[test]

@@ -1,44 +1,22 @@
-//! Diagnostics: semicircle sections with differently graded panels, with
-//! the energy check `b = ρω|C|²`.
+//! Added mass and damping of a Wigley midship section swept across its
+//! first irregular frequency, with the energy check `b = ρω|C|²`.
 use michell_seakeeping::section2d::Section;
-use std::f64::consts::PI;
-
-fn semi(r: f64, n: usize, grade: impl Fn(f64) -> f64) -> Section {
-    Section::from_nodes(
-        (0..=n)
-            .map(|i| {
-                let th = 0.5 * PI * grade(i as f64 / n as f64);
-                [r * th.cos(), -r * th.sin()]
-            })
-            .collect(),
-    )
-}
 
 fn main() {
-    let (g, r) = (9.81, 0.15);
-    let nu = 4.0f64;
-    let w = (nu * g).sqrt();
-    let cases: Vec<(&str, Section)> = vec![
-        ("uniform", semi(r, 24, |t| t)),
-        ("both ends", semi(r, 24, |t| 0.5 * (1.0 - (PI * t).cos()))),
-        ("waterline", semi(r, 24, |t| 1.0 - (0.5 * PI * t).cos())),
-        ("keel", semi(r, 24, |t| (0.5 * PI * t).sin())),
-        ("mild both", semi(r, 24, |t| 0.5 * t + 0.25 * (1.0 - (PI * t).cos()))),
-    ];
-    let curve: Vec<(f64, f64)> = (0..=128)
+    let (b, t, g, rho) = (0.15, 0.1875, 9.81, 1000.0);
+    let curve: Vec<(f64, f64)> = (0..=64)
         .map(|i| {
-            let th = 0.5 * PI * i as f64 / 128.0;
-            (r * th.cos(), r * th.sin())
+            let z = t * i as f64 / 64.0;
+            (b * (1.0 - (z / t).powi(2)), z)
         })
         .collect();
-    let fc = Section::from_curve(&curve, 24).unwrap();
-    let exact = semi(r, 24, |t| 0.5 * (1.0 - (PI * t).cos()));
-    for (a, b) in fc.nodes().iter().zip(exact.nodes()) {
-        println!("curve {:+.6} {:+.6}   exact {:+.6} {:+.6}", a[0], a[1], b[0], b[1]);
-    }
-    let cases: Vec<(&str, Section)> = cases.into_iter().chain([("from_curve", fc)]).collect();
-    for (name, sec) in cases {
-        let s = sec.heave(w, g, 1000.0).unwrap();
-        println!("{name:10} a {:9.4} b {:9.4}  ρω|C|² {:9.4}", s.added_mass, s.damping, 1000.0 * w * s.far.abs_sq());
+    let sec = Section::from_curve(&curve, 24).unwrap();
+    let m = rho * 2.0 * b * t * 2.0 / 3.0;
+    for i in 0..45 {
+        let nu = 4.0 + 0.5 * i as f64;
+        let w = (nu * g).sqrt();
+        let s = sec.heave(w, g, rho).unwrap();
+        let far = rho * w * s.far.abs_sq();
+        println!("ν {nu:5.2}  a/m {:8.4}  b/(mω) {:8.4}  energy {:+.3}", s.added_mass / m, s.damping / (m * w), s.damping / far - 1.0);
     }
 }
