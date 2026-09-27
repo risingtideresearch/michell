@@ -96,6 +96,18 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     pointer-events: none; display: none;
   }
+  #plot { position: absolute; left: 12px; bottom: 12px; width: min(580px, calc(100% - 260px));
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 6px;
+    font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  #plot .head { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  #plot .head label { flex-direction: row; align-items: center; gap: 6px; margin-left: auto; }
+  #plot .head select { padding: 2px 5px; font-size: 12px; }
+  #plot .x { border: 0; background: none; font-size: 15px; color: var(--muted); padding: 0 2px; }
+  #plot svg { width: 100%; height: auto; display: block; margin-top: 4px; }
+  #plot svg text { font: 10px system-ui, sans-serif; fill: var(--muted); }
+  #plot svg .pt { cursor: pointer; }
+  #plot .key { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
+  #plot .empty { fill: var(--muted); font-size: 12px; }
   #area { position: absolute; left: 12px; bottom: 12px; width: min(620px, calc(100% - 24px));
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 4px;
     font-size: 11px; display: none; }
@@ -191,7 +203,10 @@
       </label>
     </div>
     <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. Cases run one at a time; click a finished one to view it.</p>
-    <button class="primary" id="flowgo" disabled style="width:100%">Add cases</button>
+    <div style="display:flex;gap:8px">
+      <button class="primary" id="flowgo" disabled style="flex:1">Add cases</button>
+      <button id="plotbtn" title="Plot R_t across the finished cases">Plot</button>
+    </div>
     <div id="cases"></div>
     <div id="flowprog" hidden>
       <div class="head"><b id="fpstage"></b><span id="fptime"></span></div>
@@ -221,6 +236,25 @@
   <div id="readout3d"></div>
   <div class="legend" id="lgcp"><div id="cpname">Hull pressure C<sub>p</sub></div><div class="bar"></div><div class="ends"><span id="cplo"></span><span>0</span><span id="cphi"></span></div></div>
   <div class="legend" id="lgzeta"><div>Free-surface elevation ζ</div><div class="bar"></div><div class="ends"><span id="zlo"></span><span>0</span><span id="zhi"></span></div></div>
+  <div id="plot" hidden>
+    <div class="head">
+      <b>Total resistance R<sub>t</sub> [N]</b>
+      <label>against
+        <select id="plotx">
+          <option value="froude">Froude number</option>
+          <option value="speed">Speed [m/s]</option>
+          <option value="knots">Speed [kn]</option>
+          <option value="mass">Mass [kg]</option>
+          <option value="lcg">LCG x [m]</option>
+          <option value="sinkage">Sinkage [mm]</option>
+          <option value="trim">Trim [°]</option>
+        </select>
+      </label>
+      <button class="x" id="plotclose" title="close">×</button>
+    </div>
+    <svg id="plotsvg" viewBox="0 0 560 250"></svg>
+    <div class="key" id="plotkey"></div>
+  </div>
   <div id="area">
     <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots), its interpolant (line), and the closure's Z_T·φ(s) over the hollow (dashed), each scaled to its peak</span></div>
     <svg id="areasvg" viewBox="0 0 620 130" preserveAspectRatio="none"></svg>
@@ -436,6 +470,7 @@ function caseLabel(c) {
 }
 
 function renderCases() {
+  drawPlot();
   $("cases").innerHTML = cases.map((c) => {
     const f = c.data && c.data.forces;
     const res = f ? `R<sub>t</sub> ${fmt(f.rt, 1)} N · ${fmt(1000 * f.sinkage, 1)} mm · ${fmt(f.trim_deg, 2)}°`
@@ -464,6 +499,73 @@ $("cases").addEventListener("click", (e) => {
     pump();
   } else if (c.status === "done") view(c.id);
 });
+
+// ---------------------------------------------------------------- plot
+// R_t per finished case against a chosen x; along a speed axis, cases that
+// share a load are joined, one colour per load.
+const PLOTX = {
+  froude: (c) => c.froude,
+  speed: (c) => c.data.speed,
+  knots: (c) => c.data.speed / 0.514444,
+  mass: (c) => c.data.forces.mass,
+  lcg: (c) => c.data.forces.lcg,
+  sinkage: (c) => 1000 * c.data.forces.sinkage,
+  trim: (c) => c.data.forces.trim_deg,
+};
+const SERIES = ["#1f6feb", "#d6336c", "#2f9e44", "#e8590c", "#7048e8", "#0c8599", "#a61e4d", "#5c940d"];
+$("plotbtn").onclick = () => { $("plot").hidden = !$("plot").hidden; drawPlot(); };
+$("plotclose").onclick = () => { $("plot").hidden = true; };
+$("plotx").onchange = drawPlot;
+
+// About five round ticks spanning [a, b].
+function ticks(a, b) {
+  const span = b - a || Math.abs(a) || 1, raw = span / 5, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw);
+  const out = [];
+  for (let t = Math.ceil(a / step) * step; t <= b + 1e-9 * span; t += step) out.push(+t.toPrecision(12));
+  return out;
+}
+
+function drawPlot() {
+  if ($("plot").hidden) return;
+  const svg = $("plotsvg"), key = $("plotkey"), xk = $("plotx").value, fx = PLOTX[xk];
+  const done = cases.filter((c) => c.status === "done");
+  if (!done.length) {
+    svg.innerHTML = `<text class="empty" x="280" y="125" text-anchor="middle">No finished cases yet</text>`;
+    key.innerHTML = "";
+    return;
+  }
+  const pts = done.map((c) => ({ c, x: fx(c), y: c.data.forces.rt }));
+  const W = 560, H = 250, L = 48, R = 12, T = 10, B = 28;
+  let [x0, x1] = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x))];
+  let [y0, y1] = [0, Math.max(...pts.map((p) => p.y))];
+  if (x1 - x0 < 1e-12) { x0 -= 0.5 * (Math.abs(x0) || 1) * 0.1; x1 += 0.5 * (Math.abs(x1) || 1) * 0.1; }
+  const px = (x1 - x0) * 0.05; x0 -= px; x1 += px; y1 *= 1.08;
+  const X = (x) => L + (W - L - R) * (x - x0) / (x1 - x0), Y = (y) => H - B - (H - T - B) * (y - y0) / (y1 - y0);
+  let g = "";
+  for (const t of ticks(y0, y1)) g += `<line x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}" stroke="currentColor" opacity=".12"/><text x="${L - 5}" y="${Y(t) + 3}" text-anchor="end">${t}</text>`;
+  for (const t of ticks(x0, x1)) g += `<line x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${H - B}" stroke="currentColor" opacity=".08"/><text x="${X(t)}" y="${H - B + 13}" text-anchor="middle">${t}</text>`;
+  g += `<text x="${(L + W - R) / 2}" y="${H - 3}" text-anchor="middle">${$("plotx").selectedOptions[0].text}</text>`;
+  // Series by load; joined along a speed axis.
+  const groups = new Map();
+  for (const p of pts) { const k = loadKey(p.c); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  const joined = ["froude", "speed", "knots"].includes(xk);
+  let i = 0, legend = "";
+  for (const [, ps] of groups) {
+    const col = SERIES[i++ % SERIES.length];
+    ps.sort((a, b) => a.x - b.x);
+    if (joined && ps.length > 1) g += `<polyline fill="none" stroke="${col}" stroke-width="1.5" points="${ps.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(" ")}"/>`;
+    for (const p of ps) {
+      const on = viewing === p.c.id;
+      g += `<circle class="pt" data-id="${p.c.id}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${on ? 6 : 4}" fill="${on ? col : "var(--panel)"}" stroke="${col}" stroke-width="2"><title>Case ${p.c.id}: ${esc(caseLabel(p.c))} — R_t ${fmt(p.y, 1)} N</title></circle>`;
+    }
+    const c = ps[0].c;
+    legend += `<span style="color:${col}">● ${esc(c.mass == null && c.lcg == null ? "design load" : caseLabel(c).split(" · ").slice(1).join(" · "))}</span>`;
+  }
+  svg.innerHTML = g;
+  key.innerHTML = groups.size > 1 ? legend : "";
+}
+$("plotsvg").addEventListener("click", (e) => { const id = e.target.dataset && e.target.dataset.id; if (id) view(Number(id)); });
 
 function view(id) {
   const c = cases.find((c) => c.id === id);
