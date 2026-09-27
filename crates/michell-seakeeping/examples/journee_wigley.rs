@@ -80,6 +80,7 @@ fn main() {
         panels: 20,
         density: RHO,
         gravity: G,
+        roll_damping: 0.0,
     };
     let names = ["I", "II", "III", "IV"];
     for model in 1..=4 {

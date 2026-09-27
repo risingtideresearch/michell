@@ -29,8 +29,16 @@
 //! - [`green`], [`section2d`]: the 2-D pulsating source and Frank's
 //!   close-fit method on each station's section curve — added mass,
 //!   damping, radiated waves, and the diffraction force by Haskind;
-//! - [`strip`]: Salvesen–Tuck–Faltinsen assembly at forward speed (transom
-//!   terms included) and the heave–pitch response in regular waves;
+//! - [`green`], [`section2d`] also solve each section's **sway and roll**
+//!   (the antisymmetric problems) with their diffraction and
+//!   Froude–Krylov forces;
+//! - [`strip`]: the platform's five-mode response — sway, heave, roll,
+//!   pitch and yaw about G — in regular waves at forward speed: each
+//!   station's motion follows from the platform's through a kinematic map
+//!   (hull offsets and G's height included, so multihulls, and asymmetric
+//!   ones such as proas, need nothing special), and its force is the
+//!   forward-speed operator round its complex added mass, which gives
+//!   Salvesen–Tuck–Faltinsen's coefficients with their transom terms;
 //! - [`strip::added_resistance`]: mean added resistance by Gerritsma &
 //!   Beukelman's radiated energy (no short-wave correction), and
 //!   [`strip::added_resistance_maruo`] by Maruo's far-field momentum,
@@ -38,7 +46,17 @@
 //! - [`sea`]: Bretschneider and JONSWAP spectra, significant motions and
 //!   accelerations, mean added resistance in a sea.
 //!
-//! Still to come: a short-wave added-resistance correction.
+//! Roll damping is potential flow's alone, which leaves a monohull's roll
+//! resonance several times too high (the real damping is viscous);
+//! [`strip::StripOptions::roll_damping`] adds a fraction of critical in its
+//! place. A multihull's roll is mostly its hulls' heave, and does not have
+//! this problem. The lateral modes are checked by long beam waves (the hull
+//! follows the water: sway 1, roll the slope), zero-speed reciprocity of the
+//! five-mode coefficients, and mirror symmetry; they have not yet been
+//! compared with experiment.
+//!
+//! Still to come: a short-wave added-resistance correction; empirical
+//! (Ikeda-type) roll damping.
 //!
 //! Checks: the source's principal value against quadrature, the section
 //! damping against the energy its waves carry, the exact infinite-frequency

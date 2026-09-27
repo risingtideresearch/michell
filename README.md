@@ -739,6 +739,24 @@ lid of sources (Ohmatsu), which removes the irregular frequencies of the
 plain source method — their spurious interior modes would otherwise leak
 into the Kochin function.
 
+**Sway, roll and yaw** come from the same strip solve: each section also
+solves its antisymmetric (sway and roll) problems, and the platform's five
+modes are assembled from each station's kinematics — hull offset and the
+centre of gravity's height included — so a catamaran's roll comes out of
+its demihulls' heave, and an asymmetric platform (a proa) couples roll to
+heave and pitch by itself. `--vcg`, `--kxx`, `--kzz` set the centre of
+gravity's height above the waterline and the roll and yaw radii of
+gyration; GM_T and the natural roll period are printed. Potential flow
+leaves a monohull's roll nearly undamped — a demihull of e12 in beam seas
+reaches a roll RAO of about 19 at resonance, about 7 with `--roll-damping
+0.05` (5% of critical) standing in for the viscous damping that really
+sets it; off resonance the two agree. The lateral modes are checked by
+long-wave limits, reciprocity and mirror symmetry, not yet against
+experiment. The same assembly carries two transom end terms (`(U²/ω²)a_A`
+in A₃₅, `(U²/ω²)b_A` in B₃₅) that the earlier heave–pitch table lacked;
+they change e12's heave by about 2% at Fn 0.4 and hulls without a transom
+not at all.
+
 ## Web front end
 
 The `michell-web` crate is a browser UI over the same loaders, with the

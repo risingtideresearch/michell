@@ -41,7 +41,7 @@
 
 use crate::froude_krylov::froude_krylov;
 use crate::restoring::restoring;
-use crate::section2d::{HeaveSolution, Section};
+use crate::section2d::{HeaveSolution, LateralSolution, Section};
 use michell_geometry::parallel::map_indexed;
 use michell_geometry::quadrature::gauss_legendre;
 use michell_geometry::{Error, Placement, Result, SectionalHull, C64};
@@ -109,6 +109,12 @@ pub struct StripOptions {
     pub panels: usize,
     pub density: f64,
     pub gravity: f64,
+    /// Roll damping added to the potential flow's, as a fraction of
+    /// critical (`B₄₄ += 2ζ√(C₄₄(I₄₄ + A₄₄))`). Potential flow alone
+    /// leaves a monohull's roll almost undamped — the real damping is
+    /// viscous (friction, eddies off the bilges, keel lift); a few percent
+    /// stands in for it. 0 by default.
+    pub roll_damping: f64,
 }
 
 impl Default for StripOptions {
@@ -117,6 +123,7 @@ impl Default for StripOptions {
             panels: 20,
             density: 1025.0,
             gravity: michell_geometry::STANDARD_GRAVITY,
+            roll_damping: 0.0,
         }
     }
 }
@@ -139,6 +146,21 @@ pub struct Coefficients {
     pub froude_krylov: [C64; 2],
     /// Exciting force and moment: diffraction.
     pub diffraction: [C64; 2],
+    /// The platform's full five-mode system — sway, heave, roll, pitch,
+    /// yaw about G, in that order, roll right-handed about +x (port side
+    /// up), pitch here **bow down** and yaw bow to port (Salvesen–Tuck–
+    /// Faltinsen's axes) — as added mass, damping and restoring.
+    pub full: FullCoefficients,
+}
+
+/// The five-mode added mass, damping and restoring matrices (see
+/// [`Coefficients::full`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FullCoefficients {
+    pub added_mass: [[f64; 5]; 5],
+    pub damping: [[f64; 5]; 5],
+    pub restoring: [[f64; 5]; 5],
+    pub mass: [f64; 5],
 }
 
 /// The response to one regular wave.
@@ -153,6 +175,13 @@ pub struct Response {
     pub heave: C64,
     /// Pitch per unit wave amplitude [rad/m] (complex; bow up).
     pub pitch: C64,
+    /// Sway of G per unit wave amplitude (complex; to port, +y).
+    pub sway: C64,
+    /// Roll per unit wave amplitude [rad/m] (complex; right-handed about
+    /// +x, the port side rising).
+    pub roll: C64,
+    /// Yaw per unit wave amplitude [rad/m] (complex; bow to port).
+    pub yaw: C64,
     pub coefficients: Coefficients,
 }
 
@@ -172,12 +201,29 @@ impl Response {
     pub fn vertical_motion(&self, x: f64, lcg: f64) -> C64 {
         self.heave + self.pitch.scale(x - lcg)
     }
+
+    /// Sway RAO `|η₂|/ζ_a`.
+    pub fn sway_rao(&self) -> f64 {
+        self.sway.abs()
+    }
+
+    /// Roll RAO in the usual non-dimensional form `|η₄|/(k ζ_a)`.
+    pub fn roll_rao(&self) -> f64 {
+        self.roll.abs() / self.k
+    }
+
+    /// Yaw RAO `|η₆|/(k ζ_a)`.
+    pub fn yaw_rao(&self) -> f64 {
+        self.yaw.abs() / self.k
+    }
 }
 
 /// One station's 2-D solution (or none, for a dry or degenerate station).
 struct Strip {
     x: f64,
     sol: Option<HeaveSolution>,
+    /// Sway and roll, when the platform's lateral motions are wanted.
+    lat: Option<LateralSolution>,
 }
 
 impl Strip {
@@ -503,8 +549,104 @@ fn integrate(a: f64, b: f64, f: impl Fn(f64) -> f64) -> f64 {
     total
 }
 
-/// Solve the platform's heave–pitch system; also returns each member's
-/// stations (x from the centre of gravity) and their 2-D solutions.
+/// A 5×5 complex matrix and helpers for the five-mode system.
+type M5 = [[C64; 5]; 5];
+
+fn zero5() -> M5 {
+    [[C64::ZERO; 5]; 5]
+}
+
+/// The section kinematics: platform motions `(sway, heave, roll, pitch
+/// bow-down, yaw)` about G to the section's local sway, heave and roll
+/// (about its waterline centre), at `X` from G, hull offset `y`, G `zg`
+/// above the waterline; and its x-derivative.
+fn kinematics(x: f64, y: f64, zg: f64) -> ([[f64; 5]; 3], [[f64; 5]; 3]) {
+    let t = [
+        [1.0, 0.0, zg, 0.0, x],
+        [0.0, 1.0, y, -x, 0.0],
+        [0.0, 0.0, 1.0, 0.0, 0.0],
+    ];
+    let tp = [
+        [0.0, 0.0, 0.0, 0.0, 1.0],
+        [0.0, 0.0, 0.0, -1.0, 0.0],
+        [0.0; 5],
+    ];
+    (t, tp)
+}
+
+/// `Lᵀ c R` for 3×5 real `L`, `R` given as complex combinations
+/// `(l0 T + l1 T')` and `(r0 T + r1 T')`.
+fn sandwich(
+    t: &[[f64; 5]; 3],
+    tp: &[[f64; 5]; 3],
+    l: (C64, C64),
+    c: &[[C64; 3]; 3],
+    r: (C64, C64),
+) -> M5 {
+    let mut left = [[C64::ZERO; 5]; 3];
+    let mut right = [[C64::ZERO; 5]; 3];
+    for i in 0..3 {
+        for j in 0..5 {
+            left[i][j] = l.0.scale(t[i][j]) + l.1.scale(tp[i][j]);
+            right[i][j] = r.0.scale(t[i][j]) + r.1.scale(tp[i][j]);
+        }
+    }
+    let mut out = zero5();
+    for a in 0..5 {
+        for b in 0..5 {
+            let mut acc = C64::ZERO;
+            for i in 0..3 {
+                for j in 0..3 {
+                    acc = acc + left[i][a] * c[i][j] * right[j][b];
+                }
+            }
+            out[a][b] = acc;
+        }
+    }
+    out
+}
+
+/// A station's complex added mass `c = a − ib/ω` (the `e^{iωt}` form),
+/// local `(sway, heave, roll)`.
+fn station_c(s: &Strip, we: f64) -> [[C64; 3]; 3] {
+    let cx = |a: f64, b: f64| C64::new(a, -b / we);
+    let mut c = [[C64::ZERO; 3]; 3];
+    if let Some(h) = &s.sol {
+        c[1][1] = cx(h.added_mass, h.damping);
+    }
+    if let Some(l) = &s.lat {
+        let (a, b) = (l.added_mass, l.damping);
+        c[0][0] = cx(a[0][0], b[0][0]);
+        c[0][2] = cx(a[0][1], b[0][1]);
+        c[2][0] = cx(a[1][0], b[1][0]);
+        c[2][2] = cx(a[1][1], b[1][1]);
+    }
+    c
+}
+
+/// Solve the platform's five-mode system — sway, heave, roll, pitch, yaw
+/// about G — by strip theory; also returns each member's stations (x from
+/// the centre of gravity) and their 2-D solutions.
+///
+/// Each station's local motion (sway, heave and roll about its waterline
+/// centre) follows from the platform's through a kinematic map `T(x)`
+/// (the hull's offset and G's height enter here, so multihulls and their
+/// roll need nothing special), and its hydrodynamic force is the
+/// forward-speed operator `D = iω − U∂ₓ` wrapped round its complex added
+/// mass, `f = −D[c D(Tη)]`. Integrated along the hull (by parts, the aft
+/// station's section left as the transom's end term) this gives
+///
+/// ```text
+/// K = ∫ (iωT + UT′)ᵀ c (iωT − UT′) dx + U T_Aᵀ c_A (iωT_A − UT′_A),   F_rad = −Kη
+/// ```
+///
+/// — every coefficient of Salvesen, Tuck & Faltinsen (1970), sway, roll and
+/// yaw with heave and pitch, their transom terms included. The exciting
+/// force is Froude–Krylov (closed form in the vertical, per station in the
+/// lateral) plus Haskind diffraction with STF's speed terms,
+/// `∫Tᵀh dx + (U/iω)(∫T′ᵀh dx + T_Aᵀh_A)`. Lateral sections are solved only
+/// when the waves are oblique or the platform asymmetric; otherwise the
+/// lateral motions are unforced and uncoupled, and zero.
 fn solve(
     members: &[(&SectionalHull, Placement)],
     mass: &MassProperties,
@@ -528,6 +670,20 @@ fn solve(
     }
     let u = wave.speed;
     let xg = mass.lcg;
+    // The platform's waterplane: its transverse first moment says whether it
+    // is symmetric (roll uncoupled from heave and pitch).
+    let area: f64 = members.iter().map(|(h, _)| h.waterplane_area()).sum();
+    let first_y: f64 = members
+        .iter()
+        .map(|(h, pl)| h.waterplane_area() * pl.y)
+        .sum();
+    let length = members
+        .iter()
+        .map(|(h, _)| h.length())
+        .fold(0.0f64, f64::max);
+    let lateral = sb.abs() > 1e-9 || first_y.abs() > 1e-9 * area * length.max(1.0);
+    let volume: f64 = members.iter().map(|(h, _)| h.displaced_volume()).sum();
+    let zg = mass.bg - crate::restoring::buoyancy_depth(members);
     // Stations and their 2-D solutions at the encounter frequency, per hull.
     let fleet: Vec<Vec<Strip>> = members
         .iter()
@@ -539,118 +695,198 @@ fn solve(
                 || (),
                 |_, i| {
                     let (x, c) = &curves[i];
-                    let sol = Section::from_curve(c, opts.panels)
-                        .filter(|s| s.half_beam() > 0.0 && s.draft() > 0.0)
+                    let sec = Section::from_curve(c, opts.panels)
+                        .filter(|s| s.half_beam() > 0.0 && s.draft() > 0.0);
+                    let sol = sec
+                        .as_ref()
                         .and_then(|s| s.heave_with_diffraction(we, k, wave.heading, g, rho));
+                    let lat = if lateral {
+                        sec.as_ref()
+                            .and_then(|s| s.lateral(we, g, rho, Some((k, wave.heading))))
+                    } else {
+                        None
+                    };
                     Strip {
                         x: x + pl.x - xg,
                         sol,
+                        lat,
                     }
                 },
             )
         })
         .collect();
-    let real = |v: f64| C64::new(v, 0.0);
-    let sum =
-        |f: &dyn Fn(&Strip) -> C64| fleet.iter().fold(C64::ZERO, |acc, st| acc + trapz(st, f));
-    let a0 = sum(&|s| real(s.a())).re;
-    let b0 = sum(&|s| real(s.b())).re;
-    let xa1 = sum(&|s| real(s.x * s.a())).re;
-    let xb1 = sum(&|s| real(s.x * s.b())).re;
-    let xa2 = sum(&|s| real(s.x * s.x * s.a())).re;
-    let xb2 = sum(&|s| real(s.x * s.x * s.b())).re;
-    // Transoms: each hull's aft station, if it carries a section. The end
-    // terms are linear in them, so the platform's are their sums.
-    let afts: Vec<&Strip> = fleet
-        .iter()
-        .filter_map(|st| st.first().filter(|s| s.sol.is_some()))
-        .collect();
-    let tsum = |f: &dyn Fn(&Strip) -> f64| afts.iter().map(|s| f(s)).sum::<f64>();
-    let (aa, ba) = (tsum(&|s| s.a()), tsum(&|s| s.b()));
-    let (xaa, xba) = (tsum(&|s| s.x * s.a()), tsum(&|s| s.x * s.b()));
-    let (xxaa, xxba) = (tsum(&|s| s.x * s.x * s.a()), tsum(&|s| s.x * s.x * s.b()));
-    let (uw, uw2) = (u / (we * we), u * u / (we * we));
-    // STF convention (e^{iωt}, pitch bow down).
-    let a33 = a0 - uw * ba;
-    let b33 = b0 + u * aa;
-    let a35 = -xa1 - uw * b0 + uw * xba;
-    let b35 = -xb1 + u * a0 - u * xaa;
-    let a53 = -xa1 + uw * b0 + uw * xba;
-    let b53 = -xb1 - u * a0 - u * xaa;
-    let a55 = xa2 + uw2 * a0 - uw * xxba + uw2 * xaa;
-    let b55 = xb2 + uw2 * b0 + u * xxaa + uw2 * xba;
-    // Restoring about G (this crate's convention; C35 flips with pitch).
-    let (mut c33, mut c35m, mut c55, mut volume) = (0.0, 0.0, 0.0, 0.0);
-    for (hull, pl) in members {
-        let c = restoring(hull, rho, g, xg - pl.x);
-        c33 += c.c33;
-        c35m += c.c35;
-        c55 += c.c55;
-        volume += hull.displaced_volume();
-    }
-    let c55 = c55 - rho * g * volume * mass.bg;
-    let c35 = -c35m;
-    let m = [mass.mass, mass.mass * mass.radius_of_gyration.powi(2)];
-    // Froude–Krylov: each hull's closed form about G, at its transverse
-    // position, converted.
-    let fk = members
-        .iter()
-        .fold((C64::ZERO, C64::ZERO), |acc, (hull, pl)| {
-            let f = froude_krylov(hull, rho, g, k, wave.heading, xg - pl.x);
-            let side = C64::cis(k * sb * pl.y);
-            (acc.0 + f.heave * side, acc.1 + f.pitch * side)
-        });
-    let (fk3, fk5) = (fk.0.conj(), -fk.1.conj());
-    // Diffraction per station (this crate's convention, then conjugated).
-    let (mut h0, mut h1, mut ha, mut xha) = (C64::ZERO, C64::ZERO, C64::ZERO, C64::ZERO);
+    let iw = C64::new(0.0, we);
+    let uc = C64::new(u, 0.0);
+    // Radiation.
+    let mut kmat = zero5();
+    let add = |acc: &mut M5, m: &M5, w: f64| {
+        for a in 0..5 {
+            for b in 0..5 {
+                acc[a][b] = acc[a][b] + m[a][b].scale(w);
+            }
+        }
+    };
     for ((_, pl), strips) in members.iter().zip(&fleet) {
-        let side = C64::cis(k * sb * pl.y);
-        let hd = |s: &Strip| -> C64 {
-            s.sol.as_ref().map_or(C64::ZERO, |sol| {
-                let f = sol.diffraction(k, wave.heading, g, rho).scale(we / w0);
-                (f * C64::cis(k * cb * s.x) * side).conj()
-            })
+        let station = |s: &Strip| {
+            let (t, tp) = kinematics(s.x, pl.y, zg);
+            sandwich(&t, &tp, (iw, uc), &station_c(s, we), (iw, -uc))
         };
-        h0 = h0 + trapz(strips, &hd);
-        h1 = h1 + trapz(strips, |s| hd(s).scale(s.x));
+        for w in strips.windows(2) {
+            let dx = w[1].x - w[0].x;
+            add(&mut kmat, &station(&w[0]), 0.5 * dx);
+            add(&mut kmat, &station(&w[1]), 0.5 * dx);
+        }
         if let Some(a) = strips.first().filter(|s| s.sol.is_some()) {
-            ha = ha + hd(a);
-            xha = xha + hd(a).scale(a.x);
+            let (t, tp) = kinematics(a.x, pl.y, zg);
+            add(
+                &mut kmat,
+                &sandwich(&t, &tp, (uc, C64::ZERO), &station_c(a, we), (iw, -uc)),
+                1.0,
+            );
         }
     }
-    let u_iw = C64::new(0.0, -u / we); // U/(iω)
-    let fd3 = h0 + u_iw * ha;
-    let fd5 = -h1 - u_iw * h0 - u_iw * xha;
-    // Solve [−ω²(M + A) + iωB + C] η = F (STF convention).
-    let iw = C64::new(0.0, we);
-    let w2 = we * we;
-    let z = |mm: f64, aa: f64, bb: f64, cc: f64| real(-w2 * (mm + aa) + cc) + iw.scale(bb);
-    let z33 = z(m[0], a33, b33, c33);
-    let z35 = z(0.0, a35, b35, c35);
-    let z53 = z(0.0, a53, b53, c35);
-    let z55 = z(m[1], a55, b55, c55);
-    let (f3, f5) = (fk3 + fd3, fk5 + fd5);
-    let det = z33 * z55 - z35 * z53;
-    if det.abs() == 0.0 {
-        return Err(Error::InvalidInput("singular heave–pitch system".into()));
+    // Restoring about G (STF axes: pitch bow down).
+    let mut cmat = [[0.0; 5]; 5];
+    let (mut it, mut c35s, mut c55s, mut yc35) = (0.0, 0.0, 0.0, 0.0);
+    for (hull, pl) in members {
+        let c = restoring(hull, rho, g, xg - pl.x);
+        c35s += c.c35;
+        c55s += c.c55;
+        yc35 += pl.y * c.c35;
+        it += hull.transverse_waterplane_inertia() + hull.waterplane_area() * pl.y * pl.y;
     }
-    let eta3 = (f3 * z55 - z35 * f5) / det;
-    let eta5 = (z33 * f5 - z53 * f3) / det;
+    let rg = rho * g;
+    cmat[1][1] = rg * area;
+    cmat[1][2] = rg * first_y;
+    cmat[2][1] = cmat[1][2];
+    cmat[1][3] = -c35s;
+    cmat[3][1] = -c35s;
+    cmat[2][2] = rg * (it - volume * mass.bg);
+    cmat[2][3] = -yc35;
+    cmat[3][2] = -yc35;
+    cmat[3][3] = c55s - rg * volume * mass.bg;
+    let m = mass.mass;
+    let inertia = [
+        m,
+        m,
+        m * mass.roll_radius_of_gyration.powi(2),
+        m * mass.radius_of_gyration.powi(2),
+        m * mass.yaw_radius_of_gyration.powi(2),
+    ];
+    // Extra roll damping as a fraction of critical.
+    if opts.roll_damping > 0.0 && cmat[2][2] > 0.0 {
+        let a44 = -kmat[2][2].re / (we * we);
+        let b = 2.0 * opts.roll_damping * (cmat[2][2] * (inertia[2] + a44).max(0.0)).sqrt();
+        kmat[2][2] = kmat[2][2] + iw.scale(b);
+    }
+    // Excitation (STF convention: conjugates of this crate's amplitudes).
+    let mut f_fk = [C64::ZERO; 5];
+    let mut f_d = [C64::ZERO; 5];
+    for ((hull, pl), strips) in members.iter().zip(&fleet) {
+        let side = C64::cis(k * sb * pl.y);
+        // Vertical Froude–Krylov: the closed form, about G.
+        let fk = froude_krylov(hull, rho, g, k, wave.heading, xg - pl.x);
+        let (f3, f5) = ((fk.heave * side).conj(), -(fk.pitch * side).conj());
+        f_fk[1] = f_fk[1] + f3;
+        f_fk[2] = f_fk[2] + f3.scale(pl.y);
+        f_fk[3] = f_fk[3] + f5;
+        // Per station: lateral Froude–Krylov, and diffraction (with STF's
+        // encounter-frequency Haskind scaling), as local (sway, heave, roll).
+        let local = |s: &Strip| -> ([C64; 3], [C64; 3]) {
+            let ph = C64::cis(k * cb * s.x) * side;
+            let mut fk_l = [C64::ZERO; 3];
+            let mut h_l = [C64::ZERO; 3];
+            if let Some(sol) = &s.sol {
+                h_l[1] = (sol.diffraction(k, wave.heading, g, rho).scale(we / w0) * ph).conj();
+            }
+            if let Some(lat) = &s.lat {
+                let fkl = lat.froude_krylov(k, wave.heading, g, rho);
+                let hl = lat.diffraction(k, wave.heading, g, rho);
+                fk_l[0] = (fkl[0] * ph).conj();
+                fk_l[2] = (fkl[1] * ph).conj();
+                h_l[0] = (hl[0].scale(we / w0) * ph).conj();
+                h_l[2] = (hl[1].scale(we / w0) * ph).conj();
+            }
+            (fk_l, h_l)
+        };
+        let project = |t: &[[f64; 5]; 3], v: &[C64; 3]| -> [C64; 5] {
+            let mut out = [C64::ZERO; 5];
+            for (a, o) in out.iter_mut().enumerate() {
+                for i in 0..3 {
+                    *o = *o + v[i].scale(t[i][a]);
+                }
+            }
+            out
+        };
+        let u_iw = C64::new(0.0, -u / we); // U/(iω)
+        for w in strips.windows(2) {
+            let dx = w[1].x - w[0].x;
+            for s in [&w[0], &w[1]] {
+                let (t, tp) = kinematics(s.x, pl.y, zg);
+                let (fk_l, h_l) = local(s);
+                let (a, b, c) = (project(&t, &fk_l), project(&t, &h_l), project(&tp, &h_l));
+                for i in 0..5 {
+                    f_fk[i] = f_fk[i] + a[i].scale(0.5 * dx);
+                    f_d[i] = f_d[i] + (b[i] + u_iw * c[i]).scale(0.5 * dx);
+                }
+            }
+        }
+        if let Some(a) = strips.first().filter(|s| s.sol.is_some()) {
+            let (t, _) = kinematics(a.x, pl.y, zg);
+            let (_, h_l) = local(a);
+            let e = project(&t, &h_l);
+            for i in 0..5 {
+                f_d[i] = f_d[i] + u_iw * e[i];
+            }
+        }
+    }
+    // Solve (−ω²M + K + C) η = F.
+    let mut z = vec![C64::ZERO; 25];
+    for a in 0..5 {
+        for b in 0..5 {
+            let mut v = kmat[a][b] + C64::new(cmat[a][b], 0.0);
+            if a == b {
+                v = v - C64::new(we * we * inertia[a], 0.0);
+            }
+            z[a * 5 + b] = v;
+        }
+    }
+    let f: Vec<C64> = (0..5).map(|i| f_fk[i] + f_d[i]).collect();
+    let eta = crate::linalg::solve(z, f)
+        .ok_or_else(|| Error::InvalidInput("singular motion system".into()))?;
+    // Coefficients: A = −Re K/ω², B = Im K/ω.
+    let mut full = FullCoefficients {
+        added_mass: [[0.0; 5]; 5],
+        damping: [[0.0; 5]; 5],
+        restoring: cmat,
+        mass: inertia,
+    };
+    for a in 0..5 {
+        for b in 0..5 {
+            full.added_mass[a][b] = -kmat[a][b].re / (we * we);
+            full.damping[a][b] = kmat[a][b].im / we;
+        }
+    }
     // To this crate's convention: conjugate (time), negate pitch (bow up).
+    let (am, dm) = (full.added_mass, full.damping);
     let coefficients = Coefficients {
-        added_mass: [[a33, -a35], [-a53, a55]],
-        damping: [[b33, -b35], [-b53, b55]],
-        restoring: [[c33, -c35], [-c35, c55]],
-        mass: m,
-        froude_krylov: [fk3.conj(), -fk5.conj()],
-        diffraction: [fd3.conj(), -fd5.conj()],
+        added_mass: [[am[1][1], -am[1][3]], [-am[3][1], am[3][3]]],
+        damping: [[dm[1][1], -dm[1][3]], [-dm[3][1], dm[3][3]]],
+        restoring: [[cmat[1][1], -cmat[1][3]], [-cmat[3][1], cmat[3][3]]],
+        mass: [inertia[1], inertia[3]],
+        froude_krylov: [f_fk[1].conj(), -f_fk[3].conj()],
+        diffraction: [f_d[1].conj(), -f_d[3].conj()],
+        full,
     };
     let response = Response {
         wave: *wave,
         omega_e: we,
         k,
-        heave: eta3.conj(),
-        pitch: -eta5.conj(),
+        heave: eta[1].conj(),
+        pitch: -eta[3].conj(),
+        sway: eta[0].conj(),
+        roll: eta[2].conj(),
+        yaw: eta[4].conj(),
         coefficients,
     };
     Ok((response, fleet))
@@ -686,6 +922,7 @@ mod tests {
             panels: 16,
             density: RHO,
             gravity: G,
+            roll_damping: 0.0,
         }
     }
 
@@ -905,6 +1142,7 @@ mod tests {
                                 sol.clear_diffraction();
                                 sol
                             }),
+                            lat: None,
                         })
                         .collect()
                 })
@@ -918,6 +1156,150 @@ mod tests {
                 lam / l
             );
         }
+    }
+
+    /// A beam-sea wave many hull lengths long carries the hull with the
+    /// water: heave → 1, sway → 1 (the surface particles' orbit), roll →
+    /// the wave slope `k` (for a roll natural frequency well above the
+    /// wave's), and a fore-aft symmetric hull does not yaw.
+    #[test]
+    fn a_long_beam_wave_is_followed() {
+        let l = 3.0;
+        let hull = wigley(l);
+        let mut mass = MassProperties::floating(&hull, RHO, 0.25 * l);
+        mass.bg = -0.05; // G below B: stiff in roll
+        let k = 2.0 * PI / (60.0 * l);
+        let wave = Wave {
+            omega: (k * G).sqrt(),
+            heading: 0.5 * PI,
+            speed: 0.0,
+        };
+        let r = response(&hull, &mass, &wave, &opts()).unwrap();
+        assert!(
+            (r.heave_rao() - 1.0).abs() < 0.03,
+            "heave {}",
+            r.heave_rao()
+        );
+        assert!((r.sway_rao() - 1.0).abs() < 0.05, "sway {}", r.sway_rao());
+        assert!((r.roll_rao() - 1.0).abs() < 0.1, "roll/k {}", r.roll_rao());
+        assert!(r.yaw_rao() < 1e-3, "yaw/k {}", r.yaw_rao());
+    }
+
+    /// At zero speed the five-mode added mass and damping are symmetric
+    /// (reciprocity), sway, roll and yaw included.
+    #[test]
+    fn zero_speed_five_mode_coefficients_are_reciprocal() {
+        let l = 3.0;
+        let hull = wigley(l);
+        let mass = MassProperties::floating(&hull, RHO, 0.25 * l);
+        let k = 2.0 * PI / (1.2 * l);
+        let wave = Wave {
+            omega: (k * G).sqrt(),
+            heading: 0.6 * PI,
+            speed: 0.0,
+        };
+        let f = response(&hull, &mass, &wave, &opts())
+            .unwrap()
+            .coefficients
+            .full;
+        let scale = f.added_mass[0][0].abs().max(f.added_mass[1][1].abs());
+        for a in 0..5 {
+            for b in 0..5 {
+                let arm = if a > 1 || b > 1 { l } else { 1.0 };
+                assert!(
+                    (f.added_mass[a][b] - f.added_mass[b][a]).abs() < 1e-6 * scale * arm * arm,
+                    "A{a}{b} {} vs A{b}{a} {}",
+                    f.added_mass[a][b],
+                    f.added_mass[b][a]
+                );
+                let dscale = f.damping[a][a].abs().max(f.damping[b][b].abs()).max(1e-9);
+                assert!(
+                    (f.damping[a][b] - f.damping[b][a]).abs() < 1e-2 * dscale,
+                    "B{a}{b} {} vs B{b}{a} {} (diag {dscale})",
+                    f.damping[a][b],
+                    f.damping[b][a]
+                );
+            }
+        }
+        assert!(f.added_mass[0][0] > 0.0 && f.added_mass[2][2] > 0.0 && f.added_mass[4][4] > 0.0);
+    }
+
+    /// Mirror images move as mirror images: a proa with its ama to port
+    /// rolls and yaws opposite to one with it to starboard (heave and pitch
+    /// the same), and a head-sea wave rolls it at all — the asymmetric
+    /// platform couples roll to heave. A symmetric catamaran in head seas
+    /// neither rolls nor sways.
+    #[test]
+    fn mirrored_platforms_move_as_mirror_images() {
+        let main = wigley(3.0);
+        let ama = wigley(1.8);
+        let mass = |ms: &[(&SectionalHull, Placement)]| {
+            let vol: f64 = ms.iter().map(|(h, _)| h.displaced_volume()).sum();
+            MassProperties {
+                mass: RHO * vol,
+                lcg: 0.0,
+                radius_of_gyration: 0.75,
+                bg: 0.0,
+                roll_radius_of_gyration: 0.6,
+                yaw_radius_of_gyration: 0.8,
+            }
+        };
+        let port = [
+            (&main, Placement::default()),
+            (&ama, Placement { x: 0.0, y: 1.2 }),
+        ];
+        let star = [
+            (&main, Placement::default()),
+            (&ama, Placement { x: 0.0, y: -1.2 }),
+        ];
+        let k = 2.0 * PI / 3.6;
+        let head = Wave {
+            omega: (k * G).sqrt(),
+            heading: PI,
+            speed: 1.0,
+        };
+        let a = response_fleet(&port, &mass(&port), &head, &opts()).unwrap();
+        let b = response_fleet(&star, &mass(&star), &head, &opts()).unwrap();
+        assert!(
+            a.roll.abs() > 1e-3 * k,
+            "the proa should roll: {:?}",
+            a.roll
+        );
+        assert!(
+            (a.roll + b.roll).abs() < 1e-6 * a.roll.abs(),
+            "{:?} vs {:?}",
+            a.roll,
+            b.roll
+        );
+        assert!((a.heave - b.heave).abs() < 1e-6 * a.heave.abs());
+        // Oblique seas from either side on a symmetric catamaran.
+        let cat = [
+            (&main, Placement { x: 0.0, y: 0.8 }),
+            (&main, Placement { x: 0.0, y: -0.8 }),
+        ];
+        let m = mass(&cat);
+        let from_port = Wave {
+            heading: 0.75 * PI,
+            ..head
+        };
+        let from_star = Wave {
+            heading: 1.25 * PI,
+            ..head
+        };
+        let (p, q) = (
+            response_fleet(&cat, &m, &from_port, &opts()).unwrap(),
+            response_fleet(&cat, &m, &from_star, &opts()).unwrap(),
+        );
+        assert!((p.heave - q.heave).abs() < 1e-6 * p.heave.abs());
+        for (x, y) in [(p.sway, q.sway), (p.roll, q.roll), (p.yaw, q.yaw)] {
+            assert!((x + y).abs() < 1e-6 * x.abs().max(1e-12), "{x:?} vs {y:?}");
+        }
+        let straight = response_fleet(&cat, &m, &head, &opts()).unwrap();
+        assert!(
+            straight.sway.abs() < 1e-12
+                && straight.roll.abs() < 1e-12
+                && straight.yaw.abs() < 1e-12
+        );
     }
 
     /// Head seas. At rest the heave resonance lies in short waves that

@@ -110,10 +110,16 @@ HULL INPUTS (sniffed by header / extension)
 SEAKEEPING
   michell seakeeping <hull>... (--speed U | --froude F) [--heading DEG]
       [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N]
-      [--sea hs=H,tp=T[,gamma=G]]
-  Heave and pitch RAOs and added resistance by strip theory (Salvesen–
-  Tuck–Faltinsen; Gerritsma–Beukelman) over wave lengths λ/L (default
-  0.5:3:0.125), head seas (180) by default; mass defaults to the
+      [--sea hs=H,tp=T[,gamma=G]] [--vcg Z] [--kxx K] [--kzz K]
+      [--roll-damping ZETA]
+  Heave, pitch, sway, roll and yaw RAOs and added resistance by strip
+  theory (Salvesen–Tuck–Faltinsen; Gerritsma–Beukelman and Maruo) over
+  wave lengths λ/L (default 0.5:3:0.125), head seas (180) by default.
+  --vcg is the centre of gravity's height above the waterline (default
+  0), --kxx/--kzz the roll/yaw radii of gyration in metres; GM_T and the
+  natural roll period are printed. Roll damping is potential flow's
+  alone unless --roll-damping adds a fraction of critical (a few percent
+  stands in for the viscous damping of a monohull). Mass defaults to the
   displacement at the loaded waterline with the LCG over the LCB, and
   k_yy to 0.25 L. --sea adds significant motions, bow and LCG vertical
   accelerations and mean added resistance in a Bretschneider (or, with

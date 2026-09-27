@@ -11,13 +11,15 @@ use michell_geometry::source::SourceHull;
 use michell_geometry::{Placement, SectionalHull};
 use michell_seakeeping::restoring::{buoyancy_depth, transverse_metacentric_height};
 use michell_seakeeping::sea::{sea_response_fleet, Spectrum};
-use michell_seakeeping::strip::{added_resistance_both, MassProperties, StripOptions, Wave};
+use michell_seakeeping::strip::{
+    added_resistance_both, response_fleet, MassProperties, StripOptions, Wave,
+};
 use std::f64::consts::PI;
 
 pub(crate) const USAGE: &str =
     "usage: michell seakeeping <hull>[@x=DX,y=Y]... (--speed U | --froude F) \
 [--heading DEG] [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N] \
-[--sea hs=H,tp=T[,gamma=G]] [--dynamic] [--csv]";
+[--sea hs=H,tp=T[,gamma=G]] [--vcg Z] [--kxx K] [--kzz K] [--roll-damping ZETA] [--dynamic] [--csv]";
 
 pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
@@ -159,6 +161,7 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         panels: p.f64_flag("panels")?.map_or(20, |n| n.max(4.0) as usize),
         density: rho,
         gravity: g,
+        roll_damping: p.f64_flag("roll-damping")?.unwrap_or(0.0),
     };
     let beam = members
         .iter()
@@ -194,11 +197,40 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             "— unstable (GM_T ≤ 0)".into()
         }
     ));
+    if gm > 0.0 {
+        let c44 = rho * g * volume * gm;
+        let i44 = mass.mass * mass.roll_radius_of_gyration.powi(2);
+        let mut w = (c44 / i44).sqrt();
+        let mut ok = true;
+        for _ in 0..4 {
+            let beam_wave = Wave {
+                omega: w,
+                heading: 0.5 * PI,
+                speed: 0.0,
+            };
+            match response_fleet(&members, &mass, &beam_wave, &opts) {
+                Ok(r) => {
+                    let a44 = r.coefficients.full.added_mass[2][2];
+                    w = (c44 / (i44 + a44.max(0.0))).sqrt();
+                }
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            note(format!(
+                "natural roll period with added inertia {:.2} s (at rest)",
+                2.0 * PI / w
+            ));
+        }
+    }
     if csv {
-        println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,raw_gb_per_zeta2,sigma_aw_gb,raw_maruo_per_zeta2,sigma_aw_maruo");
+        println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,sway,roll_over_k,yaw_over_k,raw_gb_per_zeta2,sigma_aw_gb,raw_maruo_per_zeta2,sigma_aw_maruo");
     } else {
         println!(
-            "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>11} {:>8} {:>11} {:>8}",
+            "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>7} {:>7} {:>7} {:>11} {:>8} {:>11} {:>8}",
             "λ/L",
             "ω[r/s]",
             "ωe[r/s]",
@@ -206,6 +238,9 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             "ph3[deg]",
             "pitch",
             "ph5[deg]",
+            "sway",
+            "roll",
+            "yaw",
             "Raw/ζ² GB",
             "σ_aw GB",
             "Raw/ζ² far",
@@ -230,6 +265,9 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                     resp.heave.im.atan2(resp.heave.re).to_degrees(),
                     resp.pitch_rao(),
                     resp.pitch.im.atan2(resp.pitch.re).to_degrees(),
+                    resp.sway_rao(),
+                    resp.roll_rao(),
+                    resp.yaw_rao(),
                     gb,
                     sigma(gb),
                     far,
@@ -240,8 +278,8 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                     println!("{}", cells.join(","));
                 } else {
                     println!(
-                        "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:11.2} {:8.3} {:11.2} {:8.3}",
-                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10]
+                        "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:7.3} {:7.3} {:7.3} {:11.2} {:8.3} {:11.2} {:8.3}",
+                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10], row[11], row[12], row[13]
                     );
                 }
             }
@@ -249,7 +287,9 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         }
     }
     note(
-        "heave per unit wave amplitude; pitch as |η5|/(kζ); phases relative to a crest at the LCG; \
+        "heave and sway per unit wave amplitude; pitch, roll and yaw as |η|/(kζ); phases relative \
+         to a crest at the LCG; roll is potential-flow damped only (plus --roll-damping), so its \
+         resonance is overstated on a monohull; \
          added resistance by radiated energy (GB, Gerritsma–Beukelman) and far-field momentum \
          (far, Maruo) — on Journée's Wigley hulls GB is nearer the tank at Fn 0.2, the far field \
          at Fn 0.3–0.4; neither ranks hulls reliably"

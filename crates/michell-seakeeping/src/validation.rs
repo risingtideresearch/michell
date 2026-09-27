@@ -66,6 +66,7 @@ fn setup(model: usize) -> (SectionalHull, f64, MassProperties, StripOptions) {
         panels: 16,
         density: RHO,
         gravity: G,
+        roll_damping: 0.0,
     };
     (hull, b, mass, opts)
 }

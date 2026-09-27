@@ -238,6 +238,7 @@ mod tests {
             panels: 12,
             density: 1000.0,
             gravity: 9.81,
+            roll_damping: 0.0,
         };
         let mass = MassProperties::floating(&hull, 1000.0, 0.25 * l);
         let sea = Spectrum::Bretschneider { hs: 0.2, tp: 12.0 };

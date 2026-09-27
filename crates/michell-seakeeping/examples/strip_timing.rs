@@ -26,6 +26,7 @@ fn main() {
         panels: 20,
         density: rho,
         gravity: g,
+        roll_damping: 0.0,
     };
     let u = 0.3 * (g * l).sqrt();
     for lam in [1.2, 0.75, 0.5] {

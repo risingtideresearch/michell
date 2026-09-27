@@ -22,6 +22,7 @@ fn main() {
         panels: 16,
         density: rho,
         gravity: g,
+        roll_damping: 0.0,
     };
     for fnum in [0.0, 0.2, 0.3] {
         let u = fnum * (g * l).sqrt();
