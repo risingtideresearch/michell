@@ -40,7 +40,8 @@
 //! its transverse variation.
 //!
 //! Checks: the source's principal value against quadrature, the section
-//! damping against the energy its waves carry, the Haskind diffraction
+//! damping against the energy its waves carry, the exact infinite-frequency
+//! added mass of a semicircle (and the approach to it), the Haskind diffraction
 //! force against the solved diffraction problem, long-wave limits of the
 //! full response. The external target is Journée's (1992) Wigley data —
 //! heave and pitch RAOs and added resistance at Fn 0.2–0.4 — not yet
