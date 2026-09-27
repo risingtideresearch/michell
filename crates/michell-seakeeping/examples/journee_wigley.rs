@@ -90,6 +90,8 @@ fn main() {
             lcg: 0.0,
             radius_of_gyration: 0.75,
             bg: 0.0,
+            roll_radius_of_gyration: 0.35 * b,
+            yaw_radius_of_gyration: 0.75,
         };
         let name = names[model - 1];
         println!("\n=== Wigley {name}: B {b} m, ∇ {vol:.4} m³");

@@ -9,6 +9,7 @@ use michell_geometry::float::{solve_equilibrium_sectional_dynamic, FleetState, L
 use michell_geometry::iges::HullPose;
 use michell_geometry::source::SourceHull;
 use michell_geometry::{Placement, SectionalHull};
+use michell_seakeeping::restoring::{buoyancy_depth, transverse_metacentric_height};
 use michell_seakeeping::sea::{sea_response_fleet, Spectrum};
 use michell_seakeeping::strip::{added_resistance_both, MassProperties, StripOptions, Wave};
 use std::f64::consts::PI;
@@ -68,12 +69,40 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         .map(|(h, pl)| h.displaced_volume() * (h.lcb_x() + pl.x))
         .sum::<f64>()
         / volume;
+    // Vertical centre of gravity: --vcg metres above the waterline (default
+    // on it), giving BG against the platform's centre of buoyancy.
+    let vcg = p.f64_flag("vcg")?.unwrap_or(0.0);
+    let bg = vcg + buoyancy_depth(members);
+    let hull_beam = members
+        .iter()
+        .map(|(h, _)| {
+            let (a, b) = h.x_range();
+            (0..=200)
+                .map(|i| 2.0 * h.waterline_half_beam(a + (b - a) * i as f64 / 200.0))
+                .fold(0.0f64, f64::max)
+        })
+        .fold(0.0f64, f64::max);
+    // Hull offsets set a multihull's roll and yaw inertia: mass at each
+    // hull's centreplane (weighted by displacement), plus its own spread.
+    let spread_sq = members
+        .iter()
+        .map(|(h, pl)| h.displaced_volume() * pl.y * pl.y)
+        .sum::<f64>()
+        / volume;
+    let k_yy = p.f64_flag("kyy")?.unwrap_or(0.25) * l_ref;
     let mass = MassProperties {
         mass: p.f64_flag("mass")?.unwrap_or(rho * volume),
         lcg: p.f64_flag("lcg")?.unwrap_or(lcb),
-        radius_of_gyration: p.f64_flag("kyy")?.unwrap_or(0.25) * l_ref,
-        bg: 0.0,
+        radius_of_gyration: k_yy,
+        bg,
+        roll_radius_of_gyration: p
+            .f64_flag("kxx")?
+            .unwrap_or((spread_sq + (0.35 * hull_beam).powi(2)).sqrt()),
+        yaw_radius_of_gyration: p
+            .f64_flag("kzz")?
+            .unwrap_or((spread_sq + k_yy * k_yy).sqrt()),
     };
+    let gm = transverse_metacentric_height(members, bg);
     // With --dynamic, float the platform at its dynamic attitude at this
     // speed (thin-ship sinkage and trim, `michell::squat`) and take the
     // motions about that attitude rather than the loaded waterline.
@@ -152,6 +181,18 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         speed,
         speed / (g * l_ref).sqrt(),
         heading.to_degrees()
+    ));
+    note(format!(
+        "roll: VCG {vcg:.3} m above the waterline, BG {:.3} m, GM_T {gm:.3} m, k_xx {:.3} m, k_zz {:.3} m; \
+         natural roll period {} (without added inertia)",
+        mass.bg,
+        mass.roll_radius_of_gyration,
+        mass.yaw_radius_of_gyration,
+        if gm > 0.0 {
+            format!("{:.2} s", 2.0 * PI * mass.roll_radius_of_gyration / (g * gm).sqrt())
+        } else {
+            "— unstable (GM_T ≤ 0)".into()
+        }
     ));
     if csv {
         println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,raw_gb_per_zeta2,sigma_aw_gb,raw_maruo_per_zeta2,sigma_aw_maruo");

@@ -59,6 +59,8 @@ fn setup(model: usize) -> (SectionalHull, f64, MassProperties, StripOptions) {
         lcg: 0.0,
         radius_of_gyration: 0.75,
         bg: 0.0,
+        roll_radius_of_gyration: 0.35 * b,
+        yaw_radius_of_gyration: 0.75,
     };
     let opts = StripOptions {
         panels: 16,

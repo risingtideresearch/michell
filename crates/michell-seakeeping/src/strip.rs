@@ -58,20 +58,35 @@ pub struct MassProperties {
     /// ≈ 0.25 L).
     pub radius_of_gyration: f64,
     /// Height of the centre of gravity above the centre of buoyancy [m]:
-    /// subtracts `ρg∇·BG` from the pitch stiffness (0 leaves only the
-    /// waterplane's `ρg I_L`, adequate for a slender hull).
+    /// subtracts `ρg∇·BG` from the pitch and roll stiffnesses, and places
+    /// the roll axis (through G) above the waterline.
     pub bg: f64,
+    /// Roll radius of gyration about the centre of gravity [m] (commonly
+    /// 0.35–0.40 of the beam for a monohull; a multihull's is set by its
+    /// hull spacing).
+    pub roll_radius_of_gyration: f64,
+    /// Yaw radius of gyration about the centre of gravity [m] (commonly
+    /// close to the pitch one).
+    pub yaw_radius_of_gyration: f64,
 }
 
 impl MassProperties {
     /// A hull floating freely at its cut attitude: mass `ρ∇`, centre of
-    /// gravity over the centre of buoyancy, radius of gyration `k_yy`.
+    /// gravity on the centre of buoyancy, pitch radius of gyration `k_yy`
+    /// (and yaw the same), roll radius of gyration 0.35 of the waterline
+    /// beam.
     pub fn floating(hull: &SectionalHull, density: f64, radius_of_gyration: f64) -> Self {
+        let (a, b) = hull.x_range();
+        let beam = (0..=200)
+            .map(|i| 2.0 * hull.waterline_half_beam(a + (b - a) * i as f64 / 200.0))
+            .fold(0.0f64, f64::max);
         MassProperties {
             mass: density * hull.displaced_volume(),
             lcg: hull.lcb_x(),
             radius_of_gyration,
             bg: 0.0,
+            roll_radius_of_gyration: 0.35 * beam,
+            yaw_radius_of_gyration: radius_of_gyration,
         }
     }
 }

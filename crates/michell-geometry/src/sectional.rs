@@ -702,6 +702,67 @@ impl SectionalHull {
         self.waterplane[2]
     }
 
+    /// Transverse second moment of the waterplane about the centreplane,
+    /// `I_T = ∫ ⅔ f(x, 0)³ dx` [m⁴]: with the displaced volume, the
+    /// transverse metacentric radius `BM_T = I_T/∇` — the roll stiffness.
+    /// Exact for the waterline interpolant (Gauss per span).
+    pub fn transverse_waterplane_inertia(&self) -> f64 {
+        let (gx, gw) = gauss_legendre(8);
+        self.spans
+            .iter()
+            .map(|sp| {
+                gx.iter()
+                    .zip(&gw)
+                    .map(|(&t, &w)| {
+                        let x = sp.start + 0.5 * sp.len * (1.0 + t);
+                        0.5 * sp.len * w * 2.0 / 3.0 * self.waterline_half_beam(x).powi(3)
+                    })
+                    .sum::<f64>()
+            })
+            .sum()
+    }
+
+    /// Depth of the centre of buoyancy below the waterline [m]: each
+    /// station's section area and its centroid from the section curve,
+    /// closed along the centreplane and the waterline, integrated along the
+    /// stations.
+    pub fn buoyancy_depth(&self) -> f64 {
+        let per_station: Vec<(f64, f64, f64)> = self
+            .xs
+            .iter()
+            .zip(&self.sections)
+            .map(|(&x, sec)| {
+                // Shoelace over (y, depth), the curve closed back through
+                // the centreplane at the waterline.
+                let c = sec.curve();
+                let mut pts: Vec<(f64, f64)> = c.to_vec();
+                if let (Some(first), Some(last)) = (c.first(), c.last()) {
+                    pts.push((0.0, last.1));
+                    pts.push((0.0, first.1.min(0.0)));
+                }
+                let (mut a, mut m) = (0.0, 0.0);
+                for i in 0..pts.len() {
+                    let (p0, p1) = (pts[i], pts[(i + 1) % pts.len()]);
+                    let cross = p0.0 * p1.1 - p1.0 * p0.1;
+                    a += 0.5 * cross;
+                    m += cross * (p0.1 + p1.1) / 6.0;
+                }
+                (x, a.abs(), if a != 0.0 { m / a } else { 0.0 })
+            })
+            .collect();
+        let (mut vol, mut mom) = (0.0, 0.0);
+        for w in per_station.windows(2) {
+            let dx = w[1].0 - w[0].0;
+            vol += 0.5 * dx * (w[0].1 + w[1].1);
+            mom += 0.5 * dx * (w[0].1 * w[0].2 + w[1].1 * w[1].2);
+        }
+        if vol > 0.0 {
+            mom / vol
+        } else {
+            0.0
+        }
+    }
+
     /// Wetted surface of both sides [m²] (see [`SectionalHull`]'s strip
     /// construction): the shell itself, not its centreplane projection.
     pub fn wetted_surface(&self) -> f64 {
@@ -1024,5 +1085,39 @@ impl BandLu {
             }
             b[i] = s / self.a[i * n + i];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::iges::{self, HullPose, Platform, SectionalOptions};
+
+    /// The Wigley hull `f = (B/2)(1 − ξ²)(1 − ζ²)`: `I_T = (4/105) B³ L`
+    /// and the centre of buoyancy `3T/8` below the waterline.
+    #[test]
+    fn wigley_roll_hydrostatics_are_exact() {
+        let (l, b, t) = (10.0, 1.0, 0.625);
+        let surfaces = iges::wigley_surfaces(l, b, t).unwrap();
+        let source = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
+        let hull = source
+            .situate_sectional(
+                0,
+                0.0,
+                &HullPose::default(),
+                &Platform::default(),
+                &SectionalOptions::default(),
+            )
+            .unwrap()
+            .unwrap()
+            .hull;
+        let it = hull.transverse_waterplane_inertia();
+        let want = 4.0 / 105.0 * b * b * b * l;
+        assert!((it - want).abs() < 2e-3 * want, "I_T {it} vs {want}");
+        let zb = hull.buoyancy_depth();
+        assert!(
+            (zb - 0.375 * t).abs() < 2e-3 * t,
+            "z_B {zb} vs {}",
+            0.375 * t
+        );
     }
 }
