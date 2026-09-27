@@ -10,7 +10,7 @@ use michell_geometry::iges::HullPose;
 use michell_geometry::source::SourceHull;
 use michell_geometry::{Placement, SectionalHull};
 use michell_seakeeping::sea::{sea_response_fleet, Spectrum};
-use michell_seakeeping::strip::{added_resistance_fleet, MassProperties, StripOptions, Wave};
+use michell_seakeeping::strip::{added_resistance_both, MassProperties, StripOptions, Wave};
 use std::f64::consts::PI;
 
 pub(crate) const USAGE: &str =
@@ -154,10 +154,10 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         heading.to_degrees()
     ));
     if csv {
-        println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,raw_per_zeta2,sigma_aw");
+        println!("lambda_over_L,omega,omega_e,heave,heave_phase_deg,pitch_over_k,pitch_phase_deg,raw_gb_per_zeta2,sigma_aw_gb,raw_maruo_per_zeta2,sigma_aw_maruo");
     } else {
         println!(
-            "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>11} {:>9}",
+            "{:>7} {:>8} {:>8} {:>8} {:>9} {:>8} {:>9} {:>11} {:>8} {:>11} {:>8}",
             "λ/L",
             "ω[r/s]",
             "ωe[r/s]",
@@ -165,8 +165,10 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             "ph3[deg]",
             "pitch",
             "ph5[deg]",
-            "Raw/ζ²[N/m²]",
-            "σ_aw"
+            "Raw/ζ² GB",
+            "σ_aw GB",
+            "Raw/ζ² far",
+            "σ_aw far"
         );
     }
     for &lam in &lambdas {
@@ -176,9 +178,9 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             heading,
             speed,
         };
-        match added_resistance_fleet(&members, &mass, &wave, &opts) {
-            Ok(r) => {
-                let resp = r.response;
+        match added_resistance_both(&members, &mass, &wave, &opts) {
+            Ok((resp, gb, far)) => {
+                let sigma = |raw: f64| raw / (rho * g * beam * beam / l_ref);
                 let row = [
                     lam,
                     wave.omega,
@@ -187,16 +189,18 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
                     resp.heave.im.atan2(resp.heave.re).to_degrees(),
                     resp.pitch_rao(),
                     resp.pitch.im.atan2(resp.pitch.re).to_degrees(),
-                    r.per_amplitude_sq,
-                    r.coefficient(rho, g, beam, l_ref),
+                    gb,
+                    sigma(gb),
+                    far,
+                    sigma(far),
                 ];
                 if csv {
                     let cells: Vec<String> = row.iter().map(|v| format!("{v:.6}")).collect();
                     println!("{}", cells.join(","));
                 } else {
                     println!(
-                        "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:11.2} {:9.3}",
-                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8]
+                        "{:7.3} {:8.3} {:8.3} {:8.3} {:9.1} {:8.3} {:9.1} {:11.2} {:8.3} {:11.2} {:8.3}",
+                        row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7], row[8], row[9], row[10]
                     );
                 }
             }
@@ -204,7 +208,10 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
         }
     }
     note(
-        "heave per unit wave amplitude; pitch as |η5|/(kζ); phases relative to a crest at the LCG"
+        "heave per unit wave amplitude; pitch as |η5|/(kζ); phases relative to a crest at the LCG; \
+         added resistance by radiated energy (GB, Gerritsma–Beukelman) and far-field momentum \
+         (far, Maruo) — on Journée's Wigley hulls GB is nearer the tank at Fn 0.2, the far field \
+         at Fn 0.3–0.4; neither ranks hulls reliably"
             .into(),
     );
     if let Some(sea) = p.flag("sea") {
@@ -231,8 +238,8 @@ pub(crate) fn cmd_seakeeping(args: &[String]) -> Result<(), String> {
             r.accelerations[0], r.accelerations[1]
         ));
         note(format!(
-            "  mean added resistance         {:.1} N",
-            r.added_resistance
+            "  mean added resistance         {:.1} N (GB), {:.1} N (far field)",
+            r.added_resistance, r.added_resistance_far_field
         ));
         if r.skipped_energy > 0.0 {
             note(format!(

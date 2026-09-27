@@ -6,13 +6,14 @@
 //! the **absolute** wave frequency, so no encounter-spectrum Jacobian is
 //! needed; for a narrow-banded response the significant (mean of the
 //! highest third) single amplitude is `2√m₀`. The mean added resistance is
-//! `2∫ (R_aw/ζ_a²) S(ω) dω`.
+//! `2∫ (R_aw/ζ_a²) S(ω) dω`, by both of the strip solver's methods
+//! (radiated energy and far-field momentum).
 //!
 //! Following and stern-quartering seas whose components are overtaken
 //! (encounter frequency ≤ 0) are outside the strip solver; those components
 //! are skipped and counted in [`SeaResponse::skipped_energy`].
 
-use crate::strip::{added_resistance_fleet, MassProperties, StripOptions, Wave};
+use crate::strip::{added_resistance_both, MassProperties, StripOptions, Wave};
 use michell_geometry::{Placement, Result, SectionalHull};
 use std::f64::consts::PI;
 
@@ -68,8 +69,10 @@ pub struct SeaResponse {
     /// Significant vertical acceleration single amplitude at each requested
     /// station [m/s²].
     pub accelerations: Vec<f64>,
-    /// Mean added resistance [N].
+    /// Mean added resistance by Gerritsma–Beukelman's radiated energy [N].
     pub added_resistance: f64,
+    /// Mean added resistance by Maruo's far-field momentum [N].
+    pub added_resistance_far_field: f64,
     /// Share of the sea's energy `m₀` the solver could not take (overtaken
     /// components in following seas).
     pub skipped_energy: f64,
@@ -129,6 +132,7 @@ pub fn sea_response_fleet(
     let n = samples.max(3) | 1; // odd, for Simpson's rule
     let h = (hi - lo) / (n - 1) as f64;
     let (mut m_heave, mut m_pitch, mut raw, mut total, mut skipped) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    let mut raw_far = 0.0;
     let mut m_acc = vec![0.0; stations.len()];
     for i in 0..n {
         let omega = lo + h * i as f64;
@@ -147,26 +151,27 @@ pub fn sea_response_fleet(
             heading,
             speed,
         };
-        let r = match added_resistance_fleet(members, mass, &wave, opts) {
+        let (resp, gb, maruo) = match added_resistance_both(members, mass, &wave, opts) {
             Ok(r) => r,
             Err(_) => {
                 skipped += w * s;
                 continue;
             }
         };
-        let resp = r.response;
         m_heave += w * s * resp.heave.abs_sq();
         m_pitch += w * s * resp.pitch.abs_sq();
         for (m, &x) in m_acc.iter_mut().zip(stations) {
             *m += w * s * resp.omega_e.powi(4) * resp.vertical_motion(x, mass.lcg).abs_sq();
         }
-        raw += w * s * 2.0 * r.per_amplitude_sq;
+        raw += w * s * 2.0 * gb;
+        raw_far += w * s * 2.0 * maruo;
     }
     Ok(SeaResponse {
         heave: 2.0 * m_heave.sqrt(),
         pitch: 2.0 * m_pitch.sqrt(),
         accelerations: m_acc.iter().map(|m| 2.0 * m.sqrt()).collect(),
         added_resistance: raw,
+        added_resistance_far_field: raw_far,
         skipped_energy: if total > 0.0 { skipped / total } else { 0.0 },
     })
 }

@@ -174,6 +174,35 @@ fn heave_matches_wigley_iii_in_head_waves() {
     }
 }
 
+/// Table 8-I and 8-III: the peak added resistance at Fn 0.3 and 0.4, where
+/// Gerritsma–Beukelman overshoots it two- to six-fold. Maruo's far-field
+/// estimate lands within a factor of two of the measured peak (taken over
+/// the resonance band, since the computed pitch resonance falls at
+/// slightly shorter waves).
+#[test]
+fn far_field_added_resistance_peaks_near_the_measured_ones() {
+    for (model, fnum, measured) in [
+        (1, 0.3, 27.6),
+        (3, 0.3, 20.2),
+        (1, 0.4, 14.9),
+        (3, 0.4, 27.7),
+    ] {
+        let (hull, b, mass, opts) = setup(model);
+        let peak = [1.0, 1.05, 1.108, 1.25, 1.384, 1.5]
+            .iter()
+            .map(|&lam| {
+                crate::strip::added_resistance_maruo(&hull, &mass, &head_wave(lam, fnum), &opts)
+                    .unwrap()
+                    .coefficient(RHO, G, b, L)
+            })
+            .fold(0.0f64, f64::max);
+        assert!(
+            peak > 0.5 * measured && peak < 2.0 * measured,
+            "Wigley {model} Fn {fnum}: Maruo peak {peak:.1} vs measured {measured}"
+        );
+    }
+}
+
 /// Table 10-III and 10-IV: heave and pitch at zero speed, pitch in the
 /// report's normalisation `θ_a/(2π ζ_a/L)`. Pitch comes out 10–20% low.
 #[test]

@@ -32,7 +32,9 @@
 //! - [`strip`]: Salvesen–Tuck–Faltinsen assembly at forward speed (transom
 //!   terms included) and the heave–pitch response in regular waves;
 //! - [`strip::added_resistance`]: mean added resistance by Gerritsma &
-//!   Beukelman's radiated energy (no short-wave correction);
+//!   Beukelman's radiated energy (no short-wave correction), and
+//!   [`strip::added_resistance_maruo`] by Maruo's far-field momentum,
+//!   from the Kochin function of the stations' sources;
 //! - [`sea`]: Bretschneider and JONSWAP spectra, significant motions and
 //!   accelerations, mean added resistance in a sea.
 //!
@@ -51,9 +53,13 @@
 //! head waves closely, resonance peaks included; zero-speed pitch comes
 //! out 10–20% low. At speed the pitch added inertia is ~30% low and the
 //! pitch damping grows with U² where the tank shows none, so the pitch
-//! resonance falls at shorter waves than measured, and the added resistance
-//! (which goes with the square of the motions) peaks early and about twice
-//! too high at Fn 0.3–0.4. Journée found the same discrepancies with his own
+//! resonance falls at shorter waves than measured, and the radiated-energy
+//! added resistance (which goes with the square of the motions) peaks early
+//! and two to six times too high at Fn 0.3–0.4. The far-field (Maruo)
+//! estimate, in which the sections' waves interfere and the forward-scattered
+//! wave carries no momentum, is within a factor of two of the measured peaks
+//! there but about half the measurements at Fn 0.2 and on the beamy L/B 5
+//! hulls, and neither method ranks the four hulls reliably. Journée found the same discrepancies with his own
 //! Frank- and Ursell-based strip codes (MARIND 2001); they are strip
 //! theory's, on these hulls.
 

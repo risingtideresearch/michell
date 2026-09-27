@@ -43,7 +43,9 @@ use crate::froude_krylov::froude_krylov;
 use crate::restoring::restoring;
 use crate::section2d::{HeaveSolution, Section};
 use michell_geometry::parallel::map_indexed;
+use michell_geometry::quadrature::gauss_legendre;
 use michell_geometry::{Error, Placement, Result, SectionalHull, C64};
+use std::f64::consts::PI;
 
 /// The ship's mass properties, about its centre of gravity.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -255,10 +257,40 @@ pub fn added_resistance_fleet(
     opts: &StripOptions,
 ) -> Result<AddedResistance> {
     let (response, fleet) = solve(members, mass, wave, opts)?;
+    let per_amplitude_sq = radiated_energy(members, &fleet, &response, wave);
+    Ok(AddedResistance {
+        response,
+        per_amplitude_sq,
+    })
+}
+
+/// Both added-resistance estimates from one strip solution:
+/// `(response, Gerritsma–Beukelman, Maruo)`, the last two per unit wave
+/// amplitude squared [N/m²]. They bracket the tank on Journée's Wigley
+/// hulls from different sides (see the crate docs), so report both.
+pub fn added_resistance_both(
+    members: &[(&SectionalHull, Placement)],
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<(Response, f64, f64)> {
+    let (response, fleet) = solve(members, mass, wave, opts)?;
+    let gb = radiated_energy(members, &fleet, &response, wave);
+    let maruo = far_field(members, &fleet, &response, wave, opts);
+    Ok((response, gb, maruo))
+}
+
+/// Gerritsma–Beukelman's integral (see [`added_resistance`]).
+fn radiated_energy(
+    members: &[(&SectionalHull, Placement)],
+    fleet: &[Vec<Strip>],
+    response: &Response,
+    wave: &Wave,
+) -> f64 {
     let (k, we, u) = (response.k, response.omega_e, wave.speed);
     let (cb, sb) = (wave.heading.cos(), wave.heading.sin());
     let mut integral = 0.0;
-    for ((hull, pl), strips) in members.iter().zip(&fleet) {
+    for ((hull, pl), strips) in members.iter().zip(fleet) {
         let smith: Vec<f64> = hull
             .section_nodes()
             .iter()
@@ -294,10 +326,166 @@ pub fn added_resistance_fleet(
             .map(|i| 0.5 * (integrand[i] + integrand[i + 1]) * (strips[i + 1].x - strips[i].x))
             .sum::<f64>();
     }
+    -k * cb / (2.0 * we) * integral
+}
+
+/// Mean added resistance by the **far-field** method of Maruo (1960): the
+/// longitudinal momentum the ship's own waves — radiated by its motions and
+/// scattered off it — carry away, which in the frame moving with the ship
+/// is (as stated by Liu, Liang & Chen, IWWWFB 2025, after Maruo)
+///
+/// ```text
+/// R_aw = ρ/8π { ∫_{−π/2}^{−α₀} + ∫_{α₀}^{π/2} + ∫_{π/2}^{3π/2} } |H(k₁,θ)|² k₁(k₁cosθ − k cosβ)/√(1−4τcosθ) dθ
+///      + ρ/8π ∫_{α₀}^{2π−α₀} |H(k₂,θ)|² k₂(k₂cosθ − k cosβ)/√(1−4τcosθ) dθ
+/// k₁,₂(θ) = (K₀/2)(1 − 2τcosθ ± √(1−4τcosθ))/cos²θ,   τ = ω_e U/g,   K₀ = g/U²
+/// ```
+///
+/// (`α₀ = acos(1/4τ)` beyond `τ = 1/4`, else 0), which at zero speed is
+/// `ρk²/8π ∫ |H(k,θ)|²(cosθ − cosβ) dθ`. The Kochin function is the hull's
+/// outward source flux summed against each far-field wave,
+/// `H(k,θ) = ∬ σ e^{kz} e^{−ik(x cosθ + y sinθ)} dS` ([`kochin`]), from the
+/// strip solution: each station's heave sources at its relative vertical
+/// velocity `V(x) = −iω_e(η₃ + xη₅) − Uη₅` plus its diffraction sources.
+///
+/// Waves shorter than twice the station spacing are left out (see the
+/// source).
+///
+/// Unlike [`added_resistance`] (Gerritsma–Beukelman), which sums each
+/// strip's radiated energy, the waves of all the sections interfere here
+/// before their momentum is counted, and the scattered incident wave is in
+/// the balance too. Head and following seas only: the sections carry only
+/// the part of the diffraction problem symmetric about their centreplanes.
+pub fn added_resistance_maruo(
+    hull: &SectionalHull,
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<AddedResistance> {
+    added_resistance_maruo_fleet(&[(hull, Placement::default())], mass, wave, opts)
+}
+
+/// [`added_resistance_maruo`] for a platform of several placed hulls, whose
+/// waves interfere in the one Kochin function.
+pub fn added_resistance_maruo_fleet(
+    members: &[(&SectionalHull, Placement)],
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<AddedResistance> {
+    let (response, fleet) = solve(members, mass, wave, opts)?;
+    let per_amplitude_sq = far_field(members, &fleet, &response, wave, opts);
     Ok(AddedResistance {
         response,
-        per_amplitude_sq: -k * cb / (2.0 * we) * integral,
+        per_amplitude_sq,
     })
+}
+
+/// Maruo's integral (see [`added_resistance_maruo`]).
+fn far_field(
+    members: &[(&SectionalHull, Placement)],
+    fleet: &[Vec<Strip>],
+    response: &Response,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> f64 {
+    let (k, we, u, g) = (response.k, response.omega_e, wave.speed, opts.gravity);
+    let cb = wave.heading.cos();
+    let h = |kk: f64, theta: f64| kochin(members, fleet, response, wave, kk, theta).abs_sq();
+    // The Kochin function is assembled from stations; waves shorter than
+    // twice their spacing only alias it (the hull's own, smooth sources
+    // radiate next to nothing there), so the integrand stops at that
+    // Nyquist wavenumber — which the k₁ system's short divergent waves
+    // would otherwise reach near θ = ±π/2.
+    let spacing = fleet
+        .iter()
+        .flat_map(|st| st.windows(2).map(|w| w[1].x - w[0].x))
+        .fold(0.0f64, f64::max);
+    let k_max = PI / spacing.max(1e-9);
+    let integral = if u == 0.0 {
+        // One wave system, k₂ = k all round.
+        integrate(0.0, 2.0 * PI, |t| h(k, t) * k * (k * t.cos() - k * cb))
+    } else {
+        let tau = we * u / g;
+        let k0 = g / (u * u);
+        let a0 = if tau > 0.25 {
+            (1.0 / (4.0 * tau)).acos()
+        } else {
+            0.0
+        };
+        let root = |c: f64| (1.0 - 4.0 * tau * c).max(0.0).sqrt();
+        let k1 = |c: f64| 0.5 * k0 * (1.0 - 2.0 * tau * c + root(c)) / (c * c);
+        // The conjugate form, free of cancellation as cos θ → 0.
+        let k2 = |c: f64| 2.0 * k0 * tau * tau / (1.0 - 2.0 * tau * c + root(c));
+        let f = |kj: f64, t: f64| {
+            let c = t.cos();
+            let r = root(c);
+            if !(kj.is_finite()) || kj > k_max || r == 0.0 {
+                return 0.0;
+            }
+            h(kj, t) * kj * (kj * c - k * cb) / r
+        };
+        let branch1 = |t: f64| f(k1(t.cos()), t);
+        let branch2 = |t: f64| f(k2(t.cos()), t);
+        integrate(-0.5 * PI, -a0, branch1)
+            + integrate(a0, 0.5 * PI, branch1)
+            + integrate(0.5 * PI, 1.5 * PI, branch1)
+            + integrate(a0, 2.0 * PI - a0, branch2)
+    };
+    opts.density / (8.0 * PI) * integral
+}
+
+/// The Kochin function `H(k,θ) = ∬ σ e^{kz} e^{−ik(x cosθ + y sinθ)} dS` of
+/// the platform's disturbance — each station's heave sources at its
+/// relative vertical velocity, plus its diffraction sources — per unit
+/// incident wave amplitude, `x` from the centre of gravity.
+fn kochin(
+    members: &[(&SectionalHull, Placement)],
+    fleet: &[Vec<Strip>],
+    response: &Response,
+    wave: &Wave,
+    kk: f64,
+    theta: f64,
+) -> C64 {
+    let (st, ct) = theta.sin_cos();
+    let (k, we, u) = (response.k, response.omega_e, wave.speed);
+    let (cb, sb) = (wave.heading.cos(), wave.heading.sin());
+    let mut total = C64::ZERO;
+    for ((_, pl), strips) in members.iter().zip(fleet) {
+        let side = C64::cis(-kk * pl.y * st);
+        let incident_side = C64::cis(k * sb * pl.y);
+        let term = |s: &Strip| -> C64 {
+            s.sol.as_ref().map_or(C64::ZERO, |sol| {
+                let v = C64::new(0.0, -we) * (response.heave + response.pitch.scale(s.x))
+                    - response.pitch.scale(u);
+                let d = C64::cis(k * cb * s.x) * incident_side;
+                sol.source_spectrum(kk, st, v, d) * C64::cis(-kk * s.x * ct)
+            })
+        };
+        total = total + trapz(strips, term) * side;
+    }
+    total
+}
+
+/// `∫_a^b f(θ) dθ` for integrands with inverse-square-root singularities
+/// at either end: `θ = a + (b − a)(1 − cos πt)/2` makes them bounded, then
+/// Gauss–Legendre panels in `t`.
+fn integrate(a: f64, b: f64, f: impl Fn(f64) -> f64) -> f64 {
+    if !(b > a) {
+        return 0.0;
+    }
+    const PANELS: usize = 96;
+    let (gx, gw) = gauss_legendre(8);
+    let mut total = 0.0;
+    for p in 0..PANELS {
+        let (t0, t1) = (p as f64 / PANELS as f64, (p + 1) as f64 / PANELS as f64);
+        for (&x, &w) in gx.iter().zip(&gw) {
+            let t = 0.5 * (t0 + t1) + 0.5 * (t1 - t0) * x;
+            let theta = a + (b - a) * 0.5 * (1.0 - (PI * t).cos());
+            let jac = (b - a) * 0.5 * PI * (PI * t).sin();
+            total += 0.5 * (t1 - t0) * w * jac * f(theta);
+        }
+    }
+    total
 }
 
 /// Solve the platform's heave–pitch system; also returns each member's
@@ -338,7 +526,7 @@ fn solve(
                     let (x, c) = &curves[i];
                     let sol = Section::from_curve(c, opts.panels)
                         .filter(|s| s.half_beam() > 0.0 && s.draft() > 0.0)
-                        .and_then(|s| s.heave(we, g, rho));
+                        .and_then(|s| s.heave_with_diffraction(we, k, wave.heading, g, rho));
                     Strip {
                         x: x + pl.x - xg,
                         sol,
@@ -651,6 +839,70 @@ mod tests {
             .unwrap()
             .per_amplitude_sq;
         assert!((raw_pair - 2.0 * raw_solo).abs() < 1e-9 * raw_solo.abs());
+    }
+
+    /// The Kochin normalisation: a hull heaving at unit velocity (no speed,
+    /// no waves diffracted) radiates the power `½B` with
+    /// `B = (ωρk/4π) ∫ |H(k,θ)|² dθ`. Where the waves are short against the
+    /// hull but long against its beam (`kL ≫ 1 ≫ kB`) the sections radiate
+    /// independently and sideways, and that is strip theory's `∫ b dx`; on a
+    /// hull as wide as the waves are long its 2-D sources also radiate fore
+    /// and aft, which strip theory never sees, so the check needs a very
+    /// slender hull (L/B = 50).
+    #[test]
+    fn the_kochin_function_carries_the_strip_damping() {
+        let l = 3.0;
+        let surfaces = iges::wigley_surfaces(l, 0.02 * l, 0.0125 * l).unwrap();
+        let source = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
+        let so = SectionalOptions {
+            stations: 61,
+            ..SectionalOptions::default()
+        };
+        let hull = source
+            .situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &so)
+            .unwrap()
+            .unwrap()
+            .hull;
+        let mass = MassProperties::floating(&hull, RHO, 0.25 * l);
+        let members = [(&hull, Placement::default())];
+        for lam in [0.25 * l, 0.4 * l] {
+            let k = 2.0 * PI / lam;
+            let wave = Wave {
+                omega: (k * G).sqrt(),
+                heading: PI,
+                speed: 0.0,
+            };
+            let (resp, fleet) = solve(&members, &mass, &wave, &opts()).unwrap();
+            // Unit heave velocity: η₃ = i/ω (e^{−iωt}), no pitch, and the
+            // heave sources alone.
+            let heave_only = Response {
+                heave: C64::new(0.0, 1.0 / resp.omega_e),
+                pitch: C64::ZERO,
+                ..resp
+            };
+            let radiating: Vec<Vec<Strip>> = fleet
+                .into_iter()
+                .map(|st| {
+                    st.into_iter()
+                        .map(|s| Strip {
+                            x: s.x,
+                            sol: s.sol.map(|mut sol| {
+                                sol.clear_diffraction();
+                                sol
+                            }),
+                        })
+                        .collect()
+                })
+                .collect();
+            let hsq = |t: f64| kochin(&members, &radiating, &heave_only, &wave, k, t).abs_sq();
+            let b3d = resp.omega_e * RHO * k / (4.0 * PI) * integrate(0.0, 2.0 * PI, hsq);
+            let b2d = resp.coefficients.damping[0][0];
+            assert!(
+                (b3d - b2d).abs() < 0.1 * b2d,
+                "λ/L {}: B from Kochin {b3d} vs ∫b dx {b2d}",
+                lam / l
+            );
+        }
     }
 
     /// Head seas. At rest the heave resonance lies in short waves that

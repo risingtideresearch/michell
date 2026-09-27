@@ -17,7 +17,9 @@
 //! 0.6 m (II, IV), k_yy = 0.75 m, fresh water.
 
 use michell_geometry::sectional::{DepthQuadrature, SectionNodes, SectionalHull};
-use michell_seakeeping::strip::{added_resistance, MassProperties, StripOptions, Wave};
+use michell_seakeeping::strip::{
+    added_resistance, added_resistance_maruo, MassProperties, StripOptions, Wave,
+};
 use std::f64::consts::PI;
 
 const L: f64 = 3.0;
@@ -93,7 +95,7 @@ fn main() {
         println!("\n=== Wigley {name}: B {b} m, ∇ {vol:.4} m³");
         // Table 10: zero forward speed (III and IV): no speed terms at all.
         if let Some(rows) = read(&dir, &format!("10-{name}-00.exp")) {
-            println!("Fn 0    head waves:  λ/L   heave exp/calc   pitch exp/calc   Raw'' exp/calc");
+            println!("Fn 0    head waves:  λ/L   heave exp/calc   pitch exp/calc   Raw'' exp / GB / Maruo");
             for r in rows {
                 let (Some(lam), Some(z), Some(th)) = (r[0], r[4], r[6]) else {
                     continue;
@@ -110,11 +112,13 @@ fn main() {
                     .copied()
                     .flatten()
                     .map_or("  -  ".into(), |v| format!("{v:5.2}"));
+                let maruo = added_resistance_maruo(&hull, &mass, &wave, &opts).unwrap();
                 println!(
-                    "            {lam:5.3}   {z:5.2} / {:5.2}    {th:5.2} / {:5.2}    {raw} / {:6.2}",
+                    "            {lam:5.3}   {z:5.2} / {:5.2}    {th:5.2} / {:5.2}    {raw} / {:6.2} / {:6.2}",
                     r_c.response.heave_rao(),
                     r_c.response.pitch_rao() / lam,
-                    r_c.coefficient(RHO, G, b, L)
+                    r_c.coefficient(RHO, G, b, L),
+                    maruo.coefficient(RHO, G, b, L)
                 );
             }
         }
@@ -218,7 +222,7 @@ fn main() {
             }
             // Table 8: motions and added resistance in regular head waves.
             if let Some(rows) = read(&dir, &format!("08-{name}-{tag}.exp")) {
-                println!("Fn {fnum}  head waves:  λ/L   heave exp/calc   pitch exp/calc   Raw'' exp/calc");
+                println!("Fn {fnum}  head waves:  λ/L   heave exp/calc   pitch exp/calc   Raw'' exp / GB / Maruo");
                 for r in rows {
                     let Some(lam) = r[0] else { continue };
                     // First amplitude group with data.
@@ -232,15 +236,19 @@ fn main() {
                     };
                     let r_c = added_resistance(&hull, &mass, &wave, &opts).unwrap();
                     let raw_c = r_c.coefficient(RHO, G, b, L);
+                    let raw_m = added_resistance_maruo(&hull, &mass, &wave, &opts)
+                        .unwrap()
+                        .coefficient(RHO, G, b, L);
                     let f = |v: Option<f64>| v.map_or("  -  ".into(), |x| format!("{x:5.2}"));
                     println!(
-                        "            {lam:5.3}   {} / {:5.2}    {} / {:5.2}    {} / {:6.2}",
+                        "            {lam:5.3}   {} / {:5.2}    {} / {:5.2}    {} / {:6.2} / {:6.2}",
                         f(g6[1]),
                         r_c.response.heave_rao(),
                         f(g6[3]),
                         r_c.response.pitch_rao() / lam,
                         f(g6[5]),
-                        raw_c
+                        raw_c,
+                        raw_m
                     );
                 }
             }

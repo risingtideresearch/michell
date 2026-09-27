@@ -4,8 +4,13 @@ use michell_geometry::C64;
 
 /// Solve `A x = b` for square `A` (row-major, `n × n`) by LU with partial
 /// pivoting; `None` if `A` is singular to working precision.
-pub fn solve(mut a: Vec<C64>, mut b: Vec<C64>) -> Option<Vec<C64>> {
-    let n = b.len();
+pub fn solve(a: Vec<C64>, b: Vec<C64>) -> Option<Vec<C64>> {
+    solve_many(a, vec![b]).map(|mut x| x.pop().unwrap())
+}
+
+/// [`solve`] for several right-hand sides with the one factorisation.
+pub fn solve_many(mut a: Vec<C64>, mut bs: Vec<Vec<C64>>) -> Option<Vec<Vec<C64>>> {
+    let n = bs.first().map_or(0, |b| b.len());
     debug_assert_eq!(a.len(), n * n);
     for k in 0..n {
         let (piv, mag) = (k..n)
@@ -18,7 +23,9 @@ pub fn solve(mut a: Vec<C64>, mut b: Vec<C64>) -> Option<Vec<C64>> {
             for j in 0..n {
                 a.swap(k * n + j, piv * n + j);
             }
-            b.swap(k, piv);
+            for b in bs.iter_mut() {
+                b.swap(k, piv);
+            }
         }
         let inv = a[k * n + k].recip();
         for i in k + 1..n {
@@ -30,17 +37,22 @@ pub fn solve(mut a: Vec<C64>, mut b: Vec<C64>) -> Option<Vec<C64>> {
                 let v = a[k * n + j];
                 a[i * n + j] = a[i * n + j] - l * v;
             }
-            b[i] = b[i] - l * b[k];
+            for b in bs.iter_mut() {
+                let bk = b[k];
+                b[i] = b[i] - l * bk;
+            }
         }
     }
-    for i in (0..n).rev() {
-        let mut s = b[i];
-        for j in i + 1..n {
-            s = s - a[i * n + j] * b[j];
+    for b in bs.iter_mut() {
+        for i in (0..n).rev() {
+            let mut s = b[i];
+            for j in i + 1..n {
+                s = s - a[i * n + j] * b[j];
+            }
+            b[i] = s / a[i * n + i];
         }
-        b[i] = s / a[i * n + i];
     }
-    Some(b)
+    Some(bs)
 }
 
 #[cfg(test)]

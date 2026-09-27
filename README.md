@@ -724,9 +724,20 @@ discrepancies with his own strip codes. Trust heave; treat pitch at speed
 and added resistance near resonance as indicative. There is no short-wave
 added-resistance correction.
 
-The section solver's irregular frequencies (the interior sloshing modes of
-any source method) are detected by the energy check and bridged by
-interpolation.
+Added resistance is reported two ways. Gerritsma–Beukelman sums each
+strip's radiated energy; Maruo's far-field method takes the momentum of the
+whole wave pattern, built as a Kochin function from the stations' sources,
+so the sections' waves interfere and the forward-scattered wave counts for
+nothing. On the Wigley hulls the far field is within a factor of two of the
+measured peaks at Fn 0.3–0.4 (where GB is two to six times high: Wigley I,
+Fn 0.4, ≈ 26 against ≈ 15 measured and 92 by GB), but about half the
+measurements at Fn 0.2 and on the beamy L/B 5 hulls, where GB is closer.
+Neither ranks the four hulls reliably; read them as a bracket.
+
+The section solver closes each section's interior waterplane with a rigid
+lid of sources (Ohmatsu), which removes the irregular frequencies of the
+plain source method — their spurious interior modes would otherwise leak
+into the Kochin function.
 
 ## Web front end
 
