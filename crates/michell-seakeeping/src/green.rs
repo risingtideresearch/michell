@@ -35,6 +35,12 @@ const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
 /// series (whose terms peak near `e^{|w|}`, so at most ~5 digits are lost).
 const SERIES_LIMIT: f64 = 10.0;
 
+/// Beyond this `|w|` the asymptotic series, truncated at its smallest term
+/// (error ~`e^{−|w|}`), replaces the continued fraction, which converges
+/// slowly near the negative real axis — where short waves put the sources
+/// of a deep section.
+const ASYMPTOTIC_LIMIT: f64 = 40.0;
+
 /// `(P(w), P(w) + ln w)` for `Im w ≥ 0`, `Re w ≤ 0` (the source's own
 /// quadrant; `w = 0` gives `(∞, −γ + iπ)` — only the second is finite).
 fn p_and_regular(w: C64) -> (C64, C64) {
@@ -44,11 +50,15 @@ fn p_and_regular(w: C64) -> (C64, C64) {
         return (C64::new(f64::INFINITY, 0.0), C64::new(-EULER_GAMMA, PI));
     }
     let ew = w.exp();
-    if r < SERIES_LIMIT {
+    // The series' cancellation error, ~1e-16·e^{|w|} on E₁, reaches P
+    // multiplied by |e^w| = e^{Re w}: harmless wherever w leans toward the
+    // negative real axis — exactly where the continued fraction crawls.
+    let series = r < SERIES_LIMIT || (r < ASYMPTOTIC_LIMIT && w.re < -0.7 * r);
+    if series {
         // E₁(w) = −γ − ln w − S(w),  S(w) = Σ_{n≥1} (−w)ⁿ/(n·n!).
         let mut term = C64::ONE;
         let mut s = C64::ZERO;
-        for n in 1..200 {
+        for n in 1..400 {
             term = term * (-w).scale(1.0 / n as f64);
             let add = term.scale(1.0 / n as f64);
             s = s + add;
@@ -61,7 +71,11 @@ fn p_and_regular(w: C64) -> (C64, C64) {
         let reg = ew * (C64::new(-EULER_GAMMA, PI) - s) + ln_w * (C64::ONE - ew);
         (reg - ln_w, reg)
     } else {
-        let e = ew_e1_continued_fraction(w);
+        let e = if r > ASYMPTOTIC_LIMIT {
+            ew_e1_asymptotic(w)
+        } else {
+            ew_e1_continued_fraction(w)
+        };
         // On the negative real axis the fraction returns the principal
         // value e^w(−Ei(−w)), which is already P there.
         let p = if w.im == 0.0 && w.re < 0.0 {
@@ -71,6 +85,26 @@ fn p_and_regular(w: C64) -> (C64, C64) {
         };
         (p, p + w.ln())
     }
+}
+
+/// `e^{w} E₁(w) ~ Σ (−1)ⁿ n!/w^{n+1}`, summed to its smallest term; valid
+/// for `|arg w| < 3π/2`, and on the negative real axis the principal value.
+fn ew_e1_asymptotic(w: C64) -> C64 {
+    let inv = w.recip();
+    let mut term = inv;
+    let mut sum = inv;
+    let mut last = term.abs();
+    for n in 1..200 {
+        let next = term * inv.scale(-(n as f64));
+        let mag = next.abs();
+        if mag >= last || mag < 1e-17 * sum.abs() {
+            break;
+        }
+        sum = sum + next;
+        term = next;
+        last = mag;
+    }
+    sum
 }
 
 /// `e^{w} E₁(w)` by the even continued fraction
@@ -221,6 +255,33 @@ mod tests {
                     "{w:?}: {series_or_cf:?} vs {other:?}"
                 );
             }
+        }
+    }
+
+    /// Near the negative real axis the power series serves far past
+    /// `SERIES_LIMIT`, its error scaled away by `e^{Re w}`.
+    #[test]
+    fn the_series_holds_near_the_negative_axis() {
+        for &(re, im) in &[(-15.0, 2.0), (-25.0, 8.0), (-35.0, 12.0), (-20.0, 0.3)] {
+            let w = C64::new(re, im);
+            let (p, _) = p_and_regular(w);
+            let cf = ew_e1_continued_fraction(w) + C64::new(0.0, PI) * w.exp();
+            assert!((p - cf).abs() < 1e-9 * cf.abs(), "{w:?}: {p:?} vs {cf:?}");
+        }
+    }
+
+    #[test]
+    fn the_asymptotic_series_matches_the_continued_fraction() {
+        for &(re, im) in &[
+            (-45.0, 5.0),
+            (-30.0, 30.0),
+            (0.0, 60.0),
+            (-60.0, 20.0),
+            (-41.0, 0.5),
+        ] {
+            let w = C64::new(re, im);
+            let (a, c) = (ew_e1_asymptotic(w), ew_e1_continued_fraction(w));
+            assert!((a - c).abs() < 1e-12 * c.abs(), "{w:?}: {a:?} vs {c:?}");
         }
     }
 
