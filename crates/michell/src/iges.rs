@@ -639,6 +639,10 @@ pub struct HullPose {
     /// and the `pivot_x` station, so it grows or shrinks the whole hull in
     /// place (length, beam, and draft all scale together). Must be positive.
     pub scale: f64,
+    /// A further scale of beam and draft only (default `1.0`), about the
+    /// same transverse centre and design waterline: the length is kept and
+    /// every section scales by `scale_yz²` in area. Must be positive.
+    pub scale_yz: f64,
     /// Pivot station for `trim` (default: the hull's x mid); the pivot height
     /// is the base waterline.
     pub pivot_x: Option<f64>,
@@ -652,6 +656,7 @@ impl Default for HullPose {
             dz: 0.0,
             trim: 0.0,
             scale: 1.0,
+            scale_yz: 1.0,
             pivot_x: None,
         }
     }
@@ -935,7 +940,8 @@ fn pose_ctrl(surfs: &mut [NurbsSurface3], waterline_z: f64, pose: &HullPose, pla
 pub(crate) struct PoseMap {
     waterline_z: f64,
     wl: f64,
-    scale: Option<(f64, f64, f64)>,
+    /// Per-axis factors `[x, y, z]` about `(px, py, waterline)`.
+    scale: Option<([f64; 3], f64, f64)>,
     trim: Option<(f64, f64, f64)>,
     shift: [f64; 3],
     platform_trim: Option<(f64, f64, f64)>,
@@ -970,7 +976,10 @@ impl PoseMap {
         PoseMap {
             waterline_z,
             wl: waterline_z + platform.sinkage,
-            scale: (pose.scale != 1.0).then(|| (pose.scale, px(), y_mid())),
+            scale: (pose.scale != 1.0 || pose.scale_yz != 1.0).then(|| {
+                let (s, t) = (pose.scale, pose.scale * pose.scale_yz);
+                ([s, t, t], px(), y_mid())
+            }),
             trim: (pose.trim != 0.0).then(|| {
                 let (sin, cos) = pose.trim.sin_cos();
                 (px(), cos, sin)
@@ -985,9 +994,9 @@ impl PoseMap {
 
     pub(crate) fn apply(&self, p: &mut [f64; 3]) {
         if let Some((s, px, py)) = self.scale {
-            p[0] = px + s * (p[0] - px);
-            p[1] = py + s * (p[1] - py);
-            p[2] = self.waterline_z + s * (p[2] - self.waterline_z);
+            p[0] = px + s[0] * (p[0] - px);
+            p[1] = py + s[1] * (p[1] - py);
+            p[2] = self.waterline_z + s[2] * (p[2] - self.waterline_z);
         }
         if let Some((px, cos, sin)) = self.trim {
             rotate_xz(p, px, self.waterline_z, cos, sin);

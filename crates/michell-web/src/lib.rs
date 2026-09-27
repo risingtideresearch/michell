@@ -168,6 +168,19 @@ where
     }
 }
 
+/// How a case's mass is carried (see [`FlowRequest::mass_by`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MassBy {
+    /// The hull floats deeper or shallower: the waterline moves.
+    Sinking,
+    /// The hull is scaled uniformly, `k = (m/m₀)^(1/3)`, about its design
+    /// waterline: the waterline stays.
+    ScaleXyz,
+    /// Beam and draft are scaled, `k = (m/m₀)^(1/2)`, the length kept: the
+    /// waterline stays.
+    ScaleYz,
+}
+
 /// The flow request: a speed and the transom closure, on top of the cut.
 pub struct FlowRequest {
     pub cut: LoftRequest,
@@ -183,6 +196,10 @@ pub struct FlowRequest {
     /// LCB, so the hull floats at its design waterline at rest.
     pub mass: Option<f64>,
     pub lcg: Option<f64>,
+    /// How a given mass is carried: by the hull sinking to it, or by scaling
+    /// the hull (in all three axes, or in beam and draft only) until it
+    /// displaces the mass at its design waterline.
+    pub mass_by: MassBy,
     /// Double the (single) hull into a catamaran with this centre span:
     /// the distance between the demihulls' centreplanes [m].
     pub span: Option<f64>,
@@ -246,6 +263,16 @@ impl FlowRequest {
             dynamic,
             mass,
             lcg: num("lcg")?,
+            mass_by: match get("mass_by").unwrap_or("sinking") {
+                "sinking" => MassBy::Sinking,
+                "scale" => MassBy::ScaleXyz,
+                "scale_yz" => MassBy::ScaleYz,
+                other => {
+                    return Err(format!(
+                        "mass_by {other:?}: expected sinking, scale or scale_yz"
+                    ))
+                }
+            },
             span: match num("span")? {
                 Some(s) if !(s > 0.0 && s.is_finite()) => {
                     return Err(format!("span {s}: expected a positive centre span"))
@@ -418,12 +445,43 @@ pub fn flow_with_progress(
     // The load: by default the design displacement at its LCB, so at rest
     // the fleet floats exactly at its design waterline.
     let vol: f64 = design.iter().map(|(h, _)| h.displaced_volume()).sum();
+    let mass = req.mass.unwrap_or(rho * vol);
+    // A mass carried by scaling: every hull scaled alike until the fleet
+    // displaces it at the design waterline, and re-cut there — the design
+    // data (and the LCB the LCG defaults to) are the scaled hull's.
+    let mut layout = layout;
+    let design_owned = match (req.mass, req.mass_by) {
+        (Some(m), by) if by != MassBy::Sinking => {
+            let ratio = m / (rho * vol);
+            for (_, pose) in layout.iter_mut() {
+                match by {
+                    MassBy::ScaleXyz => pose.scale = ratio.cbrt(),
+                    _ => pose.scale_yz = ratio.sqrt(),
+                }
+            }
+            let opts = &cut.opts;
+            layout
+                .iter()
+                .map(|(i, pose)| {
+                    cut.file
+                        .source
+                        .situate_sectional(*i, cut.file.waterline_z, pose, &Platform::default(), opts)
+                        .map_err(|e| e.to_string())?
+                        .map(|h| (h.hull, h.placement))
+                        .ok_or_else(|| "the scaled hull is dry".to_string())
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        }
+        _ => design_owned,
+    };
+    let design: Vec<(&SectionalHull, Placement)> =
+        design_owned.iter().map(|(h, p)| (h, *p)).collect();
+    let vol: f64 = design.iter().map(|(h, _)| h.displaced_volume()).sum();
     let lcb = design
         .iter()
         .map(|(h, pl)| h.displaced_volume() * (h.lcb_x() + pl.x))
         .sum::<f64>()
         / vol.max(f64::MIN_POSITIVE);
-    let mass = req.mass.unwrap_or(rho * vol);
     let lcg = req.lcg.unwrap_or(lcb);
 
     // The attitude: the dynamic equilibrium at this speed, or the design one.
@@ -682,6 +740,8 @@ pub fn flow_with_progress(
         ("interference", res.interference),
         ("mass", mass),
         ("lcg", lcg),
+        ("displaced_volume", members.iter().map(|(h, _)| h.displaced_volume()).sum()),
+        ("length", members.iter().map(|(h, _)| h.length()).fold(0.0, f64::max)),
     ] {
         forces[k] = json!(v);
     }
@@ -1025,6 +1085,37 @@ mod tests {
             out.extend(&[(v >> 16) as u8, (v >> 8) as u8, v as u8][..n - 1]);
         }
         out
+    }
+
+    /// A mass carried by scaling keeps the design waterline: the scaled
+    /// Wigley displaces exactly that mass there, its length scaled by the
+    /// cube root of the mass ratio (x, y, z) or kept (beam and draft only).
+    #[test]
+    fn a_mass_carried_by_scaling_keeps_the_waterline() {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let rho = Conditions::seawater(1.0).fluid.density;
+        let v0 = 4.0 / 9.0 * 10.0 * 0.625;
+        let mass = 1.2 * rho * v0;
+        for (by, length) in [("scale", 10.0 * 1.2f64.cbrt()), ("scale_yz", 10.0)] {
+            let m = format!("{mass}");
+            let pairs: Vec<(String, String)> = [
+                ("froude", "0.3"),
+                ("grid", "40"),
+                ("attitude", "design"),
+                ("mass", m.as_str()),
+                ("mass_by", by),
+            ]
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+            let v = flow("w.igs", text.clone().into_bytes(), &FlowRequest::from_query(&pairs).unwrap())
+                .unwrap();
+            let f = &v["forces"];
+            let (vol, len) = (f["displaced_volume"].as_f64().unwrap(), f["length"].as_f64().unwrap());
+            assert!((vol - 1.2 * v0).abs() < 1e-5 * v0, "{by}: volume {vol} vs {}", 1.2 * v0);
+            assert!((len - length).abs() < 1e-6 * length, "{by}: length {len} vs {length}");
+        }
     }
 
     #[test]

@@ -211,6 +211,13 @@
       <label>LCG x [m]
         <input id="lcg" type="text" placeholder="at LCB">
       </label>
+      <label class="wide">A given mass is carried by
+        <select id="massby">
+          <option value="sinking">the hull sinking to it (the waterline moves)</option>
+          <option value="scale">scaling the hull in x, y, z (the waterline stays)</option>
+          <option value="scale_yz">scaling beam and draft only (the waterline stays)</option>
+        </select>
+      </label>
     </div>
     <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. A span doubles the hull into a catamaran with its demihulls' centreplanes that far apart. Cases run one at a time; click a finished one to view it.</p>
     <div style="display:flex;gap:8px">
@@ -405,7 +412,8 @@ function addCases() {
   const n = fns.length * masses.length * lcgs.length * spans.length;
   if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
   for (const span of spans) for (const mass of masses) for (const lcg of lcgs) for (const value of fns) {
-    cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span, status: "queued", data: null, error: null });
+    cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span,
+      massBy: mass == null ? "sinking" : $("massby").value, status: "queued", data: null, error: null });
   }
   renderCases();
   pump();
@@ -414,7 +422,7 @@ $("flowgo").onclick = addCases;
 for (const id of ["cfroude", "mass", "lcg", "span"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
 
 // What makes two cases' attitudes comparable, for warm starts.
-const loadKey = (c) => JSON.stringify([c.mass, c.lcg, c.span == null]);
+const loadKey = (c) => JSON.stringify([c.mass, c.lcg, c.span == null, c.massBy]);
 
 // Run the queue, one case at a time: each one uses every core.
 let pumping = false;
@@ -448,6 +456,7 @@ async function runCase(c) {
   if (c.mass != null) q.set("mass", String(c.mass));
   if (c.lcg != null) q.set("lcg", String(c.lcg));
   if (c.span != null) q.set("span", String(c.span));
+  if (c.massBy !== "sinking") q.set("mass_by", c.massBy);
   // Start from the nearest finished attitude with the same load: the solver
   // then skips its coarse search.
   {
@@ -493,8 +502,9 @@ async function runCase(c) {
 const dist = (a, b) => Math.abs(a.froude - b.froude) + (a.span == null ? 0 : Math.abs(a.span - b.span) / lRef());
 
 function caseLabel(c) {
+  const how = { sinking: "", scale: " (scaled xyz)", scale_yz: " (scaled yz)" }[c.massBy];
   const load = c.mass == null && c.lcg == null ? "design load"
-    : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg"}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
+    : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg" + how}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
   return `${speedText(c)}${c.span == null ? "" : ` · cat span ${fmt(c.span, 2)} m`} · ${load}`;
 }
 
@@ -545,7 +555,7 @@ const PLOTX = {
 // The inputs a series holds fixed: all but the one on the x-axis (speed
 // in any of its units counts as one).
 function seriesKey(c, xk) {
-  const k = { speed: c.froude, mass: c.mass, lcg: c.lcg, span: c.span };
+  const k = { speed: c.froude, mass: c.mass, lcg: c.lcg, span: c.span, by: c.massBy };
   delete k[{ froude: "speed", speed: "speed", knots: "speed", mass: "mass", lcg: "lcg", span: "span" }[xk] ?? "none"];
   return JSON.stringify(k);
 }
@@ -569,6 +579,7 @@ function seriesLabel(c, xk) {
   if (!["froude", "speed", "knots"].includes(xk)) parts.push(speedText(c));
   if (xk !== "span" && c.span != null) parts.push(`span ${fmt(c.span, 2)} m`);
   if (xk !== "mass") parts.push(c.mass == null ? "design mass" : `${fmt(c.mass, 0)} kg`);
+  if (c.massBy !== "sinking") parts.push({ scale: "scaled xyz", scale_yz: "scaled yz" }[c.massBy]);
   if (xk !== "lcg" && c.lcg != null) parts.push(`LCG ${fmt(c.lcg, 2)}`);
   return parts.join(" · ");
 }
@@ -684,6 +695,7 @@ function renderFlow() {
       <dt>Sinkage${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
       <dt>Trim${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
       <dt>Load</dt><dd>${fmt(f.mass, 1)} kg at x ${fmt(f.lcg, 3)} m</dd>
+      <dt>Displacement at speed</dt><dd>${fmt(f.displaced_volume, 4)} m³ · L ${fmt(f.length, 3)} m</dd>
       <dt>Transverse wave</dt><dd>${fmt(d.transverse_wavelength, 2)} m</dd>
     </dl>
     <p class="hint">Computed in ${d.seconds.toFixed(1)} s, ${f.solved
