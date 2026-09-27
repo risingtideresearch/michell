@@ -52,8 +52,13 @@
 //! place. A multihull's roll is mostly its hulls' heave, and does not have
 //! this problem. The lateral modes are checked by long beam waves (the hull
 //! follows the water: sway 1, roll the slope), zero-speed reciprocity of the
-//! five-mode coefficients, and mirror symmetry; they have not yet been
-//! compared with experiment.
+//! five-mode coefficients, and mirror symmetry; and, section by section,
+//! against Vugts' (1970) cylinder experiments in beam waves as plotted in
+//! Journée's SEAWAY validation report: sway, heave and roll added mass,
+//! damping and wave loads match SEAWAY's curves to about 1–6% and the tank
+//! to about 1–12% (roll's small added mass and damping, where viscosity
+//! matters, 15–40%). The three-dimensional lateral response has no
+//! experimental check yet.
 //!
 //! Still to come: a short-wave added-resistance correction; empirical
 //! (Ikeda-type) roll damping.

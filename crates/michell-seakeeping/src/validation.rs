@@ -206,6 +206,134 @@ fn far_field_added_resistance_peaks_near_the_measured_ones() {
     }
 }
 
+/// Vugts' (1970) horizontal cylinders in beam waves, as plotted in Journée's
+/// SEAWAY validation report (1213, §2.1; points read off its vector
+/// figures): the 2-D sway and heave added mass and damping and the sway,
+/// heave and roll wave loads of a circle and a B/d = 2 rectangle (G in the
+/// waterline), non-dimensionalised there as `ω' = ω√(B/2g)`,
+/// `a' = a/(ρA)`, `b' = b/(ρA)·√(B/2g)`, `F'₂ = F₂/(ρgkA)`, `F'₃ = F₃/(ρgB)`,
+/// `F'₄ = F₄/(ρgkB³/12)`. Each within 15% of the largest measured value of
+/// its quantity (the circle's high-frequency sway damping, where SEAWAY
+/// too falls below the tank, is the closest call). The circle's measured
+/// roll moment and roll added mass, which potential flow makes zero, are
+/// viscous and left out.
+#[test]
+fn sections_match_vugts_cylinders_in_beam_waves() {
+    use crate::section2d::Section;
+    let (g, rho, b) = (G, RHO, 1.0);
+    // (case, quantity, [(ω', value)])
+    let data: [(&str, &str, [(f64, f64); 3]); 13] = [
+        (
+            "circle",
+            "a22",
+            [(0.389, 1.173), (0.811, 0.756), (1.247, 0.28)],
+        ),
+        (
+            "circle",
+            "b22",
+            [(0.382, 0.045), (0.811, 0.787), (1.247, 0.736)],
+        ),
+        (
+            "circle",
+            "a33",
+            [(0.424, 1.053), (0.797, 0.609), (1.17, 0.669)],
+        ),
+        (
+            "circle",
+            "b33",
+            [(0.424, 0.544), (0.797, 0.502), (1.177, 0.293)],
+        ),
+        (
+            "circle",
+            "F2",
+            [(0.393, 2.036), (0.559, 1.798), (0.973, 0.56)],
+        ),
+        (
+            "circle",
+            "F3",
+            [(0.393, 0.732), (0.559, 0.637), (0.966, 0.309)],
+        ),
+        (
+            "rect2",
+            "a22",
+            [(0.355, 1.505), (0.787, 0.544), (1.219, 0.124)],
+        ),
+        (
+            "rect2",
+            "b22",
+            [(0.355, 0.042), (0.787, 1.077), (1.219, 0.804)],
+        ),
+        (
+            "rect2",
+            "a33",
+            [(0.494, 0.813), (0.787, 0.801), (1.184, 1.065)],
+        ),
+        (
+            "rect2",
+            "b33",
+            [(0.431, 0.39), (0.717, 0.294), (1.01, 0.142)],
+        ),
+        (
+            "rect2",
+            "F2",
+            [(0.462, 2.298), (0.642, 1.869), (1.124, 0.369)],
+        ),
+        (
+            "rect2",
+            "F3",
+            [(0.45, 0.653), (0.643, 0.509), (1.12, 0.129)],
+        ),
+        (
+            "rect2",
+            "F4",
+            [(0.462, 1.962), (0.793, 1.026), (1.124, 0.415)],
+        ),
+    ];
+    for (case, qty, points) in data {
+        let (sec, area) = match case {
+            "circle" => (Section::semicircle(0.5 * b, 48), PI * 0.125 * b * b),
+            _ => (Section::rectangle(0.5 * b, 0.5 * b, 48), 0.5 * b * b),
+        };
+        let scale = points.iter().map(|p| p.1.abs()).fold(0.0, f64::max);
+        for (wn, want) in points {
+            let w = wn / (b / (2.0 * g)).sqrt();
+            let k = w * w / g;
+            let s = (b / (2.0 * g)).sqrt();
+            let beam = 0.5 * PI;
+            let got = match qty {
+                "a22" | "b22" | "F2" | "F4" => {
+                    let lat = sec.lateral(w, g, rho, Some((k, beam))).unwrap();
+                    let f = |j: usize| {
+                        lat.froude_krylov(k, beam, g, rho)[j] + lat.diffraction(k, beam, g, rho)[j]
+                    };
+                    match qty {
+                        "a22" => lat.added_mass[0][0] / (rho * area),
+                        "b22" => lat.damping[0][0] / (rho * area) * s,
+                        "F2" => f(0).abs() / (rho * g * k * area),
+                        _ => f(1).abs() / (rho * g * k * b * b * b / 12.0),
+                    }
+                }
+                _ => {
+                    let hv = sec.heave_with_diffraction(w, k, beam, g, rho).unwrap();
+                    match qty {
+                        "a33" => hv.added_mass / (rho * area),
+                        "b33" => hv.damping / (rho * area) * s,
+                        _ => {
+                            (hv.froude_krylov(k, beam, g, rho) + hv.diffraction(k, beam, g, rho))
+                                .abs()
+                                / (rho * g * b)
+                        }
+                    }
+                }
+            };
+            assert!(
+                (got - want).abs() < 0.15 * scale,
+                "{case} {qty} at ω' {wn}: {got:.3} vs Vugts {want}"
+            );
+        }
+    }
+}
+
 /// Table 10-III and 10-IV: heave and pitch at zero speed, pitch in the
 /// report's normalisation `θ_a/(2π ζ_a/L)`. Pitch comes out 10–20% low.
 #[test]

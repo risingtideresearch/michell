@@ -751,8 +751,15 @@ leaves a monohull's roll nearly undamped — a demihull of e12 in beam seas
 reaches a roll RAO of about 19 at resonance, about 7 with `--roll-damping
 0.05` (5% of critical) standing in for the viscous damping that really
 sets it; off resonance the two agree. The lateral modes are checked by
-long-wave limits, reciprocity and mirror symmetry, not yet against
-experiment. The same assembly carries two transom end terms (`(U²/ω²)a_A`
+long-wave limits, reciprocity and mirror symmetry, and section by section
+against Vugts' (1970) horizontal cylinders in beam waves (a circle and
+rectangles of B/d 2, 4 and 8, as plotted in Journée's SEAWAY validation
+report; `python/tools/vugts/` digitises its figures): the sway, heave and
+roll coefficients and wave loads match SEAWAY's curves to about 1–6% and
+the experiments to about 1–12%, roll's small added mass and damping (where
+viscosity matters) to 15–40%; phases match SEAWAY to a few degrees under
+the report's conventions. The three-dimensional lateral response has no
+experimental check yet. The same assembly carries two transom end terms (`(U²/ω²)a_A`
 in A₃₅, `(U²/ω²)b_A` in B₃₅) that the earlier heave–pitch table lacked;
 they change e12's heave by about 2% at Fn 0.4 and hulls without a transom
 not at all.

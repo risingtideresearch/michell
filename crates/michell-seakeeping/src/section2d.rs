@@ -837,6 +837,21 @@ impl Section {
 }
 
 impl HeaveSolution {
+    /// The Froude–Krylov heave force per unit length and unit wave
+    /// amplitude, `−∫ p n_z ds` with `p = ρg e^{kz} e^{iky sin β}` (its part
+    /// even in `y`, `ρg e^{kz} cos(k y sin β)`, both sides) — the section's
+    /// own form of what [`crate::froude_krylov`] gives a whole hull in
+    /// closed form.
+    pub fn froude_krylov(&self, k: f64, heading: f64, gravity: f64, density: f64) -> C64 {
+        let sb = heading.sin();
+        let sum: f64 = self
+            .panels
+            .iter()
+            .map(|p| 2.0 * (k * p.mid[1]).exp() * (k * p.mid[0] * sb).cos() * p.n[1] * p.len)
+            .sum();
+        C64::new(-density * gravity * sum, 0.0)
+    }
+
     /// Drop the diffraction sources (a radiation-only far field).
     pub fn clear_diffraction(&mut self) {
         self.sigma_d.clear();
