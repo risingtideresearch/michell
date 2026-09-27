@@ -401,6 +401,9 @@ async function run() {
   if (!file) return;
   const q = new URLSearchParams({ name: file.name });
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
+  // The waterline this cut is made at: the slider may have moved on by the
+  // time it comes back, and the cut belongs where it was cut.
+  const wlCut = Number($("waterline").value.trim() || "0");
   $("go").disabled = true;
   if (!cutting) status(`Cutting ${file.name} into sections…`);
   try {
@@ -409,11 +412,10 @@ async function run() {
     if (!r.ok) throw new Error(data.error || r.statusText);
     status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · sectioned in ${data.seconds.toFixed(2)} s`);
     // The summary line the folded panel shows (it folds when cases start).
-    const wl = Number($("waterline").value.trim() || "0");
-    $("secsum").textContent = `— waterline ${wl.toFixed(3)} m, ${data.hulls[0].stations.length} stations`;
+    $("secsum").textContent = `— waterline ${wlCut.toFixed(3)} m, ${data.hulls[0].stations.length} stations`;
     hulls = data.hulls;
     renderResults(data.notes || []);
-    scene3d.load(hulls, wl);
+    scene3d.load(hulls, wlCut);
     // A new cut: the old cases were for other geometry.
     flowData = null;
     $("bigrt").hidden = true;
