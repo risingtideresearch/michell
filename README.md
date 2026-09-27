@@ -714,8 +714,7 @@ written. On the parabolic Wigley at Fn 0.3 the added-resistance peak
 measurements of ~5–10, as expected of the radiated-energy method at a
 lightly damped strip-theory resonance; treat added resistance near
 resonance as indicative. There is no short-wave added-resistance
-correction, and in oblique seas the Froude–Krylov pressure is taken as
-uniform across each section.
+correction.
 
 The section solver's irregular frequencies (the interior sloshing modes of
 any source method) are detected by the energy check and bridged by

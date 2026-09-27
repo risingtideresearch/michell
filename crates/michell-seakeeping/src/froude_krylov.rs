@@ -17,11 +17,20 @@
 //! ([`SectionalHull::x_transform`], [`SectionalHull::waterline_transform`]),
 //! so they carry no quadrature error beyond the stations' depth integrals.
 //!
-//! The pressure is taken as uniform across each section, which is exact in
-//! head and following seas (`β = 0, π`, where the wave has no transverse
-//! variation) and the usual strip-theory approximation otherwise
-//! (`k B |sin β| ≪ 1`). As `k → 0` the force tends to the hydrostatic
-//! `C₃₃` and `C₃₅` of a unit rise of the water ([`crate::restoring`]).
+//! In oblique seas the pressure also varies across each section, as
+//! `cos(κy)`, `κ = k sin β`. Green's theorem turns the section's share into
+//! a line integral along its curve,
+//!
+//! ```text
+//! f₃(x) = ρ g e^{i k_x (x − x_ref)} [ 2 sin(κ f₀)/κ − 2k ∫ (sin(κy)/κ) e^{−kz} dz ]
+//! ```
+//!
+//! (`f₀` the waterline half-beam), which reduces to the uniform form as
+//! `κ → 0`. It is added station by station as a correction to the closed
+//! form — the exact minus the uniform section force — so the head- and
+//! following-sea result is the closed form itself and the oblique one joins
+//! it continuously. As `k → 0` the force tends to the hydrostatic `C₃₃` and
+//! `C₃₅` of a unit rise of the water ([`crate::restoring`]).
 
 use michell_geometry::sectional::SectionalContracted;
 use michell_geometry::{SectionalHull, C64};
@@ -60,10 +69,51 @@ pub fn froude_krylov(
     let d = hull.x_center() - x_ref;
     let phase = C64::cis(kx * d);
     let rg = density * gravity;
+    let (ch, cp) = transverse_correction(hull, k, heading, x_ref);
     WaveLoad {
-        heave: (phase * f0).scale(rg),
-        pitch: (phase * (f1 + f0.scale(d))).scale(rg),
+        heave: (phase * f0 + ch).scale(rg),
+        pitch: (phase * (f1 + f0.scale(d)) + cp).scale(rg),
     }
+}
+
+/// The oblique-sea correction to the uniform-pressure force and moment
+/// (per `ρg`): each station's exact section force less its uniform one,
+/// integrated along the stations by the trapezoidal rule. Zero when
+/// `sin β = 0`.
+fn transverse_correction(hull: &SectionalHull, k: f64, heading: f64, x_ref: f64) -> (C64, C64) {
+    let kappa = k * heading.sin();
+    if kappa.abs() < 1e-12 * k.max(1e-300) {
+        return (C64::ZERO, C64::ZERO);
+    }
+    let kx = k * heading.cos();
+    let sinc = |y: f64| (kappa * y).sin() / kappa;
+    let stations: Vec<(f64, f64)> = hull
+        .curves()
+        .map(|(x, curve)| {
+            let f0 = curve.first().map_or(0.0, |p| p.0);
+            // ∫ (g(y) − y) e^{−kz} dz along the curve, g = sin(κy)/κ.
+            let line: f64 = curve
+                .windows(2)
+                .map(|w| {
+                    let (a, b) = (w[0], w[1]);
+                    let ga = (sinc(a.0) - a.0) * (-k * a.1).exp();
+                    let gb = (sinc(b.0) - b.0) * (-k * b.1).exp();
+                    0.5 * (ga + gb) * (b.1 - a.1)
+                })
+                .sum();
+            (x, 2.0 * (sinc(f0) - f0) - 2.0 * k * line)
+        })
+        .collect();
+    let (mut heave, mut pitch) = (C64::ZERO, C64::ZERO);
+    for w in stations.windows(2) {
+        let dx = w[1].0 - w[0].0;
+        for &(x, c) in &[w[0], w[1]] {
+            let f = C64::cis(kx * (x - x_ref)).scale(0.5 * dx * c);
+            heave = heave + f;
+            pitch = pitch + f.scale(x - x_ref);
+        }
+    }
+    (heave, pitch)
 }
 
 #[cfg(test)]
@@ -102,7 +152,17 @@ mod tests {
         let kx = k * heading.cos();
         let (gx, gw) = gauss_legendre(40);
         let panels = 40;
-        let f = |xi: f64, z: f64| 0.5 * B * (1.0 - xi * xi) * (1.0 - (z / T).powi(2));
+        let half = |xi: f64, z: f64| 0.5 * B * (1.0 - xi * xi) * (1.0 - (z / T).powi(2));
+        // ∫ cos(κy) over the section's width at depth z: 2 sin(κ f)/κ.
+        let kappa = k * heading.sin();
+        let f = |xi: f64, z: f64| {
+            let h = half(xi, z);
+            if kappa.abs() < 1e-12 {
+                h
+            } else {
+                (kappa * h).sin() / kappa
+            }
+        };
         let (mut heave, mut pitch) = (C64::ZERO, C64::ZERO);
         for p in 0..panels {
             let (a, b) = (
@@ -141,23 +201,28 @@ mod tests {
         let hull = wigley();
         let x_c = hull.x_center();
         let x_ref = x_c - 0.3; // off-centre pivot: exercises the re-referencing
-        for (k, heading) in [
-            (2.0 * PI / L, PI),
-            (2.0 * PI / (0.5 * L), PI),
-            (2.0 * PI / L, 0.0),
-            (1.3, 2.4),
+                               // Head and following seas: the closed form, to quadrature precision.
+                               // Oblique and beam seas: the station-by-station transverse
+                               // correction, to the trapezoidal rule's precision along the stations.
+        for (k, heading, tol) in [
+            (2.0 * PI / L, PI, 1e-6),
+            (2.0 * PI / (0.5 * L), PI, 1e-6),
+            (2.0 * PI / L, 0.0, 1e-6),
+            (1.3, 2.4, 1e-3),
+            (4.0, 0.5 * PI, 1e-3),
+            (2.0 * PI / (0.4 * L), 2.0, 1e-3),
         ] {
             let got = froude_krylov(&hull, RHO, G, k, heading, x_ref);
             let want = brute_force(x_c, k, heading, x_ref);
             let scale = RHO * G * hull.waterplane_area();
             assert!(
-                close(got.heave, want.heave, scale, 1e-6),
+                close(got.heave, want.heave, scale, tol),
                 "k {k} β {heading}: heave {:?} vs {:?}",
                 got.heave,
                 want.heave
             );
             assert!(
-                close(got.pitch, want.pitch, scale * L, 1e-6),
+                close(got.pitch, want.pitch, scale * L, tol),
                 "k {k} β {heading}: pitch {:?} vs {:?}",
                 got.pitch,
                 want.pitch
