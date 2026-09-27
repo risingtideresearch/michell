@@ -877,9 +877,39 @@ pub fn sectional_situator<'a>(
             pivot_x,
         };
         let o = if coarse { &coarse_opts } else { opts };
-        let mut members = Vec::new();
+        let mut members: Vec<(SectionalHull, Placement)> = Vec::new();
         let mut dry = 0usize;
-        for (h, st) in hulls.iter().zip(states.iter_mut()) {
+        // A hull that differs from an earlier one only by a sideways shift
+        // (a catamaran's other demihull) is that hull, moved: cut once and
+        // placed twice. The platform pitches about a transverse axis, so a
+        // shift in y leaves the cut itself unchanged.
+        let mut cut: Vec<Option<usize>> = Vec::with_capacity(hulls.len()); // member index
+        for (i, (h, st)) in hulls.iter().zip(states.iter_mut()).enumerate() {
+            let same = (0..i).find(|&j| {
+                let o = &hulls[j];
+                std::ptr::addr_eq(o.source, h.source)
+                    && o.index == h.index
+                    && o.waterline_z == h.waterline_z
+                    && HullPose { dy: 0.0, ..o.pose } == HullPose { dy: 0.0, ..h.pose }
+            });
+            if let Some(j) = same {
+                match cut[j] {
+                    Some(m) => {
+                        let (hull, pl) = &members[m];
+                        let placement = Placement {
+                            y: pl.y + h.pose.dy - hulls[j].pose.dy,
+                            ..*pl
+                        };
+                        members.push((hull.clone(), placement));
+                        cut.push(Some(members.len() - 1));
+                    }
+                    None => {
+                        dry += 1;
+                        cut.push(None);
+                    }
+                }
+                continue;
+            }
             let state = if coarse { &mut st.0 } else { &mut st.1 };
             match h.source.situate_sectional_warm(
                 h.index,
@@ -889,8 +919,14 @@ pub fn sectional_situator<'a>(
                 o,
                 state,
             )? {
-                Some(h) => members.push((h.hull, h.placement)),
-                None => dry += 1,
+                Some(h) => {
+                    members.push((h.hull, h.placement));
+                    cut.push(Some(members.len() - 1));
+                }
+                None => {
+                    dry += 1;
+                    cut.push(None);
+                }
             }
         }
         Ok(FleetState { members, dry })

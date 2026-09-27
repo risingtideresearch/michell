@@ -1283,11 +1283,29 @@ pub fn multihull_dynamic_force(
         x_ref,
         scratch: vec![SquatTransforms::default(); members.len()],
         zc_tmp: vec![SectionalContracted::default(); members.len()],
+        twin: twins(members),
     };
     let l_max = members.iter().map(|(h, _)| h.length).fold(0.0, f64::max);
     let t_max = members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max);
     let volume = members.iter().map(|(h, _)| h.volume).sum();
     Ok(integrate_force(fleet, cond, l_max, t_max, volume, opts))
+}
+
+/// For each member, an earlier member carrying the very same hull (a clone:
+/// bit-identical hydrostatics and stations), which the force quadrature can
+/// then transform once for both.
+fn twins(members: &[(&SectionalHull, Placement)]) -> Vec<Option<usize>> {
+    let print = |h: &SectionalHull| {
+        [h.volume, h.lcb_x, h.length, h.x_center, h.wetted_surface, h.draft]
+            .map(f64::to_bits)
+            .into_iter()
+            .chain([h.xs.len() as u64])
+            .collect::<Vec<_>>()
+    };
+    let prints: Vec<_> = members.iter().map(|(h, _)| print(h)).collect();
+    (0..members.len())
+        .map(|i| (0..i).find(|&j| prints[j] == prints[i]))
+        .collect()
 }
 
 /// The dynamic load a sectional fleet carries at speed, as the equilibrium

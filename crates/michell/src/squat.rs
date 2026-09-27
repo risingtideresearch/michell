@@ -163,6 +163,7 @@ pub(crate) fn multihull_dynamic_force(
         x_ref,
         scratch: vec![SquatTransforms::default(); members.len()],
         zc_tmp: vec![Default::default(); members.len()],
+        twin: vec![None; members.len()],
     };
     let l_max = members
         .iter()
@@ -262,6 +263,11 @@ pub(crate) struct Fleet<K: NearFieldKernel> {
     pub(crate) scratch: Vec<SquatTransforms>,
     /// One contraction per member for points off the shared k-grid.
     pub(crate) zc_tmp: Vec<K::Contracted>,
+    /// For each member, an earlier member it is an exact copy of (the same
+    /// hull at another placement, e.g. a catamaran's other demihull): its
+    /// transforms are that member's, so it is neither contracted nor
+    /// transformed — only its placement enters, through the pair sums.
+    pub(crate) twin: Vec<Option<usize>>,
 }
 
 /// The pair-summed bilinear forms at one wavenumber, real parts taken over
@@ -294,30 +300,33 @@ impl<K: NearFieldKernel> Fleet<K> {
     /// Transforms of every member at `(k_x, κ)`, then the pair sums with the
     /// placement phase `e^{ik_x(c_j − c_i)} cos(k_y(y_j − y_i))`.
     fn forms(&mut self, kx: f64, ky: f64, kappa: f64) -> Forms {
-        for (m, zc) in self.members.iter_mut().zip(self.zc_tmp.iter_mut()) {
-            m.inner.contract_z(kappa, zc);
+        for i in 0..self.members.len() {
+            if self.twin[i].is_none() {
+                self.members[i].inner.contract_z(kappa, &mut self.zc_tmp[i]);
+                self.scratch[i] = self.members[i].inner.transforms_at(&self.zc_tmp[i], kx);
+            }
         }
-        for ((m, zc), t) in self
-            .members
-            .iter_mut()
-            .zip(self.zc_tmp.iter())
-            .zip(self.scratch.iter_mut())
-        {
-            *t = m.inner.transforms_at(zc, kx);
-        }
+        self.copy_twins();
         self.pair_sums(kx, ky)
+    }
+
+    /// Give each copy its original's transforms.
+    fn copy_twins(&mut self) {
+        for i in 0..self.members.len() {
+            if let Some(o) = self.twin[i] {
+                self.scratch[i] = self.scratch[o];
+            }
+        }
     }
 
     /// The same from contractions already made at this `κ` — one per member.
     fn forms_cached(&mut self, zcs: &[K::Contracted], kx: f64, ky: f64) -> Forms {
-        for ((m, zc), t) in self
-            .members
-            .iter_mut()
-            .zip(zcs)
-            .zip(self.scratch.iter_mut())
-        {
-            *t = m.inner.transforms_at(zc, kx);
+        for i in 0..self.members.len() {
+            if self.twin[i].is_none() {
+                self.scratch[i] = self.members[i].inner.transforms_at(&zcs[i], kx);
+            }
         }
+        self.copy_twins();
         self.pair_sums(kx, ky)
     }
 
@@ -395,7 +404,9 @@ impl<K: NearFieldKernel> Fleet<K> {
         let mut zcs: Vec<K::Contracted> = vec![Default::default(); knodes.len() * nm];
         for (i, &(k, _)) in knodes.iter().enumerate() {
             for (j, m) in self.members.iter_mut().enumerate() {
-                m.inner.contract_z(k, &mut zcs[i * nm + j]);
+                if self.twin[j].is_none() {
+                    m.inner.contract_z(k, &mut zcs[i * nm + j]);
+                }
             }
         }
         *evals += knodes.len();
