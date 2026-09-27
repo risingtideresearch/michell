@@ -546,11 +546,10 @@ mod tests {
     /// Gerritsma–Beukelman added resistance in head seas at Fn 0.3: positive
     /// throughout, peaking with the motions (λ/L ≈ 1–1.2) and vanishing in
     /// long waves, where the hull follows the water. The peak here,
-    /// `R_aw/(ρgζ²B²/L)` ≈ 44 at λ/L = 1, sits well above the ~5–10 recalled
-    /// from Wigley experiments: the method goes with the square of the
-    /// relative motion, and strip theory overshoots this lightly damped
-    /// resonance. Not yet checked against data; the magnitude bound is a
-    /// sanity guard only.
+    /// `R_aw/(ρgζ²B²/L)` ≈ 44 at λ/L = 1 on this parabolic Wigley, is of the
+    /// order strip theory gives Journée's Wigley III at Fn 0.3 (≈ 49 at λ/L
+    /// 1.05, against a measured ≈ 20 at 1.25; see `crate::validation`). The
+    /// magnitude bound is a sanity guard only.
     #[test]
     fn added_resistance_peaks_with_the_motions() {
         let l = 3.0;

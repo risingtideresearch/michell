@@ -707,14 +707,22 @@ principal-value integral; section damping against the energy its far field
 carries; the Haskind diffraction force against the solved diffraction
 problem; the exact infinite-frequency added mass of a semicircle; long-wave
 limits of the full response (heave → 1, pitch → wave slope); far-apart twin
-hulls moving exactly like one. Not yet checked against experiment: the
-reference data (Journée 1992, Wigley hulls) was not reachable when this was
-written. On the parabolic Wigley at Fn 0.3 the added-resistance peak
-(`R_aw/(ρgζ²B²/L)` ≈ 44 at λ/L = 1) looks high against recalled
-measurements of ~5–10, as expected of the radiated-energy method at a
-lightly damped strip-theory resonance; treat added resistance near
-resonance as indicative. There is no short-wave added-resistance
-correction.
+hulls moving exactly like one.
+
+Against experiment — Journée's four Wigley hulls in head waves (Delft
+report 0909, 1992; the data are freely distributed by the author, see the
+`journee_wigley` example): heave added mass and damping agree to ~10–15%
+over the mid frequencies, the wave force and moment on the restrained hull
+to ~5–15%, and heave in head waves closely, resonance peaks included;
+zero-speed pitch is 10–20% low. At speed, strip theory's pitch added inertia
+is ~30% low and its pitch damping grows with U² where the tank shows none,
+so the computed pitch resonance falls at shorter waves than measured, and
+added resistance — which goes with the square of the motions — peaks early
+and about twice too high at Fn 0.3–0.4 (Wigley III, Fn 0.3: ≈ 49 at
+λ/L = 1.05 computed, ≈ 20 at 1.25 measured). Journée found the same
+discrepancies with his own strip codes. Trust heave; treat pitch at speed
+and added resistance near resonance as indicative. There is no short-wave
+added-resistance correction.
 
 The section solver's irregular frequencies (the interior sloshing modes of
 any source method) are detected by the energy check and bridged by
