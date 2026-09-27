@@ -1,22 +1,18 @@
-//! Added mass and damping of a Wigley midship section swept across its
-//! first irregular frequency, with the energy check `b = ρω|C|²`.
+//! Convergence of the infinite-frequency heave added mass of a semicircle
+//! toward `ρπR²/2`, and of the finite-frequency one toward it.
 use michell_seakeeping::section2d::Section;
+use std::f64::consts::PI;
 
 fn main() {
-    let (b, t, g, rho) = (0.15, 0.1875, 9.81, 1000.0);
-    let curve: Vec<(f64, f64)> = (0..=64)
-        .map(|i| {
-            let z = t * i as f64 / 64.0;
-            (b * (1.0 - (z / t).powi(2)), z)
-        })
-        .collect();
-    let sec = Section::from_curve(&curve, 24).unwrap();
-    let m = rho * 2.0 * b * t * 2.0 / 3.0;
-    for i in 0..45 {
-        let nu = 4.0 + 0.5 * i as f64;
-        let w = (nu * g).sqrt();
-        let s = sec.heave(w, g, rho).unwrap();
-        let far = rho * w * s.far.abs_sq();
-        println!("ν {nu:5.2}  a/m {:8.4}  b/(mω) {:8.4}  energy {:+.3}", s.added_mass / m, s.damping / (m * w), s.damping / far - 1.0);
+    let (r, rho, g) = (1.0, 1000.0, 9.81);
+    let exact = rho * PI * r * r / 2.0;
+    for n in [16, 32, 64, 128, 256] {
+        let a = Section::semicircle(r, n).added_mass_infinite(rho).unwrap();
+        println!("N {n:4}: a∞/exact − 1 = {:+.2e}", a / exact - 1.0);
+    }
+    let sec = Section::semicircle(r, 64);
+    for nur in [2.0, 5.0, 10.0, 20.0, 40.0] {
+        let s = sec.heave((nur / r * g).sqrt(), g, rho).unwrap();
+        println!("νR {nur:4}: a/exact {:.4}  interpolated {}", s.added_mass / exact, s.interpolated);
     }
 }

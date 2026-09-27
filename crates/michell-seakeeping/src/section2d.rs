@@ -240,6 +240,44 @@ impl Section {
         })
     }
 
+    /// Heave added mass per unit length at **infinite frequency**, where the
+    /// free surface holds `φ = 0` and the source is `ln r − ln r₁`: the limit
+    /// the frequency-dependent added mass tends to, and — for a semicircle,
+    /// `ρπR²/2` exactly — an analytic check on the panel integrals.
+    pub fn added_mass_infinite(&self, density: f64) -> Option<f64> {
+        let panels = self.panels();
+        let n = panels.len();
+        let mirror = |q: [f64; 2]| [-q[0], q[1]];
+        let image = |q: [f64; 2]| [q[0], -q[1]];
+        let inv2pi = 1.0 / (2.0 * PI);
+        let mut s = vec![C64::ZERO; n * n];
+        let mut d = vec![C64::ZERO; n * n];
+        for (i, pi) in panels.iter().enumerate() {
+            for (j, pj) in panels.iter().enumerate() {
+                let (mut val, mut grad) = (0.0, [0.0; 2]);
+                for (m, (a, b), sign) in [
+                    (0, (pj.a, pj.b), 1.0),
+                    (1, (mirror(pj.b), mirror(pj.a)), 1.0),
+                    (2, (image(pj.a), image(pj.b)), -1.0),
+                    (3, (image(mirror(pj.b)), image(mirror(pj.a))), -1.0),
+                ] {
+                    let (v, g) = log_panel(pi.mid, a, b, m == 0 && i == j);
+                    val += sign * v;
+                    grad[0] += sign * g[0];
+                    grad[1] += sign * g[1];
+                }
+                s[i * n + j] = C64::new(val * inv2pi, 0.0);
+                let dn = (grad[0] * pi.n[0] + grad[1] * pi.n[1]) * inv2pi + if i == j { 0.5 } else { 0.0 };
+                d[i * n + j] = C64::new(dn, 0.0);
+            }
+        }
+        let rhs: Vec<C64> = panels.iter().map(|p| C64::new(p.n[1], 0.0)).collect();
+        let sigma = solve(d, rhs)?;
+        let psi = apply(&s, &sigma, n);
+        let force: f64 = panels.iter().zip(&psi).map(|(p, f)| f.re * 2.0 * p.n[1] * p.len).sum();
+        Some(-density * force)
+    }
+
     /// The head-seas diffraction force per unit length and unit wave
     /// amplitude, `−∫ p_D n_z ds`, by solving the diffraction problem itself
     /// at the wave's own frequency (`ν = k`) — the reference the Haskind
@@ -529,6 +567,29 @@ mod tests {
         assert!(between(lo.added_mass, mid.added_mass, hi.added_mass), "{} {} {}", lo.added_mass, mid.added_mass, hi.added_mass);
         let bw = |s: &HeaveSolution| s.damping / s.omega;
         assert!(between(bw(&lo), bw(&mid), bw(&hi)), "{} {} {}", bw(&lo), bw(&mid), bw(&hi));
+    }
+
+    /// Infinite frequency: a semicircle's heave added mass is exactly
+    /// `ρπR²/2`, and the finite-frequency added mass approaches it.
+    #[test]
+    fn the_infinite_frequency_limit_is_exact_and_approached() {
+        let r = 1.0;
+        let exact = RHO * PI * r * r / 2.0;
+        let a_inf = Section::semicircle(r, 64).added_mass_infinite(RHO).unwrap();
+        let fine = Section::semicircle(r, 128).added_mass_infinite(RHO).unwrap();
+        // First order in the panel size (the waterline corner), converging.
+        assert!((a_inf - exact).abs() < 1e-2 * exact, "{a_inf} vs {exact}");
+        assert!((fine - exact).abs() < 0.6 * (a_inf - exact).abs(), "{fine} vs {a_inf}");
+        let sec = Section::semicircle(r, 64);
+        let mut last = f64::INFINITY;
+        for nur in [5.0, 10.0, 20.0] {
+            let a = sec.heave(omega_for(nur, r), G, RHO).unwrap().added_mass;
+            let gap = (a - a_inf).abs() / exact;
+            eprintln!("νR {nur}: a/a∞ {}", a / a_inf);
+            assert!(gap < last, "νR {nur}: not approaching a∞ ({gap} after {last})");
+            last = gap;
+        }
+        assert!(last < 0.05, "νR 20: still {last} from a∞");
     }
 
     #[test]
