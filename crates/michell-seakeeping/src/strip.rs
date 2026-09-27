@@ -43,7 +43,7 @@ use crate::froude_krylov::froude_krylov;
 use crate::restoring::restoring;
 use crate::section2d::{HeaveSolution, Section};
 use michell_geometry::parallel::map_indexed;
-use michell_geometry::{Error, Result, SectionalHull, C64};
+use michell_geometry::{Error, Placement, Result, SectionalHull, C64};
 
 /// The ship's mass properties, about its centre of gravity.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,7 +187,23 @@ pub fn response(
     wave: &Wave,
     opts: &StripOptions,
 ) -> Result<Response> {
-    solve(hull, mass, wave, opts).map(|(r, _)| r)
+    response_fleet(&[(hull, Placement::default())], mass, wave, opts)
+}
+
+/// The heave–pitch response of a rigid platform of several hulls (a
+/// catamaran, trimaran or proa) — each placed in the platform frame, `mass`
+/// the whole platform's with its centre of gravity in platform x. The hulls
+/// act independently, coupled only through the platform: strip theory has
+/// no hull-to-hull wave interaction, which is fair for well-spaced hulls at
+/// speed and least trustworthy near the gap's own resonances. In oblique
+/// seas each hull feels the wave at its own transverse position.
+pub fn response_fleet(
+    members: &[(&SectionalHull, Placement)],
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<Response> {
+    solve(members, mass, wave, opts).map(|(r, _)| r)
 }
 
 /// Mean added resistance in a regular wave, with the response it comes
@@ -227,57 +243,77 @@ pub fn added_resistance(
     wave: &Wave,
     opts: &StripOptions,
 ) -> Result<AddedResistance> {
-    let (response, strips) = solve(hull, mass, wave, opts)?;
+    added_resistance_fleet(&[(hull, Placement::default())], mass, wave, opts)
+}
+
+/// [`added_resistance`] for a platform of several hulls (see
+/// [`response_fleet`]): each hull's radiated energy, summed.
+pub fn added_resistance_fleet(
+    members: &[(&SectionalHull, Placement)],
+    mass: &MassProperties,
+    wave: &Wave,
+    opts: &StripOptions,
+) -> Result<AddedResistance> {
+    let (response, fleet) = solve(members, mass, wave, opts)?;
     let (k, we, u) = (response.k, response.omega_e, wave.speed);
-    let cb = wave.heading.cos();
-    let smith: Vec<f64> = hull
-        .section_nodes()
-        .iter()
-        .map(|n| {
-            let z0 = n.depth_integral(0.0);
-            if z0 > 0.0 {
-                n.depth_integral(k) / z0
-            } else {
-                0.0
+    let (cb, sb) = (wave.heading.cos(), wave.heading.sin());
+    let mut integral = 0.0;
+    for ((hull, pl), strips) in members.iter().zip(&fleet) {
+        let smith: Vec<f64> = hull
+            .section_nodes()
+            .iter()
+            .map(|n| {
+                let z0 = n.depth_integral(0.0);
+                if z0 > 0.0 {
+                    n.depth_integral(k) / z0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let n = strips.len();
+        let dadx = |i: usize| -> f64 {
+            let (lo, hi) = (i.saturating_sub(1), (i + 1).min(n - 1));
+            if hi == lo {
+                return 0.0;
             }
-        })
-        .collect();
-    let n = strips.len();
-    let dadx = |i: usize| -> f64 {
-        let (lo, hi) = (i.saturating_sub(1), (i + 1).min(n - 1));
-        if hi == lo {
-            return 0.0;
-        }
-        (strips[hi].a() - strips[lo].a()) / (strips[hi].x - strips[lo].x)
-    };
-    let integrand: Vec<f64> = (0..n)
-        .map(|i| {
-            let s = &strips[i];
-            let zeta = C64::cis(k * cb * s.x).scale(smith.get(i).copied().unwrap_or(0.0));
-            let rel = response.heave + response.pitch.scale(s.x) - zeta;
-            let b_star = s.b() - u * dadx(i);
-            b_star * we * we * rel.abs_sq()
-        })
-        .collect();
-    let integral: f64 = (0..n.saturating_sub(1))
-        .map(|i| 0.5 * (integrand[i] + integrand[i + 1]) * (strips[i + 1].x - strips[i].x))
-        .sum();
+            (strips[hi].a() - strips[lo].a()) / (strips[hi].x - strips[lo].x)
+        };
+        let side = C64::cis(k * sb * pl.y);
+        let integrand: Vec<f64> = (0..n)
+            .map(|i| {
+                let s = &strips[i];
+                let zeta = (C64::cis(k * cb * s.x) * side).scale(smith.get(i).copied().unwrap_or(0.0));
+                let rel = response.heave + response.pitch.scale(s.x) - zeta;
+                let b_star = s.b() - u * dadx(i);
+                b_star * we * we * rel.abs_sq()
+            })
+            .collect();
+        integral += (0..n.saturating_sub(1))
+            .map(|i| 0.5 * (integrand[i] + integrand[i + 1]) * (strips[i + 1].x - strips[i].x))
+            .sum::<f64>();
+    }
     Ok(AddedResistance {
         response,
         per_amplitude_sq: -k * cb / (2.0 * we) * integral,
     })
 }
 
+/// Solve the platform's heave–pitch system; also returns each member's
+/// stations (x from the centre of gravity) and their 2-D solutions.
 fn solve(
-    hull: &SectionalHull,
+    members: &[(&SectionalHull, Placement)],
     mass: &MassProperties,
     wave: &Wave,
     opts: &StripOptions,
-) -> Result<(Response, Vec<Strip>)> {
+) -> Result<(Response, Vec<Vec<Strip>>)> {
+    if members.is_empty() {
+        return Err(Error::InvalidGeometry("empty fleet".into()));
+    }
     let (rho, g) = (opts.density, opts.gravity);
     let w0 = wave.omega;
     let k = w0 * w0 / g;
-    let cb = wave.heading.cos();
+    let (cb, sb) = (wave.heading.cos(), wave.heading.sin());
     let we = w0 - k * wave.speed * cb;
     if !(we > 1e-6 * w0) {
         return Err(Error::InvalidInput(format!(
@@ -288,56 +324,85 @@ fn solve(
     }
     let u = wave.speed;
     let xg = mass.lcg;
-    // Stations and their 2-D solutions at the encounter frequency.
-    let curves: Vec<(f64, Vec<(f64, f64)>)> = hull.curves().map(|(x, c)| (x, c.to_vec())).collect();
-    let strips: Vec<Strip> = map_indexed(curves.len(), || (), |_, i| {
-        let (x, c) = &curves[i];
-        let sol = Section::from_curve(c, opts.panels)
-            .filter(|s| s.half_beam() > 0.0 && s.draft() > 0.0)
-            .and_then(|s| s.heave(we, g, rho));
-        Strip { x: x - xg, sol }
-    });
+    // Stations and their 2-D solutions at the encounter frequency, per hull.
+    let fleet: Vec<Vec<Strip>> = members
+        .iter()
+        .map(|(hull, pl)| {
+            let curves: Vec<(f64, Vec<(f64, f64)>)> = hull.curves().map(|(x, c)| (x, c.to_vec())).collect();
+            map_indexed(curves.len(), || (), |_, i| {
+                let (x, c) = &curves[i];
+                let sol = Section::from_curve(c, opts.panels)
+                    .filter(|s| s.half_beam() > 0.0 && s.draft() > 0.0)
+                    .and_then(|s| s.heave(we, g, rho));
+                Strip { x: x + pl.x - xg, sol }
+            })
+        })
+        .collect();
     let real = |v: f64| C64::new(v, 0.0);
-    let a0 = trapz(&strips, |s| real(s.a())).re;
-    let b0 = trapz(&strips, |s| real(s.b())).re;
-    let xa1 = trapz(&strips, |s| real(s.x * s.a())).re;
-    let xb1 = trapz(&strips, |s| real(s.x * s.b())).re;
-    let xa2 = trapz(&strips, |s| real(s.x * s.x * s.a())).re;
-    let xb2 = trapz(&strips, |s| real(s.x * s.x * s.b())).re;
-    // The transom: the aft station's section, if it has one.
-    let aft = strips.first().filter(|s| s.sol.is_some());
-    let (x_a, a_a, b_a) = aft.map_or((0.0, 0.0, 0.0), |s| (s.x, s.a(), s.b()));
+    let sum = |f: &dyn Fn(&Strip) -> C64| fleet.iter().fold(C64::ZERO, |acc, st| acc + trapz(st, f));
+    let a0 = sum(&|s| real(s.a())).re;
+    let b0 = sum(&|s| real(s.b())).re;
+    let xa1 = sum(&|s| real(s.x * s.a())).re;
+    let xb1 = sum(&|s| real(s.x * s.b())).re;
+    let xa2 = sum(&|s| real(s.x * s.x * s.a())).re;
+    let xb2 = sum(&|s| real(s.x * s.x * s.b())).re;
+    // Transoms: each hull's aft station, if it carries a section. The end
+    // terms are linear in them, so the platform's are their sums.
+    let afts: Vec<&Strip> = fleet.iter().filter_map(|st| st.first().filter(|s| s.sol.is_some())).collect();
+    let tsum = |f: &dyn Fn(&Strip) -> f64| afts.iter().map(|s| f(s)).sum::<f64>();
+    let (aa, ba) = (tsum(&|s| s.a()), tsum(&|s| s.b()));
+    let (xaa, xba) = (tsum(&|s| s.x * s.a()), tsum(&|s| s.x * s.b()));
+    let (xxaa, xxba) = (tsum(&|s| s.x * s.x * s.a()), tsum(&|s| s.x * s.x * s.b()));
     let (uw, uw2) = (u / (we * we), u * u / (we * we));
     // STF convention (e^{iωt}, pitch bow down).
-    let a33 = a0 - uw * b_a;
-    let b33 = b0 + u * a_a;
-    let a35 = -xa1 - uw * b0 + uw * x_a * b_a;
-    let b35 = -xb1 + u * a0 - u * x_a * a_a;
-    let a53 = -xa1 + uw * b0 + uw * x_a * b_a;
-    let b53 = -xb1 - u * a0 - u * x_a * a_a;
-    let a55 = xa2 + uw2 * a0 - uw * x_a * x_a * b_a + uw2 * x_a * a_a;
-    let b55 = xb2 + uw2 * b0 + u * x_a * x_a * a_a + uw2 * x_a * b_a;
+    let a33 = a0 - uw * ba;
+    let b33 = b0 + u * aa;
+    let a35 = -xa1 - uw * b0 + uw * xba;
+    let b35 = -xb1 + u * a0 - u * xaa;
+    let a53 = -xa1 + uw * b0 + uw * xba;
+    let b53 = -xb1 - u * a0 - u * xaa;
+    let a55 = xa2 + uw2 * a0 - uw * xxba + uw2 * xaa;
+    let b55 = xb2 + uw2 * b0 + u * xxaa + uw2 * xba;
     // Restoring about G (this crate's convention; C35 flips with pitch).
-    let c = restoring(hull, rho, g, xg);
-    let c55 = c.c55 - rho * g * hull.displaced_volume() * mass.bg;
-    let (c33, c35) = (c.c33, -c.c35);
+    let (mut c33, mut c35m, mut c55, mut volume) = (0.0, 0.0, 0.0, 0.0);
+    for (hull, pl) in members {
+        let c = restoring(hull, rho, g, xg - pl.x);
+        c33 += c.c33;
+        c35m += c.c35;
+        c55 += c.c55;
+        volume += hull.displaced_volume();
+    }
+    let c55 = c55 - rho * g * volume * mass.bg;
+    let c35 = -c35m;
     let m = [mass.mass, mass.mass * mass.radius_of_gyration.powi(2)];
-    // Exciting force. Froude–Krylov: whole-hull closed form, converted.
-    let fk = froude_krylov(hull, rho, g, k, wave.heading, xg);
-    let (fk3, fk5) = (fk.heave.conj(), -fk.pitch.conj());
+    // Froude–Krylov: each hull's closed form about G, at its transverse
+    // position, converted.
+    let fk = members.iter().fold((C64::ZERO, C64::ZERO), |acc, (hull, pl)| {
+        let f = froude_krylov(hull, rho, g, k, wave.heading, xg - pl.x);
+        let side = C64::cis(k * sb * pl.y);
+        (acc.0 + f.heave * side, acc.1 + f.pitch * side)
+    });
+    let (fk3, fk5) = (fk.0.conj(), -fk.1.conj());
     // Diffraction per station (this crate's convention, then conjugated).
-    let hd = |s: &Strip| -> C64 {
-        s.sol.as_ref().map_or(C64::ZERO, |sol| {
-            let f = sol.diffraction(k, wave.heading, g, rho).scale(we / w0);
-            (f * C64::cis(k * cb * s.x)).conj()
-        })
-    };
-    let h0 = trapz(&strips, &hd);
-    let h1 = trapz(&strips, |s| hd(s).scale(s.x));
-    let h_a = aft.map_or(C64::ZERO, &hd);
+    let (mut h0, mut h1, mut ha, mut xha) = (C64::ZERO, C64::ZERO, C64::ZERO, C64::ZERO);
+    for ((_, pl), strips) in members.iter().zip(&fleet) {
+        let side = C64::cis(k * sb * pl.y);
+        let hd = |s: &Strip| -> C64 {
+            s.sol.as_ref().map_or(C64::ZERO, |sol| {
+                let f = sol.diffraction(k, wave.heading, g, rho).scale(we / w0);
+                (f * C64::cis(k * cb * s.x) * side).conj()
+            })
+        };
+        h0 = h0 + trapz(strips, &hd);
+        h1 = h1 + trapz(strips, |s| hd(s).scale(s.x));
+        if let Some(a) = strips.first().filter(|s| s.sol.is_some()) {
+            ha = ha + hd(a);
+            xha = xha + hd(a).scale(a.x);
+        }
+    }
     let u_iw = C64::new(0.0, -u / we); // U/(iω)
-    let fd3 = h0 + u_iw * h_a;
-    let fd5 = -h1 - u_iw * h0 - u_iw * h_a.scale(x_a);
+    let fd3 = h0 + u_iw * ha;
+    let fd5 = -h1 - u_iw * h0 - u_iw * xha;
     // Solve [−ω²(M + A) + iωB + C] η = F (STF convention).
     let iw = C64::new(0.0, we);
     let w2 = we * we;
@@ -370,7 +435,7 @@ fn solve(
         pitch: -eta5.conj(),
         coefficients,
     };
-    Ok((response, strips))
+    Ok((response, fleet))
 }
 
 #[cfg(test)]
@@ -482,6 +547,38 @@ mod tests {
         let peak = rows.iter().cloned().fold((0.0, 0.0), |a, r| if r.1 > a.1 { r } else { a });
         assert!((1.0..=1.6).contains(&peak.0), "peak at {peak:?}");
         assert!(peak.1 > 1.0 && peak.1 < 80.0, "peak {peak:?}");
+    }
+
+    /// Two identical hulls far apart in head seas carry twice the forces
+    /// and twice the mass of one: the platform moves exactly like the
+    /// single hull. In beam-ish seas the hulls meet the wave at different
+    /// phases, so the platform heaves less than a lone hull would.
+    #[test]
+    fn a_catamaran_of_twins_heaves_like_one_hull() {
+        let l = 3.0;
+        let hull = wigley(l);
+        let one = MassProperties::floating(&hull, RHO, 0.25 * l);
+        let two = MassProperties { mass: 2.0 * one.mass, ..one };
+        let span = 1.2;
+        let cat = [
+            (&hull, Placement { x: 0.0, y: 0.5 * span }),
+            (&hull, Placement { x: 0.0, y: -0.5 * span }),
+        ];
+        let u = 0.3 * (G * l).sqrt();
+        let k = 2.0 * PI / (1.2 * l);
+        let head = Wave { omega: (k * G).sqrt(), heading: PI, speed: u };
+        let solo = response(&hull, &one, &head, &opts()).unwrap();
+        let pair = response_fleet(&cat, &two, &head, &opts()).unwrap();
+        assert!((solo.heave - pair.heave).abs() < 1e-9, "{:?} vs {:?}", solo.heave, pair.heave);
+        assert!((solo.pitch - pair.pitch).abs() < 1e-9 * k);
+        // Bow-quartering: the hulls 1.2 m apart see the wave out of phase.
+        let oblique = Wave { heading: 0.75 * PI, ..head };
+        let solo_ob = response(&hull, &one, &oblique, &opts()).unwrap();
+        let pair_ob = response_fleet(&cat, &two, &oblique, &opts()).unwrap();
+        assert!(pair_ob.heave_rao() < solo_ob.heave_rao(), "{} vs {}", pair_ob.heave_rao(), solo_ob.heave_rao());
+        let raw_solo = added_resistance(&hull, &one, &head, &opts()).unwrap().per_amplitude_sq;
+        let raw_pair = added_resistance_fleet(&cat, &two, &head, &opts()).unwrap().per_amplitude_sq;
+        assert!((raw_pair - 2.0 * raw_solo).abs() < 1e-9 * raw_solo.abs());
     }
 
     /// Head seas. At rest the heave resonance lies in short waves that
