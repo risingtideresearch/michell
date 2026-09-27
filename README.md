@@ -17,6 +17,21 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
          r.wave.resistance, r.viscous.resistance, r.cw);
 ```
 
+## Workspace layout
+
+| crate | what it holds | depends on |
+|---|---|---|
+| `michell-geometry` | IGES/STL import, hulls cut into sections (`SectionalHull`), hydrostatics, hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions` | — |
+| `michell` | thin-ship theory: Michell wave resistance, squat (dynamic sinkage/trim), near field, far-field spectrum, ITTC-57 friction | `michell-geometry` |
+| `michell-seakeeping` | linear strip-theory seakeeping (heave/pitch): restoring, Froude–Krylov loads; radiation/diffraction to come | `michell-geometry` |
+| `michell-cli`, `michell-web` | front ends | all of the above |
+
+The geometry crate knows no flow theory. `michell` hands the equilibrium
+solver its speed-dependent load through `float::DynamicModel`
+(`michell::sectional::dynamic_load_closure`); the seakeeping crate builds
+on the sectional hull's transforms (`SectionalHull::x_transform`) without
+going through `michell` at all.
+
 ## Geometry contract
 
 The hull is port/starboard symmetric, given by its half-beam
@@ -99,7 +114,7 @@ tolerance runs in ~20 ms (release build). The outer quadrature and the
 near-field (sinkage/trim) integrals fan their independent nodes out across
 the machine's cores with `std::thread::scope` (still no dependencies); the
 reduction order is the serial one, so the answer is bit-for-bit independent
-of the thread count. The worker budget is per thread (`michell::parallel`),
+of the thread count. The worker budget is per thread (`michell_geometry::parallel`),
 so a caller that already runs jobs in parallel can hand each job a share of
 the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
 environment disables threading altogether.

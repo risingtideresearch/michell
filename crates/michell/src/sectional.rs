@@ -1,723 +1,55 @@
-//! **Sectional** hull transforms: the Michell and near-field wavenumber
-//! transforms evaluated from a hull's stations rather than from a lofted
-//! half-breadth spline `f(x, z)`.
+//! The thin-ship wave kernel on **sectional** hulls
+//! ([`michell_geometry::sectional`]): the Michell free-wave amplitude and the
+//! near-field transforms, built on the hull's per-span interpolant of its
+//! depth integrals `Z(x; κ)`, and the resistance and sinkage/trim entry
+//! points.
 //!
-//! Every quantity the wave and sinkage/trim integrals need is a transform of
-//! the form `∬ f(x, z) e^{−κz} e^{ik_x x} dx dz` (or its `∂f/∂x` and
-//! `(x − x_c) ∂f/∂x` variants). Write it as
-//!
-//! ```text
-//! ∫ Z(x; κ) e^{ik_x x} dx,      Z(x; κ) = ∫ f(x, z) e^{−κz} dz,
-//! ```
-//!
-//! and do the depth integral **per station**, along the station's own section
-//! curve. The keel is then just the end of that curve: the crease a lofted
-//! `f(x, z)` has along a rockered keel line, and the square-root closure of a
-//! round bilge onto it, are both inside a 1-D integral that absorbs them, and
-//! `Z(x; κ)` is smooth in `x` wherever the hull's sections vary smoothly.
-//!
-//! What keeps this affordable is that the split preserves the separability
-//! the near-field quadrature depends on. Everything that depends on `κ` is
-//! one pass over the stations' depth nodes (`Σ_j w_j e^{−κ z_j}` per station)
-//! followed by one banded solve for the B-spline interpolant of `Z(·; κ)`
-//! along `x`; each `k_x` at that `κ` then costs one closed-form
-//! oscillatory-moment call per x-span, exactly as the exact B-spline kernel's does.
-//!
-//! Hulls are cut from CAD through [`crate::source::HullSource`]. In tests,
-//! `SectionalHull::from_hull` builds one from a B-spline half-breadth
-//! surface — stations at the Greville points of its own x knots, where the
-//! interpolant reproduces `Z(x; κ)` exactly — which is the reference
-//! harness: any difference from the exact B-spline kernel
-//! (`crate::michell::InnerIntegral`, a test oracle) is the depth
+//! In tests, `from_hull` (`crate::hull::FromHull`) builds a sectional hull
+//! from a B-spline half-breadth surface — stations at the Greville points of
+//! its own x knots, where the interpolant reproduces `Z(x; κ)` exactly —
+//! which is the reference harness: any difference from the exact B-spline
+//! kernel (`crate::michell::InnerIntegral`, a test oracle) is the depth
 //! quadrature's.
 
-use crate::bspline::{ders_basis, find_span};
-use crate::conditions::Conditions;
-use crate::error::{Error, Result};
-use crate::float::{DynamicLoad, FleetState};
 use crate::friction::{viscous_resistance_for, ViscousOptions, ViscousResistance};
 #[cfg(test)]
-use crate::hull::Hull;
-use crate::michell::Placement;
+use crate::hull::{FromHull, Hull};
 use crate::michell::{
     add_transom_step, appendage_source, hollow_shape_moment, run_outer, MemberWave,
     NearFieldKernel, OuterParams, SquatTransforms, TransomClosure, WaveOptions, WaveResistance,
 };
-use crate::moments::{osc_moments, C64};
-use crate::quadrature::gauss_legendre;
 use crate::squat::{integrate_force, DynamicForce, Fleet, Member, SquatOptions};
 use crate::MultihullResistance;
+use michell_geometry::float::{DynamicLoad, DynamicModel, FleetState};
+use michell_geometry::moments::{osc_moments, C64};
+#[cfg(test)]
+use michell_geometry::sectional::DepthQuadrature;
+use michell_geometry::sectional::{SectionNodes, SectionalContracted, SectionalHull};
+use michell_geometry::{Conditions, Error, Placement, Result};
 use std::f64::consts::PI;
 
-/// Below this, `e^{−κz}` cannot matter against the shallowest node's weight
-/// (the same floor the exact B-spline kernel drops z-spans at).
-const DECAY_EXPONENT_FLOOR: f64 = 46.0; // e^{-46} ≈ 1e-20
-
-/// One station's depth integral `Z(κ) = ∫ f(x_i, z) e^{−κz} dz`, as a
-/// quadrature that costs one exponential per node at each `κ`.
-#[derive(Debug, Clone)]
-pub struct SectionNodes {
-    nodes: Nodes,
-    /// Half-beam at the waterline, `f(x_i, 0)`.
-    waterline: f64,
-    /// Depth of the section's lowest point.
-    depth: f64,
-    /// `(half-beam, depth)` at each quadrature node, in node order: where
-    /// the depth integral evaluates the section.
-    outline: Vec<(f64, f64)>,
-    /// The section curve the quadrature integrates, sampled densely and
-    /// evenly from the waterline (or the section's top) round to the keel —
-    /// for drawing it and for measuring its girth, where joining the
-    /// quadrature nodes (graded toward the waterline, sparse at the keel)
-    /// would cut corners.
-    curve: Vec<(f64, f64)>,
+/// The thin-ship free-wave amplitude of a sectional hull.
+pub trait SectionalWave {
+    /// The source free-wave amplitude `∬ ∂f/∂x e^{−κz} e^{ik_x(x−x_c)}` at
+    /// `λ` (no transom closure).
+    fn amplitude(&self, nu: f64, lambda: f64, scratch: &mut SectionalContracted) -> C64;
+    /// [`SectionalWave::amplitude`] with the transom closed by `closure`:
+    /// the virtual appendage over the hollow behind the transom, its
+    /// z-factor the aft end station's own depth integral.
+    fn amplitude_closed(
+        &self,
+        nu: f64,
+        lambda: f64,
+        closure: TransomClosure,
+        scratch: &mut SectionalContracted,
+    ) -> C64;
 }
 
-/// Points per section in [`SectionNodes::curve`].
-const CURVE_POINTS: usize = 129;
-
-#[derive(Debug, Clone)]
-enum Nodes {
-    /// `Σ_j w_j e^{−κ z_j}`, nodes sorted by depth: a half-beam sampled as
-    /// a function of depth.
-    Depth { z: Vec<f64>, w: Vec<f64> },
-    /// `e^{−κ z₀} Σ_k w_k F(κ d sin θ_k, R_k)` with `F(a, R) = ∫_0^R e^{−ar} r dr`
-    /// (`sin` stores `d sin θ_k`, `w` carries the scales `b·d`):
-    /// the section as a region swept by rays from its top centreplane point
-    /// `(0, z₀)`, the ray at angle `θ` below the horizontal reaching the shell
-    /// at distance `R(θ)`. The depth integral is then an area integral in
-    /// polar coordinates whose radial part is closed form, and `R(θ)` is
-    /// smooth right into the keel — where a half-beam as a function of depth
-    /// closes like a square root on any round bilge.
-    Polar {
-        z0: f64,
-        sin: Vec<f64>,
-        r: Vec<f64>,
-        w: Vec<f64>,
-    },
-}
-
-/// `∫_0^R e^{−ar} r dr = R²·(1 − e^{−x}(1 + x))/x²`, `x = aR`, by series where
-/// the closed form cancels.
-fn polar_radial(a: f64, r: f64) -> f64 {
-    let x = a * r;
-    if x < 0.1 {
-        // Σ_n (−1)ⁿ (n+1) xⁿ/(n+2)!
-        let (mut term, mut sum, mut fact) = (1.0f64, 0.5f64, 2.0f64);
-        for n in 1..12 {
-            term *= -x;
-            fact *= (n + 2) as f64;
-            sum += (n + 1) as f64 * term / fact;
-        }
-        r * r * sum
-    } else {
-        r * r * (1.0 - (-x).exp() * (1.0 + x)) / (x * x)
-    }
-}
-
-impl SectionNodes {
-    /// Nodes for a section given as a half-beam function of depth on
-    /// `[0, depth]`: Gauss–Legendre panels between the `breaks` (kinks,
-    /// chines, knot lines — anywhere the half-beam is not smooth), further
-    /// split geometrically toward the waterline so that `e^{−κz}` stays
-    /// resolved when a large `κ` confines it to a sliver under the surface.
-    pub fn from_depth_function(
-        depth: f64,
-        breaks: &[f64],
-        half_beam: impl Fn(f64) -> f64,
-        opts: &DepthQuadrature,
-    ) -> SectionNodes {
-        let cuts = graded_cuts(depth, breaks, opts);
-        let (gx, gw) = gauss_legendre(opts.points);
-        let (mut z, mut w) = (Vec::new(), Vec::new());
-        let mut outline = vec![(half_beam(0.0), 0.0)];
-        for c in cuts.windows(2) {
-            let (a, b) = (c[0], c[1]);
-            let half = 0.5 * (b - a);
-            for (&t, &wt) in gx.iter().zip(&gw) {
-                let zj = a + half * (t + 1.0);
-                let h = half_beam(zj);
-                z.push(zj);
-                w.push(half * wt * h);
-                outline.push((h, zj));
-            }
-        }
-        outline.push((half_beam(depth), depth));
-        // Evenly in depth, with every break (a chine, a knot line) on it.
-        let mut zs: Vec<f64> = (0..CURVE_POINTS)
-            .map(|k| depth * k as f64 / (CURVE_POINTS - 1) as f64)
-            .chain(breaks.iter().copied().filter(|&b| b > 0.0 && b < depth))
-            .collect();
-        zs.sort_by(f64::total_cmp);
-        let curve = zs.iter().map(|&z| (half_beam(z), z)).collect();
-        SectionNodes {
-            nodes: Nodes::Depth { z, w },
-            waterline: half_beam(0.0),
-            depth,
-            outline,
-            curve,
-        }
-    }
-
-    /// Nodes for a section swept by rays from `(0, z0)` on the centreplane,
-    /// in the section's own proportions: with half-beam scaled by `beam` and
-    /// depth by `depth`, `radius(θ)` is the scaled distance to the shell
-    /// along the scaled ray `θ` below the horizontal, `θ ∈ [0, π/2]` (`π/2`
-    /// runs down the centreplane to the keel). Sweeping the scaled plane
-    /// keeps rays spread over a thin section (a fine entry is millimetres
-    /// wide and the full draft deep), where rays even in physical angle
-    /// would crowd its whole outline into a sliver of angle beside the
-    /// keel. Requires the section to be star-shaped about `(0, z0)`. Graded
-    /// toward `θ = 0`, where a large `κ` concentrates the integrand against
-    /// the surface.
-    pub fn from_polar(
-        z0: f64,
-        beam: f64,
-        depth: f64,
-        radius: impl Fn(f64) -> f64,
-        opts: &DepthQuadrature,
-    ) -> SectionNodes {
-        let half_pi = std::f64::consts::FRAC_PI_2;
-        let cuts = graded_cuts(half_pi, &[], opts);
-        let (gx, gw) = gauss_legendre(opts.points);
-        let (mut sin, mut r, mut w) = (Vec::new(), Vec::new(), Vec::new());
-        let at = |th: f64, rr: f64| (beam * rr * th.cos(), z0 + depth * rr * th.sin());
-        let mut outline = vec![at(0.0, radius(0.0))];
-        for c in cuts.windows(2) {
-            let (a, b) = (c[0], c[1]);
-            let half = 0.5 * (b - a);
-            for (&t, &wt) in gx.iter().zip(&gw) {
-                let th = a + half * (t + 1.0);
-                let rr = radius(th);
-                // Physical depth along the scaled ray is depth·r·sin θ.
-                sin.push(depth * th.sin());
-                r.push(rr);
-                w.push(half * wt * beam * depth);
-                outline.push(at(th, rr));
-            }
-        }
-        outline.push(at(half_pi, radius(half_pi)));
-        // Evenly in the scaled ray angle: evenly round a section of any
-        // proportions.
-        let curve = (0..CURVE_POINTS)
-            .map(|k| {
-                let th = half_pi * k as f64 / (CURVE_POINTS - 1) as f64;
-                at(th, radius(th))
-            })
-            .collect();
-        SectionNodes {
-            nodes: Nodes::Polar { z0, sin, r, w },
-            waterline: if z0 == 0.0 { beam * radius(0.0) } else { 0.0 },
-            depth: z0 + depth * radius(half_pi),
-            outline,
-            curve,
-        }
-    }
-
-    /// A station with no wetted section (beyond the hull's ends).
-    pub fn empty() -> SectionNodes {
-        SectionNodes {
-            nodes: Nodes::Depth {
-                z: Vec::new(),
-                w: Vec::new(),
-            },
-            waterline: 0.0,
-            depth: 0.0,
-            outline: Vec::new(),
-            curve: Vec::new(),
-        }
-    }
-
-    /// The section at its quadrature nodes, `(half-beam, depth)` from the
-    /// waterline (or the section's top) round to the keel: exactly what the
-    /// depth integral integrates, for display.
-    pub fn outline(&self) -> &[(f64, f64)] {
-        &self.outline
-    }
-
-    /// The section curve the quadrature integrates, sampled densely and
-    /// evenly, `(half-beam, depth)` from the waterline (or top) to the keel.
-    pub fn curve(&self) -> &[(f64, f64)] {
-        &self.curve
-    }
-
-    /// `Z(κ)`.
-    fn integrate(&self, kappa: f64) -> f64 {
-        match &self.nodes {
-            Nodes::Depth { z, w } => {
-                let mut s = 0.0;
-                for (&z, &w) in z.iter().zip(w) {
-                    let e = kappa * z;
-                    if e > DECAY_EXPONENT_FLOOR {
-                        break;
-                    }
-                    s += w * (-e).exp();
-                }
-                s
-            }
-            Nodes::Polar { z0, sin, r, w } => {
-                let e0 = kappa * z0;
-                if e0 > DECAY_EXPONENT_FLOOR {
-                    return 0.0;
-                }
-                let s: f64 = sin
-                    .iter()
-                    .zip(r)
-                    .zip(w)
-                    .map(|((&sn, &r), &w)| w * polar_radial(kappa * sn, r))
-                    .sum();
-                s * (-e0).exp()
-            }
-        }
-    }
-
-    /// Number of quadrature nodes.
-    pub fn len(&self) -> usize {
-        match &self.nodes {
-            Nodes::Depth { z, .. } => z.len(),
-            Nodes::Polar { r, .. } => r.len(),
-        }
-    }
-
-    /// True when the section has no nodes.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-/// Panel edges on `[0, extent]`: the `breaks`, plus a geometric sequence
-/// toward 0 with ratio `opts.grading` down to `opts.finest · extent`.
-fn graded_cuts(extent: f64, breaks: &[f64], opts: &DepthQuadrature) -> Vec<f64> {
-    let mut cuts = vec![0.0, extent];
-    let mut t = extent;
-    while t > opts.finest * extent {
-        t *= opts.grading;
-        cuts.push(t);
-    }
-    cuts.extend(breaks.iter().copied().filter(|&b| b > 0.0 && b < extent));
-    cuts.sort_by(f64::total_cmp);
-    cuts.dedup_by(|a, b| (*a - *b).abs() <= 1e-14 * extent);
-    cuts
-}
-
-/// How finely each station's depth integral is resolved.
-#[derive(Debug, Clone, Copy)]
-pub struct DepthQuadrature {
-    /// Gauss–Legendre points per panel.
-    pub points: usize,
-    /// Ratio between successive panel edges toward the waterline.
-    pub grading: f64,
-    /// Shallowest panel edge, as a fraction of the section depth.
-    pub finest: f64,
-}
-
-impl Default for DepthQuadrature {
-    fn default() -> Self {
-        // 8 points on panels graded by 0.35 toward the waterline hold the
-        // transforms to ~1e-11 of the exact B-spline kernel's exact values on the
-        // Wigley (one z-span: the deepest panel is ~0.4 T long) and ~1e-12
-        // on a CAD import, for κ up to ~1e4·ν. Six points leave ~1e-8.
-        DepthQuadrature {
-            points: 8,
-            grading: 0.35,
-            finest: 1e-7,
-        }
-    }
-}
-
-/// One non-empty knot span in one direction.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Span {
-    /// Physical coordinate of the span start.
-    pub start: f64,
-    /// Span length (> 0).
-    pub len: f64,
-}
-
-/// A transom whose area is under this fraction of the hull's maximum section
-/// area is not reported: it is hydrodynamically negligible, and at a closing
-/// stern indistinguishable from the geometry's own noise.
-pub(crate) const TRANSOM_AREA_REL: f64 = 1e-3;
-
-/// The aft-end section of a hull whose half-breadth does not close there — a
-/// **transom**.
-///
-/// The geometry contract puts the bow at the high-`x` end, so the transom, if
-/// there is one, is the section at the hull's lowest `x`. `f_T(z) = f(x_T, z)`
-/// is the aft end station's section.
-///
-/// Presence alone is not a warning: a transom clear of the water is simply a
-/// closed hull as far as the wave integral is concerned. What matters is
-/// [`Transom::depth`] and the area ratio against
-/// [`SectionalHull::max_section_area`].
-#[derive(Debug, Clone)]
-pub struct Transom {
-    /// Station of the transom — the aft end of the hull's x-domain [m].
-    pub x: f64,
-    /// Immersion depth [m], as the **equivalent rectangle**:
-    /// `A_T / (2 · max_z f_T)` — the depth of a rectangle of the transom's
-    /// widest beam carrying the same immersed area. Exact for a rectangular
-    /// transom; `T/2` for one tapering linearly to the keel.
-    ///
-    /// Deliberately not a level crossing of `f_T`: an area measure is
-    /// insensitive to a thin tail of beam running down the draft, and it is
-    /// also the scale a closure wants, since what sets the hollow is how much
-    /// water has to fill in behind the transom, not where its edge sits.
-    pub depth: f64,
-    /// Immersed transom area, `2∫₀^T f_T(z) dz` [m²] — both sides.
-    pub area: f64,
-    /// Half-beam at the waterline, `f_T(0)` [m].
-    pub half_beam: f64,
-    /// The exact B-spline oracle's transom section: per-z-span polynomial
-    /// coefficients `f_T(z) = Σ_b c[b] (z − z0_sz)^b`, flattened as
-    /// `[sz * (q + 1) + b]`. Empty on a sectional hull cut from geometry.
-    #[cfg(test)]
-    pub(crate) coeff: Vec<f64>,
-}
-
-/// A hull as stations along `x`, each with its section's depth quadrature,
-/// and the B-spline space along `x` its depth integrals are interpolated in.
-#[derive(Debug, Clone)]
-pub struct SectionalHull {
-    p: usize,
-    n: usize,
-    sections: Vec<SectionNodes>,
-    /// Banded LU of the collocation matrix (interpolation at the stations).
-    lu: BandLu,
-    spans: Vec<Span>,
-    /// First basis index active on each span.
-    span_first: Vec<usize>,
-    /// Per span, `(p+1) × (p+1)`: `N_{first+r}^{(a)}(x_s) / a!` at `[a][r]` —
-    /// maps B-spline coefficients to the span's local power basis.
-    taylor: Vec<f64>,
-    /// Waterline `f(x, 0)` and `∂f/∂x(x, 0)` in each span's power basis.
-    wl_f: Vec<f64>,
-    wl_fx: Vec<f64>,
-    x_center: f64,
-    length: f64,
-    draft: f64,
-    volume: f64,
-    xs: Vec<f64>,
-    lcb_x: f64,
-    waterplane: [f64; 3],
-    wetted_surface: f64,
-    /// The aft end station's section, when it is a real (immersed) one: a
-    /// transom, closed by [`TransomClosure`] as on any hull.
-    transom: Option<Transom>,
-}
-
-/// A sectional hull's depth integrals at one `κ`, in each x-span's local
-/// power basis (the layout the exact B-spline kernel's `ZContracted` uses).
-#[derive(Debug, Clone, Default)]
-pub struct SectionalContracted {
-    g_f: Vec<f64>,
-    g_fx: Vec<f64>,
-    any: bool,
-    /// The aft end station's depth integral: the transom section's
-    /// z-factor for the closure.
-    z_t: f64,
-    /// The fore end station's depth integral: a blunt bow's step.
-    z_b: f64,
-}
-
-impl SectionalHull {
-    /// A sectional hull from stations `xs` (strictly increasing) and their
-    /// sections, interpolated along `x` by a clamped B-spline of degree `p`
-    /// on `knots` (which must satisfy Schoenberg–Whitney against `xs`: one
-    /// station per basis function, each inside its support).
-    pub fn new(p: usize, knots: Vec<f64>, xs: &[f64], sections: Vec<SectionNodes>) -> Result<Self> {
-        let n = knots.len() - p - 1;
-        if xs.len() != n || sections.len() != n {
-            return Err(Error::InvalidInput(format!(
-                "sectional hull: {} stations and {} sections for {n} basis functions",
-                xs.len(),
-                sections.len()
-            )));
-        }
-        // Collocation: row i holds the basis functions alive at station i.
-        let mut lu = BandLu::new(n, p);
-        for (i, &x) in xs.iter().enumerate() {
-            let span = find_span(&knots, p, n, x);
-            let d = ders_basis(&knots, p, span, x, 0);
-            for r in 0..=p {
-                lu.set(i, span - p + r, d[0][r]);
-            }
-        }
-        if !lu.factor() {
-            return Err(Error::InvalidInput(
-                "sectional hull: stations do not interpolate the x knots \
-                 (Schoenberg–Whitney violated)"
-                    .into(),
-            ));
-        }
-        let mut spans = Vec::new();
-        let mut span_first = Vec::new();
-        let mut taylor = Vec::new();
-        for s in p..n {
-            let (a, b) = (knots[s], knots[s + 1]);
-            if b <= a {
-                continue;
-            }
-            spans.push(Span {
-                start: a,
-                len: b - a,
-            });
-            span_first.push(s - p);
-            let d = ders_basis(&knots, p, s, a, p);
-            let mut fact = 1.0;
-            for k in 0..=p {
-                if k > 0 {
-                    fact *= k as f64;
-                }
-                for r in 0..=p {
-                    taylor.push(d[k][r] / fact);
-                }
-            }
-        }
-        let mut hull = SectionalHull {
-            p,
-            n,
-            sections,
-            lu,
-            spans,
-            span_first,
-            taylor,
-            wl_f: Vec::new(),
-            wl_fx: Vec::new(),
-            x_center: 0.5 * (knots[p] + knots[n]),
-            length: knots[n] - knots[p],
-            draft: 0.0,
-            volume: 0.0,
-            xs: xs.to_vec(),
-            lcb_x: 0.0,
-            waterplane: [0.0; 3],
-            wetted_surface: 0.0,
-            transom: None,
-        };
-        hull.draft = hull.sections.iter().map(|s| s.depth).fold(0.0, f64::max);
-        // Displaced volume 2∬ f = 2∫ Z(x; 0) dx and its x-moment, exactly
-        // from the interpolant of the section areas.
-        let mut z0 = SectionalContracted::default();
-        hull.contract(0.0, &mut z0);
-        hull.volume = 2.0 * hull.x_moment(&z0.g_f, 0);
-        hull.lcb_x = if hull.volume > 0.0 {
-            2.0 * hull.x_moment(&z0.g_f, 1) / hull.volume
-        } else {
-            0.0
-        };
-        let wl: Vec<f64> = hull.sections.iter().map(|s| s.waterline).collect();
-        let (f, fx) = hull.to_power_basis(wl);
-        hull.wl_f = f;
-        hull.wl_fx = fx;
-        // Waterplane: A_w = ∫ 2 f(x, 0) dx and its first and second moments
-        // about x = 0, from the waterline interpolant.
-        hull.waterplane = [0, 1, 2].map(|k| 2.0 * hull.x_moment(&hull.wl_f, k));
-        hull.wetted_surface = hull.strip_area();
-        hull.transom = hull.detect_transom();
-        Ok(hull)
-    }
-
-    /// The reference construction: sections of a B-spline hull at the
-    /// Greville points of its own x knots, depth-integrated panel by panel
-    /// between its z knots. `Z(x; κ)` is then exactly in the interpolating
-    /// space, so the only approximation is the depth quadrature.
-    #[cfg(test)]
-    pub(crate) fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self> {
-        let s = hull.surface();
-        let (p, n) = (s.degree_x(), s.n_ctrl_x());
-        let kx = s.knots_x();
-        let xs: Vec<f64> = (0..n)
-            .map(|i| kx[i + 1..=i + p].iter().sum::<f64>() / p.max(1) as f64)
-            .collect();
-        let depth = s.z_domain().1;
-        let sections = xs
-            .iter()
-            .map(|&x| SectionNodes::from_depth_function(depth, s.knots_z(), |z| s.eval(x, z), opts))
-            .collect();
-        // The spline's own transom description (its depth measure samples
-        // the spline, not the quadrature nodes), so the harness checks the
-        // closure machinery exactly.
-        let mut sec = SectionalHull::new(p, kx.to_vec(), &xs, sections)?;
-        sec.transom = hull.transom().cloned();
-        Ok(sec)
-    }
-
-    /// The transom, if the aft end station carries a real section: immersed area
-    /// above `TRANSOM_AREA_REL` of the largest section's — with its depth as
-    /// the same equivalent rectangle, `A_T / (2 · max f_T)`. The geometry
-    /// contract puts the bow at high x, so this is the lowest-x station.
-    ///
-    /// Only the aft end is closed. A truncated **bow**
-    /// (a forward end station with a real section) is left as it is: its
-    /// section steps to nothing past the end of the interpolant, which the
-    /// wave kernel reads as an open, bluff forward face — no virtual
-    /// appendage is added ahead of it.
-    fn detect_transom(&self) -> Option<Transom> {
-        let aft = self.sections.first()?;
-        let area = 2.0 * aft.integrate(0.0);
-        let max_section = self
-            .sections
-            .iter()
-            .map(|s| 2.0 * s.integrate(0.0))
-            .fold(0.0, f64::max);
-        if !(area > TRANSOM_AREA_REL * max_section) {
-            return None;
-        }
-        let peak = aft
-            .outline()
-            .iter()
-            .map(|p| p.0)
-            .fold(aft.waterline, f64::max);
-        let depth = if peak > 0.0 {
-            (area / (2.0 * peak)).min(self.draft)
-        } else {
-            0.0
-        };
-        Some(Transom {
-            x: self.xs[0],
-            depth,
-            area,
-            half_beam: aft.waterline,
-            #[cfg(test)]
-            coeff: Vec::new(),
-        })
-    }
-
-    /// The transom the aft end presents, if any.
-    pub fn transom(&self) -> Option<&Transom> {
-        self.transom.as_ref()
-    }
-
-    /// Largest immersed section area `2∫ f dz` over the stations [m²] — the
-    /// reference a transom's area is judged against.
-    pub fn max_section_area(&self) -> f64 {
-        self.sections
-            .iter()
-            .map(|s| 2.0 * s.integrate(0.0))
-            .fold(0.0, f64::max)
-    }
-
-    /// `∫ x^k g(x) dx` over the hull for `g` given in each span's local power
-    /// basis (`[s·(p+1) + a]`, local coordinate `t = x − start`): exact, by
-    /// expanding `(start + t)^k` binomially.
-    fn x_moment(&self, g: &[f64], k: usize) -> f64 {
-        let p = self.p;
-        let binom = |n: usize, r: usize| -> f64 {
-            (0..r).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
-        };
-        self.spans
-            .iter()
-            .enumerate()
-            .map(|(s, sx)| {
-                let mut total = 0.0;
-                for a in 0..=p {
-                    let c = g[s * (p + 1) + a];
-                    for j in 0..=k {
-                        // ∫_0^len start^(k−j) t^(j+a) dt
-                        let e = j + a + 1;
-                        total +=
-                            c * binom(k, j) * sx.start.powi((k - j) as i32) * sx.len.powi(e as i32)
-                                / e as f64;
-                    }
-                }
-                total
-            })
-            .sum()
-    }
-
-    /// Wetted surface of both sides [m²]: the shell between neighbouring
-    /// stations as a strip of triangles joining their outlines node for
-    /// node, which carries the slope along x a projected area would miss.
-    /// An end station without a section closes its strip to a point.
-    fn strip_area(&self) -> f64 {
-        let tri = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
-            let (u, v) = (
-                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
-                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
-            );
-            let w = [
-                u[1] * v[2] - u[2] * v[1],
-                u[2] * v[0] - u[0] * v[2],
-                u[0] * v[1] - u[1] * v[0],
-            ];
-            0.5 * (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt()
-        };
-        let mut area = 0.0;
-        for i in 0..self.xs.len().saturating_sub(1) {
-            let (xa, xb) = (self.xs[i], self.xs[i + 1]);
-            let (oa, ob) = (self.sections[i].curve(), self.sections[i + 1].curve());
-            let n = oa.len().max(ob.len());
-            if n < 2 {
-                continue;
-            }
-            // Node k of an outline, stretched over n nodes (a point if empty).
-            let at = |o: &[(f64, f64)], x: f64, k: usize| -> [f64; 3] {
-                if o.is_empty() {
-                    return [x, 0.0, 0.0];
-                }
-                let j = (k * (o.len() - 1)) / (n - 1);
-                [x, o[j].0, o[j].1]
-            };
-            for k in 0..n - 1 {
-                let (a0, a1) = (at(oa, xa, k), at(oa, xa, k + 1));
-                let (b0, b1) = (at(ob, xb, k), at(ob, xb, k + 1));
-                area += tri(a0, b0, b1) + tri(a0, b1, a1);
-            }
-        }
-        2.0 * area
-    }
-
-    /// B-spline interpolant of per-station values, as power coefficients of
-    /// the value (`[s·(p+1) + a]`) and its x-derivative (`[s·p + a]`) on
-    /// each span.
-    fn to_power_basis(&self, mut v: Vec<f64>) -> (Vec<f64>, Vec<f64>) {
-        let mut f = vec![0.0; self.spans.len() * (self.p + 1)];
-        let mut fx = vec![0.0; self.spans.len() * self.p];
-        self.lu.solve(&mut v);
-        self.power_into(&v, &mut f, &mut fx);
-        (f, fx)
-    }
-
-    fn power_into(&self, c: &[f64], f: &mut [f64], fx: &mut [f64]) {
-        let p = self.p;
-        for (s, &first) in self.span_first.iter().enumerate() {
-            let t = &self.taylor[s * (p + 1) * (p + 1)..(s + 1) * (p + 1) * (p + 1)];
-            for a in 0..=p {
-                let row = &t[a * (p + 1)..(a + 1) * (p + 1)];
-                f[s * (p + 1) + a] = row
-                    .iter()
-                    .zip(&c[first..=first + p])
-                    .map(|(m, c)| m * c)
-                    .sum();
-            }
-            for a in 0..p {
-                fx[s * p + a] = (a + 1) as f64 * f[s * (p + 1) + a + 1];
-            }
-        }
-    }
-
-    /// Everything that depends on `κ`: each station's depth integral, and
-    /// their interpolant along `x` in each span's power basis.
-    pub fn contract(&self, kappa: f64, out: &mut SectionalContracted) {
-        let mut v: Vec<f64> = self.sections.iter().map(|s| s.integrate(kappa)).collect();
-        out.any = v.iter().any(|&x| x != 0.0);
-        out.z_t = v.first().copied().unwrap_or(0.0);
-        out.z_b = v.last().copied().unwrap_or(0.0);
-        out.g_f.resize(self.spans.len() * (self.p + 1), 0.0);
-        out.g_fx.resize(self.spans.len() * self.p, 0.0);
-        if !out.any {
-            out.g_f.fill(0.0);
-            out.g_fx.fill(0.0);
-            return;
-        }
-        self.lu.solve(&mut v);
-        self.power_into(&v, &mut out.g_f, &mut out.g_fx);
-    }
-
+impl SectionalWave for SectionalHull {
     /// The source free-wave amplitude `∬ ∂f/∂x e^{−κz} e^{ik_x(x−x_c)}` at
     /// `λ` (the exact B-spline kernel's `InnerIntegral::eval` convention, no transom
     /// closure).
-    pub fn amplitude(&self, nu: f64, lambda: f64, scratch: &mut SectionalContracted) -> C64 {
+    fn amplitude(&self, nu: f64, lambda: f64, scratch: &mut SectionalContracted) -> C64 {
         self.amplitude_closed(nu, lambda, TransomClosure::None, scratch)
     }
 
@@ -725,7 +57,7 @@ impl SectionalHull {
     /// virtual appendage `f_v = f_T(z)·φ(s)` over the hollow behind the
     /// transom, exactly as the exact B-spline kernel adds it — its z-factor is the
     /// aft end station's own depth integral.
-    pub fn amplitude_closed(
+    fn amplitude_closed(
         &self,
         nu: f64,
         lambda: f64,
@@ -734,42 +66,80 @@ impl SectionalHull {
     ) -> C64 {
         let kx = nu * lambda;
         self.contract(nu * lambda * lambda, scratch);
-        if !scratch.any {
+        if !scratch.any() {
             return C64::ZERO;
         }
-        let closing = self.transom_term(kx, nu, closure, scratch.z_t);
-        let p = self.p;
+        let closing = self.transom_term(kx, nu, closure, scratch.aft());
+        let p = self.degree();
         let mut xm = Vec::with_capacity(p + 1);
         let mut f = C64::ZERO;
-        for (s, sx) in self.spans.iter().enumerate() {
+        for (s, sx) in self.spans().iter().enumerate() {
             osc_moments(kx, sx.len, p - 1, &mut xm);
-            let phase = C64::cis(kx * (sx.start - self.x_center));
+            let phase = C64::cis(kx * (sx.start - self.x_center()));
             let mut sum = C64::ZERO;
             for (a, &m) in xm.iter().enumerate() {
-                sum = sum + m.scale(scratch.g_fx[s * p + a]);
+                sum = sum + m.scale(scratch.g_fx()[s * p + a]);
             }
             f = f + phase * sum;
         }
-        f + closing + self.bow_source(kx, scratch.z_b)
+        f + closing + self.bow_source(kx, scratch.fore())
     }
+}
 
+/// The near-field transforms of a sectional hull, for [`crate::squat`] and
+/// [`crate::nearfield`] (kernel convention; see [`SquatTransforms`]).
+pub(crate) trait NearFieldTransforms {
+    fn bow_source(&self, kx: f64, z_b: f64) -> C64;
+    fn transom_term(&self, kx: f64, nu: f64, closure: TransomClosure, z_t: f64) -> C64;
+    fn add_transom_transforms(
+        &self,
+        kx: f64,
+        nu: f64,
+        closure: TransomClosure,
+        z_t: f64,
+        z_b: f64,
+        t: &mut SquatTransforms,
+    );
+    #[allow(
+        dead_code,
+        reason = "the open-transom form, exercised by the parity tests"
+    )]
+    fn transforms_at(&self, zc: &SectionalContracted, kx: f64) -> SquatTransforms;
+    fn transforms_at_closed(
+        &self,
+        zc: &SectionalContracted,
+        kx: f64,
+        nu: f64,
+        closure: TransomClosure,
+    ) -> SquatTransforms;
+    fn q_closed(
+        &self,
+        zc: &SectionalContracted,
+        kx: f64,
+        nu: f64,
+        closure: TransomClosure,
+        xm: &mut Vec<C64>,
+    ) -> C64;
+}
+
+impl NearFieldTransforms for SectionalHull {
     /// The fore end's step in the sources (kernel convention): a hull that
     /// ends forward on a finite section — a plumb stem face, or the thin
     /// wide sliver it leaves when trimmed bow-up — has `f` drop to 0 there,
     /// so `∂f/∂x` carries `−f_b δ(x − x_b)`. The face is real hull, so
     /// unlike a transom it is never left open. Zero for a pointed bow.
     fn bow_source(&self, kx: f64, z_b: f64) -> C64 {
-        let Some(&x_b) = self.xs.last() else {
+        let Some(&x_b) = self.station_xs().last() else {
             return C64::ZERO;
         };
-        C64::ZERO - C64::cis(kx * (x_b - self.x_center)).scale(z_b)
+        C64::ZERO - C64::cis(kx * (x_b - self.x_center())).scale(z_b)
     }
 
     /// The transom appendage's free-wave amplitude (kernel convention): the
     /// exact `InnerIntegral::transom_term` with the transom section's
     /// z-factor `z_t` taken from the aft end station.
     fn transom_term(&self, kx: f64, nu: f64, closure: TransomClosure, z_t: f64) -> C64 {
-        let Some(tr) = &self.transom else {
+        let Some(tr) = self.transom() else {
             return C64::ZERO;
         };
         let Some(lv) = closure.hollow_length(tr.depth, nu) else {
@@ -777,7 +147,7 @@ impl SectionalHull {
         };
         let mut sm = Vec::with_capacity(3);
         let shape = hollow_shape_moment(-kx * lv, &mut sm);
-        let phase = C64::cis(kx * (tr.x - self.x_center));
+        let phase = C64::cis(kx * (tr.x - self.x_center()));
         C64::ZERO - (phase * shape).scale(z_t)
     }
 
@@ -794,7 +164,7 @@ impl SectionalHull {
         z_b: f64,
         t: &mut SquatTransforms,
     ) {
-        let (Some(&x_a), Some(&x_b)) = (self.xs.first(), self.xs.last()) else {
+        let (Some(&x_a), Some(&x_b)) = (self.station_xs().first(), self.station_xs().last()) else {
             return;
         };
         // The weights: the hull ends where its end stations are, on whatever
@@ -802,20 +172,20 @@ impl SectionalHull {
         // sliver forward, nothing at a pointed end. Taking the steps from the
         // end stations themselves (not only a detected transom) keeps the
         // force continuous as an end section shrinks to nothing.
-        let wl = |s: &SectionNodes| s.waterline;
+        let wl = |s: &SectionNodes| s.waterline();
         let (wl_a, wl_b) = (
-            self.sections.first().map_or(0.0, wl),
-            self.sections.last().map_or(0.0, wl),
+            self.section_nodes().first().map_or(0.0, wl),
+            self.section_nodes().last().map_or(0.0, wl),
         );
-        let dx_a = x_a - self.x_center;
+        let dx_a = x_a - self.x_center();
         let phase_a = C64::cis(kx * dx_a);
         add_transom_step(phase_a, dx_a, z_t, wl_a, t);
-        let dx_b = x_b - self.x_center;
+        let dx_b = x_b - self.x_center();
         add_transom_step(C64::cis(kx * dx_b), dx_b, -z_b, -wl_b, t);
         // The sources: the bow's step always (the stem face is hull), the
         // transom's closing appendage when the closure applies.
         t.q_src = t.q_src + self.bow_source(kx, z_b);
-        let Some(tr) = &self.transom else {
+        let Some(tr) = self.transom() else {
             return;
         };
         let Some(lv) = closure.hollow_length(tr.depth, nu) else {
@@ -823,7 +193,7 @@ impl SectionalHull {
         };
         let mut m = Vec::with_capacity(4);
         osc_moments(-kx * lv, 1.0, 3, &mut m);
-        let phase = C64::cis(kx * (tr.x - self.x_center));
+        let phase = C64::cis(kx * (tr.x - self.x_center()));
         t.q_src = t.q_src + appendage_source(phase, &m).scale(z_t);
     }
 
@@ -834,33 +204,36 @@ impl SectionalHull {
         dead_code,
         reason = "the open-transom form, exercised by the parity tests"
     )]
-    pub(crate) fn transforms_at(&self, zc: &SectionalContracted, kx: f64) -> SquatTransforms {
+    fn transforms_at(&self, zc: &SectionalContracted, kx: f64) -> SquatTransforms {
         self.transforms_at_closed(zc, kx, 0.0, TransomClosure::None)
     }
 
     /// [`SectionalHull::transforms_at`] with the transom closed by `closure`
     /// at `ν` (the hollow length depends on it).
-    pub(crate) fn transforms_at_closed(
+    fn transforms_at_closed(
         &self,
         zc: &SectionalContracted,
         kx: f64,
         nu: f64,
         closure: TransomClosure,
     ) -> SquatTransforms {
-        let p = self.p;
+        let p = self.degree();
         let mut t = SquatTransforms::default();
-        if !zc.any {
+        if !zc.any() {
             return t;
         }
         let mut xm = Vec::with_capacity(p + 1);
-        for (s, sx) in self.spans.iter().enumerate() {
+        for (s, sx) in self.spans().iter().enumerate() {
             osc_moments(kx, sx.len, p, &mut xm);
-            let d = sx.start - self.x_center;
+            let d = sx.start - self.x_center();
             let phase = C64::cis(kx * d);
             let (mut q_s, mut q1_s, mut w_s, mut q1w_s) =
                 (C64::ZERO, C64::ZERO, C64::ZERO, C64::ZERO);
             for a in 0..p {
-                let (g, gw) = (zc.g_fx[s * p + a], self.wl_fx[s * p + a]);
+                let (g, gw) = (
+                    zc.g_fx()[s * p + a],
+                    self.waterline_slope_power()[s * p + a],
+                );
                 q_s = q_s + xm[a].scale(g);
                 w_s = w_s + xm[a].scale(gw);
                 let shifted = xm[a + 1] + xm[a].scale(d);
@@ -869,8 +242,8 @@ impl SectionalHull {
             }
             let (mut p_s, mut pw_s) = (C64::ZERO, C64::ZERO);
             for a in 0..=p {
-                p_s = p_s + xm[a].scale(zc.g_f[s * (p + 1) + a]);
-                pw_s = pw_s + xm[a].scale(self.wl_f[s * (p + 1) + a]);
+                p_s = p_s + xm[a].scale(zc.g_f()[s * (p + 1) + a]);
+                pw_s = pw_s + xm[a].scale(self.waterline_power()[s * (p + 1) + a]);
             }
             t.q = t.q + phase * q_s;
             t.q1 = t.q1 + phase * q1_s;
@@ -880,7 +253,7 @@ impl SectionalHull {
             t.p_wl = t.p_wl + phase * pw_s;
         }
         t.q_src = t.q;
-        self.add_transom_transforms(kx, nu, closure, zc.z_t, zc.z_b, &mut t);
+        self.add_transom_transforms(kx, nu, closure, zc.aft(), zc.fore(), &mut t);
         let conj = |v: C64| C64::new(v.re, -v.im);
         t.q_src = conj(t.q_src);
         t.q = conj(t.q);
@@ -894,7 +267,7 @@ impl SectionalHull {
 
     /// Just the source transform `q` of [`SectionalHull::transforms_at_closed`]
     /// (same convention), for the near field, which needs nothing else.
-    pub(crate) fn q_closed(
+    fn q_closed(
         &self,
         zc: &SectionalContracted,
         kx: f64,
@@ -902,202 +275,30 @@ impl SectionalHull {
         closure: TransomClosure,
         xm: &mut Vec<C64>,
     ) -> C64 {
-        if !zc.any {
+        if !zc.any() {
             return C64::ZERO;
         }
-        let p = self.p;
+        let p = self.degree();
         let mut q = C64::ZERO;
-        for (s, sx) in self.spans.iter().enumerate() {
+        for (s, sx) in self.spans().iter().enumerate() {
             osc_moments(kx, sx.len, p - 1, xm);
             let mut q_s = C64::ZERO;
             for (a, &m) in xm.iter().enumerate().take(p) {
-                q_s = q_s + m.scale(zc.g_fx[s * p + a]);
+                q_s = q_s + m.scale(zc.g_fx()[s * p + a]);
             }
-            q = q + C64::cis(kx * (sx.start - self.x_center)) * q_s;
+            q = q + C64::cis(kx * (sx.start - self.x_center())) * q_s;
         }
-        if let Some(tr) = &self.transom {
+        if let Some(tr) = self.transom() {
             if let Some(lv) = closure.hollow_length(tr.depth, nu) {
                 let mut m = Vec::with_capacity(4);
                 osc_moments(-kx * lv, 1.0, 3, &mut m);
                 let shape_dx = m[2].scale(6.0) - m[1].scale(6.0);
-                let phase = C64::cis(kx * (tr.x - self.x_center));
-                q = q - (phase * shape_dx).scale(zc.z_t);
+                let phase = C64::cis(kx * (tr.x - self.x_center()));
+                q = q - (phase * shape_dx).scale(zc.aft());
             }
         }
-        q = q + self.bow_source(kx, zc.z_b);
+        q = q + self.bow_source(kx, zc.fore());
         C64::new(q.re, -q.im)
-    }
-
-    /// Length between the end stations' knots [m].
-    pub fn length(&self) -> f64 {
-        self.length
-    }
-
-    /// Deepest depth node's section depth [m] (the deepest section).
-    pub fn draft(&self) -> f64 {
-        self.draft
-    }
-
-    /// Displaced volume `2∬ f dx dz` [m³].
-    pub fn displaced_volume(&self) -> f64 {
-        self.volume
-    }
-
-    /// Longitudinal centre of buoyancy [m], in the hull's x coordinates.
-    pub fn lcb_x(&self) -> f64 {
-        self.lcb_x
-    }
-
-    /// Waterplane area `∫ 2 f(x, 0) dx` [m²].
-    pub fn waterplane_area(&self) -> f64 {
-        self.waterplane[0]
-    }
-
-    /// First moment of the waterplane about x = 0 [m³].
-    pub fn waterplane_moment(&self) -> f64 {
-        self.waterplane[1]
-    }
-
-    /// Second moment of the waterplane about x = 0 [m⁴].
-    pub fn waterplane_second_moment(&self) -> f64 {
-        self.waterplane[2]
-    }
-
-    /// Wetted surface of both sides [m²] (see [`SectionalHull`]'s strip
-    /// construction): the shell itself, not its centreplane projection.
-    pub fn wetted_surface(&self) -> f64 {
-        self.wetted_surface
-    }
-
-    /// Centre of the x domain, the phase reference of the transforms [m].
-    pub fn x_center(&self) -> f64 {
-        self.x_center
-    }
-
-    /// The x domain: the end stations [m].
-    pub fn x_range(&self) -> (f64, f64) {
-        (
-            self.spans.first().map_or(0.0, |s| s.start),
-            self.spans.last().map_or(0.0, |s| s.start + s.len),
-        )
-    }
-
-    /// Waterline half-beam `f(x, 0)` [m] as the kernel interpolates it; 0
-    /// outside the hull.
-    pub fn waterline_half_beam(&self, x: f64) -> f64 {
-        let p = self.p;
-        let Some(s) = self
-            .spans
-            .iter()
-            .position(|sp| x >= sp.start && x <= sp.start + sp.len)
-        else {
-            return 0.0;
-        };
-        let t = x - self.spans[s].start;
-        (0..=p)
-            .rev()
-            .fold(0.0, |acc, a| acc * t + self.wl_f[s * (p + 1) + a])
-            .max(0.0)
-    }
-
-    /// The stations: each one's x and its section at the quadrature nodes
-    /// (see [`SectionNodes::outline`]).
-    pub fn sections(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {
-        self.xs
-            .iter()
-            .copied()
-            .zip(self.sections.iter().map(|s| s.outline()))
-    }
-
-    /// The stations: each one's x and its section curve, sampled densely
-    /// (see [`SectionNodes::curve`]).
-    pub fn curves(&self) -> impl Iterator<Item = (f64, &[(f64, f64)])> {
-        self.xs
-            .iter()
-            .copied()
-            .zip(self.sections.iter().map(|s| s.curve()))
-    }
-
-    /// Each station's depth integral `Z(xᵢ; κ)`, and the interpolant the
-    /// kernel actually integrates along x, sampled `per_span` times per
-    /// x-span: `(stations, curve)` as `(x, Z)` pairs. At `κ = 0` this is the
-    /// sectional-area curve (half-areas).
-    pub fn depth_integral_curve(
-        &self,
-        kappa: f64,
-        per_span: usize,
-    ) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
-        let at_st = self
-            .xs
-            .iter()
-            .zip(&self.sections)
-            .map(|(&x, s)| (x, s.integrate(kappa)))
-            .collect();
-        let mut zc = SectionalContracted::default();
-        self.contract(kappa, &mut zc);
-        let p = self.p;
-        let mut curve = Vec::new();
-        for (s, sx) in self.spans.iter().enumerate() {
-            for k in 0..per_span {
-                let t = sx.len * k as f64 / per_span as f64;
-                let v = if zc.any {
-                    (0..=p)
-                        .rev()
-                        .fold(0.0, |acc, a| acc * t + zc.g_f[s * (p + 1) + a])
-                } else {
-                    0.0
-                };
-                curve.push((sx.start + t, v));
-            }
-        }
-        // Close the curve at the last station.
-        if let (Some(&xe), Some(se)) = (self.xs.last(), self.sections.last()) {
-            curve.push((xe, se.integrate(kappa)));
-        }
-        (at_st, curve)
-    }
-
-    /// The x-derivative of the interpolated depth integral, `∂Z/∂x(x; κ)`,
-    /// sampled `per_span` times per x-span as `(x, ∂Z/∂x)` — the source
-    /// strength the kernel integrates (the Michell amplitude is its Fourier
-    /// transform along x).
-    pub fn depth_integral_slope_curve(&self, kappa: f64, per_span: usize) -> Vec<(f64, f64)> {
-        let mut zc = SectionalContracted::default();
-        self.contract(kappa, &mut zc);
-        let p = self.p;
-        let mut curve = Vec::new();
-        for (s, sx) in self.spans.iter().enumerate() {
-            for k in 0..=per_span {
-                if k == per_span && s + 1 < self.spans.len() {
-                    continue;
-                }
-                let t = sx.len * k as f64 / per_span as f64;
-                let v = if zc.any {
-                    (0..p)
-                        .rev()
-                        .fold(0.0, |acc, a| acc * t + zc.g_fx[s * p + a])
-                } else {
-                    0.0
-                };
-                curve.push((sx.start + t, v));
-            }
-        }
-        curve
-    }
-
-    /// Number of stations.
-    pub fn stations(&self) -> usize {
-        self.n
-    }
-
-    /// Total depth nodes over all stations.
-    pub fn depth_nodes(&self) -> usize {
-        self.sections.iter().map(SectionNodes::len).sum()
-    }
-
-    /// Number of x-spans (what each `k_x` evaluation walks).
-    pub fn x_spans(&self) -> usize {
-        self.spans.len()
     }
 }
 
@@ -1167,17 +368,20 @@ impl AmplitudeTable {
     fn new(hull: &SectionalHull, nu: f64, closure: TransomClosure, lam_max: f64) -> Self {
         let lo = 1.0;
         // Panels ~3 radians of the amplitude's own phase wide.
-        let h = (3.0 / (nu * 0.5 * hull.length).max(1e-9)).min(0.5);
+        let h = (3.0 / (nu * 0.5 * hull.length()).max(1e-9)).min(0.5);
         let panels = (((lam_max - lo) / h).ceil() as usize).max(1);
-        let per_panel =
-            crate::parallel::map_indexed(panels, SectionalContracted::default, |scratch, p| {
+        let per_panel = michell_geometry::parallel::map_indexed(
+            panels,
+            SectionalContracted::default,
+            |scratch, p| {
                 (0..NODES)
                     .map(|j| {
                         let lam = lo + h * (p as f64 + 0.5 * (1.0 + cheb(j)));
                         hull.amplitude_closed(nu, lam, closure, scratch)
                     })
                     .collect::<Vec<_>>()
-            });
+            },
+        );
         AmplitudeTable {
             lo,
             h,
@@ -1254,19 +458,19 @@ pub fn multihull_wave_resistance(
     let (u, g) = (cond.speed, cond.gravity);
     let nu = g / (u * u);
     let n = members.len() as f64;
-    let cx_ref = members.iter().map(|(h, p)| h.x_center + p.x).sum::<f64>() / n;
+    let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
     let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
     let params = OuterParams {
         nu,
         x_half: members
             .iter()
-            .map(|(h, p)| (h.x_center + p.x - cx_ref).abs() + 0.5 * h.length)
+            .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + 0.5 * h.length())
             .fold(0.0, f64::max),
         y_half: members
             .iter()
             .map(|(_, p)| (p.y - y_ref).abs())
             .fold(0.0, f64::max),
-        t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
+        t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
     };
     let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
     // Copies of one hull (a catamaran): the pair's integrand oscillates with
@@ -1283,7 +487,7 @@ pub fn multihull_wave_resistance(
             .iter()
             .map(|(h, p)| Tabulated {
                 table: &table,
-                dx: h.x_center + p.x - cx_ref,
+                dx: h.x_center() + p.x - cx_ref,
                 dy: p.y - y_ref,
             })
             .collect();
@@ -1294,7 +498,7 @@ pub fn multihull_wave_resistance(
         .map(|(h, p)| SectionalMember {
             hull: h,
             scratch: SectionalContracted::default(),
-            dx: h.x_center + p.x - cx_ref,
+            dx: h.x_center() + p.x - cx_ref,
             dy: p.y - y_ref,
             closure: opts.transom,
         })
@@ -1325,10 +529,10 @@ pub fn multihull_resistance(
     let solo_wave_total: f64 = solo.iter().sum();
     let viscous: Vec<ViscousResistance> = members
         .iter()
-        .map(|(h, _)| viscous_resistance_for(h.length, h.wetted_surface, cond, viscous_opts))
+        .map(|(h, _)| viscous_resistance_for(h.length(), h.wetted_surface(), cond, viscous_opts))
         .collect::<Result<_>>()?;
     let viscous_total: f64 = viscous.iter().map(|v| v.resistance).sum();
-    let wetted_surface: f64 = members.iter().map(|(h, _)| h.wetted_surface).sum();
+    let wetted_surface: f64 = members.iter().map(|(h, _)| h.wetted_surface()).sum();
     let total = wave.resistance + viscous_total;
     let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * wetted_surface;
     Ok(MultihullResistance {
@@ -1386,7 +590,7 @@ pub fn multihull_dynamic_force(
                     nu,
                     closure: opts.wave.transom,
                 },
-                cx: h.x_center + p.x,
+                cx: h.x_center() + p.x,
                 y: p.y,
             })
             .collect(),
@@ -1396,9 +600,9 @@ pub fn multihull_dynamic_force(
         zc_tmp: vec![SectionalContracted::default(); members.len()],
         twin: twins(members),
     };
-    let l_max = members.iter().map(|(h, _)| h.length).fold(0.0, f64::max);
-    let t_max = members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max);
-    let volume = members.iter().map(|(h, _)| h.volume).sum();
+    let l_max = members.iter().map(|(h, _)| h.length()).fold(0.0, f64::max);
+    let t_max = members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max);
+    let volume = members.iter().map(|(h, _)| h.displaced_volume()).sum();
     Ok(integrate_force(fleet, cond, l_max, t_max, volume, opts))
 }
 
@@ -1408,16 +612,16 @@ pub fn multihull_dynamic_force(
 fn twins(members: &[(&SectionalHull, Placement)]) -> Vec<Option<usize>> {
     let print = |h: &SectionalHull| {
         [
-            h.volume,
-            h.lcb_x,
-            h.length,
-            h.x_center,
-            h.wetted_surface,
-            h.draft,
+            h.displaced_volume(),
+            h.lcb_x(),
+            h.length(),
+            h.x_center(),
+            h.wetted_surface(),
+            h.draft(),
         ]
         .map(f64::to_bits)
         .into_iter()
-        .chain([h.xs.len() as u64])
+        .chain([h.stations() as u64])
         .collect::<Vec<_>>()
     };
     let prints: Vec<_> = members.iter().map(|(h, _)| print(h)).collect();
@@ -1427,7 +631,7 @@ fn twins(members: &[(&SectionalHull, Placement)]) -> Vec<Option<usize>> {
 }
 
 /// The dynamic load a sectional fleet carries at speed, as the equilibrium
-/// solver's model (see [`crate::float::DynamicModel`]): the near-field
+/// solver's model (see [`DynamicModel`]): the near-field
 /// force and moment about `x_ref`, with a single-pass quadrature for the
 /// solver's slope probes — within ~0.1% of the converged value, and 5–20×
 /// cheaper.
@@ -1462,7 +666,7 @@ impl SectionalDynamic<'_> {
     }
 }
 
-impl crate::float::DynamicModel<SectionalHull> for SectionalDynamic<'_> {
+impl DynamicModel<SectionalHull> for SectionalDynamic<'_> {
     fn load(&mut self, fleet: &FleetState<SectionalHull>) -> Result<DynamicLoad> {
         self.eval(fleet, self.opts)
     }
@@ -1473,71 +677,6 @@ impl crate::float::DynamicModel<SectionalHull> for SectionalDynamic<'_> {
             ..*self.opts
         };
         Some(self.eval(fleet, &coarse))
-    }
-}
-
-/// LU of a banded matrix without pivoting — B-spline collocation matrices
-/// are totally positive, for which elimination without pivoting is stable
-/// (de Boor). Dense storage, band-limited loops: stations number in the
-/// hundreds.
-#[derive(Debug, Clone)]
-struct BandLu {
-    n: usize,
-    /// Half-bandwidth: entries with `|i − j| > w` are zero.
-    w: usize,
-    a: Vec<f64>,
-}
-
-impl BandLu {
-    fn new(n: usize, p: usize) -> Self {
-        BandLu {
-            n,
-            w: p + 1,
-            a: vec![0.0; n * n],
-        }
-    }
-
-    fn set(&mut self, i: usize, j: usize, v: f64) {
-        self.a[i * self.n + j] = v;
-    }
-
-    fn factor(&mut self) -> bool {
-        let (n, w) = (self.n, self.w);
-        for k in 0..n {
-            let piv = self.a[k * n + k];
-            if piv.abs() < 1e-14 {
-                return false;
-            }
-            for i in k + 1..(k + w + 1).min(n) {
-                let l = self.a[i * n + k] / piv;
-                if l == 0.0 {
-                    continue;
-                }
-                self.a[i * n + k] = l;
-                for j in k + 1..(k + w + 1).min(n) {
-                    self.a[i * n + j] -= l * self.a[k * n + j];
-                }
-            }
-        }
-        true
-    }
-
-    fn solve(&self, b: &mut [f64]) {
-        let (n, w) = (self.n, self.w);
-        for i in 0..n {
-            let mut s = b[i];
-            for k in i.saturating_sub(w)..i {
-                s -= self.a[i * n + k] * b[k];
-            }
-            b[i] = s;
-        }
-        for i in (0..n).rev() {
-            let mut s = b[i];
-            for j in i + 1..(i + w + 1).min(n) {
-                s -= self.a[i * n + j] * b[j];
-            }
-            b[i] = s / self.a[i * n + i];
-        }
     }
 }
 
@@ -1718,12 +857,15 @@ mod tests {
     #[test]
     fn iges_sections_of_a_wigley_reproduce_the_exact_hull() {
         let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-        let surfs = crate::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
-        let text = crate::iges::write(&surfs, "wigley").unwrap();
-        let imp = crate::iges::import_sectional(&text, &crate::iges::SectionalOptions::default())
-            .unwrap()
-            .hulls
-            .remove(0);
+        let surfs = michell_geometry::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
+        let text = michell_geometry::iges::write(&surfs, "wigley").unwrap();
+        let imp = michell_geometry::iges::import_sectional(
+            &text,
+            &michell_geometry::iges::SectionalOptions::default(),
+        )
+        .unwrap()
+        .hulls
+        .remove(0);
         eprintln!("{:?}", imp.report);
         let sec = &imp.hull;
         let vol = rel_vol(&hull, sec);
@@ -1765,13 +907,13 @@ mod tests {
         };
         let wave = untransomed();
         let import = |stations: usize, rays: usize| {
-            let so = crate::iges::SectionalOptions {
+            let so = michell_geometry::iges::SectionalOptions {
                 waterline_z: -0.95,
                 stations,
                 rays,
                 ..Default::default()
             };
-            let mut fleet = crate::iges::import_sectional(&text, &so).unwrap();
+            let mut fleet = michell_geometry::iges::import_sectional(&text, &so).unwrap();
             assert!(fleet.failed.is_empty(), "{:?}", fleet.failed);
             assert_eq!(fleet.hulls.len(), 1, "the stem is part of the hull");
             fleet.hulls.remove(0)
@@ -1809,13 +951,16 @@ mod tests {
     #[test]
     fn sectional_hydrostatics_match_the_exact_hull() {
         let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
-        let surfs = crate::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
-        let text = crate::iges::write(&surfs, "wigley").unwrap();
-        let sec = crate::iges::import_sectional(&text, &crate::iges::SectionalOptions::default())
-            .unwrap()
-            .hulls
-            .remove(0)
-            .hull;
+        let surfs = michell_geometry::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
+        let text = michell_geometry::iges::write(&surfs, "wigley").unwrap();
+        let sec = michell_geometry::iges::import_sectional(
+            &text,
+            &michell_geometry::iges::SectionalOptions::default(),
+        )
+        .unwrap()
+        .hulls
+        .remove(0)
+        .hull;
         let rel = |a: f64, b: f64| (a - b).abs() / b.abs().max(1e-300);
         let area = rel(sec.waterplane_area(), hull.waterplane_area());
         let m2 = rel(
@@ -1847,26 +992,26 @@ mod twin_tests {
         let (u, g) = (cond.speed, cond.gravity);
         let nu = g / (u * u);
         let n = members.len() as f64;
-        let cx_ref = members.iter().map(|(h, p)| h.x_center + p.x).sum::<f64>() / n;
+        let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
         let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
         let params = OuterParams {
             nu,
             x_half: members
                 .iter()
-                .map(|(h, p)| (h.x_center + p.x - cx_ref).abs() + 0.5 * h.length)
+                .map(|(h, p)| (h.x_center() + p.x - cx_ref).abs() + 0.5 * h.length())
                 .fold(0.0, f64::max),
             y_half: members
                 .iter()
                 .map(|(_, p)| (p.y - y_ref).abs())
                 .fold(0.0, f64::max),
-            t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
+            t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
         };
         let mem = members
             .iter()
             .map(|(h, p)| SectionalMember {
                 hull: h,
                 scratch: SectionalContracted::default(),
-                dx: h.x_center + p.x - cx_ref,
+                dx: h.x_center() + p.x - cx_ref,
                 dy: p.y - y_ref,
                 closure: opts.transom,
             })
@@ -1885,8 +1030,8 @@ mod twin_tests {
     #[test]
     fn a_catamaran_from_a_tabulated_amplitude_is_exact() {
         let wigley = {
-            let surfaces = crate::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-            crate::iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0)
+            let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+            michell_geometry::iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0)
                 .unwrap()
                 .situate_sectional(
                     0,
@@ -1900,11 +1045,11 @@ mod twin_tests {
                 .hull
         };
         let e12 = crate::cad_fixture("e12.igs").map(|t| {
-            let o = crate::iges::SectionalOptions {
+            let o = michell_geometry::iges::SectionalOptions {
                 waterline_z: -0.95,
                 ..Default::default()
             };
-            crate::iges::import_sectional(&t, &o)
+            michell_geometry::iges::import_sectional(&t, &o)
                 .unwrap()
                 .hulls
                 .remove(0)
@@ -1912,8 +1057,11 @@ mod twin_tests {
         });
         let opts = WaveOptions::default();
         for h in std::iter::once(&wigley).chain(e12.as_ref()) {
-            for (fnum, span) in [(0.3, 2.0 * h.length / 10.0), (0.45, 3.5 * h.length / 10.0)] {
-                let cond = Conditions::seawater(fnum * (9.81 * h.length).sqrt());
+            for (fnum, span) in [
+                (0.3, 2.0 * h.length() / 10.0),
+                (0.45, 3.5 * h.length() / 10.0),
+            ] {
+                let cond = Conditions::seawater(fnum * (9.81 * h.length()).sqrt());
                 let pair = [
                     (
                         h,
@@ -1937,7 +1085,7 @@ mod twin_tests {
                 assert!(
                     (fast - slow).abs() < 1e-5 * slow,
                     "L {} Fn {fnum} span {span}: tabulated {fast} vs direct {slow}",
-                    h.length
+                    h.length()
                 );
             }
         }
@@ -1965,7 +1113,9 @@ mod transom_tests {
             .iter()
             .flat_map(|&c| [c, 0.9 * c, 0.0])
             .collect();
-        let surface = crate::bspline::BSplineSurface::new(3, 2, knots_x, knots_z, control).unwrap();
+        let surface =
+            michell_geometry::bspline::BSplineSurface::new(3, 2, knots_x, knots_z, control)
+                .unwrap();
         Hull::new(surface).unwrap()
     }
 
@@ -2065,14 +1215,14 @@ mod transom_tests {
     /// 0.37 m wide at the waterline and a centimetre deep.
     #[test]
     fn a_cad_transom_is_detected_from_its_end_section() {
-        let so = crate::iges::SectionalOptions {
+        let so = michell_geometry::iges::SectionalOptions {
             waterline_z: E12_WL,
             ..Default::default()
         };
         let Some(text) = e12_text() else {
             return;
         };
-        let imp = crate::iges::import_sectional(&text, &so)
+        let imp = michell_geometry::iges::import_sectional(&text, &so)
             .unwrap()
             .hulls
             .remove(0);
@@ -2099,11 +1249,11 @@ mod transom_tests {
         let Some(text) = e12_text() else {
             return;
         };
-        let opts = crate::iges::SectionalOptions {
+        let opts = michell_geometry::iges::SectionalOptions {
             waterline_z: -0.95,
             ..Default::default()
         };
-        let fleet = crate::iges::import_sectional(&text, &opts).unwrap();
+        let fleet = michell_geometry::iges::import_sectional(&text, &opts).unwrap();
         let h = &fleet.hulls[0].hull;
         assert!(h.transom().is_some());
         let cond = Conditions::seawater(0.3 * (9.81f64 * h.length()).sqrt());

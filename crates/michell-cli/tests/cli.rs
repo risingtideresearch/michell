@@ -45,8 +45,8 @@ fn run_err(cmd: &mut Command) -> String {
 /// A wigley control net to hang the viscous tests off.
 /// The exact Wigley cut into sections through the public library API, as
 /// the CLI cuts `michell wigley`'s IGES.
-fn sectional_wigley() -> michell::sectional::SectionalHull {
-    use michell::iges::{self, HullPose, Platform, SectionalOptions};
+fn sectional_wigley() -> michell_geometry::SectionalHull {
+    use michell_geometry::iges::{self, HullPose, Platform, SectionalOptions};
     let surfaces = iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
     let src = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
     src.situate_sectional(
@@ -62,7 +62,7 @@ fn sectional_wigley() -> michell::sectional::SectionalHull {
 }
 
 fn library_resistance(
-    members: &[(&michell::sectional::SectionalHull, michell::Placement)],
+    members: &[(&michell_geometry::SectionalHull, michell::Placement)],
     cond: &michell::Conditions,
 ) -> michell::MultihullResistance {
     michell::sectional::multihull_resistance(

@@ -2,8 +2,10 @@
 //! must re-import (through the sectional cut) as the same hull, and posed
 //! exports must land where the pose says.
 
-use michell::iges::{self, HullPose, Platform, SectionalImport, SectionalOptions, SourceFleet};
 use michell::{sectional, Conditions};
+use michell_geometry::iges::{
+    self, HullPose, Platform, SectionalImport, SectionalOptions, SourceFleet,
+};
 
 fn cut(src: &SourceFleet, idx: usize) -> SectionalImport {
     src.situate_sectional(

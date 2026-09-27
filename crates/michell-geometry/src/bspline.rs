@@ -95,26 +95,22 @@ impl BSplineSurface {
     }
 
     /// Parametric domain in x: `[knots_x[p], knots_x[n]]`.
-    #[cfg(test)]
     pub fn x_domain(&self) -> (f64, f64) {
         (self.knots_x[self.degree_x], self.knots_x[self.n_ctrl_x])
     }
 
     /// Parametric domain in z: `[knots_z[q], knots_z[n]]`.
-    #[cfg(test)]
     pub fn z_domain(&self) -> (f64, f64) {
         (self.knots_z[self.degree_z], self.knots_z[self.n_ctrl_z])
     }
 
     /// Surface value. Arguments outside the domain are clamped to it.
-    #[cfg(test)]
     pub fn eval(&self, x: f64, z: f64) -> f64 {
         self.eval_deriv(x, z, 0, 0)
     }
 
     /// Mixed partial derivative `∂^{dx+dz} S / ∂x^{dx} ∂z^{dz}`.
     /// Arguments outside the domain are clamped to it.
-    #[cfg(test)]
     pub fn eval_deriv(&self, x: f64, z: f64, dx: usize, dz: usize) -> f64 {
         let (x0, x1) = self.x_domain();
         let (z0, z1) = self.z_domain();
@@ -141,13 +137,11 @@ impl BSplineSurface {
     }
 
     /// Indices `s` of non-empty knot spans `[knots_x[s], knots_x[s+1])`.
-    #[cfg(test)]
-    pub(crate) fn x_span_indices(&self) -> Vec<usize> {
+    pub fn x_span_indices(&self) -> Vec<usize> {
         span_indices(&self.knots_x, self.degree_x, self.n_ctrl_x)
     }
 
-    #[cfg(test)]
-    pub(crate) fn z_span_indices(&self) -> Vec<usize> {
+    pub fn z_span_indices(&self) -> Vec<usize> {
         span_indices(&self.knots_z, self.degree_z, self.n_ctrl_z)
     }
 
@@ -155,8 +149,7 @@ impl BSplineSurface {
     /// `a = 0..=degree_x`, `b = 0..=degree_z`, evaluated at the lower-left
     /// corner of the given (non-empty) span pair. Together with Taylor's
     /// theorem this yields the exact local polynomial on the span rectangle.
-    #[cfg(test)]
-    pub(crate) fn corner_partials(&self, span_x: usize, span_z: usize) -> Vec<Vec<f64>> {
+    pub fn corner_partials(&self, span_x: usize, span_z: usize) -> Vec<Vec<f64>> {
         let p = self.degree_x;
         let q = self.degree_z;
         let x0 = self.knots_x[span_x];
@@ -251,7 +244,7 @@ fn validate_knots(knots: &[f64], degree: usize, dir: &str) -> Result<usize> {
 
 /// Index `s` such that `knots[s] <= u < knots[s+1]` within the domain,
 /// with the right end mapped into the last non-empty span.
-pub(crate) fn find_span(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> usize {
+pub fn find_span(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> usize {
     if u >= knots[n_ctrl] {
         // Last non-empty span.
         let mut s = n_ctrl - 1;
@@ -275,7 +268,6 @@ pub(crate) fn find_span(knots: &[f64], degree: usize, n_ctrl: usize, u: f64) -> 
     lo
 }
 
-#[cfg(test)]
 fn span_indices(knots: &[f64], degree: usize, n_ctrl: usize) -> Vec<usize> {
     (degree..n_ctrl)
         .filter(|&s| knots[s + 1] > knots[s])
@@ -285,7 +277,7 @@ fn span_indices(knots: &[f64], degree: usize, n_ctrl: usize) -> Vec<usize> {
 /// Highest B-spline degree the crate accepts in either direction. Bounds the
 /// stack storage of [`ders_basis`]; CAD surfaces are almost always cubic and
 /// never beyond degree 7, and a higher-degree *fit* would be ill-advised.
-pub(crate) const MAX_DEGREE: usize = 9;
+pub const MAX_DEGREE: usize = 9;
 
 /// Basis values and derivatives at one parameter, on the stack.
 ///
@@ -294,7 +286,7 @@ pub(crate) const MAX_DEGREE: usize = 9;
 /// [`MAX_DEGREE`] so a hot evaluation loop (surface points inside a Newton
 /// intersection, say) allocates nothing.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct BasisDers {
+pub struct BasisDers {
     d: [[f64; MAX_DEGREE + 1]; MAX_DEGREE + 1],
     p: usize,
 }
@@ -312,7 +304,7 @@ impl std::ops::Index<usize> for BasisDers {
 /// Returns `ders[k][j]` = k-th derivative of basis function `N_{span-p+j, p}`
 /// at `u`, for `k = 0..=min(n, p)` and `j = 0..=p`. Rows past `min(n, p)` are
 /// zero.
-pub(crate) fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize) -> BasisDers {
+pub fn ders_basis(knots: &[f64], p: usize, span: usize, u: f64, n: usize) -> BasisDers {
     debug_assert!(p <= MAX_DEGREE);
     let n = n.min(p);
     let mut ndu = [[0.0f64; MAX_DEGREE + 1]; MAX_DEGREE + 1];

@@ -41,12 +41,27 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "michell"
 version = "0.1.0"
+dependencies = [
+ "michell-geometry",
+]
 
 [[package]]
 name = "michell-cli"
 version = "0.1.0"
 dependencies = [
  "michell",
+ "michell-geometry",
+]
+
+[[package]]
+name = "michell-geometry"
+version = "0.1.0"
+
+[[package]]
+name = "michell-seakeeping"
+version = "0.1.0"
+dependencies = [
+ "michell-geometry",
 ]
 
 [[package]]
@@ -55,6 +70,7 @@ version = "0.1.0"
 dependencies = [
  "michell",
  "michell-cli",
+ "michell-geometry",
  "serde_json",
  "tiny_http",
 ]

@@ -11,3 +11,4 @@ path = "src/main.rs"
 
 [dependencies]
 michell = { path = "../michell" }
+michell-geometry = { path = "../michell-geometry" }

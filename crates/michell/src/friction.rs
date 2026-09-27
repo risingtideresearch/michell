@@ -16,8 +16,8 @@
 //! craft the roughness term can be the larger of the two, so folding it into
 //! `k` hides it.
 
-use crate::conditions::Conditions;
-use crate::error::{Error, Result};
+use michell_geometry::Conditions;
+use michell_geometry::{Error, Result};
 
 /// How the hull's surface finish is charged on top of flat-plate friction.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]

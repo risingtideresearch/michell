@@ -42,16 +42,18 @@
 //! physical. Linear theory also means no breaking: steep bow systems are
 //! indicative only.
 
-use crate::conditions::Conditions;
-use crate::error::{Error, Result};
 #[cfg(test)]
 use crate::hull::Hull;
 #[cfg(test)]
 use crate::michell::InnerIntegral;
-use crate::michell::{Placement, TransomClosure};
-use crate::moments::C64;
-use crate::quadrature::gauss_legendre;
-use crate::sectional::{SectionalContracted, SectionalHull};
+use crate::michell::TransomClosure;
+use crate::sectional::SectionalWave;
+use michell_geometry::moments::C64;
+use michell_geometry::quadrature::gauss_legendre;
+use michell_geometry::sectional::{SectionalContracted, SectionalHull};
+use michell_geometry::Conditions;
+use michell_geometry::Placement;
+use michell_geometry::{Error, Result};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 /// Free-wave spectrum of a hull or fleet at fixed speed: the complex
@@ -547,7 +549,8 @@ impl<'h> FreeWaveSpectrum<'h> {
 #[cfg(test)]
 mod sectional_spectrum_tests {
     use super::*;
-    use crate::sectional::{DepthQuadrature, SectionalHull};
+    use crate::hull::FromHull;
+    use michell_geometry::sectional::{DepthQuadrature, SectionalHull};
 
     /// The sectional spectrum of a hull built from its own spline (the
     /// exact harness) reproduces the exact B-spline kernel's: the wave field is a

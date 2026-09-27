@@ -1,7 +1,7 @@
 //! Loading hull specs into a working fleet of sectional hulls.
 //!
 //! Every input becomes source geometry that can be re-posed and re-cut
-//! ([`michell::source::HullSource`]), and each of its hulls is cut into
+//! ([`michell_geometry::source::HullSource`]), and each of its hulls is cut into
 //! sections at the design waterline:
 //!
 //! * `*.igs` / `*.iges`: NURBS patches, clustered into hulls;
@@ -9,10 +9,10 @@
 //!   clustered likewise.
 
 use crate::formats::looks_binary_stl;
-use michell::iges::{source_fleet, HullPose, Platform, SectionalOptions, SectionalReport};
-use michell::sectional::SectionalHull;
-use michell::source::{HullSource, SourceHull};
 use michell::Placement;
+use michell_geometry::iges::{source_fleet, HullPose, Platform, SectionalOptions, SectionalReport};
+use michell_geometry::source::{HullSource, SourceHull};
+use michell_geometry::SectionalHull;
 use std::collections::HashMap;
 
 /// What a file held.
@@ -189,7 +189,7 @@ pub fn open_source_bytes(
                  (or a scale to metres)"
             )
         })?;
-        let src = michell::stl::mesh_fleet(&bytes, scale, settings.waterline_z)
+        let src = michell_geometry::stl::mesh_fleet(&bytes, scale, settings.waterline_z)
             .map_err(|e| format!("{path}: STL import failed: {e}"))?;
         return Ok(SourceFile {
             path: path.into(),
@@ -246,12 +246,13 @@ pub fn open_geometry(
         let scale = settings.units.ok_or_else(|| {
             format!("{path}: STL files carry no units; give their scale (mm, m, in, …)")
         })?;
-        let tris = michell::stl::parse_stl(&bytes, scale).map_err(|e| format!("{path}: {e}"))?;
+        let tris =
+            michell_geometry::stl::parse_stl(&bytes, scale).map_err(|e| format!("{path}: {e}"))?;
         let top = tris
             .iter()
             .flatten()
             .fold(f64::NEG_INFINITY, |m, v| m.max(v[2]));
-        let src = michell::stl::mesh_fleet(&bytes, scale, top + 1.0)
+        let src = michell_geometry::stl::mesh_fleet(&bytes, scale, top + 1.0)
             .map_err(|e| format!("{path}: STL import failed: {e}"))?;
         return Ok(SourceFile {
             path: path.into(),
@@ -261,8 +262,8 @@ pub fn open_geometry(
         });
     }
     let text = String::from_utf8(bytes).expect("checked utf8");
-    let file =
-        michell::iges::parse(&text).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
+    let file = michell_geometry::iges::parse(&text)
+        .map_err(|e| format!("{path}: IGES import failed: {e}"))?;
     let top = file
         .surfaces
         .iter()
@@ -288,7 +289,7 @@ pub fn open_geometry(
 /// fleet with none left is an error.
 pub fn load(specs: &[String], settings: &LoadSettings) -> Result<Fleet, String> {
     let mut files: Vec<SourceFile> = Vec::new();
-    let mut cut: Vec<Vec<(usize, michell::iges::SectionalImport)>> = Vec::new();
+    let mut cut: Vec<Vec<(usize, michell_geometry::iges::SectionalImport)>> = Vec::new();
     let mut by_path: HashMap<String, usize> = HashMap::new();
     let mut members = Vec::new();
     for spec in specs {

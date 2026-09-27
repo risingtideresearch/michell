@@ -549,11 +549,8 @@ mod tests {
 }
 
 #[cfg(test)]
-mod sectional_tests {
+mod test_mesh {
     use super::*;
-    use crate::conditions::Conditions;
-    use crate::michell::{TransomClosure, WaveOptions};
-    use crate::sectional::{wave_resistance, DepthQuadrature, SectionalHull};
 
     /// Binary STL of a triangle list (f32, as STL stores it).
     pub(super) fn stl_bytes(tris: &[Tri]) -> Vec<u8> {
@@ -583,222 +580,6 @@ mod sectional_tests {
         }
         tris
     }
-
-    /// The Wigley hull `y = ±(B/2)(1 − (2x/L)²)(1 − (z/T)²)` below the
-    /// waterline (CAD z = 0), carried on wall-sided to `top` above it, as a
-    /// two-sided mesh: `nx` columns along the length, `nz` rows down the
-    /// draft.
-    fn wigley_tris(l: f64, b: f64, t: f64, top: f64, nx: usize, nz: usize) -> Vec<Tri> {
-        let half = |x: f64, depth: f64| {
-            let xi = 2.0 * x / l;
-            let zeta = (depth / t).clamp(0.0, 1.0);
-            0.5 * b * (1.0 - xi * xi) * (1.0 - zeta * zeta)
-        };
-        // Depth rows: `top` above the water, then the waterline to the keel.
-        let depths: Vec<f64> = std::iter::once(-top)
-            .chain((0..=nz).map(|j| t * j as f64 / nz as f64))
-            .collect();
-        let xs: Vec<f64> = (0..=nx)
-            .map(|i| -0.5 * l + l * i as f64 / nx as f64)
-            .collect();
-        let mut tris = Vec::new();
-        for side in [1.0, -1.0] {
-            let p = |i: usize, j: usize| {
-                let (x, d) = (xs[i], depths[j]);
-                [x, side * half(x, d), -d]
-            };
-            for i in 0..nx {
-                for j in 0..depths.len() - 1 {
-                    tris.push([p(i, j), p(i + 1, j), p(i + 1, j + 1)]);
-                    tris.push([p(i, j), p(i + 1, j + 1), p(i, j + 1)]);
-                }
-            }
-        }
-        tris
-    }
-
-    fn untransomed() -> WaveOptions {
-        WaveOptions {
-            transom: TransomClosure::None,
-            ..WaveOptions::default()
-        }
-    }
-
-    fn rel(a: f64, b: f64) -> f64 {
-        (a - b).abs() / b.abs()
-    }
-
-    /// A finely tessellated Wigley, imported by sections straight from its
-    /// facets, against the exact hull's sections: volume and R_w agree to
-    /// the tessellation's chord error.
-    #[test]
-    fn stl_sections_of_a_wigley_match_the_exact_hull() {
-        let (l, b, t) = (10.0, 1.0, 0.625);
-        let hull = crate::hulls::wigley(l, b, t).unwrap();
-        let exact = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
-        let bytes = stl_bytes(&wigley_tris(l, b, t, 0.2, 400, 64));
-        let fleet = import_sectional(&bytes, 1.0, &SectionalOptions::default()).unwrap();
-        assert_eq!(fleet.hulls.len(), 1, "{:?}", fleet.failed);
-        let imp = &fleet.hulls[0];
-        eprintln!("{:?}", imp.report);
-        assert!(imp.report.two_sided && imp.report.centerplane.abs() < 1e-9);
-        assert!(imp.report.transom.is_none());
-        assert!((imp.report.x_range.0 + 0.5 * l).abs() < 1e-6);
-        assert!((imp.report.x_range.1 - 0.5 * l).abs() < 1e-6);
-        let dv = rel(imp.hull.displaced_volume(), hull.displaced_volume());
-        eprintln!("volume {dv:.2e}");
-        assert!(dv < 2e-4, "volume {dv:.2e}");
-        let wave = untransomed();
-        for fn_ in [0.25, 0.3, 0.35, 0.5] {
-            let cond = Conditions::seawater(fn_ * (9.81 * l).sqrt());
-            let a = wave_resistance(&exact, &cond, &wave).unwrap().resistance;
-            let s = wave_resistance(&imp.hull, &cond, &wave).unwrap().resistance;
-            let e = rel(s, a);
-            eprintln!("Fn {fn_}: Rw exact {a:.6e}, stl {s:.6e} ({e:.2e})");
-            assert!(e < 5e-4, "Fn {fn_}: {e:.2e}");
-        }
-    }
-
-    /// The same Wigley posed (design dz and trim, platform sinkage and
-    /// trim) from its STL and from its IGES patches: the pose moves both
-    /// alike, and the sections agree to the chord error.
-    #[test]
-    fn a_posed_stl_wigley_matches_the_posed_iges_one() {
-        let (l, b, t) = (10.0, 1.0, 0.625);
-        let hull = crate::hulls::wigley(l, b, t).unwrap();
-        let surfs = crate::iges::halfbreadth_surfaces(hull.surface(), 0.0, 0.0);
-        let text = crate::iges::write(&surfs, "wigley").unwrap();
-        let iges = crate::iges::source_fleet(&text, 0.0).unwrap();
-        let bytes = stl_bytes(&wigley_tris(l, b, t, 0.2, 400, 64));
-        let mesh = mesh_fleet(&bytes, 1.0, 0.0).unwrap();
-        // Raised overall, so the IGES shell's top rim (at the design
-        // waterline) stays dry: the two wetted shapes are the same.
-        let pose = HullPose {
-            dz: -0.1,
-            trim: 0.4f64.to_radians(),
-            ..Default::default()
-        };
-        let plat = Platform {
-            sinkage: 0.02,
-            trim: -0.2f64.to_radians(),
-            pivot_x: 1.0,
-        };
-        let opts = SectionalOptions::default();
-        let a = iges
-            .situate_sectional(0, 0.0, &pose, &plat, &opts)
-            .unwrap()
-            .unwrap();
-        let s = mesh
-            .situate_sectional(0, 0.0, &pose, &plat, &opts)
-            .unwrap()
-            .unwrap();
-        eprintln!("iges {:?}\nstl  {:?}", a.report, s.report);
-        let dv = rel(s.hull.displaced_volume(), a.hull.displaced_volume());
-        eprintln!(
-            "volume {:.6} vs {:.6} ({dv:.2e}), lcb {:.5} vs {:.5}",
-            s.hull.displaced_volume(),
-            a.hull.displaced_volume(),
-            s.hull.lcb_x(),
-            a.hull.lcb_x()
-        );
-        assert!(dv < 2e-4, "volume {dv:.2e}");
-        assert!((s.hull.lcb_x() - a.hull.lcb_x()).abs() < 1e-4 * l);
-        assert!((s.report.draft - a.report.draft).abs() < 1e-6);
-        // The pose really moved the hull (not a vacuous comparison).
-        assert!(a.report.draft < t - 0.05);
-        let wave = untransomed();
-        for fn_ in [0.3, 0.5] {
-            let cond = Conditions::seawater(fn_ * (9.81 * l).sqrt());
-            let ra = wave_resistance(&a.hull, &cond, &wave).unwrap().resistance;
-            let rs = wave_resistance(&s.hull, &cond, &wave).unwrap().resistance;
-            let e = rel(rs, ra);
-            eprintln!("Fn {fn_}: Rw iges {ra:.6e}, stl {rs:.6e} ({e:.2e})");
-            assert!(e < 5e-4, "Fn {fn_}: {e:.2e}");
-        }
-        // The posed tessellations share their frame: the same keel depth.
-        let (vi, _) = iges.posed_tessellation(0, 0.0, &pose, &plat).unwrap();
-        let (vs, _) = mesh.posed_tessellation(0, 0.0, &pose, &plat).unwrap();
-        let low = |v: &[[f64; 3]]| v.iter().fold(f64::INFINITY, |m, p| m.min(p[2]));
-        assert!(
-            (low(&vi) - low(&vs)).abs() < 1e-5,
-            "{} {}",
-            low(&vi),
-            low(&vs)
-        );
-    }
-
-    /// Real CAD through STL: e12's IGES tessellation written as binary STL
-    /// (every hull, in the water frame) and imported by sections, against
-    /// the IGES sectional import. They differ by the tessellation's chord
-    /// error.
-    #[test]
-    fn e12_through_stl_matches_its_iges_import() {
-        let Some(text) = crate::cad_fixture("e12.igs") else {
-            return;
-        };
-        let wl = -0.95;
-        let iges = crate::iges::source_fleet(&text, wl).unwrap();
-        let tris = fleet_tris(&iges, wl);
-        let bytes = stl_bytes(&tris);
-        let so = SectionalOptions {
-            waterline_z: wl,
-            ..Default::default()
-        };
-        let a = crate::iges::import_sectional(&text, &so).unwrap();
-        let s = import_sectional(
-            &bytes,
-            1.0,
-            &SectionalOptions {
-                waterline_z: 0.0,
-                ..so
-            },
-        )
-        .unwrap();
-        eprintln!(
-            "{} triangles; iges {} hulls ({} failed), stl {} hulls ({} failed)",
-            tris.len(),
-            a.hulls.len(),
-            a.failed.len(),
-            s.hulls.len(),
-            s.failed.len()
-        );
-        assert_eq!(
-            a.hulls.len(),
-            s.hulls.len(),
-            "{:?} / {:?}",
-            a.failed,
-            s.failed
-        );
-        let l = a.hulls.iter().map(|h| h.hull.length()).fold(0.0, f64::max);
-        let cond = Conditions::seawater(0.3 * (9.81 * l).sqrt());
-        let wave = WaveOptions::default();
-        for (ha, hs) in a.hulls.iter().zip(&s.hulls) {
-            let dv = rel(hs.hull.displaced_volume(), ha.hull.displaced_volume());
-            let ra = wave_resistance(&ha.hull, &cond, &wave).unwrap().resistance;
-            let rs = wave_resistance(&hs.hull, &cond, &wave).unwrap().resistance;
-            let er = rel(rs, ra);
-            let ta = ha.report.transom.as_ref().map_or(0.0, |t| t.area);
-            let ts = hs.report.transom.as_ref().map_or(0.0, |t| t.area);
-            eprintln!(
-                "y {:.4}/{:.4}: volume {:.5}/{:.5} ({dv:.2e}), x {:.4}..{:.4} / {:.4}..{:.4}, \
-                 transom {ta:.5}/{ts:.5}, Rw(Fn 0.3) {ra:.5e}/{rs:.5e} ({er:.2e}), \
-                 ambiguous {}/{}",
-                ha.report.centerplane,
-                hs.report.centerplane,
-                ha.hull.displaced_volume(),
-                hs.hull.displaced_volume(),
-                ha.report.x_range.0,
-                ha.report.x_range.1,
-                hs.report.x_range.0,
-                hs.report.x_range.1,
-                ha.report.ambiguous_rays,
-                hs.report.ambiguous_rays,
-            );
-            assert_eq!(ha.report.transom.is_some(), hs.report.transom.is_some());
-            assert!(dv < 1e-3, "volume {dv:.2e}");
-            assert!(er < 3e-3, "Rw {er:.2e}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -816,8 +597,8 @@ mod pose_timing {
         };
         let wl = -0.95;
         let iges = crate::iges::source_fleet(&text, wl).unwrap();
-        let tris = super::sectional_tests::fleet_tris(&iges, wl);
-        let bytes = super::sectional_tests::stl_bytes(&tris);
+        let tris = super::test_mesh::fleet_tris(&iges, wl);
+        let bytes = super::test_mesh::stl_bytes(&tris);
         let t = std::time::Instant::now();
         let fleet = mesh_fleet(&bytes, 1.0, 0.0).unwrap();
         eprintln!(
