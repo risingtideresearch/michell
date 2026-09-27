@@ -55,9 +55,13 @@
 //! [`DynamicForce::lift_fraction`] is reported so that boundary is visible.
 
 use crate::conditions::Conditions;
+#[cfg(test)]
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement, SquatTransforms, WaveOptions, ZContracted};
+#[cfg(test)]
+use crate::michell::{InnerIntegral, Placement};
+use crate::michell::{NearFieldKernel, SquatTransforms, WaveOptions};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -88,7 +92,12 @@ pub struct DynamicForce {
 /// Quadrature controls for the near-field integrals.
 #[derive(Debug, Clone, Copy)]
 pub struct SquatOptions {
-    /// Relative tolerance on the force between refinement passes.
+    /// Relative tolerance on the force between refinement passes. The
+    /// pass-to-pass change wobbles (it is not monotone) and overstates the
+    /// finer pass's error by about an order of magnitude: on e12 at Fn 0.3
+    /// and 0.5 the first pass is already within 0.1% of the eighth, and a
+    /// change under 2e-3 leaves the result within ~1e-4 of it, far inside
+    /// thin-ship's own 20–40%. Each pass costs 4× the last.
     pub rel_tol: f64,
     /// Maximum panel-doubling passes.
     pub max_refinements: usize,
@@ -100,47 +109,16 @@ pub struct SquatOptions {
 impl Default for SquatOptions {
     fn default() -> Self {
         SquatOptions {
-            rel_tol: 1e-4,
+            rel_tol: 2e-3,
             max_refinements: 3,
             wave: WaveOptions::default(),
         }
     }
 }
 
-/// A closure adapting [`multihull_dynamic_force`] to the shape
-/// `FnMut(&FleetState) -> Result<DynamicLoad>` the dynamic equilibrium solver
-/// wants (`crate::float::solve_equilibrium_dynamic_with` /
-/// `solve_equilibrium_bodies_dynamic`): the fleet's situated hulls are
-/// borrowed fresh from `FleetState` on every call, so the closure has no
-/// stale state and works unchanged across Newton iterations and warm starts.
-///
-/// A dry fleet (`fleet.members` empty — everything lifted clear of the water)
-/// reports zero load rather than erroring: the hydrostatic side of the solver
-/// already handles that case by sinking until something gets wet.
-pub fn dynamic_load_closure<'a>(
-    cond: &'a Conditions,
-    x_ref: f64,
-    opts: &'a SquatOptions,
-) -> impl FnMut(&crate::float::FleetState) -> Result<crate::float::DynamicLoad> + 'a {
-    move |fleet: &crate::float::FleetState| {
-        if fleet.members.is_empty() {
-            return Ok(crate::float::DynamicLoad {
-                force_up: 0.0,
-                moment_bow_up: 0.0,
-            });
-        }
-        let members: Vec<(&Hull, Placement)> = fleet.members.iter().map(|(h, p)| (h, *p)).collect();
-        let d = multihull_dynamic_force(&members, cond, x_ref, opts)?;
-        Ok(crate::float::DynamicLoad {
-            force_up: d.force_up,
-            moment_bow_up: d.moment_bow_up,
-        })
-    }
-}
-
+#[cfg(test)]
 /// Near-field force and moment of a single hull about `x_ref`.
-/// Near-field force and moment of a single hull about `x_ref`.
-pub fn dynamic_force(
+pub(crate) fn dynamic_force(
     hull: &Hull,
     cond: &Conditions,
     x_ref: f64,
@@ -149,12 +127,13 @@ pub fn dynamic_force(
     multihull_dynamic_force(&[(hull, Placement::default())], cond, x_ref, opts)
 }
 
+#[cfg(test)]
 /// Near-field force and moment of a fleet — every member's pressure includes
 /// what every other member's source sheet induces on it, through the same
 /// placement phases the wave superposition uses (`e^{ik_x Δx} cos(k_y Δy)`),
 /// so demihull interaction in sinkage and trim is carried exactly within the
 /// theory. `x_ref` is the pitch pivot in fleet coordinates.
-pub fn multihull_dynamic_force(
+pub(crate) fn multihull_dynamic_force(
     members: &[(&Hull, Placement)],
     cond: &Conditions,
     x_ref: f64,
@@ -170,11 +149,22 @@ pub fn multihull_dynamic_force(
     let u = cond.speed;
     let g = cond.gravity;
     let nu = g / (u * u);
-    let rho = cond.fluid.density;
 
-    let mut fleet = Fleet::new(members, nu, x_ref, opts.wave);
-
-    // Length scales for the quadrature layout.
+    let fleet = Fleet {
+        members: members
+            .iter()
+            .map(|(h, p)| Member {
+                inner: InnerIntegral::new(h, nu, opts.wave.transom),
+                cx: h.x_center() + p.x,
+                y: p.y,
+            })
+            .collect(),
+        nu,
+        x_ref,
+        scratch: vec![SquatTransforms::default(); members.len()],
+        zc_tmp: vec![Default::default(); members.len()],
+        twin: vec![None; members.len()],
+    };
     let l_max = members
         .iter()
         .map(|(h, _)| h.length())
@@ -182,8 +172,28 @@ pub fn multihull_dynamic_force(
     let t_max = members
         .iter()
         .map(|(h, _)| h.draft())
-        .fold(0.0f64, f64::max)
-        .max(1e-6);
+        .fold(0.0f64, f64::max);
+    let volume: f64 = members.iter().map(|(h, _)| h.displaced_volume()).sum();
+    Ok(integrate_force(fleet, cond, l_max, t_max, volume, opts))
+}
+
+/// The near-field force and moment of a fleet of kernels: the local
+/// (principal-value) and wave (residue) integrals, refined to `opts.rel_tol`.
+/// Shared by every hull representation; `l_max`, `t_max` lay out the
+/// wavenumber quadrature and `volume` normalises the lift fraction.
+pub(crate) fn integrate_force<K: NearFieldKernel>(
+    mut fleet: Fleet<K>,
+    cond: &Conditions,
+    l_max: f64,
+    t_max: f64,
+    volume: f64,
+    opts: &SquatOptions,
+) -> DynamicForce {
+    let u = cond.speed;
+    let g = cond.gravity;
+    let nu = fleet.nu;
+    let rho = cond.fluid.density;
+    let t_max = t_max.max(1e-6);
 
     // Local (principal-value) part: F and M_pv together, refined until the
     // force settles.
@@ -219,8 +229,7 @@ pub fn multihull_dynamic_force(
     let force_up = pref * f_int;
     let moment_local = pref * m_int;
     let moment_wave = -(4.0 * rho * u * u * nu / PI) * w_int;
-    let volume: f64 = members.iter().map(|(h, _)| h.displaced_volume()).sum();
-    Ok(DynamicForce {
+    DynamicForce {
         force_up,
         moment_bow_up: moment_local + moment_wave,
         moment_local,
@@ -232,28 +241,33 @@ pub fn multihull_dynamic_force(
         },
         est_rel_error: est_rel,
         evaluations: evals,
-    })
+    }
 }
 
 /// One member's evaluator plus its fleet-frame placement.
 #[derive(Clone)]
-struct Member<'h> {
-    inner: InnerIntegral<'h>,
+pub(crate) struct Member<K> {
+    pub(crate) inner: K,
     /// Fleet-frame x of the hull's own phase centre.
-    cx: f64,
-    y: f64,
+    pub(crate) cx: f64,
+    pub(crate) y: f64,
 }
 
 /// `Clone` so each worker thread of a θ fan-out gets its own scratch (the
 /// hulls themselves are shared by reference).
 #[derive(Clone)]
-struct Fleet<'h> {
-    members: Vec<Member<'h>>,
-    nu: f64,
-    x_ref: f64,
-    scratch: Vec<SquatTransforms>,
+pub(crate) struct Fleet<K: NearFieldKernel> {
+    pub(crate) members: Vec<Member<K>>,
+    pub(crate) nu: f64,
+    pub(crate) x_ref: f64,
+    pub(crate) scratch: Vec<SquatTransforms>,
     /// One contraction per member for points off the shared k-grid.
-    zc_tmp: Vec<ZContracted>,
+    pub(crate) zc_tmp: Vec<K::Contracted>,
+    /// For each member, an earlier member it is an exact copy of (the same
+    /// hull at another placement, e.g. a catamaran's other demihull): its
+    /// transforms are that member's, so it is neither contracted nor
+    /// transformed — only its placement enters, through the pair sums.
+    pub(crate) twin: Vec<Option<usize>>,
 }
 
 /// The pair-summed bilinear forms at one wavenumber, real parts taken over
@@ -282,51 +296,37 @@ impl Default for Forms {
     }
 }
 
-impl<'h> Fleet<'h> {
-    fn new(members: &[(&'h Hull, Placement)], nu: f64, x_ref: f64, wave: WaveOptions) -> Self {
-        Fleet {
-            members: members
-                .iter()
-                .map(|(h, p)| Member {
-                    inner: InnerIntegral::new(h, nu, wave.transom),
-                    cx: h.x_center() + p.x,
-                    y: p.y,
-                })
-                .collect(),
-            nu,
-            x_ref,
-            scratch: vec![SquatTransforms::default(); members.len()],
-            zc_tmp: vec![ZContracted::default(); members.len()],
-        }
-    }
-
+impl<K: NearFieldKernel> Fleet<K> {
     /// Transforms of every member at `(k_x, κ)`, then the pair sums with the
     /// placement phase `e^{ik_x(c_j − c_i)} cos(k_y(y_j − y_i))`.
     fn forms(&mut self, kx: f64, ky: f64, kappa: f64) -> Forms {
-        for (m, zc) in self.members.iter_mut().zip(self.zc_tmp.iter_mut()) {
-            m.inner.contract_z(kappa, zc);
+        for i in 0..self.members.len() {
+            if self.twin[i].is_none() {
+                self.members[i].inner.contract_z(kappa, &mut self.zc_tmp[i]);
+                self.scratch[i] = self.members[i].inner.transforms_at(&self.zc_tmp[i], kx);
+            }
         }
-        for ((m, zc), t) in self
-            .members
-            .iter_mut()
-            .zip(self.zc_tmp.iter())
-            .zip(self.scratch.iter_mut())
-        {
-            *t = m.inner.transforms_at(zc, kx);
-        }
+        self.copy_twins();
         self.pair_sums(kx, ky)
     }
 
-    /// The same from contractions already made at this `κ` — one per member.
-    fn forms_cached(&mut self, zcs: &[ZContracted], kx: f64, ky: f64) -> Forms {
-        for ((m, zc), t) in self
-            .members
-            .iter_mut()
-            .zip(zcs)
-            .zip(self.scratch.iter_mut())
-        {
-            *t = m.inner.transforms_at(zc, kx);
+    /// Give each copy its original's transforms.
+    fn copy_twins(&mut self) {
+        for i in 0..self.members.len() {
+            if let Some(o) = self.twin[i] {
+                self.scratch[i] = self.scratch[o];
+            }
         }
+    }
+
+    /// The same from contractions already made at this `κ` — one per member.
+    fn forms_cached(&mut self, zcs: &[K::Contracted], kx: f64, ky: f64) -> Forms {
+        for i in 0..self.members.len() {
+            if self.twin[i].is_none() {
+                self.scratch[i] = self.members[i].inner.transforms_at(&zcs[i], kx);
+            }
+        }
+        self.copy_twins();
         self.pair_sums(kx, ky)
     }
 
@@ -339,7 +339,9 @@ impl<'h> Fleet<'h> {
             let rj = tj.p + tj.q1 + tj.q.scale(shift_j);
             let rwj = tj.p_wl + tj.q1_wl + tj.w.scale(shift_j);
             for (i, mi) in self.members.iter().enumerate() {
-                let qi = self.scratch[i].q;
+                // Weights of j (the hull the pressure acts on) against the
+                // sources of i (hull plus any transom closure).
+                let qi = self.scratch[i].q_src;
                 let e = C64::cis(kx * (mj.cx - mi.cx)).scale((ky * (mj.y - mi.y)).cos());
                 let qi_e = qi * e;
                 out.qq += (conj(tj.q) * qi_e).re;
@@ -399,10 +401,12 @@ impl<'h> Fleet<'h> {
         }
         // Contract every member once per k-node.
         let nm = self.members.len();
-        let mut zcs: Vec<ZContracted> = vec![ZContracted::default(); knodes.len() * nm];
+        let mut zcs: Vec<K::Contracted> = vec![Default::default(); knodes.len() * nm];
         for (i, &(k, _)) in knodes.iter().enumerate() {
             for (j, m) in self.members.iter_mut().enumerate() {
-                m.inner.contract_z(k, &mut zcs[i * nm + j]);
+                if self.twin[j].is_none() {
+                    m.inner.contract_z(k, &mut zcs[i * nm + j]);
+                }
             }
         }
         *evals += knodes.len();

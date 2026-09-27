@@ -1,29 +1,25 @@
 //! # michell
 //!
-//! Thin-ship **wave resistance** (Michell's integral) and **viscous
-//! resistance** (ITTC-57) for hulls described as clamped, polynomial
-//! (non-rational) tensor-product B-spline half-breadth surfaces.
+//! Thin-ship **wave resistance** (Michell's integral), **dynamic sinkage and
+//! trim**, the far-field **wave pattern**, and **viscous resistance**
+//! (ITTC-57) for **sectional hulls**: a hull described by its stations, each
+//! a section curve integrated in depth, the whole interpolated along the
+//! length.
 //!
-//! ## Geometry contract
+//! ## Where hulls come from
 //!
-//! The hull is port/starboard symmetric and given by its half-beam
-//! `y = f(x, z) >= 0` on the centerplane:
+//! A [`SectionalHull`] is cut from source geometry kept in its own frame, so
+//! it can be re-posed and re-cut as often as a sweep or an equilibrium solve
+//! needs ([`source::HullSource`]):
 //!
-//! - `x` runs along the hull (arbitrary origin), in metres;
-//! - `z` runs vertically **downward** from the undisturbed waterline, so the
-//!   surface domain is `z ∈ [0, T]` with `T` the draft;
-//! - all quantities are SI.
+//! - **IGES** B-spline surfaces ([`iges::source_fleet`], or surfaces already
+//!   in hand through [`iges::source_fleet_from_surfaces`] — e.g. the exact
+//!   Wigley test hull, [`iges::wigley_surfaces`]),
+//! - **STL** triangle meshes ([`stl::mesh_fleet`]).
 //!
-//! **Asymmetric hulls** (port ≠ starboard) are supported via
-//! [`Hull::new_asymmetric`], which takes the two half-breadth surfaces and
-//! adds a centreplane-dipole wave system for the camber part on top of the
-//! source system; a symmetric hull recovers classical Michell exactly. The
-//! dipole magnitude uses an approximate closure — see the `michell` module.
-//!
-//! **Heeled hulls** are supported via [`heel_wave_resistance`], which keeps the
-//! sources on the ship's tilted centreplane (the geometrically robust thin-ship
-//! treatment of heel) by making the vertical decay complex; `heel = 0`
-//! reproduces the upright result exactly.
+//! Frames: CAD sources are `x` along the hull, `y` transverse, `z` **up**;
+//! a cut hull's sections measure `z` downward from the effective waterline.
+//! All quantities are SI.
 //!
 //! ## Theory
 //!
@@ -34,108 +30,86 @@
 //! I(λ) + i J(λ) = ∬ (∂f/∂x) exp(−ν λ² z) exp(i ν λ x) dx dz
 //! ```
 //!
-//! Because `f` is piecewise polynomial, the inner integrals are evaluated in
-//! closed form on every knot span (polynomial × oscillatory / exponential
-//! moments); only the smooth outer integral is quadratured, with panels sized
-//! to the local oscillation rate and refined to a requested tolerance.
+//! The depth integral is done per station along its own section curve and
+//! interpolated along `x` by a B-spline, whose oscillatory integral is closed
+//! form per span ([`sectional`]); only the smooth outer integral is
+//! quadratured, with panels sized to the local oscillation rate and refined
+//! to a requested tolerance.
 //!
 //! Viscous resistance uses the ITTC-57 correlation line with an optional form
-//! factor, referencing the thin-ship wetted surface
-//! `S = 2 ∬ √(1 + fx² + fz²) dx dz`.
+//! factor and roughness allowance, referencing each hull's wetted shell area.
 //!
 //! ## Assumptions and limits
 //!
 //! - Thin-ship (Michell) linearisation: slender hull, `|∂f/∂x| ≪ 1`; no
-//!   sinkage, trim, or wave-breaking; deep water; infinite fluid extent.
-//! - The half-breadth should close at the bow (`f = 0` there). A **transom
-//!   stern** is closed by a virtual appendage — see [`TransomClosure`] — whose
-//!   hollow length defaults to the ballistic estimate; the bow has no such
-//!   treatment.
-//! - The control net must be non-negative (sufficient condition for
-//!   `f >= 0`).
+//!   wave-breaking; deep water; infinite fluid extent. Hulls are
+//!   port/starboard symmetric about their centreplanes.
+//! - A **transom stern** is closed by a virtual appendage — see
+//!   [`TransomClosure`] — whose hollow length defaults to the ballistic
+//!   estimate; the bow has no such treatment.
 //!
 //! ## Example
 //!
 //! ```
-//! use michell::{hulls, Conditions};
+//! use michell::iges::{self, HullPose, Platform, SectionalOptions};
+//! use michell::{sectional, Conditions};
 //!
-//! let hull = hulls::wigley(10.0, 1.0, 0.625).unwrap();
+//! let surfaces = iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+//! let source = iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap();
+//! let cut = source
+//!     .situate_sectional(
+//!         0,
+//!         0.0,
+//!         &HullPose::default(),
+//!         &Platform::default(),
+//!         &SectionalOptions::default(),
+//!     )
+//!     .unwrap()
+//!     .expect("the hull is wet");
 //! let cond = Conditions::freshwater(3.0); // 3 m/s
-//! let r = michell::resistance(&hull, &cond).unwrap();
-//! assert!(r.wave.resistance > 0.0 && r.viscous.resistance > 0.0);
+//! let r = sectional::multihull_resistance(
+//!     &[(&cut.hull, cut.placement)],
+//!     &cond,
+//!     &Default::default(),
+//!     &Default::default(),
+//! )
+//! .unwrap();
+//! assert!(r.wave.resistance > 0.0 && r.viscous_total > 0.0);
 //! assert!(r.total > r.wave.resistance);
 //! ```
 
-pub mod body;
 mod bspline;
-pub mod centerplane;
 mod conditions;
 mod error;
-pub mod fit;
 pub mod float;
 mod friction;
-pub mod grid;
+#[cfg(test)]
 mod hull;
-pub mod hulls;
+mod hulls;
 pub mod iges;
-pub mod inclined;
-pub mod lifting;
-pub mod lifting3d;
 mod michell;
 mod moments;
+pub mod nearfield;
 pub mod parallel;
 mod quadrature;
+pub mod sectional;
+pub mod source;
 pub mod spectrum;
 pub mod squat;
 pub mod stl;
+#[cfg(test)]
+mod validation;
 
-pub use bspline::BSplineSurface;
 pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};
 pub use error::{Error, Result};
 pub use friction::{
-    ittc57_cf, roughness_delta_cf, roughness_reynolds, schlichting_rough_cf, viscous_resistance,
-    viscous_resistance_with, viscous_resistance_with_options, Roughness, ViscousOptions,
-    ViscousResistance,
+    ittc57_cf, roughness_delta_cf, roughness_reynolds, schlichting_rough_cf,
+    viscous_resistance_for, Roughness, ViscousOptions, ViscousResistance,
 };
-pub use grid::SampleGrid;
-pub use hull::{Hull, Transom};
-pub use michell::{
-    asymmetric_wave_resistance_lifting, heel_wave_resistance, inner_integrals,
-    inner_integrals_with, multihull_heel_wave_resistance, multihull_wave_resistance,
-    multihull_wave_resistance_lifting, multihull_wave_resistance_with, wave_resistance,
-    wave_resistance_with, LiftingGrid, Placement, TransomClosure, WaveOptions, WaveResistance,
-    BALLISTIC_COEFF,
-};
+pub use michell::{Placement, TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF};
 pub use moments::C64;
+pub use sectional::{SectionalHull, Transom};
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
-
-/// Combined resistance breakdown.
-#[derive(Debug, Clone, Copy)]
-pub struct Resistance {
-    pub wave: WaveResistance,
-    pub viscous: ViscousResistance,
-    /// R_w + R_v [N].
-    pub total: f64,
-    /// Effective (towing) power P_E = (R_w + R_v) · U [W].
-    pub effective_power: f64,
-    /// Wave resistance coefficient C_w = R_w / (½ ρ U² S).
-    pub cw: f64,
-    /// Viscous resistance coefficient C_v = R_v / (½ ρ U² S).
-    pub cv: f64,
-    /// Total resistance coefficient C_t = C_w + C_v.
-    pub ct: f64,
-}
-
-/// Wave + viscous resistance with default options: zero form factor, smooth
-/// hull.
-pub fn resistance(hull: &Hull, cond: &Conditions) -> Result<Resistance> {
-    resistance_with(
-        hull,
-        cond,
-        &WaveOptions::default(),
-        &ViscousOptions::default(),
-    )
-}
 
 /// Combined resistance breakdown for a multihull.
 #[derive(Debug, Clone)]
@@ -162,110 +136,17 @@ pub struct MultihullResistance {
     pub interference: f64,
 }
 
-/// Multihull resistance with default options: zero form factor, smooth hulls.
-pub fn multihull_resistance(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-) -> Result<MultihullResistance> {
-    multihull_resistance_with(
-        members,
-        cond,
-        &WaveOptions::default(),
-        &ViscousOptions::default(),
-    )
-}
-
-/// Multihull resistance with explicit quadrature and viscous options (the
-/// latter applied to every member).
-pub fn multihull_resistance_with(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    wave_opts: &WaveOptions,
-    viscous_opts: &ViscousOptions,
-) -> Result<MultihullResistance> {
-    let wave = multihull_wave_resistance_with(members, cond, wave_opts)?;
-    let mut solo_wave_total = 0.0;
-    for m in members {
-        solo_wave_total += multihull_wave_resistance_with(&[*m], cond, wave_opts)?.resistance;
+/// Test support: the CAD files the real-hull tests run on live at the
+/// repository root and are not committed (`.gitignore`: `/*.igs`), so a test
+/// that needs one skips, saying so, when it is absent.
+#[cfg(test)]
+pub(crate) fn cad_fixture(name: &str) -> Option<String> {
+    let path = format!("{}/../../{name}", env!("CARGO_MANIFEST_DIR"));
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(_) => {
+            eprintln!("skipping: CAD fixture {name} is not present (not in the repository)");
+            None
+        }
     }
-    multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
-}
-
-/// Multihull resistance for a fleet **heeled** by `heel` radians about the
-/// platform's longitudinal axis: the wave part uses
-/// [`multihull_heel_wave_resistance`], the viscous part is unchanged (the model
-/// does not re-clip to the heeled waterline — see that function). `heel = 0`
-/// reproduces [`multihull_resistance_with`].
-pub fn multihull_resistance_heeled(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    wave_opts: &WaveOptions,
-    viscous_opts: &ViscousOptions,
-    heel: f64,
-) -> Result<MultihullResistance> {
-    let wave = multihull_heel_wave_resistance(members, cond, heel, wave_opts)?;
-    let mut solo_wave_total = 0.0;
-    for m in members {
-        solo_wave_total += multihull_heel_wave_resistance(&[*m], cond, heel, wave_opts)?.resistance;
-    }
-    multihull_resistance_core(members, cond, viscous_opts, wave, solo_wave_total)
-}
-
-/// Assemble the viscous breakdown and coefficients around an already-computed
-/// combined `wave` resistance and `solo_wave_total` (Σ standalone wave). Shared
-/// by the upright and heeled multihull paths.
-fn multihull_resistance_core(
-    members: &[(&Hull, Placement)],
-    cond: &Conditions,
-    viscous_opts: &ViscousOptions,
-    wave: WaveResistance,
-    solo_wave_total: f64,
-) -> Result<MultihullResistance> {
-    let viscous: Vec<ViscousResistance> = members
-        .iter()
-        .map(|(h, _)| viscous_resistance_with_options(h, cond, viscous_opts))
-        .collect::<Result<_>>()?;
-    let viscous_total: f64 = viscous.iter().map(|v| v.resistance).sum();
-    let wetted_surface: f64 = members.iter().map(|(h, _)| h.wetted_surface()).sum();
-    let total = wave.resistance + viscous_total;
-    let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * wetted_surface;
-    Ok(MultihullResistance {
-        wave,
-        viscous,
-        viscous_total,
-        total,
-        effective_power: total * cond.speed,
-        wetted_surface,
-        cw: wave.resistance / q,
-        cv: viscous_total / q,
-        ct: total / q,
-        solo_wave_total,
-        interference: if solo_wave_total > f64::MIN_POSITIVE {
-            wave.resistance / solo_wave_total
-        } else {
-            1.0
-        },
-    })
-}
-
-/// Wave + viscous resistance with explicit quadrature and viscous options.
-pub fn resistance_with(
-    hull: &Hull,
-    cond: &Conditions,
-    wave_opts: &WaveOptions,
-    viscous_opts: &ViscousOptions,
-) -> Result<Resistance> {
-    let wave = wave_resistance_with(hull, cond, wave_opts)?;
-    let viscous = viscous_resistance_with_options(hull, cond, viscous_opts)?;
-    let q = 0.5 * cond.fluid.density * cond.speed * cond.speed * hull.wetted_surface();
-    let total = wave.resistance + viscous.resistance;
-    Ok(Resistance {
-        wave,
-        viscous,
-        total,
-        effective_power: total * cond.speed,
-        cw: wave.resistance / q,
-        cv: viscous.resistance / q,
-        ct: total / q,
-    })
 }

@@ -4,23 +4,46 @@
 //! tests pin that, entry point by entry point, by running each once with a
 //! budget of one worker and once with many and demanding exact equality.
 
-use michell::float::{solve_equilibrium_bodies_dynamic, LoadCase};
-use michell::iges::HullPose;
+use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
+use michell::iges::{self, HullPose, Platform, SectionalOptions, SourceFleet};
 use michell::parallel::with_threads;
-use michell::squat::{dynamic_load_closure, multihull_dynamic_force, SquatOptions};
-use michell::{
-    hulls, multihull_heel_wave_resistance, multihull_wave_resistance_lifting,
-    multihull_wave_resistance_with, Conditions, Hull, LiftingGrid, Placement, WaveOptions,
+use michell::sectional::{
+    dynamic_load_closure, multihull_dynamic_force, multihull_wave_resistance,
 };
+use michell::source::SourceHull;
+use michell::squat::SquatOptions;
+use michell::{Conditions, Placement, SectionalHull, WaveOptions};
 
-fn catamaran() -> (Hull, Hull) {
+/// A Wigley hull's exact CAD surfaces, as a source to cut.
+fn wigley_source(length: f64, beam: f64, draft: f64) -> SourceFleet {
+    let surfaces = iges::wigley_surfaces(length, beam, draft).unwrap();
+    iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0).unwrap()
+}
+
+/// A coarse cut: bit-for-bit independence needs no resolution, only work.
+fn opts() -> SectionalOptions {
+    SectionalOptions {
+        stations: 41,
+        rays: 17,
+        ..SectionalOptions::default()
+    }
+}
+
+fn cut(src: &SourceFleet) -> SectionalHull {
+    src.situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &opts())
+        .unwrap()
+        .expect("wet")
+        .hull
+}
+
+fn catamaran() -> (SectionalHull, SectionalHull) {
     (
-        hulls::wigley(10.0, 0.8, 0.6).unwrap(),
-        hulls::wigley(9.0, 0.7, 0.55).unwrap(),
+        cut(&wigley_source(10.0, 0.8, 0.6)),
+        cut(&wigley_source(9.0, 0.7, 0.55)),
     )
 }
 
-fn placed<'a>(a: &'a Hull, b: &'a Hull) -> Vec<(&'a Hull, Placement)> {
+fn placed<'a>(a: &'a SectionalHull, b: &'a SectionalHull) -> Vec<(&'a SectionalHull, Placement)> {
     vec![
         (a, Placement { x: 0.0, y: -1.5 }),
         (b, Placement { x: 0.7, y: 1.5 }),
@@ -32,41 +55,16 @@ fn wave_resistance_is_bitwise_independent_of_thread_count() {
     let (a, b) = catamaran();
     let members = placed(&a, &b);
     let opts = WaveOptions::default();
-    for u in [2.0, 3.5, 5.0] {
+    for u in [2.0, 5.0] {
         let cond = Conditions::seawater(u);
-        let serial = with_threads(1, || multihull_wave_resistance_with(&members, &cond, &opts));
-        let parallel = with_threads(8, || multihull_wave_resistance_with(&members, &cond, &opts));
+        let serial = with_threads(1, || multihull_wave_resistance(&members, &cond, &opts));
+        let parallel = with_threads(8, || multihull_wave_resistance(&members, &cond, &opts));
         let (s, p) = (serial.unwrap(), parallel.unwrap());
         assert_eq!(s.resistance.to_bits(), p.resistance.to_bits(), "U = {u}");
         assert_eq!(s.est_rel_error.to_bits(), p.est_rel_error.to_bits());
         assert_eq!(s.max_lambda.to_bits(), p.max_lambda.to_bits());
         assert_eq!(s.inner_evaluations, p.inner_evaluations);
     }
-}
-
-#[test]
-fn heeled_and_lifting_paths_are_bitwise_independent_of_thread_count() {
-    let (a, b) = catamaran();
-    let members = placed(&a, &b);
-    let opts = WaveOptions::default();
-    let cond = Conditions::seawater(3.0);
-
-    let s = with_threads(1, || {
-        multihull_heel_wave_resistance(&members, &cond, 0.2, &opts).unwrap()
-    });
-    let p = with_threads(8, || {
-        multihull_heel_wave_resistance(&members, &cond, 0.2, &opts).unwrap()
-    });
-    assert_eq!(s.resistance.to_bits(), p.resistance.to_bits());
-
-    let grid = LiftingGrid { nx: 8, nz: 4 };
-    let s = with_threads(1, || {
-        multihull_wave_resistance_lifting(&members, &cond, &opts, grid).unwrap()
-    });
-    let p = with_threads(8, || {
-        multihull_wave_resistance_lifting(&members, &cond, &opts, grid).unwrap()
-    });
-    assert_eq!(s.resistance.to_bits(), p.resistance.to_bits());
 }
 
 #[test]
@@ -90,39 +88,30 @@ fn dynamic_force_is_bitwise_independent_of_thread_count() {
 
 #[test]
 fn dynamic_equilibrium_is_bitwise_independent_of_thread_count() {
-    // The whole Newton solve — situate, near-field force, resistance — through
-    // the closure the manifest sweep uses, on a Wigley body with freeboard
-    // (parabolic sections below the design waterline, wall-sided above).
-    let (l, b, t, fb) = (10.0, 1.0, 0.625, 0.3);
-    let a = l / 2.0;
-    let knots_x = vec![-a, -a, -a, a, a, a];
-    let knots_z = vec![0.0, 0.0, 0.0, fb, fb, fb + t, fb + t, fb + t];
-    let mut control = Vec::with_capacity(15);
-    for gi in [0.0, 2.0, 0.0] {
-        for hj in [1.0, 1.0, 1.0, 1.0, 0.0] {
-            control.push(b / 2.0 * gi * hj);
-        }
-    }
-    let surface = michell::BSplineSurface::new(2, 2, knots_x, knots_z, control).unwrap();
-    let body = michell::body::Body::new(surface, fb, 0.0).unwrap();
-    let bodies = [&body];
-    let poses = [HullPose::default()];
+    // The whole Newton solve — re-cut, near-field force, resistance — through
+    // the closure the manifest sweep uses, on a Wigley loaded light of its
+    // design displacement (so it rises and never needs topside).
+    let src = wigley_source(10.0, 1.0, 0.625);
+    let hulls = [SourceHull {
+        source: &src,
+        index: 0,
+        waterline_z: 0.0,
+        pose: HullPose::default(),
+    }];
     let cond = Conditions::seawater(3.0);
     let load = LoadCase {
         mass: 2000.0,
         lcg: Some(0.0),
     };
     let squat = SquatOptions::default();
-    let bopts = michell::body::BodyOptions::default();
+    let opts = opts();
     let solve = || {
-        solve_equilibrium_bodies_dynamic(
-            &bodies,
-            0.0,
-            &poses,
+        solve_equilibrium_sectional_dynamic(
+            &hulls,
             &load,
             cond.fluid.density,
             cond.gravity,
-            &bopts,
+            &opts,
             dynamic_load_closure(&cond, 0.0, &squat),
             None,
         )

@@ -44,10 +44,14 @@
 
 use crate::conditions::Conditions;
 use crate::error::{Error, Result};
+#[cfg(test)]
 use crate::hull::Hull;
-use crate::michell::{InnerIntegral, Placement, TransomClosure};
+#[cfg(test)]
+use crate::michell::InnerIntegral;
+use crate::michell::{Placement, TransomClosure};
 use crate::moments::C64;
 use crate::quadrature::gauss_legendre;
+use crate::sectional::{SectionalContracted, SectionalHull};
 use std::f64::consts::{FRAC_PI_2, PI};
 
 /// Free-wave spectrum of a hull or fleet at fixed speed: the complex
@@ -69,11 +73,40 @@ pub struct FreeWaveSpectrum<'h> {
 }
 
 struct Member<'h> {
-    inner: InnerIntegral<'h>,
+    inner: Kernel<'h>,
     /// Hull midpoint relative to `x_ref`.
     dx: f64,
     /// Transverse centerplane position.
     y: f64,
+}
+
+/// Where a member's amplitude `F(λ)` comes from: a sectional hull's kernel
+/// (with the transom closure applied), or, in tests, the exact B-spline
+/// oracle the sectional one is checked against.
+enum Kernel<'h> {
+    #[cfg(test)]
+    Lofted(InnerIntegral<'h>),
+    Sectional {
+        hull: &'h SectionalHull,
+        nu: f64,
+        closure: TransomClosure,
+        scratch: SectionalContracted,
+    },
+}
+
+impl Kernel<'_> {
+    fn eval(&mut self, lambda: f64) -> C64 {
+        match self {
+            #[cfg(test)]
+            Kernel::Lofted(inner) => inner.eval(lambda),
+            Kernel::Sectional {
+                hull,
+                nu,
+                closure,
+                scratch,
+            } => hull.amplitude_closed(*nu, lambda, *closure, scratch),
+        }
+    }
 }
 
 /// Wave elevation ζ sampled on a rectangular grid.
@@ -125,28 +158,10 @@ fn grid_coord(a: f64, b: f64, n: usize, i: usize) -> f64 {
 }
 
 impl<'h> FreeWaveSpectrum<'h> {
-    /// Build the spectrum of a fleet (same member format as
-    /// [`crate::multihull_wave_resistance`]). Uses the default transom
-    /// closure ([`TransomClosure::default`]); see [`Self::new_with_transom`]
-    /// to override it.
-    pub fn new(members: &[(&'h Hull, Placement)], cond: &Conditions) -> Result<Self> {
-        Self::new_with_transom(members, cond, TransomClosure::default())
-    }
-
-    /// As [`Self::new`], with explicit control over how a wet transom is
-    /// handled.
-    ///
-    /// The wave-resistance and dynamic-squat force integrals default to the
-    /// virtual-appendage closure because it is load-bearing there: dropping
-    /// it (`TransomClosure::None`) misses the transom's contribution to the
-    /// force entirely. A *displayed* wake is a different use: the closure is
-    /// a numerical device that fixes up an integrated force, not a model of
-    /// the actual near-transom sea surface (real transom flow separates and
-    /// breaks, which linear theory cannot represent either way), so a caller
-    /// drawing "what does the wave field look like" more often wants
-    /// `TransomClosure::None` — the plain thin-ship field of the wetted hull
-    /// alone, with no added closure shape behind the transom.
-    pub fn new_with_transom(
+    /// The spectrum of a fleet of B-spline hulls on the exact kernel: the
+    /// test oracle for [`Self::new_sectional`].
+    #[cfg(test)]
+    pub(crate) fn new_with_transom(
         members: &[(&'h Hull, Placement)],
         cond: &Conditions,
         transom: TransomClosure,
@@ -181,7 +196,69 @@ impl<'h> FreeWaveSpectrum<'h> {
             members: members
                 .iter()
                 .map(|(h, p)| Member {
-                    inner: InnerIntegral::new(h, nu, transom),
+                    inner: Kernel::Lofted(InnerIntegral::new(h, nu, transom)),
+                    dx: h.x_center() + p.x - x_ref,
+                    y: p.y,
+                })
+                .collect(),
+            x_ref,
+        })
+    }
+
+    /// The spectrum of a fleet of sectional hulls, with `transom` closing any
+    /// wet transom.
+    ///
+    /// The wave-resistance and dynamic-squat force integrals default to the
+    /// virtual-appendage closure because it is load-bearing there: dropping
+    /// it (`TransomClosure::None`) misses the transom's contribution to the
+    /// force entirely. A *displayed* wake is a different use: the closure is
+    /// a numerical device that fixes up an integrated force, not a model of
+    /// the actual near-transom sea surface (real transom flow separates and
+    /// breaks, which linear theory cannot represent either way), so a caller
+    /// drawing "what does the wave field look like" more often wants
+    /// `TransomClosure::None` — the plain thin-ship field of the wetted hull
+    /// alone, with no added closure shape behind the transom.
+    pub fn new_sectional(
+        members: &[(&'h SectionalHull, Placement)],
+        cond: &Conditions,
+        transom: TransomClosure,
+    ) -> Result<Self> {
+        cond.validate()?;
+        if members.is_empty() {
+            return Err(Error::InvalidConditions(
+                "at least one hull is required".into(),
+            ));
+        }
+        if members
+            .iter()
+            .any(|(_, p)| !(p.x.is_finite() && p.y.is_finite()))
+        {
+            return Err(Error::InvalidConditions(
+                "hull placements must be finite".into(),
+            ));
+        }
+        let nu = cond.gravity / (cond.speed * cond.speed);
+        let n = members.len() as f64;
+        let x_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
+        Ok(FreeWaveSpectrum {
+            nu,
+            speed: cond.speed,
+            rho: cond.fluid.density,
+            x_half: members
+                .iter()
+                .map(|(h, p)| (h.x_center() + p.x - x_ref).abs() + 0.5 * h.length())
+                .fold(0.0, f64::max),
+            y_span: members.iter().map(|(_, p)| p.y.abs()).fold(0.0, f64::max),
+            t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
+            members: members
+                .iter()
+                .map(|(h, p)| Member {
+                    inner: Kernel::Sectional {
+                        hull: h,
+                        nu,
+                        closure: transom,
+                        scratch: SectionalContracted::default(),
+                    },
                     dx: h.x_center() + p.x - x_ref,
                     y: p.y,
                 })
@@ -464,5 +541,57 @@ impl<'h> FreeWaveSpectrum<'h> {
         }
         let scale = -(2.0 * self.nu / PI) * sec * sec * sec;
         (plus.scale(scale), minus.scale(scale))
+    }
+}
+
+#[cfg(test)]
+mod sectional_spectrum_tests {
+    use super::*;
+    use crate::sectional::{DepthQuadrature, SectionalHull};
+
+    /// The sectional spectrum of a hull built from its own spline (the
+    /// exact harness) reproduces the exact B-spline kernel's: the wave field is a
+    /// function of the amplitudes alone.
+    #[test]
+    fn sectional_wake_matches_the_exact_kernel() {
+        let hull = crate::hulls::wigley(10.0, 1.0, 0.625).unwrap();
+        let sec = SectionalHull::from_hull(&hull, &DepthQuadrature::default()).unwrap();
+        let cond = Conditions::seawater(3.0);
+        let p = Placement::default();
+        let mut a =
+            FreeWaveSpectrum::new_with_transom(&[(&hull, p)], &cond, TransomClosure::None).unwrap();
+        let mut b =
+            FreeWaveSpectrum::new_sectional(&[(&sec, p)], &cond, TransomClosure::None).unwrap();
+        let ga = a.elevation_grid(-40.0, -6.0, -12.0, 12.0, 60, 41).unwrap();
+        let gb = b.elevation_grid(-40.0, -6.0, -12.0, 12.0, 60, 41).unwrap();
+        let peak = ga.zeta.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let worst = ga
+            .zeta
+            .iter()
+            .zip(&gb.zeta)
+            .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()));
+        assert!(worst < 1e-9 * peak, "worst {worst:.2e} of peak {peak:.2e}");
+        // The angular resistance density integrates to the sectional R_w.
+        let (gx, gw) = gauss_legendre(16);
+        let panels = 400;
+        let mut rw = 0.0;
+        for k in 0..panels {
+            let (t0, t1) = (
+                -FRAC_PI_2 + PI * k as f64 / panels as f64,
+                -FRAC_PI_2 + PI * (k + 1) as f64 / panels as f64,
+            );
+            for (&t, &w) in gx.iter().zip(&gw) {
+                let th = 0.5 * (t0 + t1) + 0.5 * (t1 - t0) * t;
+                rw += 0.5 * (t1 - t0) * w * b.resistance_density(th);
+            }
+        }
+        let wave = crate::michell::WaveOptions {
+            transom: TransomClosure::None,
+            ..Default::default()
+        };
+        let direct = crate::sectional::wave_resistance(&sec, &cond, &wave)
+            .unwrap()
+            .resistance;
+        assert!((rw - direct).abs() < 1e-3 * direct, "{rw} vs {direct}");
     }
 }

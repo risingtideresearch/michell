@@ -1,26 +1,26 @@
 //! `michell` — thin-ship wave resistance from hull files.
 //!
-//! The CLI lives here as a library so front-ends (the egui editor) can loft and
-//! run sweeps in-process rather than shelling out to the `michell` binary. The
-//! three front-end entry points — [`loft`], [`info`], and [`run_manifest`] —
-//! report progress through a [`Reporter`] and return the text they would
-//! otherwise have printed to stdout; every other command still prints directly.
+//! The CLI lives here as a library so front-ends (the web server) can load
+//! hulls and run sweeps in-process rather than shelling out to the `michell`
+//! binary. [`info`] and [`run_manifest`] report progress through a
+//! [`Reporter`] and return the text they would otherwise have printed to
+//! stdout; every other command still prints directly.
 
 mod archive;
+pub mod fleet;
 mod formats;
-mod gridio;
 mod json;
 pub mod manifest;
 mod pdf;
 mod png;
 mod render;
 mod report;
-mod view;
+mod scene;
 
-use formats::{
-    load_hulls, parse_pair, parse_range, resolved_fit, write_hull_file, LoadSettings, Source,
-};
-use michell::{Conditions, Fluid, Hull, Placement, WaveOptions, STANDARD_GRAVITY};
+use fleet::{describe, max_beam, LoadSettings};
+use formats::{parse_pair, parse_range};
+pub use formats::parse_units;
+use michell::{Conditions, Fluid, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -68,13 +68,12 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         }
         Some("spectrum") => cmd_spectrum(&args[1..]),
         Some("wake") => cmd_wake(&args[1..]),
+        Some("field") => cmd_field(&args[1..]),
         Some("render") => cmd_render(&args[1..]),
-        Some("view") => view::cmd_view(&args[1..]),
-        Some("loft") => {
-            let out = loft(&args[1..], report)?;
-            print!("{out}");
-            Ok(())
-        }
+        Some("view") => Err("`michell view` was removed; use the web viewer (michell-web)".into()),
+        Some("loft") => Err("`michell loft` was removed: every command cuts hulls into \
+                             sections straight from the IGES or STL file"
+            .into()),
         Some("place") => cmd_place(&args[1..]),
         Some("wigley") => cmd_wigley(&args[1..]),
         Some("help") | Some("-h") | Some("--help") | None => {
@@ -94,26 +93,20 @@ USAGE
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
-  michell view <hull>... --speed U [--port N] [options]       interactive fleet viewer
-  michell loft <offsets|iges> -o OUT.hull [options]           convert to a control net
+  michell field <hull>... --speed U -o scene.json [options]   3-D scene: sections, closure, wave field
   michell place <hull>[@dx=..,dy=..,dz=..]... -o OUT.igs      write posed CAD geometry
-  michell wigley [-o OUT.hull] [--length L --beam B --draft T]
+  michell wigley [-o OUT.igs] [--length L --beam B --draft T]   exact Wigley hull as IGES
 
 HULL INPUTS (sniffed by header / extension)
-  *.hull            canonical B-spline control net (exact); with a
-                    `waterline` key, a re-situatable full-band body
-  offsets table     `michell-offsets v1` station x waterline half-beams (lofted)
-  *.grid.json       derivative-augmented sample grid (the IR written by
-                    --dump-grid), lofted on load
-  *.igs, *.iges     untrimmed NURBS surface(s) (sampled and lofted, with
-                    surface slopes recovered from the CAD geometry)
-  *.stl             triangle mesh, binary or ASCII (ray-sampled and lofted);
-                    requires --units; quality tracks the export's chord
-                    tolerance — use fine tessellations
+  Every hull is cut into sections (stations along x, each integrated along
+  rays from its top centreplane point) straight from its source geometry,
+  and re-cut at every pose a sweep or equilibrium solve visits.
+  *.igs, *.iges     NURBS surfaces (types 128/143/141), clustered into hulls
+  *.stl             triangle mesh, binary or ASCII; requires --units
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
-      michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
+      michell resistance vaka.igs ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
   Suffix keys: y=Y  places the hull's centerplane absolutely (single-hull
   files only); dy=S shifts transversely; x=DX / dx=DX shifts longitudinally
   (added to the file's own x coordinates).
@@ -142,22 +135,16 @@ SPEED SELECTION (resistance, squat)
   --froude A[:B:STEP]   length Froude numbers instead of speeds
   --knots               interpret and display speeds in knots
 
-IMPORT / LOFT OPTIONS (offsets and IGES inputs)
-  --waterline Z         IGES: design waterline height in the file frame,
+IMPORT OPTIONS
+  --waterline Z         IGES/STL: design waterline height in the file frame,
                         metres after unit conversion (z up; default 0)
-  --centerplane Y       IGES: transverse position of the hull centerplane
+  --centerplane Y       transverse position of the hull centerplane
                         (default: auto-detect; full shells fold about their
                         midplane, half hulls measure from y = 0)
   --units U             STL: scale to metres (mm|cm|m|in|ft or a number);
                         required for STL, which has no units field
-  --samples NxM         IGES/STL: sample grid, stations x waterlines
-                        (default 121x33)
-  --fit-degree PxQ      spline degrees for the loft (default 3x3)
-  --fit-control NxM     loft control net (default: 12x8 offsets, 20x12 IGES)
-  --fit-deriv-weight W  relative weight of sampled surface slopes in the
-                        loft (default 1; 0 fits values only)
-  --dump-grid PATH      write the sampled grid(s) as *.grid.json before
-                        lofting (multihull files get -0, -1, ... suffixes)
+  --stations N          stations along each hull (default 121, cosine-spaced)
+  --rays M              rays across each section (default 33)
 
 PHYSICS OPTIONS
   --fluid NAME          seawater | freshwater, at 15 C (default seawater)
@@ -184,10 +171,6 @@ PHYSICS OPTIONS
                         length L_v = COEFF*U*sqrt(d_T/g) (default COEFF=sqrt2,
                         the ballistic free-fall value) so the body closes.
                         Inert on a hull that closes aft
-  --heel DEG            (resistance) heel the whole fleet DEG degrees about the
-                        platform's longitudinal axis; adds the tilted-thickness
-                        wave-making (|DEG| < 90). Viscous resistance is
-                        unchanged: no waterline re-clip, no yaw side-force
 
 WAVE FIELD (spectrum, wake)
   Both take one speed: --speed U (m/s; knots with --knots) or --froude F.
@@ -219,37 +202,29 @@ WAVE FIELD (spectrum, wake)
     --camera AZ:EL[:D]  degrees off dead astern (positive to starboard),
                         elevation degrees, distance m (default 35:18, auto)
     --z-scale S         vertical exaggeration of the water (default 1)
-    --freeboard F       topsides height above waterline [m] (default T/2)
     --zmax M            tint saturation elevation [m] (default: 99.5th pct)
-  Same caveat as wake (paled where not astern of every hull); hulls sit at
-  the static waterline, without dynamic sinkage or trim.
+  Same caveat as wake (paled where not astern of every hull); hulls are drawn
+  from their source geometry at the static waterline, without dynamic
+  sinkage or trim.
 
 SWEEPS
-  michell sweep study.json      preferred: a JSON manifest referencing
-                                full-band .hull bodies (from `michell loft`),
-                                with speed/waterline axes, per-hull load
+  michell sweep study.json      preferred: a JSON manifest referencing hull
+                                files (IGES/STL; `hull: N` picks one
+                                of a multihull file's hulls), with
+                                speed/waterline axes, per-hull load
                                 (mass/lcg/vcg), point loads (mass at an
                                 offset from a hull), pose axes, and a derived
-                                fleet CG — see the README for the schema; when
-                                the fleet carries mass each row also rolls up
-                                the heel behaviour (GZ-curve summaries + a
-                                per-angle resistance rise)
-  michell loft boat.igs --waterline Z -o boat
-                                decompose an IGES multihull into full-band
-                                body files (boat-port.hull, ...); --wetted
-                                keeps the old single-hull wetted output
+                                fleet CG — see the README for the schema
 
 PLACE (reconstruct CAD geometry from a studied configuration)
   michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7,dz=0.05 -o boat.igs
   Writes the input geometry, posed, as a new IGES file (untrimmed 128
   surfaces, metres) for import back into CAD — e.g. amas at the dx/dy/dz a
   sweep found good. Inputs: IGES files (surfaces pass through exactly, with
-  each spec's pose applied to every hull in that file) and .hull control
-  nets or bodies (the half-breadth spline converts exactly to a mirrored
-  pair of surfaces). Suffix keys, all optional:
+  each spec's pose applied to every hull in that file). Suffix keys, all
+  optional:
       dx / x    longitudinal shift [m]        dy  transverse shift [m]
-      dz        immersion [m], + is deeper    y   absolute centerplane
-                                                  (.hull inputs only)
+      dz        immersion [m], + is deeper
       trim      design trim [deg], + raises the +x end, about pivot=X
                 (default: the hull's x mid) at the waterline
   --waterline Z         CAD height of the design waterline (default 0);
@@ -261,7 +236,7 @@ PLACE (reconstruct CAD geometry from a studied configuration)
   Bounded (143/141) source patches are exported as full base surfaces with
   their parameter range restricted to the bounded box.
 
-SWEEPS (flag form, IGES inputs; hulls modelled in position)
+SWEEPS (flag form; hulls modelled in position)
   michell sweep boat.igs --speeds 3:8:1 [axes...]         long-form CSV/JSON
   --axis waterline=A:B:S        raw waterline sweep
   --axis SEL:PARAM=A[:B:S]      design-pose sweep; SEL = file stem, or
@@ -295,7 +270,8 @@ struct Parsed {
     switches: Vec<String>,
 }
 
-const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--wetted"];
+// `--sections` is accepted and ignored: every hull is sectional now.
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--sections"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {
@@ -374,37 +350,43 @@ impl Parsed {
         })
     }
 
+    /// The import settings: `--waterline`, `--centerplane`, and the
+    /// sectioning resolution `--stations N` / `--rays M`.
     fn load_settings(&self) -> Result<LoadSettings, String> {
-        let mut s = LoadSettings::default();
-        if let Some(w) = self.f64_flag("waterline")? {
-            s.waterline_z = w;
+        for gone in [
+            "samples",
+            "fit-degree",
+            "fit-control",
+            "fit-deriv-weight",
+            "fit-fairing",
+            "dump-grid",
+        ] {
+            if self.flag(gone).is_some() {
+                return Err(format!(
+                    "--{gone} was removed with lofting; hulls are cut into sections \
+                     (resolution: --stations N --rays M)"
+                ));
+            }
         }
-        s.centerplane = self.f64_flag("centerplane")?;
-        if let Some(u) = self.flag("units") {
-            s.units = Some(formats::parse_units(u)?);
-        }
-        if let Some(v) = self.flag("samples") {
-            s.samples = parse_pair(v)?;
-        }
-        if let Some(v) = self.flag("fit-degree") {
-            let (px, pz) = parse_pair(v)?;
-            s.fit.degree_x = px;
-            s.fit.degree_z = pz;
-            s.fit_explicit = true;
-        }
-        if let Some(v) = self.flag("fit-control") {
-            let (nx, nz) = parse_pair(v)?;
-            s.fit.n_ctrl_x = nx;
-            s.fit.n_ctrl_z = nz;
-            s.fit_explicit = true;
-        }
-        if let Some(w) = self.f64_flag("fit-deriv-weight")? {
-            s.fit.derivative_weight = w;
-        }
-        if let Some(p) = self.flag("dump-grid") {
-            s.dump_grid = Some(p.clone());
-        }
-        Ok(s)
+        let d = LoadSettings::default();
+        let count = |name: &str, default: usize, min: usize| -> Result<usize, String> {
+            match self.flag(name) {
+                None => Ok(default),
+                Some(v) => match v.trim().parse::<usize>() {
+                    Ok(n) if n >= min => Ok(n),
+                    _ => Err(format!(
+                        "--{name} {v:?}: expected a count of at least {min}"
+                    )),
+                },
+            }
+        };
+        Ok(LoadSettings {
+            waterline_z: self.f64_flag("waterline")?.unwrap_or(0.0),
+            centerplane: self.f64_flag("centerplane")?,
+            stations: count("stations", d.stations, 8)?,
+            rays: count("rays", d.rays, 5)?,
+            units: self.flag("units").map(|u| formats::parse_units(u)).transpose()?,
+        })
     }
 
     fn conditions(&self, speed: f64) -> Result<Conditions, String> {
@@ -428,123 +410,6 @@ impl Parsed {
         }
         Ok(cond)
     }
-}
-
-/// Placement request from a hull spec suffix.
-#[derive(Default, Clone, Copy)]
-struct SpecPlacement {
-    /// Absolute centerplane position (single-hull files only).
-    y_abs: Option<f64>,
-    /// Transverse shift applied to the file's detected placements.
-    dy: f64,
-    /// Longitudinal shift added to the file's x coordinates.
-    dx: f64,
-}
-
-/// Parse `path` or `path@key=V,...` (keys: `y` absolute centerplane,
-/// `dy` transverse shift, `x`/`dx` longitudinal shift).
-fn parse_hull_spec(spec: &str) -> Result<(String, SpecPlacement), String> {
-    let Some((path, rest)) = spec.split_once('@') else {
-        return Ok((spec.to_string(), SpecPlacement::default()));
-    };
-    let mut place = SpecPlacement::default();
-    for part in rest.split(',') {
-        let (k, v) = part
-            .split_once('=')
-            .ok_or_else(|| format!("bad placement {rest:?}: expected key=value pairs"))?;
-        let val: f64 = v
-            .trim()
-            .parse()
-            .map_err(|_| format!("bad placement value {v:?} in {spec:?}"))?;
-        match k.trim() {
-            "y" => place.y_abs = Some(val),
-            "dy" => place.dy = val,
-            "x" | "dx" => place.dx = val,
-            other => return Err(format!("unknown placement key {other:?} (use y, dy, x/dx)")),
-        }
-    }
-    if place.y_abs.is_some() && place.dy != 0.0 {
-        return Err(format!(
-            "{spec:?}: give either y (absolute) or dy (shift), not both"
-        ));
-    }
-    Ok((path.to_string(), place))
-}
-
-/// One hull of the working fleet: a file may contribute several (a multihull
-/// IGES export), and a spec's `@x,y` offset shifts everything from that file.
-struct Member {
-    path: String,
-    hull: Hull,
-    placement: Placement,
-    source: Source,
-}
-
-/// Load a fleet of hull specs, reading each unique file once. A file
-/// containing several hulls contributes all of them, each at its detected
-/// placement plus the spec's offset.
-fn load_fleet(specs: &[String], settings: &LoadSettings) -> Result<Vec<Member>, String> {
-    let mut cache: HashMap<String, Vec<(Hull, Placement, Source)>> = HashMap::new();
-    let mut members = Vec::new();
-    for spec in specs {
-        let (path, sp) = parse_hull_spec(spec)?;
-        if !cache.contains_key(&path) {
-            cache.insert(path.clone(), load_hulls(&path, settings)?);
-        }
-        let hulls = &cache[&path];
-        if sp.y_abs.is_some() && hulls.len() > 1 {
-            return Err(format!(
-                "{spec:?}: absolute y placement is ambiguous for a file with {} hulls; \
-                 use dy=SHIFT instead",
-                hulls.len()
-            ));
-        }
-        for (hull, detected, source) in hulls {
-            members.push(Member {
-                path: path.clone(),
-                hull: hull.clone(),
-                placement: Placement {
-                    x: detected.x + sp.dx,
-                    y: sp.y_abs.unwrap_or(detected.y + sp.dy),
-                },
-                source: source.clone(),
-            });
-        }
-    }
-    Ok(members)
-}
-
-/// Slope-channel residual summary, when the loft fit any.
-fn slope_line(r: &michell::fit::FitReport) -> Option<String> {
-    match (r.fx_residual, r.fz_residual) {
-        (None, None) => None,
-        (fx, fz) => {
-            let one = |name: &str, c: Option<michell::fit::ChannelResiduals>| {
-                c.map(|c| format!("{name} max {:.3e} rms {:.3e}", c.max, c.rms))
-            };
-            let parts: Vec<String> = [one("dfdx", fx), one("dfdz", fz)]
-                .into_iter()
-                .flatten()
-                .collect();
-            Some(format!("slopes: {}", parts.join(", ")))
-        }
-    }
-}
-
-/// A loft that cannot reach its own samples is integrating a smoothed hull,
-/// and the smoothing takes exactly the short-scale `∂f/∂x` content that feeds
-/// the diverging end of the wave spectrum — so `Rw` at low Froude goes first.
-/// Say so rather than letting it pass silently into a resistance curve.
-fn loft_warning(fit: &michell::fit::FitReport) -> Option<String> {
-    fit.under_resolved().then(|| {
-        format!(
-            "                loft residual is {:.1}% of max half-beam (rms {:.1}%); \
-             the control net cannot hold this geometry — raise --fit-control \
-             (and --samples to match). Rw at low Froude is biased first.",
-            100.0 * fit.relative_max(),
-            100.0 * fit.relative_rms()
-        )
-    })
 }
 
 /// One-line description of a roughness allowance, empty when smooth, for the
@@ -593,119 +458,9 @@ fn roughness_regime_note<'a>(
     ))
 }
 
-fn describe_source(source: &Source) -> Vec<String> {
-    match source {
-        Source::Native => vec!["source: native control net (exact)".into()],
-        Source::Body(r) => {
-            let mut v = vec![format!(
-                "source: full-band body, situated at its design waterline \
-                 (loft max residual {:.3e} m, rms {:.3e} m)",
-                r.max_residual, r.rms_residual
-            )];
-            v.extend(loft_warning(r));
-            v.extend(slope_line(r));
-            v
-        }
-        Source::Offsets(r) => {
-            let mut v = vec![format!(
-                "source: offsets table, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
-                r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
-            )];
-            v.extend(loft_warning(r));
-            v
-        }
-        Source::Grid(r) => {
-            let mut v = vec![format!(
-                "source: sample grid, lofted (max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m)",
-                r.max_residual, r.max_residual_at.0, r.max_residual_at.1, r.rms_residual
-            )];
-            v.extend(loft_warning(r));
-            v.extend(slope_line(r));
-            v
-        }
-        Source::Stl(r) => {
-            let sides = if r.two_sided {
-                format!("full shell folded about y = {:.4} m", r.centerplane)
-            } else {
-                format!("one-sided about y = {:.4} m", r.centerplane)
-            };
-            vec![
-                format!(
-                    "source: STL mesh ({} triangles, units scale {}, {sides})",
-                    r.patches, r.units_scale
-                ),
-                format!(
-                    "geometry: draft {:.4} m, x {:.4}..{:.4} m, fold asymmetry {:.3e} m",
-                    r.draft, r.x_range.0, r.x_range.1, r.max_asymmetry
-                ),
-                format!(
-                    "loft: max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m, \
-                     {} ambiguous samples",
-                    r.fit.max_residual,
-                    r.fit.max_residual_at.0,
-                    r.fit.max_residual_at.1,
-                    r.fit.rms_residual,
-                    r.ambiguous_samples
-                ),
-            ]
-            .into_iter()
-            .chain(loft_warning(&r.fit))
-            .collect()
-        }
-        Source::Iges(r) => {
-            let sides = if r.two_sided {
-                format!("full shell folded about y = {:.4} m", r.centerplane)
-            } else if r.mirrored {
-                format!("port half mirrored about y = {:.4} m", r.centerplane)
-            } else {
-                format!("half hull about y = {:.4} m", r.centerplane)
-            };
-            let mut v = vec![format!(
-                "source: IGES ({} patches, units scale {}, {sides})",
-                r.patches, r.units_scale
-            )];
-            v.push(format!(
-                "geometry: draft {:.4} m, x {:.4}..{:.4} m, fold asymmetry {:.3e} m",
-                r.draft, r.x_range.0, r.x_range.1, r.max_asymmetry
-            ));
-            v.push(format!(
-                "loft: max residual {:.3e} m at x={:.3} z={:.3}, rms {:.3e} m, \
-                 {} failed inversions, {} ambiguous samples, {} slope gaps",
-                r.fit.max_residual,
-                r.fit.max_residual_at.0,
-                r.fit.max_residual_at.1,
-                r.fit.rms_residual,
-                r.failed_inversions,
-                r.ambiguous_samples,
-                r.derivative_gaps
-            ));
-            v.extend(loft_warning(&r.fit));
-            v.extend(slope_line(&r.fit));
-            v
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
-
-/// Maximum breadth [m] of a situated hull: twice the largest half-breadth
-/// sampled over its wetted surface graph.
-fn max_beam(hull: &michell::Hull) -> f64 {
-    let s = hull.surface();
-    let (x0, x1) = s.x_domain();
-    let (z0, z1) = s.z_domain();
-    let mut half = 0.0f64;
-    for i in 0..=60 {
-        let x = x0 + (x1 - x0) * i as f64 / 60.0;
-        for j in 0..=30 {
-            let z = z0 + (z1 - z0) * j as f64 / 30.0;
-            half = half.max(s.eval(x, z));
-        }
-    }
-    2.0 * half
-}
 
 /// `michell info` in-process: geometry and diagnostics for a fleet of hull
 /// specs (arguments without the leading `info`). Returns the text the CLI would
@@ -715,7 +470,9 @@ pub fn info(args: &[String]) -> Result<String, String> {
     if p.positional.is_empty() {
         return Err("usage: michell info <hull>... [options]".into());
     }
-    let members = load_fleet(&p.positional, &p.load_settings()?)?;
+    let settings = p.load_settings()?;
+    let fleet = fleet::load(&p.positional, &settings)?;
+    let members = &fleet.members;
     let mut out = String::new();
     if p.switch("--json") {
         out.push('[');
@@ -773,7 +530,7 @@ pub fn info(args: &[String]) -> Result<String, String> {
         } else {
             format!("hull: {}", m.path)
         };
-        if m.placement == Placement::default() {
+        if m.placement.x.abs() < 1e-9 && m.placement.y.abs() < 1e-9 {
             let _ = writeln!(out, "{name}");
         } else {
             let _ = writeln!(
@@ -782,10 +539,11 @@ pub fn info(args: &[String]) -> Result<String, String> {
                 m.placement.x, m.placement.y
             );
         }
-        for line in describe_source(&m.source) {
+        for line in describe(&fleet, m) {
             let _ = writeln!(out, "{line}");
         }
         let _ = writeln!(out, "length          {:>10.4} m", m.hull.length());
+        let _ = writeln!(out, "beam            {:>10.4} m", max_beam(&m.hull));
         let _ = writeln!(out, "draft           {:>10.4} m", m.hull.draft());
         let _ = writeln!(out, "wetted surface  {:>10.4} m^2", m.hull.wetted_surface());
         let _ = writeln!(
@@ -793,33 +551,16 @@ pub fn info(args: &[String]) -> Result<String, String> {
             "displaced vol   {:>10.4} m^3",
             m.hull.displaced_volume()
         );
-        if let Some(t) = m.hull.transom() {
-            // A wet transom is outside what the wave integral models, so say
-            // so here rather than letting it pass silently into a resistance
-            // curve. A_T/A_X is the usual measure of how much it matters.
-            let _ = writeln!(
-                out,
-                "transom         {:>10.4} m^2 immersed ({:.1}% of max section), \
-                 depth {:.4} m, beam {:.4} m",
-                t.area,
-                100.0 * t.area / m.hull.max_section_area(),
-                t.depth,
-                2.0 * t.half_beam,
-            );
-            let _ = writeln!(
-                out,
-                "                wave resistance does not model transom sterns; \
-                 treat Rw as approximate"
-            );
-        }
-        let s = m.hull.surface();
+        let _ = writeln!(out, "LCB             {:>10.4} m", m.hull.lcb_x());
         let _ = writeln!(
             out,
-            "spline          degree {}x{}, control net {}x{}",
-            s.degree_x(),
-            s.degree_z(),
-            s.n_ctrl_x(),
-            s.n_ctrl_z()
+            "waterplane      {:>10.4} m^2",
+            m.hull.waterplane_area()
+        );
+        let _ = writeln!(
+            out,
+            "sections        {} stations, {} rays each",
+            m.report.stations, settings.rays
         );
     }
     Ok(out)
@@ -874,12 +615,24 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
             "usage: michell squat <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
         );
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let cut_members = fleet.hulls();
+    // Per hull: (length, waterplane area, its first and second moments about
+    // x = 0, volume, placement).
+    let hydro: Vec<(f64, f64, f64, f64, f64, Placement)> = cut_members
         .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
+        .map(|(h, pl)| {
+            (
+                h.length(),
+                h.waterplane_area(),
+                h.waterplane_moment(),
+                h.waterplane_second_moment(),
+                h.displaced_volume(),
+                *pl,
+            )
+        })
+        .collect();
+    let l_ref = hydro.iter().map(|h| h.0).fold(0.0f64, f64::max);
     let knots = p.switch("--knots");
     let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
     let speeds: Vec<f64> = match (p.flag("speeds"), p.flag("froude")) {
@@ -907,13 +660,11 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     // Fleet waterplane in fleet coordinates: area, first and second moments,
     // and the LCF, which is the default pivot and the axis I_L is taken about.
     let (mut aw, mut mw, mut iw, mut vol) = (0.0, 0.0, 0.0, 0.0);
-    for (h, pl) in &members {
-        let a = h.waterplane_area();
-        let m = h.waterplane_moment() + pl.x * a;
+    for &(_, a, m1, m2, v, pl) in &hydro {
         aw += a;
-        mw += m;
-        iw += h.waterplane_second_moment() + 2.0 * pl.x * h.waterplane_moment() + pl.x * pl.x * a;
-        vol += h.displaced_volume();
+        mw += m1 + pl.x * a;
+        iw += m2 + 2.0 * pl.x * m1 + pl.x * pl.x * a;
+        vol += v;
     }
     if aw <= 0.0 {
         return Err("fleet has no waterplane".into());
@@ -923,7 +674,7 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     // Trimming inertia about the LCF (the parallel-axis correction of I_w).
     let i_l = iw - mw * mw / aw;
 
-    for (h, _) in &members {
+    for (h, _) in &cut_members {
         if let Some(t) = h.transom() {
             eprintln!(
                 "note: transom immersed ({:.1}% of max section); squat is evaluated on the \
@@ -935,7 +686,7 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     }
     println!(
         "fleet: {} hull(s), L(ref) {:.3} m, Aw {:.3} m^2, LCF {:.3} m, I_L {:.3} m^4, vol {:.3} m^3; pivot {:.3} m",
-        members.len(),
+        hydro.len(),
         l_ref,
         aw,
         lcf,
@@ -957,7 +708,7 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
     );
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let d = michell::squat::multihull_dynamic_force(&members, &cond, pivot, &opts)
+        let d = michell::sectional::multihull_dynamic_force(&cut_members, &cond, pivot, &opts)
             .map_err(|e| format!("{e}"))?;
         let rho = cond.fluid.density;
         let s_eq = -d.force_up / (rho * g * aw);
@@ -985,21 +736,22 @@ fn cmd_squat(args: &[String]) -> Result<(), String> {
 
 fn cmd_resistance(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
+    if p.flag("heel").is_some() {
+        return Err("--heel was removed: michell no longer models heel".into());
+    }
     if p.positional.is_empty() {
         return Err(
             "usage: michell resistance <hull>[@x=DX,y=Y]... --speeds A[:B:STEP] [options]".into(),
         );
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let multi = members.len() > 1;
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let summary = &fleet.members;
+    let cut_members = fleet.hulls();
+    let multi = summary.len() > 1;
     // Reference length for Froude number: the longest hull.
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
-    let total_s: f64 = members.iter().map(|(h, _)| h.wetted_surface()).sum();
-    let total_v: f64 = members.iter().map(|(h, _)| h.displaced_volume()).sum();
+    let l_ref = fleet.l_ref();
+    let total_s: f64 = summary.iter().map(|m| m.hull.wetted_surface()).sum();
+    let total_v: f64 = summary.iter().map(|m| m.hull.displaced_volume()).sum();
 
     let knots = p.switch("--knots");
     let g = p.f64_flag("gravity")?.unwrap_or(STANDARD_GRAVITY);
@@ -1022,8 +774,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
 
     let viscous_opts = p.viscous_options()?;
     let form_factor = viscous_opts.form_factor;
-    let heel_deg = p.f64_flag("heel")?.unwrap_or(0.0);
-    let heel = heel_deg.to_radians();
     let mut wave_opts = WaveOptions::default();
     if let Some(t) = p.f64_flag("rel-tol")? {
         wave_opts.rel_tol = t;
@@ -1033,11 +783,12 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     let mut rows = Vec::new();
     for &u in &speeds {
         let cond = p.conditions(u)?;
-        let r = if heel != 0.0 {
-            michell::multihull_resistance_heeled(&members, &cond, &wave_opts, &viscous_opts, heel)
-        } else {
-            michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
-        }
+        let r = michell::sectional::multihull_resistance(
+            &cut_members,
+            &cond,
+            &wave_opts,
+            &viscous_opts,
+        )
         .map_err(|e| format!("at U = {u} m/s: {e}"))?;
         rows.push((u, cond, r));
     }
@@ -1048,7 +799,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
             .map(|(_, c, _)| c.fluid)
             .unwrap_or(Fluid::SEAWATER_15C);
         let mut out = String::from("{\"hulls\":[");
-        for (i, m) in loaded.iter().enumerate() {
+        for (i, m) in summary.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
@@ -1067,7 +818,7 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
         out.push_str("],");
         out.push_str(&format!(
             "\"fluid\":{{\"density\":{},\"kinematic_viscosity\":{}}},\"form_factor\":{},\
-             \"roughness\":{},\"heel_deg\":{},",
+             \"roughness\":{},",
             fluid.density,
             fluid.kinematic_viscosity,
             form_factor,
@@ -1076,7 +827,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
                 michell::Roughness::DeltaCf(c) => format!("{{\"delta_cf\":{c}}}"),
                 michell::Roughness::SandGrain(k) => format!("{{\"sand_grain_m\":{k}}}"),
             },
-            heel_deg
         ));
         out.push_str("\"points\":[");
         for (i, (u, cond, r)) in rows.iter().enumerate() {
@@ -1114,18 +864,18 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     }
 
     let mut seen: Vec<&str> = Vec::new();
-    for m in &loaded {
+    for m in summary {
         if seen.contains(&m.path.as_str()) {
             continue;
         }
         seen.push(&m.path);
         println!("hull: {}", m.path);
-        for line in describe_source(&m.source) {
+        for line in describe(&fleet, m) {
             println!("{line}");
         }
     }
     if multi {
-        let placements: Vec<String> = loaded
+        let placements: Vec<String> = summary
             .iter()
             .map(|m| format!("{}@x={},y={}", m.path, m.placement.x, m.placement.y))
             .collect();
@@ -1138,12 +888,6 @@ fn cmd_resistance(args: &[String]) -> Result<(), String> {
     );
     if let Some(note) = roughness_regime_note(rows.iter().flat_map(|(_, _, r)| r.viscous.iter())) {
         println!("{note}");
-    }
-    if heel != 0.0 {
-        println!(
-            "heeled {heel_deg:.1} deg about the platform axis (tilted-thickness \
-             wave-making only; no waterline re-clip, no yaw side-force)"
-        );
     }
     let u_label = if knots { "U[kn]" } else { "U[m/s]" };
     if multi {
@@ -1243,8 +987,9 @@ fn cmd_report(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_sweep(args: &[String]) -> Result<(), String> {
-    use michell::float::{solve_equilibrium, LoadCase};
-    use michell::iges::{self, HullPose, ImportOptions, Platform, SourceFleet};
+    use michell::float::{solve_equilibrium_sectional, LoadCase};
+    use michell::iges::{HullPose, Platform};
+    use michell::source::SourceHull;
 
     let p = parse_args(args)?;
     if p.positional.is_empty() {
@@ -1264,45 +1009,37 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
     if settings.centerplane.is_some() {
         return Err("--centerplane is not supported by sweep".into());
     }
-    if settings.dump_grid.is_some() {
-        return Err("--dump-grid is not supported by sweep (it re-lofts one \
-                    grid per pose); use `michell info` or `michell loft`"
-            .into());
-    }
     let base_wl = settings.waterline_z;
-    let opts = ImportOptions {
-        waterline_z: base_wl,
-        stations: settings.samples.0,
-        waterlines: settings.samples.1,
-        fit: resolved_fit(&settings, ImportOptions::default().fit),
-        centerplane: None,
-    };
+    let opts = settings.sectional(base_wl);
 
-    // Load the source fleets and learn each hull's base transverse position.
+    // Load the source geometry and learn each hull's base transverse position.
     struct File {
         stem: String,
-        src: SourceFleet,
+        src: fleet::SourceFile,
         base_y: Vec<f64>,
         n: usize,
     }
     let mut files: Vec<File> = Vec::new();
     let mut l_ref = 0.0f64;
     for path in &p.positional {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-        let src = iges::source_fleet(&text, base_wl).map_err(|e| format!("{path}: {e}"))?;
-        let poses = vec![HullPose::default(); src.len()];
-        let fl = src
-            .situate(base_wl, &poses, &Platform::default(), &opts)
-            .map_err(|e| format!("{path}: {e}"))?;
-        let mut base_y = vec![0.0; src.len()];
-        let mut mi = 0;
+        let src = fleet::open_source(path, &settings)?;
+        let n = src.source.len();
+        let mut base_y = vec![0.0; n];
         for (hi, y) in base_y.iter_mut().enumerate() {
-            if fl.dry.contains(&hi) {
-                continue;
+            let cut = src
+                .source
+                .situate_sectional(
+                    hi,
+                    src.waterline_z,
+                    &HullPose::default(),
+                    &Platform::default(),
+                    &settings.sectional(src.waterline_z),
+                )
+                .map_err(|e| format!("{path}: hull {}: {e}", hi + 1))?;
+            if let Some(h) = cut {
+                *y = h.placement.y;
+                l_ref = l_ref.max(h.hull.length());
             }
-            *y = fl.members[mi].placement.y;
-            l_ref = l_ref.max(fl.members[mi].hull.length());
-            mi += 1;
         }
         let stem = std::path::Path::new(path)
             .file_stem()
@@ -1310,8 +1047,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             .unwrap_or(path)
             .to_string();
         eprintln!(
-            "loaded {path}: {} hull(s) at y = {:?}",
-            src.len(),
+            "loaded {path}: {n} hull(s) at y = {:?}",
             base_y
                 .iter()
                 .map(|y| (y * 1e4).round() / 1e4)
@@ -1319,7 +1055,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         );
         files.push(File {
             stem,
-            n: src.len(),
+            n,
             src,
             base_y,
         });
@@ -1556,12 +1292,21 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         }
 
         // Situate (raw) or solve (float).
-        let mut fleets: Vec<michell::float::FleetState> = Vec::new();
+        let mut members: Vec<(michell::sectional::SectionalHull, Placement)> = Vec::new();
         let (sinkage, trim_deg, volume, lcb, dry) = if let Some(mass) = weight {
-            let eq = solve_equilibrium(
-                &files[0].src,
-                base_wl,
-                &poses[0],
+            let f = &files[0];
+            let hulls: Vec<SourceHull> = poses[0]
+                .iter()
+                .enumerate()
+                .map(|(index, pose)| SourceHull {
+                    source: f.src.source.as_ref(),
+                    index,
+                    waterline_z: f.src.waterline_z,
+                    pose: *pose,
+                })
+                .collect();
+            let eq = solve_equilibrium_sectional(
+                &hulls,
                 &LoadCase { mass, lcg },
                 density,
                 &opts,
@@ -1574,38 +1319,35 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                 eq.lcb,
                 eq.fleet.dry,
             );
-            fleets.push(eq.fleet);
+            members = eq.fleet.members;
             out
         } else {
             let mut volume = 0.0;
             let mut moment = 0.0;
             let mut dry = 0usize;
+            let o = settings.sectional(waterline);
             for (f, fp) in files.iter().zip(&poses) {
-                let fl = f
-                    .src
-                    .situate(waterline, fp, &Platform::default(), &opts)
-                    .map_err(|e| format!("point {}: {e}", point + 1))?;
-                dry += fl.dry.len();
-                let mut members = Vec::new();
-                for m in fl.members {
-                    volume += m.hull.displaced_volume();
-                    moment += m.hull.lcb_x() * m.hull.displaced_volume();
-                    members.push((m.hull, m.placement));
+                for (hi, pose) in fp.iter().enumerate() {
+                    match f
+                        .src
+                        .source
+                        .situate_sectional(hi, waterline, pose, &Platform::default(), &o)
+                        .map_err(|e| format!("point {}: {e}", point + 1))?
+                    {
+                        Some(m) => {
+                            volume += m.hull.displaced_volume();
+                            moment += m.hull.lcb_x() * m.hull.displaced_volume();
+                            members.push((m.hull, m.placement));
+                        }
+                        None => dry += 1,
+                    }
                 }
-                fleets.push(michell::float::FleetState {
-                    members,
-                    dry: 0,
-                    band_exceeded: 0,
-                    band_overshoot: 0.0,
-                });
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (0.0, 0.0, volume, lcb, dry)
         };
-        let members: Vec<(&Hull, Placement)> = fleets
-            .iter()
-            .flat_map(|fl| fl.members.iter().map(|(h, p)| (h, *p)))
-            .collect();
+        let members: Vec<(&michell::sectional::SectionalHull, Placement)> =
+            members.iter().map(|(h, p)| (h, *p)).collect();
 
         let mut rows = Vec::with_capacity(speeds.len());
         for &u in &speeds {
@@ -1613,9 +1355,13 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             let (rw, rv, rt, pe, iff, cw, ct) = if members.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                let r =
-                    michell::multihull_resistance_with(&members, &cond, &wave_opts, &viscous_opts)
-                        .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                let r = michell::sectional::multihull_resistance(
+                    &members,
+                    &cond,
+                    &wave_opts,
+                    &viscous_opts,
+                )
+                .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
                     r.viscous_total,
@@ -1739,12 +1485,10 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
     if p.positional.is_empty() {
         return Err("usage: michell spectrum <hull>... --speed U [options]".into());
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let members = fleet.hulls();
+    let l_ref = fleet.l_ref();
+    let transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
     let u = single_speed(&p, l_ref)?;
     let cond = p.conditions(u)?;
     let n = match p.flag("points") {
@@ -1755,7 +1499,8 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
             .max(9),
     };
 
-    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom)
+        .map_err(|e| format!("{e}"))?;
 
     // Significant angular range: where dRw/dθ still matters.
     let lim = 89.5f64.to_radians();
@@ -1795,7 +1540,11 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
         rows.push((theta, a, d));
     }
     let rw_spectrum = total;
-    let rw = michell::multihull_wave_resistance(&members, &cond)
+    let wave_opts = WaveOptions {
+        transom,
+        ..WaveOptions::default()
+    };
+    let rw = michell::sectional::multihull_wave_resistance(&members, &cond, &wave_opts)
         .map_err(|e| format!("{e}"))?
         .resistance;
     eprintln!(
@@ -1862,17 +1611,107 @@ fn cmd_spectrum(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `michell field`: a viewer-neutral 3-D scene of IGES hulls cut into
+/// sections at one speed (see [`scene`]).
+fn cmd_field(args: &[String]) -> Result<(), String> {
+    let p = parse_args(args)?;
+    if p.positional.is_empty() {
+        return Err(
+            "usage: michell field <hull>[@x=DX,y=Y]... --speed U | --froude F -o scene.json \
+             [--waterline Z --transom SPEC --region X0,X1,Y0,Y1 --size NX,NY --stations N --rays M]"
+                .into(),
+        );
+    }
+    let out_path = p
+        .flag("o")
+        .or_else(|| p.flag("output"))
+        .ok_or("michell field needs -o scene.json")?
+        .clone();
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let l_ref = fleet.l_ref();
+    let u = single_speed(&p, l_ref)?;
+    let cond = p.conditions(u)?;
+    let closure = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
+
+    let (mut x_lo, mut x_hi, mut y_abs) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for m in &fleet.members {
+        let (a, b) = m.report.x_range;
+        x_lo = x_lo.min(a + m.placement.x);
+        x_hi = x_hi.max(b + m.placement.x);
+        y_abs = y_abs.max(m.placement.y.abs());
+    }
+    let [x0, x1, y0, y1] = match p.flag("region") {
+        Some(s) => parse_region(s)?,
+        None => {
+            let x1 = x_hi + 0.35 * l_ref;
+            let x0 = x_lo - 3.0 * l_ref;
+            let yh = (0.42 * (x1 - x0)).max(y_abs + 0.8 * l_ref);
+            [x0, x1, -yh, yh]
+        }
+    };
+    let (nx, ny) = match p.flag("size") {
+        Some(s) => parse_pair(s)?,
+        None => {
+            let nx = 400usize;
+            let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round() as usize;
+            (nx, ny.clamp(32, 600))
+        }
+    };
+    if nx < 2 || ny < 2 {
+        return Err("--size: need at least 2x2 grid points".into());
+    }
+    let hulls: Vec<scene::SceneHull> = fleet
+        .members
+        .iter()
+        .map(|m| {
+            let file = &fleet.files[m.file];
+            scene::SceneHull {
+                name: if file.source.len() > 1 {
+                    format!("{}#{}", m.path, m.index + 1)
+                } else {
+                    m.path.clone()
+                },
+                hull: &m.hull,
+                placement: m.placement,
+                shift: m.shift,
+                source: file.source.as_ref(),
+                index: m.index,
+                waterline_z: file.waterline_z,
+            }
+        })
+        .collect();
+    let surface = scene::Surface {
+        x0,
+        x1,
+        y0,
+        y1,
+        nx,
+        ny,
+    };
+    let t = std::time::Instant::now();
+    let text = scene::build(&hulls, &cond, closure, &surface, l_ref)?;
+    std::fs::write(&out_path, text).map_err(|e| format!("cannot write {out_path}: {e}"))?;
+    eprintln!(
+        "wrote {out_path}: {} hull(s) at U = {:.3} m/s (Fn {:.3}), free surface {nx}x{ny} over \
+         x {x0:.2}..{x1:.2}, y {y0:.2}..{y1:.2} m ({:.1} s)",
+        hulls.len(),
+        u,
+        u / (cond.gravity * l_ref).sqrt(),
+        t.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
 fn cmd_wake(args: &[String]) -> Result<(), String> {
     let p = parse_args(args)?;
     if p.positional.is_empty() {
         return Err("usage: michell wake <hull>... --speed U [-o wake.png] [options]".into());
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let loaded = &fleet.members;
+    let members = fleet.hulls();
+    let l_ref = fleet.l_ref();
+    let transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
     let u = single_speed(&p, l_ref)?;
     let cond = p.conditions(u)?;
 
@@ -1880,8 +1719,8 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     let mut y_abs = 0.0f64;
-    for m in &loaded {
-        let (h0, h1) = m.hull.surface().x_domain();
+    for m in loaded {
+        let (h0, h1) = m.hull.x_range();
         x_lo = x_lo.min(h0 + m.placement.x);
         x_hi = x_hi.max(h1 + m.placement.x);
         y_abs = y_abs.max(m.placement.y.abs());
@@ -1908,7 +1747,7 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
         return Err("--size: need at least 2x2 grid points".into());
     }
 
-    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom).map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, nx, ny)
         .map_err(|e| format!("{e}"))?;
@@ -2034,14 +1873,14 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
     }
     // Hull waterplane footprints in neutral dark gray.
     const HULL_GRAY: [u8; 3] = [0x52, 0x51, 0x4e];
-    for m in &loaded {
-        let (h0, h1) = m.hull.surface().x_domain();
+    for m in loaded {
+        let (h0, h1) = m.hull.x_range();
         for ix in 0..nx {
             let x = grid.x(ix) - m.placement.x;
             if x < h0 || x > h1 {
                 continue;
             }
-            let half_beam = m.hull.surface().eval(x, 0.0);
+            let half_beam = m.hull.waterline_half_beam(x);
             for iy in 0..ny {
                 if (grid.y(iy) - m.placement.y).abs() <= half_beam {
                     let row = ny - 1 - iy;
@@ -2065,12 +1904,11 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
     if p.positional.is_empty() {
         return Err("usage: michell render <hull>... --speed U [-o render.png] [options]".into());
     }
-    let loaded = load_fleet(&p.positional, &p.load_settings()?)?;
-    let members: Vec<(&Hull, Placement)> = loaded.iter().map(|m| (&m.hull, m.placement)).collect();
-    let l_ref = members
-        .iter()
-        .map(|(h, _)| h.length())
-        .fold(0.0f64, f64::max);
+    let fleet = fleet::load(&p.positional, &p.load_settings()?)?;
+    let loaded = &fleet.members;
+    let members = fleet.hulls();
+    let l_ref = fleet.l_ref();
+    let transom = parse_transom(p.flag("transom").map(|s| s.as_str()))?;
     let u = single_speed(&p, l_ref)?;
     let cond = p.conditions(u)?;
 
@@ -2078,8 +1916,8 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     let mut y_abs = 0.0f64;
-    for m in &loaded {
-        let (h0, h1) = m.hull.surface().x_domain();
+    for m in loaded {
+        let (h0, h1) = m.hull.x_range();
         x_lo = x_lo.min(h0 + m.placement.x);
         x_hi = x_hi.max(h1 + m.placement.x);
         y_abs = y_abs.max(m.placement.y.abs());
@@ -2112,7 +1950,7 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
         return Err("--size: image must be at least 16x16 pixels".into());
     }
 
-    let mut spec = michell::FreeWaveSpectrum::new(&members, &cond).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom).map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, gx, gy)
         .map_err(|e| format!("{e}"))?;
@@ -2139,20 +1977,18 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
     };
     render::add_water(&mut scene, &grid, z_scale, vmax, fade);
     render::add_skirt(&mut scene, &grid, z_scale, vmax, fade);
-    for m in &loaded {
-        let fb = match p.f64_flag("freeboard")? {
-            Some(f) if f >= 0.0 => f,
-            Some(f) => return Err(format!("--freeboard must be non-negative, got {f}")),
-            // Slender hulls (amas) have tiny drafts; keep a visible sheer.
-            None => (0.5 * m.hull.draft()).max(0.02 * m.hull.length()),
-        };
-        render::add_hull(
-            &mut scene,
-            m.hull.surface(),
-            m.placement.x,
-            m.placement.y,
-            fb,
-        );
+    for m in loaded {
+        let file = &fleet.files[m.file];
+        let (verts, tris) = file
+            .source
+            .posed_tessellation(
+                m.index,
+                file.waterline_z,
+                &michell::iges::HullPose::default(),
+                &michell::iges::Platform::default(),
+            )
+            .map_err(|e| format!("{}: {e}", m.path))?;
+        render::add_mesh(&mut scene, &verts, &tris, m.shift.x, m.shift.y);
     }
 
     // Camera: degrees off dead astern (positive toward +y), elevation, and
@@ -2230,339 +2066,10 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `michell loft` in-process: convert offsets/IGES/STL geometry to control-net
-/// `.hull` files on disk (arguments without the leading `loft`). Progress —
-/// per-hull, per-waterline — flows through `report`; the returned string is the
-/// summary table the CLI would have printed to stdout.
-pub fn loft(args: &[String], report: &mut Reporter) -> Result<String, String> {
-    let p = parse_args(args)?;
-    let [path] = p.positional.as_slice() else {
-        return Err("usage: michell loft <offsets|iges> -o OUT.hull [options]".into());
-    };
-    let out_path = p
-        .flag("output")
-        .ok_or("loft requires an output path: -o PREFIX (or OUT.hull)")?;
-    let settings = p.load_settings()?;
-
-    // IGES and STL files loft to full-band bodies by default, decomposing
-    // multihull files into one body per hull. --wetted keeps the old
-    // single-hull wetted-only output; offsets tables always loft wetted.
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let lower = path.to_ascii_lowercase();
-    let is_text = std::str::from_utf8(&bytes).is_ok();
-    let is_stl = lower.ends_with(".stl") || formats::looks_binary_stl(&bytes) || !is_text;
-    let first = if is_stl {
-        ""
-    } else {
-        std::str::from_utf8(&bytes)
-            .expect("checked utf8")
-            .lines()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("")
-            .trim_end()
-    };
-    let is_iges = !is_stl
-        && (lower.ends_with(".igs")
-            || lower.ends_with(".iges")
-            || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G'));
-
-    if !(is_iges || is_stl) || p.switch("--wetted") {
-        let mut hulls = load_hulls(path, &settings)?;
-        if hulls.len() > 1 {
-            return Err(format!(
-                "{path} contains {} hulls; --wetted lofts exactly one — drop \
-                 --wetted to decompose into full-band bodies",
-                hulls.len()
-            ));
-        }
-        let (hull, _, source) = hulls.pop().expect("one hull");
-        if matches!(source, Source::Native | Source::Body(_)) {
-            return Err(format!("{path} is already a control-net file"));
-        }
-        std::fs::write(out_path, write_hull_file(&hull))
-            .map_err(|e| format!("cannot write {out_path}: {e}"))?;
-        let mut out = String::new();
-        for line in describe_source(&source) {
-            let _ = writeln!(out, "{line}");
-        }
-        let _ = writeln!(out, "wrote {out_path}");
-        return Ok(out);
-    }
-
-    // Full-band decomposition. A body is lofted once and re-situated many
-    // times, so default to a much denser sampling and control net than the
-    // one-shot import path — wave resistance is sensitive to loft resolution
-    // near support boundaries (keel rocker, stem), and the band is taller
-    // than the wetted zone.
-    use michell::iges::{self, HullPose, ImportOptions, Platform};
-    let design_wl = settings.waterline_z;
-    let opts = ImportOptions {
-        waterline_z: design_wl,
-        stations: if p.flag("samples").is_some() {
-            settings.samples.0
-        } else {
-            301
-        },
-        waterlines: if p.flag("samples").is_some() {
-            settings.samples.1
-        } else {
-            97
-        },
-        fit: if settings.fit_explicit {
-            settings.fit
-        } else {
-            michell::fit::FitOptions {
-                degree_x: 3,
-                degree_z: 3,
-                n_ctrl_x: 80,
-                n_ctrl_z: 32,
-                // Honour --fit-deriv-weight even with the default net.
-                derivative_weight: settings.fit.derivative_weight,
-            }
-        },
-        centerplane: settings.centerplane,
-    };
-    enum LoftSrc {
-        Iges(michell::iges::SourceFleet),
-        Mesh(michell::stl::MeshFleet),
-    }
-    impl LoftSrc {
-        fn len(&self) -> usize {
-            match self {
-                LoftSrc::Iges(s) => s.len(),
-                LoftSrc::Mesh(s) => s.len(),
-            }
-        }
-        fn hull_z_top(&self, i: usize) -> f64 {
-            match self {
-                LoftSrc::Iges(s) => s.hull_z_top(i),
-                LoftSrc::Mesh(s) => s.hull_z_top(i),
-            }
-        }
-        fn hull_z_bottom(&self, i: usize) -> f64 {
-            match self {
-                LoftSrc::Iges(s) => s.hull_z_bottom(i),
-                LoftSrc::Mesh(s) => s.hull_z_bottom(i),
-            }
-        }
-        fn situate_one(
-            &self,
-            i: usize,
-            wl: f64,
-            pose: &HullPose,
-            platform: &Platform,
-            opts: &ImportOptions,
-        ) -> Result<Option<michell::iges::ImportedHull>, michell::Error> {
-            match self {
-                LoftSrc::Iges(s) => s.situate_one(i, wl, pose, platform, opts),
-                LoftSrc::Mesh(s) => s.situate_one(i, wl, pose, platform, opts),
-            }
-        }
-        fn situate_one_progress(
-            &self,
-            i: usize,
-            wl: f64,
-            pose: &HullPose,
-            platform: &Platform,
-            opts: &ImportOptions,
-            progress: &mut dyn FnMut(f32),
-        ) -> Result<Option<michell::iges::ImportedHull>, michell::Error> {
-            match self {
-                LoftSrc::Iges(s) => s.situate_one_progress(i, wl, pose, platform, opts, progress),
-                LoftSrc::Mesh(s) => s.situate_one_progress(i, wl, pose, platform, opts, progress),
-            }
-        }
-    }
-    let src = if is_stl {
-        let scale = settings.units.ok_or_else(|| {
-            format!(
-                "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
-                 (or a scale to metres)"
-            )
-        })?;
-        LoftSrc::Mesh(
-            michell::stl::mesh_fleet(&bytes, scale, design_wl)
-                .map_err(|e| format!("{path}: {e}"))?,
-        )
-    } else {
-        let text = std::str::from_utf8(&bytes).expect("checked utf8");
-        LoftSrc::Iges(iges::source_fleet(text, design_wl).map_err(|e| format!("{path}: {e}"))?)
-    };
-    let n = src.len();
-    // The band reaches from the keel to `--band` metres above the design
-    // waterline (default: half the design draft). Including the deck in the
-    // fit would distort the wetted geometry — a deck is a cliff for a
-    // height-field loft — so the band should stay below it; a sweep that
-    // rises past the band is reported per-pose as band_exceeded.
-    /// Default `--band`, in multiples of the design draft above the design
-    /// waterline. Generous on purpose: a dynamic sweep routinely sinks and
-    /// trims past a mean band, and everything above the band is then taken as
-    /// zero half-beam, which silently removes hull. Measured on e12, letting
-    /// the band take in the whole deck costs about 0.3% in Rw at matched
-    /// control density, while holding the net fixed as the band grows costs
-    /// 3.5%; so take the band and scale the net. Not simply maximal, because
-    /// `top` is only the extent of the file and a file carrying a cabin or a
-    /// rig above the sheer is not something a half-breadth height field
-    /// should be asked to fit.
-    const DEFAULT_BAND_DRAFTS: f64 = 1.5;
-    let band_flag = p.f64_flag("band")?;
-    let mut lofted = Vec::new();
-    for idx in 0..n {
-        // Progress (like the sweep) so a front-end can show a bar; the dense
-        // band loft is the slow step, reported per waterline row as a
-        // percentage. The fraction is in hundredths-of-a-hull so the bar moves
-        // both within a hull and across hulls. Start at 0% before any sampling.
-        report(
-            &format!("lofting hull {}/{n} 0%", idx + 1),
-            Some((idx * 100, n * 100)),
-        );
-        let top = src.hull_z_top(idx);
-        let bottom = src.hull_z_bottom(idx);
-        let draft_est = design_wl - bottom;
-        if draft_est <= 0.0 {
-            return Err(format!(
-                "{path} hull {idx}: design waterline (z = {design_wl}) is below \
-                 the hull (keel bound z = {bottom:.3})"
-            ));
-        }
-        let margin = band_flag
-            .unwrap_or(DEFAULT_BAND_DRAFTS * draft_est)
-            .max(0.0);
-        let band_top = (design_wl + margin).min(top);
-        // A band that stops well below the top of the supplied geometry is
-        // the quiet way to get wrong answers later: any pose that immerses
-        // past it loses hull, because `situate` takes the missing half-beam
-        // as zero and only reports a count. Say up front what was kept and
-        // what was left behind, in units of the draft that will be sunk and
-        // trimmed, so the choice is made with eyes open.
-        let kept = band_top - design_wl;
-        let available = top - design_wl;
-        if available - kept > 1e-3 {
-            eprintln!(
-                "note: hull {idx}: band keeps {kept:.3} m above the design waterline \
-                 ({:.0}% of the {draft_est:.3} m draft); the source carries {available:.3} m \
-                 above it. A pose that immerses more than {kept:.3} m at any station loses \
-                 the rest - raise --band if a sweep will sink or trim past that.",
-                100.0 * kept / draft_est
-            );
-        }
-        // Detect the centerplane at the *design* waterline, where the hull is
-        // symmetric and the fold physically matters — band-top probes sample
-        // topsides, where fittings can skew the detection — then hold it
-        // fixed for the band loft.
-        let mut detect_opts = opts;
-        detect_opts.stations = 61;
-        detect_opts.waterlines = 17;
-        detect_opts.fit.n_ctrl_x = detect_opts.fit.n_ctrl_x.min(10);
-        detect_opts.fit.n_ctrl_z = detect_opts.fit.n_ctrl_z.min(7);
-        let mut hull_opts = opts;
-        // Scale the z control net with the band so the wetted zone keeps the
-        // resolution it had under the old, shorter default band; without this
-        // a generous band is a downgrade, not an upgrade. An explicit
-        // --fit-control still wins.
-        if !settings.fit_explicit {
-            let band_height = band_top - bottom;
-            let reference = 1.5 * draft_est; // keel to the old default band top
-            let scale = if reference > 0.0 {
-                band_height / reference
-            } else {
-                1.0
-            };
-            let scaled = (hull_opts.fit.n_ctrl_z as f64 * scale).round();
-            hull_opts.fit.n_ctrl_z = (scaled as usize)
-                .max(hull_opts.fit.n_ctrl_z)
-                .min(opts.waterlines.saturating_sub(2));
-        }
-        if hull_opts.centerplane.is_none() {
-            hull_opts.centerplane = src
-                .situate_one(
-                    idx,
-                    design_wl,
-                    &HullPose::default(),
-                    &Platform::default(),
-                    &detect_opts,
-                )
-                .map_err(|e| format!("{path} hull {idx}: {e}"))?
-                .map(|m| m.report.centerplane);
-        }
-        // Report each new integer percent as the band loft samples.
-        let mut last_pct = 0u32;
-        let mut on_progress = |f: f32| {
-            let pct = (f * 100.0).round() as u32;
-            if pct != last_pct {
-                last_pct = pct;
-                report(
-                    &format!("lofting hull {}/{n} {pct}%", idx + 1),
-                    Some((idx * 100 + pct as usize, n * 100)),
-                );
-            }
-        };
-        let m = src
-            .situate_one_progress(
-                idx,
-                band_top,
-                &HullPose::default(),
-                &Platform::default(),
-                &hull_opts,
-                &mut on_progress,
-            )
-            .map_err(|e| format!("{path} hull {idx}: {e}"))?
-            .ok_or_else(|| format!("{path} hull {idx}: nothing below the band top?"))?;
-        let wl_depth = band_top - design_wl;
-        lofted.push((m, wl_depth));
-    }
-    let grids: Vec<(&michell::SampleGrid, Option<f64>)> = lofted
-        .iter()
-        .map(|(m, _)| (&m.grid, Some(m.report.centerplane)))
-        .collect();
-    formats::dump_grids(&settings, &grids)?;
-    let ys: Vec<f64> = lofted.iter().map(|(m, _)| m.report.centerplane).collect();
-    let span = ys.last().unwrap_or(&0.0) - ys.first().unwrap_or(&0.0);
-    let names: Vec<String> = if n == 1 {
-        vec![String::new()]
-    } else if n == 2 && (ys[0] + ys[1]).abs() < 0.1 * span {
-        vec!["port".into(), "starboard".into()]
-    } else if n == 3
-        && (ys[0] + ys[2]).abs() < 0.1 * span
-        && (ys[1] - (ys[0] + ys[2]) / 2.0).abs() < 0.25 * span
-    {
-        vec!["port".into(), "center".into(), "starboard".into()]
-    } else {
-        (0..n).map(|i| i.to_string()).collect()
-    };
-    let prefix = out_path.strip_suffix(".hull").unwrap_or(out_path);
-    let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "{:<28} {:>12} {:>9} {:>9} {:>11} {:>18}",
-        "file", "centerplane", "band[m]", "WL depth", "residual", "at (x, z)"
-    );
-    for ((m, wl_depth), name) in lofted.iter().zip(&names) {
-        let file = if name.is_empty() {
-            format!("{prefix}.hull")
-        } else {
-            format!("{prefix}-{name}.hull")
-        };
-        let body_text = formats::write_body_file(m.hull.surface(), *wl_depth, m.report.centerplane);
-        std::fs::write(&file, body_text).map_err(|e| format!("cannot write {file}: {e}"))?;
-        let _ = writeln!(
-            out,
-            "{file:<28} {:>12.4} {:>9.4} {:>9.4} {:>11.3e} {:>9.3},{:>7.3}",
-            m.report.centerplane,
-            m.hull.draft(),
-            wl_depth,
-            m.report.fit.max_residual,
-            m.report.fit.max_residual_at.0,
-            m.report.fit.max_residual_at.1,
-        );
-    }
-    Ok(out)
-}
-
 /// One `place` input: a path plus the pose to apply to every hull in it.
 struct PlaceSpec {
     path: String,
-    /// Absolute centerplane (`y=`); `.hull` inputs only.
+    /// Absolute centerplane (`y=`): rejected, IGES carries none.
     y_abs: Option<f64>,
     pose: michell::iges::HullPose,
 }
@@ -2631,72 +2138,34 @@ fn cmd_place(args: &[String]) -> Result<(), String> {
 
     // Each input file is parsed once; a spec's pose applies rigidly to every
     // hull the file contains.
-    enum Loaded {
-        Fleet(iges::SourceFleet),
-        Spline(formats::HullFileData),
-    }
-    let mut cache: HashMap<String, Loaded> = HashMap::new();
+    let mut cache: HashMap<String, iges::SourceFleet> = HashMap::new();
     let mut surfaces: Vec<michell::iges::NurbsSurface3> = Vec::new();
     for raw in &p.positional {
         let spec = parse_place_spec(raw)?;
+        if spec.y_abs.is_some() {
+            return Err(format!(
+                "{raw:?}: absolute y placement needs a recorded centerplane, \
+                 which IGES inputs don't carry; use dy=SHIFT"
+            ));
+        }
         if !cache.contains_key(&spec.path) {
             let path = &spec.path;
             let text =
                 std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
-            let first = text
-                .lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .trim_end();
-            let lower = path.to_ascii_lowercase();
-            let loaded = if first.starts_with("michell-hull") {
-                Loaded::Spline(formats::parse_hull_data(&text).map_err(|e| format!("{path}: {e}"))?)
-            } else if lower.ends_with(".igs")
-                || lower.ends_with(".iges")
-                || first.len() >= 73 && matches!(first.as_bytes()[72], b'S' | b'G')
-            {
-                Loaded::Fleet(
-                    iges::source_fleet(&text, waterline_z).map_err(|e| format!("{path}: {e}"))?,
-                )
-            } else {
-                return Err(format!(
-                    "{path}: place takes IGES files and .hull control nets or \
-                     bodies; loft other formats first (michell loft)"
-                ));
-            };
-            cache.insert(spec.path.clone(), loaded);
+            let fleet =
+                iges::source_fleet(&text, waterline_z).map_err(|e| format!("{path}: {e}"))?;
+            cache.insert(spec.path.clone(), fleet);
         }
         let before = surfaces.len();
-        let hulls = match &cache[&spec.path] {
-            Loaded::Fleet(fleet) => {
-                if spec.y_abs.is_some() {
-                    return Err(format!(
-                        "{raw:?}: absolute y placement needs a recorded centerplane, \
-                         which IGES inputs don't carry; use dy=SHIFT"
-                    ));
-                }
-                for i in 0..fleet.len() {
-                    surfaces.extend(
-                        fleet
-                            .posed_surfaces(i, waterline_z, &spec.pose, &platform)
-                            .map_err(|e| format!("{}: {e}", spec.path))?,
-                    );
-                }
-                fleet.len()
-            }
-            Loaded::Spline(data) => {
-                let centerplane = data.centerplane.unwrap_or(0.0);
-                let z_top_cad = waterline_z + data.waterline.unwrap_or(0.0);
-                let mut pose = spec.pose;
-                if let Some(y) = spec.y_abs {
-                    pose.dy = y - centerplane;
-                }
-                let mut pair = iges::halfbreadth_surfaces(&data.surface, centerplane, z_top_cad);
-                iges::apply_pose(&mut pair, waterline_z, &pose, &platform);
-                surfaces.extend(pair);
-                1
-            }
-        };
+        let fleet = &cache[&spec.path];
+        for i in 0..fleet.len() {
+            surfaces.extend(
+                fleet
+                    .posed_surfaces(i, waterline_z, &spec.pose, &platform)
+                    .map_err(|e| format!("{}: {e}", spec.path))?,
+            );
+        }
+        let hulls = fleet.len();
         eprintln!(
             "{}: {} hull{}, {} patch{}",
             raw,
@@ -2729,12 +2198,12 @@ fn cmd_wigley(args: &[String]) -> Result<(), String> {
     let l = p.f64_flag("length")?.unwrap_or(10.0);
     let b = p.f64_flag("beam")?.unwrap_or(l / 10.0);
     let t = p.f64_flag("draft")?.unwrap_or(b * 0.625);
-    let hull = michell::hulls::wigley(l, b, t).map_err(|e| format!("{e}"))?;
-    let text = write_hull_file(&hull);
+    let surfaces = michell::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
+    let text = michell::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
     match p.flag("output") {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}"))?;
-            println!("wrote {path} (Wigley L={l} B={b} T={t})");
+            println!("wrote {path} (Wigley L={l} B={b} T={t}, IGES, design waterline at z = 0)");
         }
         None => print!("{text}"),
     }

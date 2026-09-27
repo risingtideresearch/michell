@@ -486,92 +486,24 @@ pub fn add_skirt(
 
 const HULL_WETTED: u32 = 0x7a4034;
 const HULL_TOPSIDE: u32 = 0xe9e5db;
-const HULL_DECK: u32 = 0xd8d2c6;
 const HULL_KS: f64 = 0.06;
 const HULL_SPEC_P: f64 = 16.0;
 
-/// One hull: wetted surface (both sides, keel to waterline), wall-sided
-/// topsides extruded to `freeboard` above the waterline, and a deck cap.
-/// `px`/`py` place the hull in the fleet frame; z is flipped to point up.
-pub fn add_hull(
-    scene: &mut Scene,
-    surf: &michell::BSplineSurface,
-    px: f64,
-    py: f64,
-    freeboard: f64,
-) {
-    let (hx0, hx1) = surf.x_domain();
-    let (_, draft) = surf.z_domain();
-    const NX: usize = 96;
-    const NZ: usize = 16;
-    const NFB: usize = 3;
-    const NDK: usize = 6;
-    let xs: Vec<f64> = (0..=NX)
-        .map(|i| hx0 + (hx1 - hx0) * i as f64 / NX as f64)
-        .collect();
-    let half: Vec<f64> = xs.iter().map(|&x| surf.eval(x, 0.0).max(0.0)).collect();
-
-    let mat = |base: u32| Vertex {
-        pos: [0.0; 3],
-        base: hex(base),
-        ks: HULL_KS,
-        spec_p: HULL_SPEC_P,
-    };
-
-    for side in [1.0f64, -1.0] {
-        // Wetted: z downward 0..draft, world z = -zd.
-        let start = scene.verts.len();
-        for j in 0..=NZ {
-            let zd = draft * j as f64 / NZ as f64;
-            for (i, &x) in xs.iter().enumerate() {
-                let hb = if j == 0 {
-                    half[i]
-                } else {
-                    surf.eval(x, zd).max(0.0)
-                };
-                let mut v = mat(HULL_WETTED);
-                v.pos = [x + px, py + side * hb, -zd];
-                scene.push_vert(v);
-            }
-        }
-        grid_quads(scene, start, NX + 1, NZ + 1);
-
-        // Topsides: waterline section extruded up to the freeboard.
-        let start = scene.verts.len();
-        for j in 0..=NFB {
-            let z = freeboard * j as f64 / NFB as f64;
-            for (i, _) in xs.iter().enumerate() {
-                let mut v = mat(HULL_TOPSIDE);
-                v.pos = [xs[i] + px, py + side * half[i], z];
-                scene.push_vert(v);
-            }
-        }
-        grid_quads(scene, start, NX + 1, NFB + 1);
-    }
-
-    // Deck: strip across the sheer line at z = freeboard.
+/// One hull as its source tessellation (`x` forward, `z` up from the
+/// waterline), shifted by `(dx, dy)` into the fleet frame: wetted below the
+/// waterline, topsides above.
+pub fn add_mesh(scene: &mut Scene, verts: &[[f64; 3]], tris: &[[u32; 3]], dx: f64, dy: f64) {
     let start = scene.verts.len();
-    for j in 0..=NDK {
-        let f = 2.0 * j as f64 / NDK as f64 - 1.0;
-        for (i, _) in xs.iter().enumerate() {
-            let mut v = mat(HULL_DECK);
-            v.pos = [xs[i] + px, py + f * half[i], freeboard];
-            scene.push_vert(v);
-        }
+    for p in verts {
+        scene.push_vert(Vertex {
+            pos: [p[0] + dx, p[1] + dy, p[2]],
+            base: hex(if p[2] < 0.0 { HULL_WETTED } else { HULL_TOPSIDE }),
+            ks: HULL_KS,
+            spec_p: HULL_SPEC_P,
+        });
     }
-    grid_quads(scene, start, NX + 1, NDK + 1);
-}
-
-/// Quads over a `cols` × `rows` vertex lattice appended at `start`
-/// (row-major, column index fastest).
-fn grid_quads(scene: &mut Scene, start: usize, cols: usize, rows: usize) {
-    for j in 0..rows - 1 {
-        for i in 0..cols - 1 {
-            let a = start + j * cols + i;
-            let b = a + 1;
-            let c = a + cols + 1;
-            let d = a + cols;
-            scene.push_quad(a, b, c, d);
-        }
-    }
+    scene.tris.extend(
+        tris.iter()
+            .map(|t| [start + t[0] as usize, start + t[1] as usize, start + t[2] as usize]),
+    );
 }

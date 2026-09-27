@@ -9,13 +9,12 @@ use crate::json::Json;
 use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState, KNOT};
 use crate::pdf::{Document, Page};
 use crate::png;
-use michell::body::{Body, BodyOptions};
-use michell::float::{fleet_cg, solve_equilibrium_bodies_dynamic, LoadCase};
+use crate::manifest::source_hulls;
+use michell::float::{fleet_cg, solve_equilibrium_sectional_dynamic, LoadCase};
 use michell::iges::{HullPose, Platform};
-use michell::squat::dynamic_load_closure;
-use michell::{
-    multihull_resistance_with, Conditions, FreeWaveSpectrum, Hull, Placement, TransomClosure,
-};
+use michell::sectional::{dynamic_load_closure, multihull_resistance, SectionalHull};
+use michell::source::SourceHull;
+use michell::{Conditions, FreeWaveSpectrum, Placement, TransomClosure};
 
 const PAGE_W: f64 = 792.0;
 const PAGE_H: f64 = 612.0;
@@ -45,8 +44,6 @@ const KELVIN_TAN: f64 = 0.353_553_390_593_273_76;
 /// known. The index states the value next to the column so nobody reads BP
 /// as a prediction.
 const PROPULSIVE_EFFICIENCY: f64 = 0.55;
-const KEEL_BEAM_FRACTION: f64 = 0.10;
-const KEEL_MIN_BEAM: f64 = 2.0e-3;
 
 pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Result<(), String> {
     // The report renders its own progress to stderr, which is what the CLI
@@ -57,7 +54,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
         return Err(
             "michell report currently supports dynamic-mode manifests only \
              (options.dynamic: true — a weight axis with per-speed \
-             sinkage/trim); for a non-dynamic or heeled sweep use `michell \
+             sinkage/trim); for a non-dynamic sweep use `michell \
              sweep` for the CSV/JSON table instead"
                 .into(),
         );
@@ -75,7 +72,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
     };
     let mut cache_out: Vec<CachedRow> = Vec::new();
 
-    let bodies: Vec<&Body> = pm.hulls.iter().map(|h| &h.body).collect();
+    let midships: Vec<f64> = pm.hulls.iter().map(|h| h.midship).collect();
     let total_rows = pm.points * pm.speeds.len();
     let mut doc = Document::new();
     let mut detail_pages: Vec<Page> = Vec::new();
@@ -93,7 +90,8 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
         // Mass and LCG are derived from the hull and point loads carried
         // through their poses, the same way the sweep derives them, so a
         // report and a sweep of the same manifest agree on what floats.
-        let cg = fleet_cg(&bodies, &loads, &poses);
+        let cg = fleet_cg(&midships, &loads, &poses);
+        let posed = source_hulls(&pm.hulls, &poses);
         if cg.mass <= 0.0 {
             return Err(format!(
                 "point {}: fleet carries no mass (all hull and point masses are zero)",
@@ -138,14 +136,12 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                     u / KNOT
                 );
                 let closure = dynamic_load_closure(&cond, pivot_x, &pm.squat_opts);
-                let dyn_eq = solve_equilibrium_bodies_dynamic(
-                    &bodies,
-                    0.0,
-                    &poses,
+                let dyn_eq = solve_equilibrium_sectional_dynamic(
+                    &posed,
                     &LoadCase { mass, lcg },
                     pm.density,
                     pm.gravity,
-                    &pm.bopts,
+                    &pm.sopts,
                     closure,
                     warm,
                 )
@@ -165,17 +161,8 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim,
                 pivot_x,
             };
-            let (members_owned, band) = situate_at(&bodies, &poses, &platform, &pm.bopts)?;
-            if band.exceeded > 0 {
-                eprintln!(
-                    "row {row_no}/{total_rows}: WARNING {} wetted sample(s) rose above the top \
-                     of the lofted band. That geometry is not in the .hull file and was taken \
-                     as zero half-beam, so this row understates the immersed hull and its \
-                     forces. Re-loft with --band {:.2} or more.",
-                    band.exceeded, band.need
-                );
-            }
-            let members: Vec<(&Hull, Placement)> =
+            let members_owned = situate_at(&posed, &platform, &pm.sopts)?;
+            let members: Vec<(&SectionalHull, Placement)> =
                 members_owned.iter().map(|(h, p)| (h, *p)).collect();
             let resistance = if rt.is_some() {
                 None
@@ -183,7 +170,7 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 None
             } else {
                 Some(
-                    multihull_resistance_with(&members, &cond, &pm.wave_opts, &pm.viscous)
+                    multihull_resistance(&members, &cond, &pm.wave_opts, &pm.viscous)
                         .map_err(|e| format!("point {} U={u}: {e}", point + 1))?,
                 )
             };
@@ -200,9 +187,8 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 &members,
                 pm.l_ref,
                 &pm.hulls,
-                &poses,
+                &posed,
                 &platform,
-                band,
             )?;
             rows.push(RowSummary {
                 row_no,
@@ -213,7 +199,6 @@ pub fn run(manifest_path: &str, out_path: &str, cache_path: Option<&str>) -> Res
                 trim_deg: trim.to_degrees(),
                 rt,
                 pe,
-                band,
             });
             detail_pages.push(page);
             cache_out.push(CachedRow {
@@ -278,10 +263,6 @@ struct RowSummary {
     trim_deg: f64,
     rt: Option<f64>,
     pe: Option<f64>,
-    /// Whether this row's pose stayed inside the lofted band. When it did
-    /// not, the hull the forces were computed on is missing its immersed
-    /// upper stern, so `rt`/`pe` in the index understate the row.
-    band: BandCheck,
 }
 
 /// A compact repr of a point's non-speed axis values (e.g. a spacing or lcg
@@ -387,44 +368,30 @@ fn write_cache(path: &str, rows: &[CachedRow]) -> Result<(), String> {
     std::fs::write(path, out).map_err(|e| format!("cannot write {path}: {e}"))
 }
 
-/// Re-loft the fleet directly at a known (sinkage, trim) — the cheap,
+/// Cut the fleet directly at a known (sinkage, trim) — the cheap,
 /// non-iterative half of what the Newton solver does on every call. Used
 /// both for a fresh solve's result and to rebuild a cached row's geometry
 /// without re-solving it.
 fn situate_at(
-    bodies: &[&Body],
-    poses: &[HullPose],
+    hulls: &[SourceHull],
     platform: &Platform,
-    opts: &BodyOptions,
-) -> Result<(Vec<(Hull, Placement)>, BandCheck), String> {
+    opts: &michell::iges::SectionalOptions,
+) -> Result<Vec<(SectionalHull, Placement)>, String> {
     let mut members = Vec::new();
-    let mut band = BandCheck::default();
-    for (body, pose) in bodies.iter().zip(poses) {
-        if let Some(sb) = body
-            .situate(0.0, pose, platform, opts)
+    for h in hulls {
+        let o = michell::iges::SectionalOptions {
+            waterline_z: h.waterline_z,
+            ..*opts
+        };
+        if let Some(sh) = h
+            .source
+            .situate_sectional(h.index, h.waterline_z, &h.pose, platform, &o)
             .map_err(|e| format!("{e}"))?
         {
-            band.exceeded += sb.band_exceeded;
-            if sb.band_overshoot > 0.0 {
-                // What --band would have covered this pose: the band this
-                // body already carries above its design waterline, plus how
-                // far the water climbed past its top.
-                band.need = band.need.max(body.waterline() + sb.band_overshoot);
-            }
-            members.push((sb.hull, sb.placement));
+            members.push((sh.hull, sh.placement));
         }
     }
-    Ok((members, band))
-}
-
-/// Whether a row's pose stayed inside the geometry the `.hull` files carry,
-/// and if not, the `--band` that would have covered it.
-#[derive(Debug, Clone, Copy, Default)]
-struct BandCheck {
-    /// Wetted samples that fell above a body's band top, summed over hulls.
-    exceeded: usize,
-    /// Smallest `michell loft --band` that would have contained this pose [m].
-    need: f64,
+    Ok(members)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -435,12 +402,11 @@ fn build_detail_page(
     speed: f64,
     froude: f64,
     cond: &Conditions,
-    members: &[(&Hull, Placement)],
+    members: &[(&SectionalHull, Placement)],
     l_ref: f64,
     hulls: &[MHull],
-    poses: &[HullPose],
+    posed: &[SourceHull],
     platform: &Platform,
-    band: BandCheck,
 ) -> Result<Page, String> {
     let mut page = Page::new(PAGE_W, PAGE_H);
     let knots = speed / KNOT;
@@ -479,20 +445,18 @@ fn build_detail_page(
 
     let profile_hull_y = hulls
         .iter()
-        .zip(poses)
-        .map(|(h, p)| h.body.centerplane() + p.dy)
+        .zip(posed)
+        .map(|(h, p)| h.centerplane + p.pose.dy)
         .find(|y| y.abs() > 1e-9)
         .unwrap_or(0.0);
     let profile_caption = draw_profile_view(
         &mut page,
         profile_rect,
-        hulls,
-        poses,
+        posed,
         platform,
         members,
         cond,
         profile_hull_y,
-        band,
     )?;
     draw_caption(
         &mut page,
@@ -525,7 +489,7 @@ fn draw_plan_view(
     doc: &mut Document,
     page: &mut Page,
     rect: [f64; 4],
-    members: &[(&Hull, Placement)],
+    members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
     l_ref: f64,
 ) -> Result<String, String> {
@@ -545,7 +509,7 @@ fn draw_plan_view(
     let mut x_hi = f64::NEG_INFINITY;
     let mut y_abs = 0.0f64;
     for (h, p) in members {
-        let (h0, h1) = h.surface().x_domain();
+        let (h0, h1) = h.x_range();
         x_lo = x_lo.min(h0 + p.x);
         x_hi = x_hi.max(h1 + p.x);
         y_abs = y_abs.max(p.y.abs());
@@ -590,7 +554,7 @@ fn draw_plan_view(
     // and is not a model of the actual (breaking, unsteady) near-transom
     // sea surface, so drawing it here would show fabricated structure
     // behind a wet transom that doesn't correspond to anything real.
-    let mut spec = FreeWaveSpectrum::new_with_transom(members, cond, TransomClosure::None)
+    let mut spec = FreeWaveSpectrum::new_sectional(members, cond, TransomClosure::None)
         .map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, nx, ny)
@@ -630,13 +594,13 @@ fn draw_plan_view(
     }
     const HULL_GRAY: [u8; 3] = [0x52, 0x51, 0x4e];
     for (h, p) in members {
-        let (h0, h1) = h.surface().x_domain();
+        let (h0, h1) = h.x_range();
         for ix in 0..nx {
             let x = grid.x(ix) - p.x;
             if x < h0 || x > h1 {
                 continue;
             }
-            let half_beam = h.surface().eval(x, 0.0);
+            let half_beam = h.waterline_half_beam(x);
             for iy in 0..ny {
                 if (grid.y(iy) - p.y).abs() <= half_beam {
                     let row = ny - 1 - iy;
@@ -662,177 +626,152 @@ fn draw_plan_view(
     ))
 }
 
-/// Positive angle raises the +x side, down-positive z — mirrors
-/// `michell::body`'s private `FrameMap::body_to_water`. That struct isn't
-/// exported (situating never needs the inverse outside the crate), so the
-/// handful of trig lines are duplicated here rather than plumbing a new
-/// public API through the library for a one-off report view.
-fn rot_down(x: f64, zd: f64, px: f64, pzd: f64, sin: f64, cos: f64) -> (f64, f64) {
-    let (dx, dz) = (x - px, zd - pzd);
-    (px + dx * cos + dz * sin, pzd + dz * cos - dx * sin)
-}
-
-/// Map a point in a hull's own body frame (`xb`, `zb` down from the band top)
-/// to the water frame (`xw`, depth below the *actual* free surface — always
-/// 0 there by construction, since the platform's sinkage/trim is baked in).
-fn body_to_water(
-    xb: f64,
-    zb: f64,
-    body: &Body,
-    pose: &HullPose,
-    pose_pivot_x: f64,
-    platform: &Platform,
-) -> (f64, f64) {
-    let mut x = xb;
-    let mut z = zb - body.waterline();
-    if pose.trim != 0.0 {
-        let (s, c) = pose.trim.sin_cos();
-        (x, z) = rot_down(x, z, pose_pivot_x, 0.0, s, c);
-    }
-    x += pose.dx;
-    z += pose.dz;
-    let zw = -platform.sinkage;
-    if platform.trim != 0.0 {
-        let (s, c) = platform.trim.sin_cos();
-        (x, z) = rot_down(x, z, platform.pivot_x, zw, s, c);
-    }
-    (x, z - zw)
-}
-
-/// A hull's centreplane profile at the solved attitude: the keel/rocker
-/// line, the top of the lofted band, the design-waterline mark, and the
-/// (band-top, keel) pairs that bound the hull's silhouette.
+/// A hull's centreplane profile at the solved attitude, in the water frame
+/// (x, depth below the actual free surface — down-positive): the keel line,
+/// the top of the geometry, the design-waterline mark, and the (top, keel)
+/// pairs that bound the hull's silhouette.
 struct HullProfile {
     keel: Vec<[f64; 2]>,
-    /// The top of the body's modelled band (`z_b = 0`). This is where the
-    /// loft was cut, NOT a sheer line: `michell loft --band` deliberately
-    /// stops the fit a short way above the design waterline, because a deck
-    /// is a cliff for a height-field loft. The source CAD may well carry
-    /// full topsides above it; the `.hull` body simply does not. Drawn, and
-    /// labelled as the band top, so a pose that immerses past it is visible
-    /// rather than silently missing.
-    band_top: Vec<[f64; 2]>,
+    /// The top of the source geometry (sheer, or deck edge).
+    top: Vec<[f64; 2]>,
     design_wl: Vec<[f64; 2]>,
-    /// `[band top, keel]` pairs at the stations that carry any beam.
+    /// `[top, keel]` pairs at the stations that carry any geometry.
     silhouette: Vec<[[f64; 2]; 2]>,
-    /// Band top's height above the design waterline [m], for the caption.
-    band_above_wl: f64,
 }
 
-fn hull_profile_at(body: &Body, pose: &HullPose, platform: &Platform) -> HullProfile {
+/// The profile from the hull's tessellation at its pose and the platform
+/// state: per x bin, the highest and lowest vertex. The design waterline is
+/// the posed image of the design floatplane; the pose and platform move the
+/// hull rigidly (with uniform scale), so that image is the affine map fitted
+/// between the unposed and posed vertices.
+fn hull_profile_at(h: &SourceHull, platform: &Platform) -> Result<HullProfile, String> {
     const STATIONS: usize = 120;
-    const SCAN: usize = 160;
-    const SMOOTH_PASSES: usize = 3;
-    let (x0, x1) = body.surface().x_domain();
-    let (_, depth) = body.surface().z_domain();
-    let pivot_x = pose.pivot_x.unwrap_or(0.5 * (x0 + x1));
-    let xs: Vec<f64> = (0..STATIONS)
-        .map(|i| x0 + (x1 - x0) * i as f64 / (STATIONS - 1) as f64)
+    let (at_rest, _) = h
+        .source
+        .posed_tessellation(h.index, h.waterline_z, &HullPose::default(), &Platform::default())
+        .map_err(|e| format!("{e}"))?;
+    let (verts, _) = h
+        .source
+        .posed_tessellation(h.index, h.waterline_z, &h.pose, platform)
+        .map_err(|e| format!("{e}"))?;
+    let (mut x0, mut x1) = (f64::INFINITY, f64::NEG_INFINITY);
+    for v in &verts {
+        x0 = x0.min(v[0]);
+        x1 = x1.max(v[0]);
+    }
+    let mut hi = vec![f64::NEG_INFINITY; STATIONS];
+    let mut lo = vec![f64::INFINITY; STATIONS];
+    let bin = |x: f64| (((x - x0) / (x1 - x0) * STATIONS as f64) as usize).min(STATIONS - 1);
+    for v in &verts {
+        let b = bin(v[0]);
+        hi[b] = hi[b].max(v[2]);
+        lo[b] = lo[b].min(v[2]);
+    }
+    let mut keel = Vec::new();
+    let mut top = Vec::new();
+    let mut silhouette = Vec::new();
+    for b in 0..STATIONS {
+        if hi[b] < lo[b] {
+            continue;
+        }
+        let x = x0 + (x1 - x0) * (b as f64 + 0.5) / STATIONS as f64;
+        let (t, k) = ([x, -hi[b]], [x, -lo[b]]);
+        top.push(t);
+        keel.push(k);
+        silhouette.push([t, k]);
+    }
+    // The design floatplane at rest is z = 0; fit x', z' = A·(x, z, 1) over
+    // the vertex correspondence (exact for the affine pose) and map it.
+    let fit = affine_xz(&at_rest, &verts);
+    let (ax0, ax1) = at_rest
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| (a.min(v[0]), b.max(v[0])));
+    let design_wl = (0..=40)
+        .map(|i| {
+            let x = ax0 + (ax1 - ax0) * i as f64 / 40.0;
+            let (xw, zw) = fit(x, 0.0);
+            [xw, -zw]
+        })
         .collect();
-    let z_of = |j: usize| depth * j as f64 / (SCAN - 1) as f64;
-
-    // Raw keel depth per station, in the body's own frame.
-    let mut raw: Vec<Option<f64>> = Vec::with_capacity(STATIONS);
-    let mut fs = vec![0.0f64; SCAN];
-    for &xb in &xs {
-        let f_wl = body.surface().eval(xb, body.waterline()).max(0.0);
-        let eps = (KEEL_BEAM_FRACTION * f_wl).max(KEEL_MIN_BEAM);
-        for (j, f) in fs.iter_mut().enumerate() {
-            *f = body.surface().eval(xb, z_of(j));
-        }
-        // Walk DOWN from the band top and stop at the first crossing back
-        // below eps. Taking the DEEPEST crossing instead - the obvious
-        // reading of "where does the hull stop" - lands in the ringing tail
-        // this loft leaves under the hull, a few millimetres of half-beam
-        // wandering all the way to the band bottom. The detected depth then
-        // hops between ripple lobes from one station to the next and the
-        // keel draws as a sawtooth.
-        let mut entered = false;
-        let mut keel = None;
-        for j in 0..SCAN {
-            if !entered {
-                entered = fs[j] > eps;
-            } else if fs[j] <= eps {
-                let t = ((fs[j - 1] - eps) / (fs[j - 1] - fs[j])).clamp(0.0, 1.0);
-                keel = Some(z_of(j - 1) + t * (z_of(j) - z_of(j - 1)));
-                break;
-            }
-        }
-        raw.push(match (entered, keel) {
-            (true, None) => Some(depth), // beam all the way to the band bottom
-            (_, k) => k,
-        });
-    }
-
-    // Light binomial smoothing of the detected depths. A hull's underside is
-    // smooth; what survives the crossing rule above is detection jitter of a
-    // millimetre or two, which this panel's vertical exaggeration magnifies
-    // into a visible sawtooth. The window shrinks at the ends so the transom
-    // and the stem stay exactly where they were found rather than being
-    // rounded off by the filter.
-    let mut zs: Vec<f64> = raw.iter().filter_map(|v| *v).collect();
-    let n = zs.len();
-    for _ in 0..SMOOTH_PASSES {
-        let o = zs.clone();
-        for i in 0..n {
-            zs[i] = match i.min(n - 1 - i).min(2) {
-                0 => o[i],
-                1 => 0.25 * (o[i - 1] + 2.0 * o[i] + o[i + 1]),
-                _ => (o[i - 2] + 4.0 * o[i - 1] + 6.0 * o[i] + 4.0 * o[i + 1] + o[i + 2]) / 16.0,
-            };
-        }
-    }
-
-    let mut keel = Vec::with_capacity(STATIONS);
-    let mut band_top = Vec::with_capacity(STATIONS);
-    let mut design_wl = Vec::with_capacity(STATIONS);
-    let mut silhouette = Vec::with_capacity(STATIONS);
-    let mut k = 0usize;
-    for (i, &xb) in xs.iter().enumerate() {
-        let top = body_to_water(xb, 0.0, body, pose, pivot_x, platform);
-        band_top.push([top.0, top.1]);
-        if raw[i].is_some() {
-            let (xw, zw) = body_to_water(xb, zs[k], body, pose, pivot_x, platform);
-            k += 1;
-            keel.push([xw, zw]);
-            silhouette.push([[top.0, top.1], [xw, zw]]);
-        }
-        let (xw, zw) = body_to_water(xb, body.waterline(), body, pose, pivot_x, platform);
-        design_wl.push([xw, zw]);
-    }
-    HullProfile {
+    Ok(HullProfile {
         keel,
-        band_top,
+        top,
         design_wl,
         silhouette,
-        band_above_wl: body.waterline(),
+    })
+}
+
+/// The affine map in the (x, z) plane taking `from` to `to` (paired
+/// vertices), by least squares.
+fn affine_xz(from: &[[f64; 3]], to: &[[f64; 3]]) -> impl Fn(f64, f64) -> (f64, f64) {
+    // Normal equations for [x z 1] against each target coordinate.
+    let mut m = [[0.0f64; 3]; 3];
+    let mut rx = [0.0f64; 3];
+    let mut rz = [0.0f64; 3];
+    for (a, b) in from.iter().zip(to) {
+        let r = [a[0], a[2], 1.0];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] += r[i] * r[j];
+            }
+            rx[i] += r[i] * b[0];
+            rz[i] += r[i] * b[2];
+        }
     }
+    let solve = |rhs: [f64; 3]| -> [f64; 3] {
+        let det = |m: &[[f64; 3]; 3]| {
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        };
+        let d = det(&m);
+        let mut out = [0.0; 3];
+        for (k, o) in out.iter_mut().enumerate() {
+            let mut mk = m;
+            for i in 0..3 {
+                mk[i][k] = rhs[i];
+            }
+            *o = if d != 0.0 { det(&mk) / d } else { 0.0 };
+        }
+        out
+    };
+    let (cx, cz) = (solve(rx), solve(rz));
+    move |x, z| (cx[0] * x + cx[1] * z + cx[2], cz[0] * x + cz[1] * z + cz[2])
 }
 
 #[allow(clippy::too_many_arguments)]
 fn draw_profile_view(
     page: &mut Page,
     rect: [f64; 4],
-    hulls: &[MHull],
-    poses: &[HullPose],
+    posed: &[SourceHull],
     platform: &Platform,
-    members: &[(&Hull, Placement)],
+    members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
     wave_cut_y: f64,
-    band: BandCheck,
 ) -> Result<String, String> {
-    let profiles: Vec<HullProfile> = hulls
+    let mut profiles: Vec<HullProfile> = posed
         .iter()
-        .zip(poses)
-        .map(|(h, p)| hull_profile_at(&h.body, p, platform))
-        .collect();
+        .map(|h| hull_profile_at(h, platform))
+        .collect::<Result<_, _>>()?;
+    // Topsides are cut one draft above the water, so the panel's height goes
+    // to the immersed hull and the attitude rather than to freeboard.
+    let draft = profiles
+        .iter()
+        .flat_map(|p| p.keel.iter().map(|k| k[1]))
+        .fold(0.0f64, f64::max);
+    let cap = -draft.max(1e-3);
+    for p in &mut profiles {
+        for t in p.top.iter_mut().chain(p.silhouette.iter_mut().map(|sl| &mut sl[0])) {
+            t[1] = t[1].max(cap);
+        }
+    }
 
     // Wave elevation cut along the fleet centreline at the reference hull's
     // transverse offset ("the wake, in profile"); z is up here, so it adds
     // to the flat sea surface as a negative depth.
     let mut wave_cut: Vec<[f64; 2]> = Vec::new();
     if !members.is_empty() {
-        let mut spec = FreeWaveSpectrum::new_with_transom(members, cond, TransomClosure::None)
+        let mut spec = FreeWaveSpectrum::new_sectional(members, cond, TransomClosure::None)
             .map_err(|e| format!("{e}"))?;
         let (x0, x1) = data_x_range(&profiles);
         const N: usize = 160;
@@ -845,14 +784,14 @@ fn draw_profile_view(
     }
 
     // Data bounds (down-positive z; we flip to page y-up at draw time). The
-    // band-top curve spans the hull's full modelled length regardless of
-    // local wetness, so it sets the x-range.
+    // top curve spans the hull's full length regardless of local wetness,
+    // so it sets the x-range.
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     let mut z_lo = 0.0f64; // includes the still-water line
     let mut z_hi = 0.0f64;
     for p in &profiles {
-        for pt in p.keel.iter().chain(&p.band_top).chain(&p.design_wl) {
+        for pt in p.keel.iter().chain(&p.top).chain(&p.design_wl) {
             x_lo = x_lo.min(pt[0]);
             x_hi = x_hi.max(pt[0]);
             z_lo = z_lo.min(pt[1]);
@@ -923,7 +862,7 @@ fn draw_profile_view(
     page.polyline(&[to_page(x_lo, 0.0), to_page(x_hi, 0.0)], BLUE, 0.5);
 
     for p in &profiles {
-        let top_pts: Vec<[f64; 2]> = p.band_top.iter().map(|pt| to_page(pt[0], pt[1])).collect();
+        let top_pts: Vec<[f64; 2]> = p.top.iter().map(|pt| to_page(pt[0], pt[1])).collect();
         page.polyline(&top_pts, GRAY, 0.6);
         let keel_pts: Vec<[f64; 2]> = p.keel.iter().map(|pt| to_page(pt[0], pt[1])).collect();
         page.polyline(&keel_pts, BLACK, 1.2);
@@ -936,25 +875,13 @@ fn draw_profile_view(
         page.polyline(&cut_pts, BLUE, 0.9);
     }
 
-    let band_h = profiles.first().map(|p| p.band_above_wl).unwrap_or(0.0);
-    let mut caption = format!(
-        "shaded: hull centreplane section, darker = submerged; black: keel, the {:.0}% \
-         half-beam contour lightly smoothed (this loft has no sharp keel edge); \
-         orange: design waterline\n\
-         blue: still water and the wake cut at y = {wave_cut_y:.2} m; gray: top of the \
-         lofted band, {band_h:.2} m above the design waterline - topsides above it are \
-         not in the .hull file; vertical exaggeration {:.1}x",
-        100.0 * KEEL_BEAM_FRACTION,
+    let caption = format!(
+        "shaded: hull profile, darker = submerged, topsides cut one draft above the \
+         water; black: keel; orange: design waterline\n\
+         blue: still water and the wake cut at y = {wave_cut_y:.2} m; vertical \
+         exaggeration {:.1}x",
         sz / sx
     );
-    if band.exceeded > 0 {
-        caption.push_str(&format!(
-            "\nWARNING: water rose above the band top at {} wetted sample(s) - that hull \
-             is missing from the file and counted as zero beam, so the immersed hull shown \
-             and this row's forces are understated. Re-loft with --band {:.2} or more.",
-            band.exceeded, band.need
-        ));
-    }
     Ok(caption)
 }
 
@@ -962,7 +889,7 @@ fn data_x_range(profiles: &[HullProfile]) -> (f64, f64) {
     let mut x_lo = f64::INFINITY;
     let mut x_hi = f64::NEG_INFINITY;
     for p in profiles {
-        for pt in p.band_top.iter() {
+        for pt in p.top.iter() {
             x_lo = x_lo.min(pt[0]);
             x_hi = x_hi.max(pt[0]);
         }
@@ -1041,9 +968,6 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
                 &format!("{:.2}", pe / 1000.0 / PROPULSIVE_EFFICIENCY),
             );
         }
-        if row.band.exceeded > 0 {
-            page.text(col_x[9] + 50.0, y, 9.0, ORANGE, "*");
-        }
     }
 
     // Brake power is the one column here that is not computed from the
@@ -1062,37 +986,5 @@ fn build_index_page(manifest_path: &str, rows: &[RowSummary]) -> Page {
              from one."
         ),
     );
-    y -= 9.5;
-
-    // A row whose pose lifted water above the lofted band was integrated over
-    // a hull that is missing its immersed upper stern, so its Rt and Pe are
-    // understated. Say so next to the numbers, not only on the detail page.
-    let flagged = rows.iter().filter(|r| r.band.exceeded > 0).count();
-    if flagged > 0 {
-        let need = rows.iter().fold(0.0f64, |m, r| m.max(r.band.need));
-        y -= 20.0;
-        page.text(
-            MARGIN,
-            y,
-            8.0,
-            ORANGE,
-            &format!(
-                "* {flagged} of {} row(s): the solved attitude immersed the hull above the \
-                 top of the lofted band.",
-                rows.len()
-            ),
-        );
-        page.text(
-            MARGIN,
-            y - 10.0,
-            8.0,
-            GRAY,
-            &format!(
-                "That geometry is not in the .hull file and was taken as zero half-beam, so \
-                 Rt and Pe are understated. Re-loft with michell loft --band {need:.2} or \
-                 more and re-run."
-            ),
-        );
-    }
     page
 }
