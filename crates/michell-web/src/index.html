@@ -832,15 +832,18 @@ const scene3d = (() => {
   }
 
   // Coloured mesh from positions (scene frame) and per-vertex values.
-  function colored(pos, index, vals, vmax, userData, opacity = 1) {
+  function colored(pos, index, vals, vmax, userData, opacity = 1, lit = true) {
     const col = new Float32Array(vals.length * 3);
     vals.forEach((v, i) => col.set(diverging(v / vmax), 3 * i));
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
-    geo.setIndex(index);
+    geo.setIndex(Array.isArray(index) ? index : new THREE.BufferAttribute(index, 1));
     geo.computeVertexNormals();
-    const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.8, side: THREE.DoubleSide,
+    // Unlit when the colour is the whole story: at true scale a surface's
+    // shading would draw only its tiniest ripples, as streaks.
+    const Mat = lit ? THREE.MeshStandardMaterial : THREE.MeshBasicMaterial;
+    const mesh = new THREE.Mesh(geo, new Mat({ vertexColors: true, ...(lit ? { roughness: 0.8 } : {}), side: THREE.DoubleSide,
       transparent: opacity < 1, opacity, depthWrite: opacity >= 1 }));
     mesh.userData = { vals, ...userData };
     return mesh;
@@ -909,24 +912,42 @@ const scene3d = (() => {
     }
     clipHull();
 
-    const g = d.surface, zmax = range99(g.zeta);
+    const g = d.surface;
+    if (typeof g.zeta === "string") g.zeta = new Float32Array(b64(g.zeta));
+    const zmax = range99(g.zeta);
     const mm = (1000 * zmax) >= 100 ? (1000 * zmax).toFixed(0) : (1000 * zmax).toPrecision(2);
     $("zlo").textContent = `−${mm} mm`; $("zhi").textContent = `+${mm} mm`;
-    const pos = new Float32Array(g.nx * g.ny * 3), inside = new Uint8Array(g.nx * g.ny);
+    // The waterplanes at this attitude, from each pressure mesh's top row
+    // (its depth-0 half-beams): inside them the surface is flattened to calm
+    // water and left to the hull to cover, rather than cut out cell by cell.
+    const wl = d.hulls.map((p) => {
+      const nz = p.depth.length;
+      return { x: p.x, y: p.y, hb: p.x.map((_, i) => p.half_beam[i * nz]) };
+    });
+    const insideWl = (x, y) => wl.some((w) => {
+      const n = w.x.length;
+      if (x < w.x[0] || x > w.x[n - 1]) return false;
+      let i = 1;
+      while (i < n - 1 && w.x[i] < x) i++;
+      const t = (x - w.x[i - 1]) / (w.x[i] - w.x[i - 1] || 1);
+      return Math.abs(y - w.y) < w.hb[i - 1] + t * (w.hb[i] - w.hb[i - 1]);
+    });
+    const pos = new Float32Array(g.nx * g.ny * 3), vals = new Float32Array(g.nx * g.ny);
     for (let iy = 0; iy < g.ny; iy++) for (let ix = 0; ix < g.nx; ix++) {
       const n = iy * g.nx + ix;
       const x = g.x0 + (g.x1 - g.x0) * ix / (g.nx - 1), y = g.y0 + (g.y1 - g.y0) * iy / (g.ny - 1);
-      pos.set([x, g.zeta[n], y], 3 * n);
-      inside[n] = hulls.some((h) => { const b = wlHalfBeam(h, x - h.placement.x); return b >= 0 && Math.abs(y - h.placement.y) < b; }) ? 1 : 0;
+      const z = insideWl(x, y) ? 0 : g.zeta[n];
+      vals[n] = z;
+      pos.set([x, z, y], 3 * n);
     }
-    const index = [];
+    const index = new Uint32Array(6 * (g.nx - 1) * (g.ny - 1));
+    let m = 0;
     for (let iy = 0; iy + 1 < g.ny; iy++) for (let ix = 0; ix + 1 < g.nx; ix++) {
       const a = iy * g.nx + ix, b = a + 1, c = a + g.nx + 1, e = a + g.nx;
-      if (inside[a] || inside[b] || inside[c] || inside[e]) continue;
-      index.push(a, c, b, a, e, c);
+      index.set([a, c, b, a, e, c], m); m += 6;
     }
     // See-through, so the hull's pressure shows beneath it.
-    waveMesh = colored(pos, index, g.zeta, zmax, { what: "zeta" }, 0.72);
+    waveMesh = colored(pos, index, vals, zmax, { what: "zeta" }, 0.72, false);
     waveMesh.renderOrder = 1;
     layers.waves.add(waveMesh); probes.push(waveMesh);
     // The Wake view frames the whole pattern; the others stay on the hull.

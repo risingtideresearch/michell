@@ -216,7 +216,7 @@ impl FlowRequest {
             },
             other => return Err(format!("closure {other:?}: expected ballistic, fixed or off")),
         };
-        let grid = num("grid")?.map_or(320, |g| (g as usize).clamp(40, 800));
+        let grid = num("grid")?.map_or(640, |g| (g as usize).clamp(40, 1200));
         let dynamic = match get("attitude").unwrap_or("dynamic") {
             "dynamic" => true,
             "design" => false,
@@ -467,9 +467,39 @@ pub fn flow_with_progress(
     let (x0, x1) = (xa - 1.5 * l_ref, xb + 0.4 * l_ref);
     let yh = (yh + 0.45 * l_ref).max(0.3 * (x1 - x0));
     let nx = req.grid;
-    let ny = ((nx as f64) * 2.0 * yh / (x1 - x0)).round().clamp(16.0, 400.0) as usize;
+    // An odd row count, so y = 0 is a row and a symmetric fleet mirrors.
+    let nh = ((nx as f64) * yh / (x1 - x0)).round().clamp(8.0, 600.0) as usize + 1;
+    let ny = 2 * nh - 1;
     track.at(3, 0.0, format!("{nx} × {ny} grid over {:.0} × {:.0} m", x1 - x0, 2.0 * yh))?;
-    let g = free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny).map_err(|e| e.to_string())?;
+    // A fleet symmetric about y = 0 — one hull on the centreline, or
+    // mirrored pairs — has a symmetric field: compute the half with y ≥ 0.
+    let symmetric = members.iter().all(|(h, pl)| {
+        let tol = 1e-6 * l_ref;
+        pl.y.abs() < tol
+            || members.iter().any(|(o, q)| {
+                (q.y + pl.y).abs() < tol
+                    && (q.x - pl.x).abs() < tol
+                    && (o.displaced_volume() - h.displaced_volume()).abs() <= 1e-6 * h.displaced_volume()
+                    && (o.length() - h.length()).abs() < tol
+            })
+    });
+    let g = if symmetric {
+        let half = free_surface(&members, &cond, &nf, x0, x1, 0.0, yh, nx, nh)
+            .map_err(|e| e.to_string())?;
+        let mut zeta = Vec::with_capacity(nx * ny);
+        for iy in 0..ny {
+            let k = iy.abs_diff(nh - 1);
+            zeta.extend_from_slice(&half.zeta[k * nx..(k + 1) * nx]);
+        }
+        michell::WaveGrid {
+            y0: -yh,
+            ny,
+            zeta,
+            ..half
+        }
+    } else {
+        free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny).map_err(|e| e.to_string())?
+    };
     track.at(
         4,
         0.0,
@@ -582,7 +612,7 @@ pub fn flow_with_progress(
         "hulls": hulls,
         "surface": {
             "x0": g.x0, "x1": g.x1, "y0": g.y0, "y1": g.y1, "nx": g.nx, "ny": g.ny,
-            "zeta": round(&g.zeta),
+            "zeta": b64(bytemuck_f32(&g.zeta.iter().map(|&z| z as f32).collect::<Vec<_>>())),
         },
         "forces": forces,
     }))
