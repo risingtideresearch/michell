@@ -12,8 +12,8 @@
 //! (encounter frequency ≤ 0) are outside the strip solver; those components
 //! are skipped and counted in [`SeaResponse::skipped_energy`].
 
-use crate::strip::{added_resistance, MassProperties, StripOptions, Wave};
-use michell_geometry::{Result, SectionalHull};
+use crate::strip::{added_resistance_fleet, MassProperties, StripOptions, Wave};
+use michell_geometry::{Placement, Result, SectionalHull};
 use std::f64::consts::PI;
 
 /// A one-dimensional wave spectrum.
@@ -90,6 +90,31 @@ pub fn sea_response(
     samples: usize,
     opts: &StripOptions,
 ) -> Result<SeaResponse> {
+    sea_response_fleet(
+        &[(hull, Placement::default())],
+        mass,
+        spectrum,
+        heading,
+        speed,
+        stations,
+        samples,
+        opts,
+    )
+}
+
+/// [`sea_response`] for a platform of several placed hulls; `stations` are
+/// platform-x positions.
+#[allow(clippy::too_many_arguments)]
+pub fn sea_response_fleet(
+    members: &[(&SectionalHull, Placement)],
+    mass: &MassProperties,
+    spectrum: &Spectrum,
+    heading: f64,
+    speed: f64,
+    stations: &[f64],
+    samples: usize,
+    opts: &StripOptions,
+) -> Result<SeaResponse> {
     let wp = spectrum.peak_frequency();
     let (lo, hi) = (0.3 * wp, 4.0 * wp);
     let n = samples.max(3) | 1; // odd, for Simpson's rule
@@ -113,7 +138,7 @@ pub fn sea_response(
             heading,
             speed,
         };
-        let r = match added_resistance(hull, mass, &wave, opts) {
+        let r = match added_resistance_fleet(members, mass, &wave, opts) {
             Ok(r) => r,
             Err(_) => {
                 skipped += w * s;
