@@ -19,7 +19,8 @@
 //!                               line; a client that goes away stops it
 
 use michell_web::{
-    flow, flow_with_progress, loft, FlowRequest, LoftRequest, CANCELLED, MAX_UPLOAD,
+    flow, flow_with_progress, loft, span_sweep_with_progress, FlowRequest, LoftRequest,
+    CANCELLED, MAX_UPLOAD,
 };
 use std::io::{Read, Write};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -66,6 +67,9 @@ fn handle(mut req: Request) {
         && pairs.iter().any(|(k, v)| k == "progress" && v != "0")
     {
         return stream_flow(req, &pairs);
+    }
+    if *req.method() == Method::Post && path == "/api/span_sweep" {
+        return stream_sweep(req, &pairs);
     }
     let resp = match (req.method(), path) {
         (Method::Get, "/") => Response::from_string(PAGE)
@@ -199,6 +203,98 @@ fn stream_flow(mut req: Request, pairs: &[(String, String)]) {
         }
     };
     let _ = chunk(&mut out, &last).and_then(|_| {
+        out.write_all(b"0\r\n\r\n")?;
+        out.flush()
+    });
+}
+
+/// `/api/span_sweep?spans=S1,S2,…&…` (the flow's other keys, without
+/// `span`): a fast catamaran span sweep (see
+/// `michell_web::span_sweep_with_progress`), streamed like `/api/flow`:
+/// progress lines, a `{"span_index": i, "result": …}` line per span as it is
+/// done, and a closing `{"done": true}` (or `{"error": …}`).
+fn stream_sweep(mut req: Request, pairs: &[(String, String)]) {
+    use std::cell::RefCell;
+    let name = pairs
+        .iter()
+        .find(|(k, _)| k == "name")
+        .map_or("upload", |(_, v)| v.as_str())
+        .to_string();
+    let body = read_body(&mut req);
+    let out = RefCell::new(req.into_writer());
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\n\
+                Cache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\
+                Connection: close\r\n\r\n";
+    let chunk = |line: &str| -> std::io::Result<()> {
+        let mut out = out.borrow_mut();
+        let data = format!("{line}\n");
+        write!(out, "{:x}\r\n", data.len())?;
+        out.write_all(data.as_bytes())?;
+        out.write_all(b"\r\n")?;
+        out.flush()
+    };
+    {
+        let mut o = out.borrow_mut();
+        if o.write_all(head.as_bytes()).and_then(|_| o.flush()).is_err() {
+            return;
+        }
+    }
+    let t0 = std::time::Instant::now();
+    let gone = std::cell::Cell::new(false);
+    let result = body.and_then(|bytes| {
+        let spans: Vec<f64> = pairs
+            .iter()
+            .find(|(k, _)| k == "spans")
+            .map(|(_, v)| v.split(',').filter_map(|t| t.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        let opts = FlowRequest::from_query(pairs)?;
+        span_sweep_with_progress(
+            &name,
+            bytes,
+            &opts,
+            &spans,
+            &mut |i, v| {
+                let ok = chunk(&serde_json::json!({ "span_index": i, "result": v }).to_string()).is_ok();
+                gone.set(gone.get() || !ok);
+                ok
+            },
+            &mut |p| {
+                let line = serde_json::json!({ "progress": {
+                    "stage": p.stage,
+                    "step": p.step,
+                    "steps": p.steps,
+                    "detail": p.detail,
+                    "fraction": p.fraction,
+                    "seconds": t0.elapsed().as_secs_f64(),
+                }});
+                let bad = chunk("").is_err() || {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    chunk(&line.to_string()).is_err()
+                };
+                gone.set(gone.get() || bad);
+                !bad
+            },
+        )
+    });
+    let last = match result {
+        Ok(()) => {
+            eprintln!("span sweep {name}: ok ({:.2} s, streamed)", t0.elapsed().as_secs_f64());
+            serde_json::json!({ "done": true }).to_string()
+        }
+        Err(e) if e == CANCELLED || gone.get() => {
+            eprintln!(
+                "span sweep {name}: cancelled after {:.1} s (client gone)",
+                t0.elapsed().as_secs_f64()
+            );
+            return;
+        }
+        Err(e) => {
+            eprintln!("span sweep {name}: {e}");
+            serde_json::json!({ "error": e }).to_string()
+        }
+    };
+    let _ = chunk(&last).and_then(|_| {
+        let mut out = out.borrow_mut();
         out.write_all(b"0\r\n\r\n")?;
         out.flush()
     });

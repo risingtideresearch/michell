@@ -206,6 +206,9 @@ pub struct FlowRequest {
     /// A previous solution `(sinkage [m], trim [rad])` to start the
     /// equilibrium from — the last speed's, as the slider moves.
     pub warm: Option<(f64, f64)>,
+    /// Hold the platform at this `(sinkage [m], trim [rad])` instead of
+    /// solving for it (a fast span sweep's shared attitude).
+    pub hold: Option<(f64, f64)>,
 }
 
 impl FlowRequest {
@@ -263,6 +266,7 @@ impl FlowRequest {
             dynamic,
             mass,
             lcg: num("lcg")?,
+            hold: None,
             mass_by: match get("mass_by").unwrap_or("sinking") {
                 "sinking" => MassBy::Sinking,
                 "scale" => MassBy::ScaleXyz,
@@ -369,6 +373,25 @@ pub fn flow_with_progress(
     bytes: Vec<u8>,
     req: &FlowRequest,
     report: &mut dyn FnMut(&Progress) -> bool,
+) -> Result<Value, String> {
+    flow_inner(name, bytes, req, report, None)
+}
+
+/// One demihull's free surface at a held attitude, computed once for a fast
+/// span sweep and summed at each span's offsets.
+struct SweepField {
+    /// The largest span the half-field must cover.
+    max_span: f64,
+    /// `(dy, rows, grid)`: the half-field (y ≥ 0) on rows `dy` apart.
+    field: Option<(f64, usize, michell::WaveGrid)>,
+}
+
+fn flow_inner(
+    name: &str,
+    bytes: Vec<u8>,
+    req: &FlowRequest,
+    report: &mut dyn FnMut(&Progress) -> bool,
+    mut shared: Option<&mut SweepField>,
 ) -> Result<Value, String> {
     use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
     use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
@@ -487,7 +510,35 @@ pub fn flow_with_progress(
     // The attitude: the dynamic equilibrium at this speed, or the design one.
     let mut platform = Platform::default();
     let mut solved = None;
-    let at_attitude: Vec<(SectionalHull, Placement)> = if req.dynamic {
+    let at_attitude: Vec<(SectionalHull, Placement)> = if let Some((sinkage, trim)) = req.hold {
+        // Held: cut the fleet at the given attitude, no solve.
+        platform = Platform {
+            sinkage,
+            trim,
+            pivot_x: lcg,
+        };
+        track.at(1, 0.5, "at the held attitude".into())?;
+        let mut out: Vec<(SectionalHull, Placement)> = Vec::new();
+        for (k, (i, pose)) in layout.iter().enumerate() {
+            // A copy of an earlier layout entry, shifted sideways, is that cut.
+            if let Some(j) = layout[..k]
+                .iter()
+                .position(|(o, q)| o == i && HullPose { dy: 0.0, ..*q } == HullPose { dy: 0.0, ..*pose })
+            {
+                let (h, p) = out[j].clone();
+                out.push((h, Placement { y: p.y + pose.dy - layout[j].1.dy, ..p }));
+                continue;
+            }
+            let h = cut
+                .file
+                .source
+                .situate_sectional(*i, cut.file.waterline_z, pose, &platform, &cut.opts)
+                .map_err(|e| e.to_string())?
+                .ok_or("the hull is dry at the held attitude")?;
+            out.push((h.hull, h.placement));
+        }
+        out
+    } else if req.dynamic {
         let sources: Vec<SourceHull> = layout
             .iter()
             .map(|&(index, pose)| SourceHull {
@@ -593,7 +644,44 @@ pub fn flow_with_progress(
                     && (o.length() - h.length()).abs() < tol
             })
     });
-    let g = if let Some(span) = req.span {
+    let g = if let (Some(span), Some(sf)) = (req.span, shared.as_deref_mut()) {
+        // A fast span sweep: one demihull half-field at the held attitude,
+        // wide enough for the largest span, summed at this span's offsets
+        // with linear interpolation between its rows (display only).
+        let dy = (x1 - x0) / (nx - 1) as f64;
+        if sf.field.is_none() {
+            let reach = yh.max(0.0) + 0.5 * sf.max_span + 0.6 * l_ref;
+            let rows = (reach / dy).ceil() as usize + 2;
+            let (h0, p0) = members[0];
+            let one = [(h0, Placement { x: p0.x, y: 0.0 })];
+            let half = free_surface(&one, &cond, &nf, x0, x1, 0.0, (rows - 1) as f64 * dy, nx, rows)
+                .map_err(|e| e.to_string())?;
+            sf.field = Some((dy, rows, half));
+        }
+        let (dy1, rows, half) = sf.field.as_ref().expect("just computed");
+        let at = |y: f64, i: usize| -> f64 {
+            let u = (y.abs() / dy1).min((rows - 1) as f64);
+            let j = (u.floor() as usize).min(rows - 2);
+            let t = u - j as f64;
+            (1.0 - t) * half.zeta[j * nx + i] + t * half.zeta[(j + 1) * nx + i]
+        };
+        let nh = (yh / dy).ceil() as usize + 1;
+        let (yh, ny) = ((nh - 1) as f64 * dy, 2 * nh - 1);
+        let mut zeta = Vec::with_capacity(nx * ny);
+        for iy in 0..ny {
+            let y = (iy.abs_diff(nh - 1)) as f64 * dy;
+            for i in 0..nx {
+                zeta.push(at(y - 0.5 * span, i) + at(y + 0.5 * span, i));
+            }
+        }
+        michell::WaveGrid {
+            y0: -yh,
+            y1: yh,
+            ny,
+            zeta,
+            ..half.clone()
+        }
+    } else if let Some(span) = req.span {
         // A catamaran's field is its demihull's, twice, shifted by ±span/2
         // (exact in thin-ship theory): one hull's field on a y-grid whose
         // spacing divides span/2, summed at offset rows. Both demihulls are
@@ -661,7 +749,30 @@ pub fn flow_with_progress(
 
     // Forces: the solved balance, or at the design attitude the force and
     // the first-order sinkage and trim it implies.
-    let forces = match solved {
+    let forces = match (solved, req.hold) {
+        (None, Some((sinkage, trim))) => {
+            // Held, not balanced: the dynamic load at this attitude shows
+            // how far from its own equilibrium this span sits. An indication,
+            // so from the quadrature's first passes (~0.1%), not its last.
+            let quick = michell::squat::SquatOptions {
+                max_refinements: 1,
+                ..squat
+            };
+            let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcg, &quick)
+                .map_err(|e| e.to_string())?;
+            json!({
+                "fz": d.force_up,
+                "moment": d.moment_bow_up,
+                // Of the weight, as the solved cases report it.
+                "lift_fraction": d.force_up / (mass * cond.gravity),
+                "sinkage": sinkage,
+                "trim_deg": trim.to_degrees(),
+                "trim_rad": trim,
+                "solved": false,
+                "held": true,
+            })
+        }
+        (s, _) => match s {
         Some((sinkage, trim, iterations, d, lift)) => json!({
             "fz": d.force_up,
             "moment": d.moment_bow_up,
@@ -695,6 +806,7 @@ pub fn flow_with_progress(
                 "solved": false,
             })
         }
+    },
     };
 
     // The whole hull at the attitude, topsides included, for display: the
@@ -784,6 +896,71 @@ fn b64(bytes: Vec<u8>) -> String {
         }
     }
     out
+}
+
+/// A fast catamaran span sweep: the pair floated once, at the middle span,
+/// and every span evaluated at that held attitude — resistance, pressure,
+/// the free surface (summed from one demihull field) and the dynamic load
+/// the attitude leaves unbalanced. Each span's result goes to `emit` (with
+/// its index in `spans`) as it is done; returning `false` from `emit` or
+/// `report` stops the sweep.
+pub fn span_sweep_with_progress(
+    name: &str,
+    bytes: Vec<u8>,
+    req: &FlowRequest,
+    spans: &[f64],
+    emit: &mut dyn FnMut(usize, Value) -> bool,
+    report: &mut dyn FnMut(&Progress) -> bool,
+) -> Result<(), String> {
+    if spans.is_empty() || spans.iter().any(|s| !(*s > 0.0)) {
+        return Err("spans: expected positive centre spans".into());
+    }
+    let mut order: Vec<usize> = (0..spans.len()).collect();
+    order.sort_by(|&a, &b| spans[a].total_cmp(&spans[b]));
+    let mid = order[order.len() / 2];
+    // The middle span first (solved), then the rest at its attitude.
+    order.retain(|&i| i != mid);
+    order.insert(0, mid);
+    let mut shared = SweepField {
+        max_span: spans.iter().cloned().fold(0.0, f64::max),
+        field: None,
+    };
+    let n = order.len();
+    let mut hold = None;
+    for (k, &i) in order.iter().enumerate() {
+        let sub = FlowRequest {
+            span: Some(spans[i]),
+            hold,
+            cut: LoftRequest { ..req.cut },
+            ..*req
+        };
+        // The solved span is most of the work; weight it as such.
+        let (lo, w) = if k == 0 { (0.0, 0.6) } else { (0.6 + 0.4 * (k - 1) as f64 / (n - 1) as f64, 0.4 / (n - 1) as f64) };
+        let mut sub_report = |p: &Progress| {
+            report(&Progress {
+                detail: format!("span {:.2} m ({}/{n}) · {}", spans[i], k + 1, p.detail),
+                fraction: lo + w * p.fraction,
+                ..p.clone()
+            })
+        };
+        let v = flow_inner(name, bytes.clone(), &sub, &mut sub_report, Some(&mut shared))?;
+        if hold.is_none() {
+            // The solved attitude; at the design attitude, the design one.
+            let f = &v["forces"];
+            hold = Some(if f["solved"].as_bool() == Some(true) {
+                (
+                    f["sinkage"].as_f64().unwrap_or(0.0),
+                    f["trim_rad"].as_f64().unwrap_or(0.0),
+                )
+            } else {
+                (0.0, 0.0)
+            });
+        }
+        if !emit(i, v) {
+            return Err(CANCELLED.into());
+        }
+    }
+    Ok(())
 }
 
 /// Values rounded to 6 significant figures: a third of the JSON.
@@ -1115,6 +1292,43 @@ mod tests {
             let (vol, len) = (f["displaced_volume"].as_f64().unwrap(), f["length"].as_f64().unwrap());
             assert!((vol - 1.2 * v0).abs() < 1e-5 * v0, "{by}: volume {vol} vs {}", 1.2 * v0);
             assert!((len - length).abs() < 1e-6 * length, "{by}: length {len} vs {length}");
+        }
+    }
+
+    /// A span sweep at the design attitude is, span by span, the single
+    /// catamaran flows: the held path and the shared field change nothing
+    /// but the cost.
+    #[test]
+    fn a_span_sweep_is_its_spans_flows() {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let q = |extra: &[(&str, &str)]| -> FlowRequest {
+            let mut pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+            FlowRequest::from_query(&pairs).unwrap()
+        };
+        let spans = [2.0, 3.0, 4.5];
+        let mut got = vec![None; spans.len()];
+        span_sweep_with_progress(
+            "w.igs",
+            text.clone().into_bytes(),
+            &q(&[]),
+            &spans,
+            &mut |i, v| {
+                got[i] = Some(v);
+                true
+            },
+            &mut |_| true,
+        )
+        .unwrap();
+        for (i, s) in spans.iter().enumerate() {
+            let one = flow("w.igs", text.clone().into_bytes(), &q(&[("span", &s.to_string())])).unwrap();
+            let v = got[i].as_ref().expect("every span reported");
+            let (a, b) = (v["forces"]["rt"].as_f64().unwrap(), one["forces"]["rt"].as_f64().unwrap());
+            assert!((a - b).abs() < 1e-9 * b, "span {s}: sweep {a} vs single {b}");
         }
     }
 

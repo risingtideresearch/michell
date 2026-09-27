@@ -205,6 +205,12 @@
       <label class="wide">Catamaran centre span(s) [m]
         <input id="span" type="text" placeholder="blank: the hull on its own">
       </label>
+      <label class="wide">Several spans are
+        <select id="spanmode">
+          <option value="each">each floated at speed (exact)</option>
+          <option value="fast">held at the middle span's attitude (fast)</option>
+        </select>
+      </label>
       <label>Mass [kg]
         <input id="mass" type="text" placeholder="design">
       </label>
@@ -288,7 +294,7 @@ const $ = (id) => document.getElementById(id);
 const G = 9.81;
 let file = null, hulls = [], flowData = null, flowAbort = null;
 // The case queue: {id, froude, value, unit, mass, lcg, span, status, data, error}.
-let cases = [], nextCase = 1, viewing = null;
+let cases = [], nextCase = 1, nextGroup = 1, viewing = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
 // ---------------------------------------------------------------- upload
@@ -411,9 +417,15 @@ function addCases() {
   if (masses.some((m) => m != null && !(m > 0))) { $("flowout").innerHTML = `<div class="note">Masses must be positive</div>`; return; }
   const n = fns.length * masses.length * lcgs.length * spans.length;
   if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
-  for (const span of spans) for (const mass of masses) for (const lcg of lcgs) for (const value of fns) {
-    cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span,
-      massBy: mass == null ? "sinking" : $("massby").value, status: "queued", data: null, error: null });
+  // A fast span sweep: the spans of each (speed, load) share one request,
+  // floated once at the middle span and held there.
+  const fast = $("spanmode").value === "fast" && spans.filter((s) => s != null).length > 1;
+  for (const mass of masses) for (const lcg of lcgs) for (const value of fns) {
+    const group = fast ? nextGroup++ : null;
+    for (const span of spans) {
+      cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span, group,
+        massBy: mass == null ? "sinking" : $("massby").value, status: "queued", data: null, error: null });
+    }
   }
   renderCases();
   pump();
@@ -431,6 +443,7 @@ async function pump() {
   pumping = true;
   try {
     for (let c; (c = cases.find((c) => c.status === "queued")); ) {
+      if (c.group != null) { await runGroup(cases.filter((o) => o.group === c.group && o.status === "queued")); continue; }
       c.status = "running";
       renderCases();
       try {
@@ -447,6 +460,72 @@ async function pump() {
     }
   } finally {
     pumping = false;
+  }
+}
+
+// POST the hull and read newline-delimited JSON back: progress lines to the
+// bar, every other message to `onMsg`.
+async function stream(url, ctl, onMsg) {
+  const r = await fetch(url, { method: "POST", body: file, signal: ctl.signal });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
+  const reader = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.progress) progress.update(msg.progress);
+      else onMsg(msg);
+    }
+    if (done) break;
+  }
+}
+
+// A fast span sweep: one request for the group's spans, each span's result
+// landing in its own case as it arrives.
+async function runGroup(group) {
+  const c0 = group[0];
+  const q = new URLSearchParams({ name: file.name, froude: String(c0.froude), progress: "1",
+    spans: group.map((c) => c.span).join(",") });
+  for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
+  if (c0.mass != null) q.set("mass", String(c0.mass));
+  if (c0.lcg != null) q.set("lcg", String(c0.lcg));
+  if (c0.massBy !== "sinking") q.set("mass_by", c0.massBy);
+  const ctl = new AbortController();
+  flowAbort = ctl;
+  for (const c of group) { c.status = "running"; c.abort = ctl; }
+  renderCases();
+  progress.start(`Span sweep: ${group.length} spans at ${speedText(c0)}`);
+  let finished = false;
+  try {
+    await stream(`/api/span_sweep?${q}`, ctl, (msg) => {
+      if (msg.error) throw new Error(msg.error);
+      if (msg.done) { finished = true; return; }
+      const c = group[msg.span_index];
+      if (!c || !cases.includes(c)) return;
+      c.data = msg.result;
+      c.status = "done";
+      if (viewing == null) view(c.id);
+      renderCases();
+    });
+    if (!finished) throw new Error("the server closed the connection before the sweep finished");
+  } catch (e) {
+    for (const c of group) {
+      if (c.status !== "done" && cases.includes(c)) {
+        c.status = "error";
+        c.error = e.name === "AbortError" ? "cancelled" : e.message;
+        c.group = null; // a retry runs it on its own
+      }
+    }
+  } finally {
+    progress.stop();
+    flowAbort = null;
+    for (const c of group) c.abort = null;
+    renderCases();
   }
 }
 
@@ -470,24 +549,9 @@ async function runCase(c) {
   c.abort = ctl;
   progress.start(`Case ${c.id}: ${caseLabel(c)}`);
   try {
-    const r = await fetch(`/api/flow?${q}`, { method: "POST", body: file, signal: ctl.signal });
-    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-    // Newline-delimited JSON: progress lines, then the result.
-    const reader = r.body.getReader(), dec = new TextDecoder();
-    let buf = "", data = null;
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (value) buf += dec.decode(value, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        if (msg.progress) progress.update(msg.progress);
-        else data = msg;
-      }
-      if (done) break;
-    }
+    // Progress lines, then the result.
+    let data = null;
+    await stream(`/api/flow?${q}`, ctl, (msg) => { data = msg; });
     if (!data) throw new Error("the server closed the connection before the result");
     if (data.error) throw new Error(data.error);
     return data;
@@ -512,7 +576,7 @@ function renderCases() {
   drawPlot();
   $("cases").innerHTML = cases.map((c) => {
     const f = c.data && c.data.forces;
-    const res = f ? `R<sub>t</sub> ${fmt(f.rt, 1)} N · ${fmt(1000 * f.sinkage, 1)} mm · ${fmt(f.trim_deg, 2)}°`
+    const res = f ? `R<sub>t</sub> ${fmt(f.rt, 1)} N · ${fmt(1000 * f.sinkage, 1)} mm · ${fmt(f.trim_deg, 2)}°${f.held ? " · held" : ""}`
       : c.status === "running" ? "running…" : c.status === "queued" ? "queued" : "";
     return `<div class="case ${c.status}${viewing === c.id ? " viewing" : ""}" data-id="${c.id}">
       <span class="dot"></span><span class="what">${c.id}. ${esc(caseLabel(c))}</span>
@@ -692,13 +756,15 @@ function renderFlow() {
       <dt>Effective power</dt><dd>${fmt(f.pe / 1000, 3)} kW</dd>
       ${hulls.length > 1 ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
       <dt>Dynamic lift</dt><dd>${fmt(f.fz, 1)} N (${fmt(100 * f.lift_fraction, 2)}% of weight)</dd>
-      <dt>Sinkage${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
-      <dt>Trim${f.solved ? "" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
+      <dt>Sinkage${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
+      <dt>Trim${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
       <dt>Load</dt><dd>${fmt(f.mass, 1)} kg at x ${fmt(f.lcg, 3)} m</dd>
       <dt>Displacement at speed</dt><dd>${fmt(f.displaced_volume, 4)} m³ · L ${fmt(f.length, 3)} m</dd>
       <dt>Transverse wave</dt><dd>${fmt(d.transverse_wavelength, 2)} m</dd>
     </dl>
-    <p class="hint">Computed in ${d.seconds.toFixed(1)} s, ${f.solved
+    <p class="hint">Computed in ${d.seconds.toFixed(1)} s, ${f.held
+      ? "at the attitude the span sweep solved for its middle span, held (not re-balanced for this span): the dynamic lift shown is what this span would feel there. Resistance and flow are for the hull at that attitude."
+      : f.solved
       ? `at the dynamic equilibrium (${f.iterations} Newton iterations); resistance and flow are for the hull at that attitude. Stations, keel and closure layers stay at the design waterline.`
       : "at the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}</p>`;
 }
