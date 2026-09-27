@@ -40,8 +40,8 @@ use crate::friction::{viscous_resistance_for, ViscousOptions, ViscousResistance}
 use crate::hull::Hull;
 use crate::michell::Placement;
 use crate::michell::{
-    add_transom_step, appendage_source, hollow_shape_moment, run_outer, MemberWave, NearFieldKernel, OuterParams, SquatTransforms,
-    TransomClosure, WaveOptions, WaveResistance,
+    add_transom_step, appendage_source, hollow_shape_moment, run_outer, MemberWave,
+    NearFieldKernel, OuterParams, SquatTransforms, TransomClosure, WaveOptions, WaveResistance,
 };
 use crate::moments::{osc_moments, C64};
 use crate::quadrature::gauss_legendre;
@@ -1169,18 +1169,15 @@ impl AmplitudeTable {
         // Panels ~3 radians of the amplitude's own phase wide.
         let h = (3.0 / (nu * 0.5 * hull.length).max(1e-9)).min(0.5);
         let panels = (((lam_max - lo) / h).ceil() as usize).max(1);
-        let per_panel = crate::parallel::map_indexed(
-            panels,
-            SectionalContracted::default,
-            |scratch, p| {
+        let per_panel =
+            crate::parallel::map_indexed(panels, SectionalContracted::default, |scratch, p| {
                 (0..NODES)
                     .map(|j| {
                         let lam = lo + h * (p as f64 + 0.5 * (1.0 + cheb(j)));
                         hull.amplitude_closed(nu, lam, closure, scratch)
                     })
                     .collect::<Vec<_>>()
-            },
-        );
+            });
         AmplitudeTable {
             lo,
             h,
@@ -1410,11 +1407,18 @@ pub fn multihull_dynamic_force(
 /// then transform once for both.
 fn twins(members: &[(&SectionalHull, Placement)]) -> Vec<Option<usize>> {
     let print = |h: &SectionalHull| {
-        [h.volume, h.lcb_x, h.length, h.x_center, h.wetted_surface, h.draft]
-            .map(f64::to_bits)
-            .into_iter()
-            .chain([h.xs.len() as u64])
-            .collect::<Vec<_>>()
+        [
+            h.volume,
+            h.lcb_x,
+            h.length,
+            h.x_center,
+            h.wetted_surface,
+            h.draft,
+        ]
+        .map(f64::to_bits)
+        .into_iter()
+        .chain([h.xs.len() as u64])
+        .collect::<Vec<_>>()
     };
     let prints: Vec<_> = members.iter().map(|(h, _)| print(h)).collect();
     (0..members.len())
@@ -1835,7 +1839,11 @@ mod twin_tests {
     use super::*;
 
     /// The direct fleet integral: every member evaluates its own amplitude.
-    fn direct(members: &[(&SectionalHull, Placement)], cond: &Conditions, opts: &WaveOptions) -> f64 {
+    fn direct(
+        members: &[(&SectionalHull, Placement)],
+        cond: &Conditions,
+        opts: &WaveOptions,
+    ) -> f64 {
         let (u, g) = (cond.speed, cond.gravity);
         let nu = g / (u * u);
         let n = members.len() as f64;
@@ -1847,7 +1855,10 @@ mod twin_tests {
                 .iter()
                 .map(|(h, p)| (h.x_center + p.x - cx_ref).abs() + 0.5 * h.length)
                 .fold(0.0, f64::max),
-            y_half: members.iter().map(|(_, p)| (p.y - y_ref).abs()).fold(0.0, f64::max),
+            y_half: members
+                .iter()
+                .map(|(_, p)| (p.y - y_ref).abs())
+                .fold(0.0, f64::max),
             t_max: members.iter().map(|(h, _)| h.draft).fold(0.0, f64::max),
         };
         let mem = members
@@ -1860,7 +1871,13 @@ mod twin_tests {
                 closure: opts.transom,
             })
             .collect();
-        run_outer(&params, opts, 4.0 * cond.fluid.density * g * g / (PI * u * u), mem).resistance
+        run_outer(
+            &params,
+            opts,
+            4.0 * cond.fluid.density * g * g / (PI * u * u),
+            mem,
+        )
+        .resistance
     }
 
     /// A catamaran's resistance from one tabulated demihull amplitude is the
@@ -1871,24 +1888,51 @@ mod twin_tests {
             let surfaces = crate::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
             crate::iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0)
                 .unwrap()
-                .situate_sectional(0, 0.0, &Default::default(), &Default::default(), &Default::default())
+                .situate_sectional(
+                    0,
+                    0.0,
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                )
                 .unwrap()
                 .unwrap()
                 .hull
         };
         let e12 = crate::cad_fixture("e12.igs").map(|t| {
-            let o = crate::iges::SectionalOptions { waterline_z: -0.95, ..Default::default() };
-            crate::iges::import_sectional(&t, &o).unwrap().hulls.remove(0).hull
+            let o = crate::iges::SectionalOptions {
+                waterline_z: -0.95,
+                ..Default::default()
+            };
+            crate::iges::import_sectional(&t, &o)
+                .unwrap()
+                .hulls
+                .remove(0)
+                .hull
         });
         let opts = WaveOptions::default();
         for h in std::iter::once(&wigley).chain(e12.as_ref()) {
             for (fnum, span) in [(0.3, 2.0 * h.length / 10.0), (0.45, 3.5 * h.length / 10.0)] {
                 let cond = Conditions::seawater(fnum * (9.81 * h.length).sqrt());
                 let pair = [
-                    (h, Placement { x: 0.0, y: 0.5 * span }),
-                    (h, Placement { x: 0.0, y: -0.5 * span }),
+                    (
+                        h,
+                        Placement {
+                            x: 0.0,
+                            y: 0.5 * span,
+                        },
+                    ),
+                    (
+                        h,
+                        Placement {
+                            x: 0.0,
+                            y: -0.5 * span,
+                        },
+                    ),
                 ];
-                let fast = multihull_wave_resistance(&pair, &cond, &opts).unwrap().resistance;
+                let fast = multihull_wave_resistance(&pair, &cond, &opts)
+                    .unwrap()
+                    .resistance;
                 let slow = direct(&pair, &cond, &opts);
                 assert!(
                     (fast - slow).abs() < 1e-5 * slow,
@@ -2074,13 +2118,19 @@ mod transom_tests {
             dynamic_force(h, &cond, h.lcb_x(), &so).unwrap()
         };
         let open = force(TransomClosure::None);
-        for closure in [TransomClosure::default(), TransomClosure::Fixed { length: 1.0 }] {
+        for closure in [
+            TransomClosure::default(),
+            TransomClosure::Fixed { length: 1.0 },
+        ] {
             let d = force(closure);
             let (df, dm) = (
                 (d.force_up - open.force_up).abs() / open.force_up.abs(),
                 (d.moment_bow_up - open.moment_bow_up).abs() / open.moment_bow_up.abs(),
             );
-            assert!(df < 0.05 && dm < 0.05, "{closure:?}: force {df:.3}, moment {dm:.3} off");
+            assert!(
+                df < 0.05 && dm < 0.05,
+                "{closure:?}: force {df:.3}, moment {dm:.3} off"
+            );
         }
     }
 }

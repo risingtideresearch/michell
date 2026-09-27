@@ -449,13 +449,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                 }
             }
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
-            (
-                FleetState { members, dry },
-                0.0,
-                0.0,
-                volume,
-                lcb,
-            )
+            (FleetState { members, dry }, 0.0, 0.0, volume, lcb)
         };
 
         let members: Vec<(&SectionalHull, Placement)> =
@@ -502,20 +496,15 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                     eq.lcb,
                     eq.fleet.dry,
                 ),
-                None => (
-                    members.clone(),
-                    sinkage,
-                    trim_deg,
-                    volume,
-                    lcb,
-                    state.dry,
-                ),
+                None => (members.clone(), sinkage, trim_deg, volume, lcb, state.dry),
             };
             let (rw, rv, rt, pe, iff, cw, ct) = if members_u.is_empty() {
                 (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)
             } else {
-                let r = michell::sectional::multihull_resistance(&members_u, &cond, &wave_opts, &viscous)
-                    .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
+                let r = michell::sectional::multihull_resistance(
+                    &members_u, &cond, &wave_opts, &viscous,
+                )
+                .map_err(|e| format!("point {} U={u}: {e}", point + 1))?;
                 (
                     r.wave.resistance,
                     r.viscous_total,
@@ -544,18 +533,7 @@ pub fn run(manifest_path: &str, report: &mut crate::Reporter) -> Result<String, 
                         .into_iter()
                         .flatten(),
                 )
-                .chain([
-                    dry_u as f64,
-                    u,
-                    froude,
-                    rw,
-                    rv,
-                    rt,
-                    pe,
-                    iff,
-                    cw,
-                    ct,
-                ])
+                .chain([dry_u as f64, u, froude, rw, rv, rt, pe, iff, cw, ct])
                 .collect();
             let spectrum = if binary {
                 Some(
@@ -904,14 +882,18 @@ pub(crate) fn parse_manifest(
             settings.waterline_z = v;
         }
         if let Some(v) = o.get("units") {
-            let u = v.as_str().ok_or("options.units: expected a string (mm, m, in, ...)")?;
+            let u = v
+                .as_str()
+                .ok_or("options.units: expected a string (mm, m, in, ...)")?;
             settings.units = Some(crate::formats::parse_units(u)?);
         }
         let count = |key: &str, min: usize| -> Result<Option<usize>, String> {
             match o.get(key).and_then(Json::as_f64) {
                 None => Ok(None),
                 Some(v) if v >= min as f64 && v.fract() == 0.0 => Ok(Some(v as usize)),
-                Some(v) => Err(format!("options.{key} {v}: expected a count of at least {min}")),
+                Some(v) => Err(format!(
+                    "options.{key} {v}: expected a count of at least {min}"
+                )),
             }
         };
         if let Some(n) = count("stations", 8)? {

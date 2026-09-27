@@ -683,7 +683,13 @@ impl SquatTransforms {
 /// so `∂f/∂x` carries `f_T δ(x − x_T)` — through the depth z-factor `z_t` in
 /// the volume transforms and the waterline half-beam `f_t0` in the waterline
 /// ones. `p` (the transform of `f` itself) has no share.
-pub(crate) fn add_transom_step(phase: C64, dx_t: f64, z_t: f64, f_t0: f64, t: &mut SquatTransforms) {
+pub(crate) fn add_transom_step(
+    phase: C64,
+    dx_t: f64,
+    z_t: f64,
+    f_t0: f64,
+    t: &mut SquatTransforms,
+) {
     t.q = t.q + phase.scale(z_t);
     t.w = t.w + phase.scale(f_t0);
     t.q1 = t.q1 + phase.scale(dx_t * z_t);

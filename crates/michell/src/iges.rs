@@ -1827,7 +1827,10 @@ fn sectional_cluster(
     // neighbour's (the transom itself). A pointed end's neighbour carries
     // next to no section, so it keeps its empty tip (see above).
     let bd = |s: &Option<(f64, f64, f64, Vec<f64>, f64)>| s.as_ref().map_or(0.0, |s| s.1 * s.2);
-    let bd_max = sampled_all.iter().map(|(s, _)| bd(s)).fold(0.0f64, f64::max);
+    let bd_max = sampled_all
+        .iter()
+        .map(|(s, _)| bd(s))
+        .fold(0.0f64, f64::max);
     for (end, dir) in [(0usize, 1isize), (ns - 1, -1)] {
         // The first station inward that samples: stations between it and
         // the end are part of the same cliff (and are dropped below).
@@ -3439,8 +3442,7 @@ mod sectional_ends {
             .unwrap()
             .unwrap()
             .hull;
-        let cond =
-            crate::Conditions::seawater(0.68 * (9.81f64 * design.length()).sqrt());
+        let cond = crate::Conditions::seawater(0.68 * (9.81f64 * design.length()).sqrt());
         let mut last: Option<f64> = None;
         for k in 0..=5 {
             let trim = (1.0 + 0.2 * k as f64).to_radians();
@@ -3463,7 +3465,10 @@ mod sectional_ends {
             .unwrap()
             .force_up;
             if let Some(prev) = last {
-                assert!((f / prev - 1.0).abs() < 0.1, "lift {prev} -> {f} at step {k}");
+                assert!(
+                    (f / prev - 1.0).abs() < 0.1,
+                    "lift {prev} -> {f} at step {k}"
+                );
             }
             last = Some(f);
         }

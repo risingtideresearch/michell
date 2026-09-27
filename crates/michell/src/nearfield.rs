@@ -152,7 +152,11 @@ fn build_sheet(
     // Stations must increase; the aft (low-x) end carries any transom.
     let mut real_from = 0;
     if let Some(tr) = hull.transom() {
-        if let Some(lv) = opts.closure.hollow_length(tr.depth, nu).filter(|&l| l > 0.0) {
+        if let Some(lv) = opts
+            .closure
+            .hollow_length(tr.depth, nu)
+            .filter(|&l| l > 0.0)
+        {
             let nz1 = depth.len();
             let f_t: Vec<f64> = f[..nz1].to_vec();
             let na = 12;
@@ -182,10 +186,9 @@ fn build_sheet(
         if dx <= 0.0 {
             return 0.0;
         }
-        let fx = (f[(i + 1) * nz1 + j] + f[(i + 1) * nz1 + j + 1]
-            - f[i * nz1 + j]
-            - f[i * nz1 + j + 1])
-            / (2.0 * dx);
+        let fx =
+            (f[(i + 1) * nz1 + j] + f[(i + 1) * nz1 + j + 1] - f[i * nz1 + j] - f[i * nz1 + j + 1])
+                / (2.0 * dx);
         -2.0 * u * fx
     };
     // Δσ across station edge i in row j (σ is 0 outside the sheet).
@@ -294,7 +297,10 @@ fn build_nodes(
     let (gx, gw) = gauss_legendre(8);
     let panel = |ka: f64, kb: f64, out: &mut Vec<(f64, f64)>| {
         for (g, &xk) in gx.iter().enumerate() {
-            out.push((0.5 * (kb - ka) * xk + 0.5 * (ka + kb), 0.5 * (kb - ka) * gw[g]));
+            out.push((
+                0.5 * (kb - ka) * xk + 0.5 * (ka + kb),
+                0.5 * (kb - ka) * gw[g],
+            ));
         }
     };
     let k_lo = 0.05 / l;
@@ -317,11 +323,8 @@ fn build_nodes(
             })
             .collect()
     };
-    let zcs: Vec<Vec<SectionalContracted>> = crate::parallel::map_indexed(
-        knodes.len(),
-        || (),
-        |_, i| contract_all(knodes[i].0),
-    );
+    let zcs: Vec<Vec<SectionalContracted>> =
+        crate::parallel::map_indexed(knodes.len(), || (), |_, i| contract_all(knodes[i].0));
     let q_of = |zc: &[SectionalContracted], kx: f64| -> Vec<C64> {
         let mut xm = Vec::with_capacity(8);
         members
@@ -616,7 +619,10 @@ pub fn free_surface(
     let ys: Vec<f64> = members.iter().map(|(_, p)| p.y).collect();
     let nn = nodes.k.len();
     if std::env::var("NF_TIME").is_ok() {
-        eprintln!("nodes {nn} built in {:.2}s", t_nodes.elapsed().as_secs_f64());
+        eprintln!(
+            "nodes {nn} built in {:.2}s",
+            t_nodes.elapsed().as_secs_f64()
+        );
     }
     // Per node, a_c(x)·cos(k_y y) + a_s(x)·sin(k_y y), where
     // a_c = Σ_m Re(c_m E_m(x)) cos(k_y y_m), a_s the same with sin.
@@ -639,7 +645,10 @@ pub fn free_surface(
                     let re = c.re * e.re - c.im * e.im;
                     ac[b * nx + ix] += re * cy;
                     asn[b * nx + ix] += re * sy;
-                    e = C64::new(e.re * step.re - e.im * step.im, e.re * step.im + e.im * step.re);
+                    e = C64::new(
+                        e.re * step.re - e.im * step.im,
+                        e.re * step.im + e.im * step.re,
+                    );
                 }
             }
         }
@@ -765,7 +774,9 @@ mod tests {
             TransomClosure::None,
         )
         .unwrap();
-        let far = spec.elevation_grid(-35.0, 25.0, -12.0, 12.0, 241, 97).unwrap();
+        let far = spec
+            .elevation_grid(-35.0, 25.0, -12.0, 12.0, 241, 97)
+            .unwrap();
         let (mut num, mut den, mut up, mut peak) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for iy in 0..fs.ny {
             for ix in 0..fs.nx {

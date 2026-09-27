@@ -71,7 +71,11 @@ impl LoftRequest {
 pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
     let t0 = std::time::Instant::now();
     let cut = cut(name, bytes, req)?;
-    let hulls: Vec<Value> = cut.hulls.iter().map(|h| sectioned_json(h, cut.kind)).collect();
+    let hulls: Vec<Value> = cut
+        .hulls
+        .iter()
+        .map(|h| sectioned_json(h, cut.kind))
+        .collect();
     Ok(json!({
         "name": name,
         "seconds": t0.elapsed().as_secs_f64(),
@@ -186,7 +190,11 @@ where
         fleet: &michell::float::FleetState<SectionalHull>,
     ) -> michell::Result<michell::float::DynamicLoad> {
         let d = self.inner.load(fleet)?;
-        let vol: f64 = fleet.members.iter().map(|(h, _)| h.displaced_volume()).sum();
+        let vol: f64 = fleet
+            .members
+            .iter()
+            .map(|(h, _)| h.displaced_volume())
+            .sum();
         (self.report)(&d, vol)?;
         Ok(d)
     }
@@ -251,7 +259,10 @@ impl FlowRequest {
         let num = |k: &str| -> Result<Option<f64>, String> {
             get(k)
                 .filter(|v| !v.is_empty())
-                .map(|v| v.parse::<f64>().map_err(|_| format!("{k}: expected a number, got {v:?}")))
+                .map(|v| {
+                    v.parse::<f64>()
+                        .map_err(|_| format!("{k}: expected a number, got {v:?}"))
+                })
                 .transpose()
         };
         let froude = num("froude")?.ok_or("froude is required")?;
@@ -268,7 +279,11 @@ impl FlowRequest {
                 Some(c) => TransomClosure::Ballistic { coeff: c.max(0.0) },
                 None => TransomClosure::default(),
             },
-            other => return Err(format!("closure {other:?}: expected ballistic, fixed or off")),
+            other => {
+                return Err(format!(
+                    "closure {other:?}: expected ballistic, fixed or off"
+                ))
+            }
         };
         let grid = num("grid")?.map_or(640, |g| (g as usize).clamp(40, 1200));
         let dynamic = match get("attitude").unwrap_or("dynamic") {
@@ -284,7 +299,11 @@ impl FlowRequest {
             None => None,
             Some(v) => {
                 let (a, b) = v.split_once(',').ok_or("warm: expected sinkage,trim")?;
-                let p = |t: &str| t.trim().parse::<f64>().map_err(|_| format!("warm: bad number {t:?}"));
+                let p = |t: &str| {
+                    t.trim()
+                        .parse::<f64>()
+                        .map_err(|_| format!("warm: bad number {t:?}"))
+                };
                 let (s, t) = (p(a)?, p(b)?);
                 (s.is_finite() && t.is_finite() && t.abs() < 0.3).then_some((s, t))
             }
@@ -437,13 +456,21 @@ fn flow_inner(
     track.at(
         0,
         1.0,
-        format!("{} hull{}", cut.hulls.len(), if cut.hulls.len() == 1 { "" } else { "s" }),
+        format!(
+            "{} hull{}",
+            cut.hulls.len(),
+            if cut.hulls.len() == 1 { "" } else { "s" }
+        ),
     )?;
     // The fleet: the file's hulls where they are, or its one hull doubled
     // into a catamaran — each copy as `(hull index, pose)`, the pose's `dy`
     // putting the copies' centreplanes at ±span/2.
     let layout: Vec<(usize, HullPose)> = match req.span {
-        None => cut.index.iter().map(|&i| (i, HullPose::default())).collect(),
+        None => cut
+            .index
+            .iter()
+            .map(|&i| (i, HullPose::default()))
+            .collect(),
         Some(span) => {
             if cut.hulls.len() != 1 {
                 return Err(format!(
@@ -451,7 +478,10 @@ fn flow_inner(
                     cut.hulls.len()
                 ));
             }
-            let (yc, beam) = (cut.hulls[0].placement.y, michell_cli::fleet::max_beam(&cut.hulls[0].hull));
+            let (yc, beam) = (
+                cut.hulls[0].placement.y,
+                michell_cli::fleet::max_beam(&cut.hulls[0].hull),
+            );
             if span <= beam {
                 return Err(format!(
                     "span {span} m: the demihulls overlap (beam {beam:.3} m)"
@@ -485,7 +515,10 @@ fn flow_inner(
         .collect();
     let design: Vec<(&SectionalHull, Placement)> =
         design_owned.iter().map(|(h, p)| (h, *p)).collect();
-    let l_ref = design.iter().map(|(h, _)| h.length()).fold(0.0f64, f64::max);
+    let l_ref = design
+        .iter()
+        .map(|(h, _)| h.length())
+        .fold(0.0f64, f64::max);
     let cond = Conditions::seawater(req.froude * (STANDARD_GRAVITY * l_ref).sqrt());
     let rho = cond.fluid.density;
     let wave = WaveOptions {
@@ -519,7 +552,13 @@ fn flow_inner(
                 .map(|(i, pose)| {
                     cut.file
                         .source
-                        .situate_sectional(*i, cut.file.waterline_z, pose, &Platform::default(), opts)
+                        .situate_sectional(
+                            *i,
+                            cut.file.waterline_z,
+                            pose,
+                            &Platform::default(),
+                            opts,
+                        )
                         .map_err(|e| e.to_string())?
                         .map(|h| (h.hull, h.placement))
                         .ok_or_else(|| "the scaled hull is dry".to_string())
@@ -552,12 +591,17 @@ fn flow_inner(
         let mut out: Vec<(SectionalHull, Placement)> = Vec::new();
         for (k, (i, pose)) in layout.iter().enumerate() {
             // A copy of an earlier layout entry, shifted sideways, is that cut.
-            if let Some(j) = layout[..k]
-                .iter()
-                .position(|(o, q)| o == i && HullPose { dy: 0.0, ..*q } == HullPose { dy: 0.0, ..*pose })
-            {
+            if let Some(j) = layout[..k].iter().position(|(o, q)| {
+                o == i && HullPose { dy: 0.0, ..*q } == HullPose { dy: 0.0, ..*pose }
+            }) {
                 let (h, p) = out[j].clone();
-                out.push((h, Placement { y: p.y + pose.dy - layout[j].1.dy, ..p }));
+                out.push((
+                    h,
+                    Placement {
+                        y: p.y + pose.dy - layout[j].1.dy,
+                        ..p
+                    },
+                ));
                 continue;
             }
             let h = cut
@@ -632,7 +676,13 @@ fn flow_inner(
             trim: eq.trim,
             pivot_x: lcg,
         };
-        solved = Some((eq.sinkage, eq.trim, eq.iterations, eq.dynamic, eq.lift_fraction));
+        solved = Some((
+            eq.sinkage,
+            eq.trim,
+            eq.iterations,
+            eq.dynamic,
+            eq.lift_fraction,
+        ));
         eq.fleet.members
     } else {
         design_owned.clone()
@@ -662,7 +712,11 @@ fn flow_inner(
     // An odd row count, so y = 0 is a row and a symmetric fleet mirrors.
     let nh = ((nx as f64) * yh / (x1 - x0)).round().clamp(8.0, 600.0) as usize + 1;
     let ny = 2 * nh - 1;
-    track.at(3, 0.0, format!("{nx} × {ny} grid over {:.0} × {:.0} m", x1 - x0, 2.0 * yh))?;
+    track.at(
+        3,
+        0.0,
+        format!("{nx} × {ny} grid over {:.0} × {:.0} m", x1 - x0, 2.0 * yh),
+    )?;
     // A fleet symmetric about y = 0 — one hull on the centreline, or
     // mirrored pairs — has a symmetric field: compute the half with y ≥ 0.
     let symmetric = members.iter().all(|(h, pl)| {
@@ -671,7 +725,8 @@ fn flow_inner(
             || members.iter().any(|(o, q)| {
                 (q.y + pl.y).abs() < tol
                     && (q.x - pl.x).abs() < tol
-                    && (o.displaced_volume() - h.displaced_volume()).abs() <= 1e-6 * h.displaced_volume()
+                    && (o.displaced_volume() - h.displaced_volume()).abs()
+                        <= 1e-6 * h.displaced_volume()
                     && (o.length() - h.length()).abs() < tol
             })
     });
@@ -685,8 +740,18 @@ fn flow_inner(
             let rows = (reach / dy).ceil() as usize + 2;
             let (h0, p0) = members[0];
             let one = [(h0, Placement { x: p0.x, y: 0.0 })];
-            let half = free_surface(&one, &cond, &nf, x0, x1, 0.0, (rows - 1) as f64 * dy, nx, rows)
-                .map_err(|e| e.to_string())?;
+            let half = free_surface(
+                &one,
+                &cond,
+                &nf,
+                x0,
+                x1,
+                0.0,
+                (rows - 1) as f64 * dy,
+                nx,
+                rows,
+            )
+            .map_err(|e| e.to_string())?;
             sf.field = Some((dy, rows, half));
         }
         let (dy1, rows, half) = sf.field.as_ref().expect("just computed");
@@ -726,8 +791,18 @@ fn flow_inner(
         let rows = nh + m;
         let (h0, p0) = members[0];
         let one = [(h0, Placement { x: p0.x, y: 0.0 })];
-        let half = free_surface(&one, &cond, &nf, x0, x1, 0.0, (rows - 1) as f64 * dy, nx, rows)
-            .map_err(|e| e.to_string())?;
+        let half = free_surface(
+            &one,
+            &cond,
+            &nf,
+            x0,
+            x1,
+            0.0,
+            (rows - 1) as f64 * dy,
+            nx,
+            rows,
+        )
+        .map_err(|e| e.to_string())?;
         let row = |j: usize| &half.zeta[j * nx..(j + 1) * nx];
         let mut zeta = Vec::with_capacity(nx * ny);
         for iy in 0..ny {
@@ -804,40 +879,40 @@ fn flow_inner(
             })
         }
         (s, _) => match s {
-        Some((sinkage, trim, iterations, d, lift)) => json!({
-            "fz": d.force_up,
-            "moment": d.moment_bow_up,
-            "lift_fraction": lift,
-            "sinkage": sinkage,
-            "trim_deg": trim.to_degrees(),
-            "trim_rad": trim,
-            "iterations": iterations,
-            "solved": true,
-        }),
-        None => {
-            let (mut aw, mut mw, mut iw) = (0.0, 0.0, 0.0);
-            for (h, pl) in &members {
-                let a = h.waterplane_area();
-                aw += a;
-                mw += h.waterplane_moment() + pl.x * a;
-                iw += h.waterplane_second_moment()
-                    + 2.0 * pl.x * h.waterplane_moment()
-                    + pl.x * pl.x * a;
-            }
-            let lcf = mw / aw.max(f64::MIN_POSITIVE);
-            let i_l = iw - mw * mw / aw.max(f64::MIN_POSITIVE);
-            let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcf, &squat)
-                .map_err(|e| e.to_string())?;
-            json!({
+            Some((sinkage, trim, iterations, d, lift)) => json!({
                 "fz": d.force_up,
                 "moment": d.moment_bow_up,
-                "lift_fraction": d.lift_fraction,
-                "sinkage": -d.force_up / (rho * cond.gravity * aw),
-                "trim_deg": (d.moment_bow_up / (rho * cond.gravity * i_l)).to_degrees(),
-                "solved": false,
-            })
-        }
-    },
+                "lift_fraction": lift,
+                "sinkage": sinkage,
+                "trim_deg": trim.to_degrees(),
+                "trim_rad": trim,
+                "iterations": iterations,
+                "solved": true,
+            }),
+            None => {
+                let (mut aw, mut mw, mut iw) = (0.0, 0.0, 0.0);
+                for (h, pl) in &members {
+                    let a = h.waterplane_area();
+                    aw += a;
+                    mw += h.waterplane_moment() + pl.x * a;
+                    iw += h.waterplane_second_moment()
+                        + 2.0 * pl.x * h.waterplane_moment()
+                        + pl.x * pl.x * a;
+                }
+                let lcf = mw / aw.max(f64::MIN_POSITIVE);
+                let i_l = iw - mw * mw / aw.max(f64::MIN_POSITIVE);
+                let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcf, &squat)
+                    .map_err(|e| e.to_string())?;
+                json!({
+                    "fz": d.force_up,
+                    "moment": d.moment_bow_up,
+                    "lift_fraction": d.lift_fraction,
+                    "sinkage": -d.force_up / (rho * cond.gravity * aw),
+                    "trim_deg": (d.moment_bow_up / (rho * cond.gravity * i_l)).to_degrees(),
+                    "solved": false,
+                })
+            }
+        },
     };
 
     // The whole hull at the attitude, topsides included, for display: the
@@ -883,8 +958,14 @@ fn flow_inner(
         ("interference", res.interference),
         ("mass", mass),
         ("lcg", lcg),
-        ("displaced_volume", members.iter().map(|(h, _)| h.displaced_volume()).sum()),
-        ("length", members.iter().map(|(h, _)| h.length()).fold(0.0, f64::max)),
+        (
+            "displaced_volume",
+            members.iter().map(|(h, _)| h.displaced_volume()).sum(),
+        ),
+        (
+            "length",
+            members.iter().map(|(h, _)| h.length()).fold(0.0, f64::max),
+        ),
     ] {
         forces[k] = json!(v);
     }
@@ -917,7 +998,9 @@ fn b64(bytes: Vec<u8>) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for c in bytes.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
         for k in 0..4 {
             if k <= c.len() {
                 out.push(A[(n >> (18 - 6 * k) & 63) as usize] as char);
@@ -966,7 +1049,14 @@ pub fn span_sweep_with_progress(
             ..*req
         };
         // The solved span is most of the work; weight it as such.
-        let (lo, w) = if k == 0 { (0.0, 0.6) } else { (0.6 + 0.4 * (k - 1) as f64 / (n - 1) as f64, 0.4 / (n - 1) as f64) };
+        let (lo, w) = if k == 0 {
+            (0.0, 0.6)
+        } else {
+            (
+                0.6 + 0.4 * (k - 1) as f64 / (n - 1) as f64,
+                0.4 / (n - 1) as f64,
+            )
+        };
         let mut sub_report = |p: &Progress| {
             report(&Progress {
                 detail: format!("span {:.2} m ({}/{n}) · {}", spans[i], k + 1, p.detail),
@@ -974,7 +1064,13 @@ pub fn span_sweep_with_progress(
                 ..p.clone()
             })
         };
-        let v = flow_inner(name, bytes.clone(), &sub, &mut sub_report, Some(&mut shared))?;
+        let v = flow_inner(
+            name,
+            bytes.clone(),
+            &sub,
+            &mut sub_report,
+            Some(&mut shared),
+        )?;
         if hold.is_none() {
             // The solved attitude; at the design attitude, the design one.
             let f = &v["forces"];
@@ -1179,18 +1275,25 @@ mod tests {
         let text = michell::iges::write(&surfaces, "wigley").unwrap();
         // This Wigley ends at its waterline (no topsides to sink into), so
         // at the design attitude.
-        let pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
+        let pairs: Vec<(String, String)> =
+            [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
         let req = FlowRequest::from_query(&pairs).unwrap();
         let v = flow("w.igs", text.into_bytes(), &req).unwrap();
         let h = &v["hulls"][0];
-        let (nx, nz) = (h["x"].as_array().unwrap().len(), h["depth"].as_array().unwrap().len());
+        let (nx, nz) = (
+            h["x"].as_array().unwrap().len(),
+            h["depth"].as_array().unwrap().len(),
+        );
         assert_eq!(h["cp"].as_array().unwrap().len(), nx * nz);
         assert_eq!(v["surface"]["nx"], 60);
         let f = &v["forces"];
-        assert!(f["fz"].as_f64().unwrap() < 0.0 && f["sinkage"].as_f64().unwrap() > 0.0, "{f}");
+        assert!(
+            f["fz"].as_f64().unwrap() < 0.0 && f["sinkage"].as_f64().unwrap() > 0.0,
+            "{f}"
+        );
         assert!(f["rw"].as_f64().unwrap() > 0.0);
     }
 
@@ -1235,13 +1338,21 @@ mod tests {
     fn a_catamaran_field_is_its_demihulls_summed() {
         let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
         let text = michell::iges::write(&surfaces, "wigley").unwrap();
-        let pairs: Vec<(String, String)> =
-            [("froude", "0.35"), ("grid", "60"), ("attitude", "design"), ("span", "3.1")]
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
-        let v = flow("w.igs", text.clone().into_bytes(), &FlowRequest::from_query(&pairs).unwrap())
-            .unwrap();
+        let pairs: Vec<(String, String)> = [
+            ("froude", "0.35"),
+            ("grid", "60"),
+            ("attitude", "design"),
+            ("span", "3.1"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let v = flow(
+            "w.igs",
+            text.clone().into_bytes(),
+            &FlowRequest::from_query(&pairs).unwrap(),
+        )
+        .unwrap();
         let sfc = &v["surface"];
         let get = |k: &str| sfc[k].as_f64().unwrap();
         let (nx, ny) = (get("nx") as usize, get("ny") as usize);
@@ -1253,7 +1364,13 @@ mod tests {
         // The same two hulls, directly, on the same grid.
         let hull = michell::iges::source_fleet(&text, 0.0)
             .unwrap()
-            .situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &Default::default())
+            .situate_sectional(
+                0,
+                0.0,
+                &HullPose::default(),
+                &Platform::default(),
+                &Default::default(),
+            )
             .unwrap()
             .unwrap()
             .hull;
@@ -1279,7 +1396,10 @@ mod tests {
             .iter()
             .zip(&direct.zeta)
             .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
-        assert!(worst < 1e-4 * peak, "summed vs direct: {worst} of peak {peak}");
+        assert!(
+            worst < 1e-4 * peak,
+            "summed vs direct: {worst} of peak {peak}"
+        );
         assert_eq!(v["hulls"].as_array().unwrap().len(), 2);
     }
 
@@ -1317,12 +1437,26 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-            let v = flow("w.igs", text.clone().into_bytes(), &FlowRequest::from_query(&pairs).unwrap())
-                .unwrap();
+            let v = flow(
+                "w.igs",
+                text.clone().into_bytes(),
+                &FlowRequest::from_query(&pairs).unwrap(),
+            )
+            .unwrap();
             let f = &v["forces"];
-            let (vol, len) = (f["displaced_volume"].as_f64().unwrap(), f["length"].as_f64().unwrap());
-            assert!((vol - 1.2 * v0).abs() < 1e-5 * v0, "{by}: volume {vol} vs {}", 1.2 * v0);
-            assert!((len - length).abs() < 1e-6 * length, "{by}: length {len} vs {length}");
+            let (vol, len) = (
+                f["displaced_volume"].as_f64().unwrap(),
+                f["length"].as_f64().unwrap(),
+            );
+            assert!(
+                (vol - 1.2 * v0).abs() < 1e-5 * v0,
+                "{by}: volume {vol} vs {}",
+                1.2 * v0
+            );
+            assert!(
+                (len - length).abs() < 1e-6 * length,
+                "{by}: length {len} vs {length}"
+            );
         }
     }
 
@@ -1334,10 +1468,11 @@ mod tests {
         let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
         let text = michell::iges::write(&surfaces, "wigley").unwrap();
         let q = |extra: &[(&str, &str)]| -> FlowRequest {
-            let mut pairs: Vec<(String, String)> = [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect();
+            let mut pairs: Vec<(String, String)> =
+                [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
             pairs.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
             FlowRequest::from_query(&pairs).unwrap()
         };
@@ -1356,10 +1491,21 @@ mod tests {
         )
         .unwrap();
         for (i, s) in spans.iter().enumerate() {
-            let one = flow("w.igs", text.clone().into_bytes(), &q(&[("span", &s.to_string())])).unwrap();
+            let one = flow(
+                "w.igs",
+                text.clone().into_bytes(),
+                &q(&[("span", &s.to_string())]),
+            )
+            .unwrap();
             let v = got[i].as_ref().expect("every span reported");
-            let (a, b) = (v["forces"]["rt"].as_f64().unwrap(), one["forces"]["rt"].as_f64().unwrap());
-            assert!((a - b).abs() < 1e-9 * b, "span {s}: sweep {a} vs single {b}");
+            let (a, b) = (
+                v["forces"]["rt"].as_f64().unwrap(),
+                one["forces"]["rt"].as_f64().unwrap(),
+            );
+            assert!(
+                (a - b).abs() < 1e-9 * b,
+                "span {s}: sweep {a} vs single {b}"
+            );
         }
     }
 

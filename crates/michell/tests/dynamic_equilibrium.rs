@@ -4,9 +4,9 @@
 //! fore-aft symmetric Wigley hull with freeboard.
 
 use michell::float::{
-    DynamicModel,
     solve_equilibrium_dynamic_with, solve_equilibrium_sectional,
-    solve_equilibrium_sectional_dynamic, DynamicEquilibrium, DynamicLoad, FleetState, LoadCase,
+    solve_equilibrium_sectional_dynamic, DynamicEquilibrium, DynamicLoad, DynamicModel, FleetState,
+    LoadCase,
 };
 use michell::iges::{self, HullPose, NurbsSurface3, Platform, SectionalOptions, SourceFleet};
 use michell::sectional::SectionalHull;
@@ -104,7 +104,12 @@ fn zero_dynamic_load_reproduces_hydrostatic_solve_exactly() {
     for lcg in [None, Some(0.2)] {
         let load = LoadCase { mass, lcg };
         let eq = solve_equilibrium_sectional(&hulls(&src), &load, RHO, &opts).unwrap();
-        let dy = solve_dynamic(&src, &load, |_: &FleetState| Ok(DynamicLoad::default()), None);
+        let dy = solve_dynamic(
+            &src,
+            &load,
+            |_: &FleetState| Ok(DynamicLoad::default()),
+            None,
+        );
         assert_eq!(
             dy.sinkage.to_bits(),
             eq.sinkage.to_bits(),

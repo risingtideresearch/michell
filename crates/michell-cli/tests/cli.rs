@@ -255,7 +255,10 @@ fn wigley_roundtrip_matches_library() {
     let rv_want = michell::viscous_resistance_for(10.0, s_cli, &cond, &Default::default())
         .unwrap()
         .resistance;
-    assert!((rv - rv_want).abs() < 1e-9 * rv_want, "rv {rv} vs {rv_want}");
+    assert!(
+        (rv - rv_want).abs() < 1e-9 * rv_want,
+        "rv {rv} vs {rv_want}"
+    );
     // Effective power P_E = R_t * U.
     let pe = json_num(&out, "effective_power");
     let total = json_num(&out, "total");
@@ -288,7 +291,11 @@ fn froude_range_produces_table() {
 #[test]
 fn offsets_and_loft_are_rejected() {
     let off_path = tmp("wigley.offsets");
-    std::fs::write(&off_path, "michell-offsets v1\nwaterlines 0 0.5\nstation 0 1 0\n").unwrap();
+    std::fs::write(
+        &off_path,
+        "michell-offsets v1\nwaterlines 0 0.5\nstation 0 1 0\n",
+    )
+    .unwrap();
     let err = run_err(bin().args(["info", off_path.to_str().unwrap()]));
     assert!(err.contains("no longer read"), "{err}");
     let err = run_err(bin().args(["loft", off_path.to_str().unwrap(), "-o", "x"]));
@@ -873,7 +880,6 @@ fn stl_resistance() {
         want.wave.resistance
     );
 }
-
 
 #[test]
 fn errors_are_clean() {

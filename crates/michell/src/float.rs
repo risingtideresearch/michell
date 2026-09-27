@@ -361,7 +361,10 @@ fn broyden(jd: [f64; 4], (ds, dt): (f64, f64), (df, dm): (f64, f64), z_scale: f6
     if !(n2 > 0.0 && n2.is_finite()) {
         return jd;
     }
-    let (ef, em) = (df - (jd[0] * ds + jd[2] * dt), dm - (jd[1] * ds + jd[3] * dt));
+    let (ef, em) = (
+        df - (jd[0] * ds + jd[2] * dt),
+        dm - (jd[1] * ds + jd[3] * dt),
+    );
     [
         jd[0] + ef * w_s * ds / n2,
         jd[1] + em * w_s * ds / n2,

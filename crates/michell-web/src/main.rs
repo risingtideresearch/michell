@@ -170,7 +170,11 @@ fn stream_flow(mut req: Request, pairs: &[(String, String)]) {
         out.write_all(b"\r\n")?;
         out.flush()
     };
-    if out.write_all(head.as_bytes()).and_then(|_| out.flush()).is_err() {
+    if out
+        .write_all(head.as_bytes())
+        .and_then(|_| out.flush())
+        .is_err()
+    {
         return;
     }
     let t0 = std::time::Instant::now();
@@ -190,11 +194,10 @@ fn stream_flow(mut req: Request, pairs: &[(String, String)]) {
             // (the kernel buffers it) and fails once the peer's reset is
             // back: lead with a blank keep-alive line, so the report after
             // an abort — not the one after that — finds out.
-            gone = chunk(&mut out, "").is_err()
-                || {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                    chunk(&mut out, &line.to_string()).is_err()
-                };
+            gone = chunk(&mut out, "").is_err() || {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                chunk(&mut out, &line.to_string()).is_err()
+            };
             !gone
         })
     });
@@ -251,7 +254,10 @@ fn stream_sweep(mut req: Request, pairs: &[(String, String)]) {
     };
     {
         let mut o = out.borrow_mut();
-        if o.write_all(head.as_bytes()).and_then(|_| o.flush()).is_err() {
+        if o.write_all(head.as_bytes())
+            .and_then(|_| o.flush())
+            .is_err()
+        {
             return;
         }
     }
@@ -270,7 +276,8 @@ fn stream_sweep(mut req: Request, pairs: &[(String, String)]) {
             &opts,
             &spans,
             &mut |i, v| {
-                let ok = chunk(&serde_json::json!({ "span_index": i, "result": v }).to_string()).is_ok();
+                let ok =
+                    chunk(&serde_json::json!({ "span_index": i, "result": v }).to_string()).is_ok();
                 gone.set(gone.get() || !ok);
                 ok
             },
@@ -294,7 +301,10 @@ fn stream_sweep(mut req: Request, pairs: &[(String, String)]) {
     });
     let last = match result {
         Ok(()) => {
-            eprintln!("span sweep {name}: ok ({:.2} s, streamed)", t0.elapsed().as_secs_f64());
+            eprintln!(
+                "span sweep {name}: ok ({:.2} s, streamed)",
+                t0.elapsed().as_secs_f64()
+            );
             serde_json::json!({ "done": true }).to_string()
         }
         Err(e) if e == CANCELLED || gone.get() => {

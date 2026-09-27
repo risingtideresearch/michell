@@ -6,10 +6,10 @@
 //! schema `michell sweep` reads, via [`crate::manifest::parse_manifest`].
 
 use crate::json::Json;
+use crate::manifest::source_hulls;
 use crate::manifest::{parse_manifest, point_state, Axis, MHull, PointState, KNOT};
 use crate::pdf::{Document, Page};
 use crate::png;
-use crate::manifest::source_hulls;
 use michell::float::{fleet_cg, solve_equilibrium_sectional_dynamic, LoadCase};
 use michell::iges::{HullPose, Platform};
 use michell::sectional::{dynamic_load_closure, multihull_resistance, SectionalHull};
@@ -648,7 +648,12 @@ fn hull_profile_at(h: &SourceHull, platform: &Platform) -> Result<HullProfile, S
     const STATIONS: usize = 120;
     let (at_rest, _) = h
         .source
-        .posed_tessellation(h.index, h.waterline_z, &HullPose::default(), &Platform::default())
+        .posed_tessellation(
+            h.index,
+            h.waterline_z,
+            &HullPose::default(),
+            &Platform::default(),
+        )
         .map_err(|e| format!("{e}"))?;
     let (verts, _) = h
         .source
@@ -685,7 +690,9 @@ fn hull_profile_at(h: &SourceHull, platform: &Platform) -> Result<HullProfile, S
     let fit = affine_xz(&at_rest, &verts);
     let (ax0, ax1) = at_rest
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| (a.min(v[0]), b.max(v[0])));
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+            (a.min(v[0]), b.max(v[0]))
+        });
     let design_wl = (0..=40)
         .map(|i| {
             let x = ax0 + (ax1 - ax0) * i as f64 / 40.0;
@@ -761,7 +768,11 @@ fn draw_profile_view(
         .fold(0.0f64, f64::max);
     let cap = -draft.max(1e-3);
     for p in &mut profiles {
-        for t in p.top.iter_mut().chain(p.silhouette.iter_mut().map(|sl| &mut sl[0])) {
+        for t in p
+            .top
+            .iter_mut()
+            .chain(p.silhouette.iter_mut().map(|sl| &mut sl[0]))
+        {
             t[1] = t[1].max(cap);
         }
     }

@@ -18,8 +18,8 @@ mod report;
 mod scene;
 
 use fleet::{describe, max_beam, LoadSettings};
-use formats::{parse_pair, parse_range};
 pub use formats::parse_units;
+use formats::{parse_pair, parse_range};
 use michell::{Conditions, Fluid, Placement, WaveOptions, STANDARD_GRAVITY};
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -385,7 +385,10 @@ impl Parsed {
             centerplane: self.f64_flag("centerplane")?,
             stations: count("stations", d.stations, 8)?,
             rays: count("rays", d.rays, 5)?,
-            units: self.flag("units").map(|u| formats::parse_units(u)).transpose()?,
+            units: self
+                .flag("units")
+                .map(|u| formats::parse_units(u))
+                .transpose()?,
         })
     }
 
@@ -1305,13 +1308,8 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
                     pose: *pose,
                 })
                 .collect();
-            let eq = solve_equilibrium_sectional(
-                &hulls,
-                &LoadCase { mass, lcg },
-                density,
-                &opts,
-            )
-            .map_err(|e| format!("point {}: {e}", point + 1))?;
+            let eq = solve_equilibrium_sectional(&hulls, &LoadCase { mass, lcg }, density, &opts)
+                .map_err(|e| format!("point {}: {e}", point + 1))?;
             let out = (
                 eq.sinkage,
                 eq.trim.to_degrees(),
@@ -1747,7 +1745,8 @@ fn cmd_wake(args: &[String]) -> Result<(), String> {
         return Err("--size: need at least 2x2 grid points".into());
     }
 
-    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom)
+        .map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, nx, ny)
         .map_err(|e| format!("{e}"))?;
@@ -1950,7 +1949,8 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
         return Err("--size: image must be at least 16x16 pixels".into());
     }
 
-    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom).map_err(|e| format!("{e}"))?;
+    let mut spec = michell::FreeWaveSpectrum::new_sectional(&members, &cond, transom)
+        .map_err(|e| format!("{e}"))?;
     let grid = spec
         .elevation_grid(x0, x1, y0, y1, gx, gy)
         .map_err(|e| format!("{e}"))?;

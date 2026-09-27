@@ -497,13 +497,20 @@ pub fn add_mesh(scene: &mut Scene, verts: &[[f64; 3]], tris: &[[u32; 3]], dx: f6
     for p in verts {
         scene.push_vert(Vertex {
             pos: [p[0] + dx, p[1] + dy, p[2]],
-            base: hex(if p[2] < 0.0 { HULL_WETTED } else { HULL_TOPSIDE }),
+            base: hex(if p[2] < 0.0 {
+                HULL_WETTED
+            } else {
+                HULL_TOPSIDE
+            }),
             ks: HULL_KS,
             spec_p: HULL_SPEC_P,
         });
     }
-    scene.tris.extend(
-        tris.iter()
-            .map(|t| [start + t[0] as usize, start + t[1] as usize, start + t[2] as usize]),
-    );
+    scene.tris.extend(tris.iter().map(|t| {
+        [
+            start + t[0] as usize,
+            start + t[1] as usize,
+            start + t[2] as usize,
+        ]
+    }));
 }

@@ -9,9 +9,7 @@
 //!   clustered likewise.
 
 use crate::formats::looks_binary_stl;
-use michell::iges::{
-    source_fleet, HullPose, Platform, SectionalOptions, SectionalReport,
-};
+use michell::iges::{source_fleet, HullPose, Platform, SectionalOptions, SectionalReport};
 use michell::sectional::SectionalHull;
 use michell::source::{HullSource, SourceHull};
 use michell::Placement;
@@ -96,7 +94,10 @@ pub struct Fleet {
 impl Fleet {
     /// `(hull, placement)` pairs, as the physics takes them.
     pub fn hulls(&self) -> Vec<(&SectionalHull, Placement)> {
-        self.members.iter().map(|m| (&m.hull, m.placement)).collect()
+        self.members
+            .iter()
+            .map(|m| (&m.hull, m.placement))
+            .collect()
     }
 
     pub fn source(&self, m: &Member) -> &dyn HullSource {
@@ -181,8 +182,7 @@ pub fn open_source_bytes(
 ) -> Result<SourceFile, String> {
     let lower = path.to_ascii_lowercase();
     // STL: by extension or binary layout (binary STL is not UTF-8).
-    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || std::str::from_utf8(&bytes).is_err()
-    {
+    if lower.ends_with(".stl") || looks_binary_stl(&bytes) || std::str::from_utf8(&bytes).is_err() {
         let scale = settings.units.ok_or_else(|| {
             format!(
                 "{path}: STL files carry no units; pass --units mm|cm|m|in|ft \
@@ -236,14 +236,21 @@ pub fn open_source_bytes(
 /// whatever the waterline (even one that misses the hull entirely). The
 /// returned source's `waterline_z` is 0: tessellations come back in the
 /// file's own frame.
-pub fn open_geometry(path: &str, bytes: Vec<u8>, settings: &LoadSettings) -> Result<SourceFile, String> {
+pub fn open_geometry(
+    path: &str,
+    bytes: Vec<u8>,
+    settings: &LoadSettings,
+) -> Result<SourceFile, String> {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".stl") || looks_binary_stl(&bytes) || std::str::from_utf8(&bytes).is_err() {
         let scale = settings.units.ok_or_else(|| {
             format!("{path}: STL files carry no units; give their scale (mm, m, in, …)")
         })?;
         let tris = michell::stl::parse_stl(&bytes, scale).map_err(|e| format!("{path}: {e}"))?;
-        let top = tris.iter().flatten().fold(f64::NEG_INFINITY, |m, v| m.max(v[2]));
+        let top = tris
+            .iter()
+            .flatten()
+            .fold(f64::NEG_INFINITY, |m, v| m.max(v[2]));
         let src = michell::stl::mesh_fleet(&bytes, scale, top + 1.0)
             .map_err(|e| format!("{path}: STL import failed: {e}"))?;
         return Ok(SourceFile {
@@ -254,7 +261,8 @@ pub fn open_geometry(path: &str, bytes: Vec<u8>, settings: &LoadSettings) -> Res
         });
     }
     let text = String::from_utf8(bytes).expect("checked utf8");
-    let file = michell::iges::parse(&text).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
+    let file =
+        michell::iges::parse(&text).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
     let top = file
         .surfaces
         .iter()
@@ -263,7 +271,8 @@ pub fn open_geometry(path: &str, bytes: Vec<u8>, settings: &LoadSettings) -> Res
     if !top.is_finite() {
         return Err(format!("{path}: no surfaces to show"));
     }
-    let src = source_fleet(&text, top + 1.0).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
+    let src =
+        source_fleet(&text, top + 1.0).map_err(|e| format!("{path}: IGES import failed: {e}"))?;
     Ok(SourceFile {
         path: path.into(),
         kind: Kind::Iges,
@@ -361,8 +370,14 @@ pub fn describe(fleet: &Fleet, m: &Member) -> Vec<String> {
         format!("one side about y = {:.4} m", r.centerplane)
     };
     let what = match fleet.files[m.file].kind {
-        Kind::Iges => format!("IGES ({} patches, units scale {})", r.patches, r.units_scale),
-        Kind::Stl => format!("STL ({} triangles, units scale {})", r.patches, r.units_scale),
+        Kind::Iges => format!(
+            "IGES ({} patches, units scale {})",
+            r.patches, r.units_scale
+        ),
+        Kind::Stl => format!(
+            "STL ({} triangles, units scale {})",
+            r.patches, r.units_scale
+        ),
     };
     let mut lines = vec![format!(
         "source: {what}, {} stations over x {:.4}..{:.4} m, {sides}",

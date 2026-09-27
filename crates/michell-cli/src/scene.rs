@@ -77,7 +77,12 @@ pub(crate) fn build(
         // The CAD hull itself, posed, whole.
         let (verts, tris) = h
             .source
-            .posed_tessellation(h.index, h.waterline_z, &HullPose::default(), &Platform::default())
+            .posed_tessellation(
+                h.index,
+                h.waterline_z,
+                &HullPose::default(),
+                &Platform::default(),
+            )
             .map_err(|e| e.to_string())?;
         let verts: Vec<[f64; 3]> = verts
             .iter()
@@ -87,10 +92,16 @@ pub(crate) fn build(
         objects.push(Object {
             name: format!("{} hull", h.name),
             kind: "mesh",
-            cells: tris.iter().map(|t| t.iter().map(|&i| i as usize).collect()).collect(),
+            cells: tris
+                .iter()
+                .map(|t| t.iter().map(|&i| i as usize).collect())
+                .collect(),
             vertices: verts,
             quantities: vec![("height above waterline [m]".into(), height)],
-            note: Some("the posed source tessellation (display only; the physics uses the stations)".into()),
+            note: Some(
+                "the posed source tessellation (display only; the physics uses the stations)"
+                    .into(),
+            ),
         });
         objects.push(stations(h, hull, pl, nu));
         if let Some(app) = appendage(h, hull, pl, nu, closure) {
@@ -130,12 +141,18 @@ fn stations(h: &SceneHull, hull: &SectionalHull, pl: Placement, nu: f64) -> Obje
     let slope = hull.depth_integral_slope_curve(nu, 8);
     let at = |curve: &[(f64, f64)], x: f64| -> f64 {
         // Linear interpolation on a dense (x, value) curve.
-        let j = curve.partition_point(|p| p.0 < x).clamp(1, curve.len().max(2) - 1);
+        let j = curve
+            .partition_point(|p| p.0 < x)
+            .clamp(1, curve.len().max(2) - 1);
         if curve.len() < 2 {
             return curve.first().map_or(0.0, |p| p.1);
         }
         let (a, b) = (curve[j - 1], curve[j]);
-        let t = if b.0 > a.0 { (x - a.0) / (b.0 - a.0) } else { 0.0 };
+        let t = if b.0 > a.0 {
+            (x - a.0) / (b.0 - a.0)
+        } else {
+            0.0
+        };
         a.1 + t * (b.1 - a.1)
     };
     let (mut vertices, mut cells) = (Vec::new(), Vec::new());
@@ -343,10 +360,12 @@ fn near_field(
     let (x0, x1) = (x_lo - 1.5 * l, x_hi + 0.6 * l);
     let (y0, y1) = (y_lo - 0.7 * l, y_hi + 0.7 * l);
     let nx = 260usize;
-    let ny = ((nx as f64) * (y1 - y0) / (x1 - x0)).round().clamp(32.0, 400.0) as usize;
+    let ny = ((nx as f64) * (y1 - y0) / (x1 - x0))
+        .round()
+        .clamp(32.0, 400.0) as usize;
     let t = std::time::Instant::now();
-    let g = free_surface(&members, cond, &opts, x0, x1, y0, y1, nx, ny)
-        .map_err(|e| e.to_string())?;
+    let g =
+        free_surface(&members, cond, &opts, x0, x1, y0, y1, nx, ny).map_err(|e| e.to_string())?;
     let t_fs = t.elapsed().as_secs_f64();
     let mut vertices = Vec::with_capacity(g.nx * g.ny);
     let mut zeta = Vec::with_capacity(g.nx * g.ny);
@@ -354,9 +373,9 @@ fn near_field(
         for ix in 0..g.nx {
             let (x, y) = (g.x(ix), g.y(iy));
             // Inside a waterplane the field is not the sea's: flatten it.
-            let inside = members.iter().any(|(hl, pl)| {
-                (y - pl.y).abs() < hl.waterline_half_beam(x - pl.x)
-            });
+            let inside = members
+                .iter()
+                .any(|(hl, pl)| (y - pl.y).abs() < hl.waterline_half_beam(x - pl.x));
             let v = if inside { 0.0 } else { g.get(ix, iy) };
             vertices.push([x, y, v]);
             zeta.push(v);
@@ -391,22 +410,38 @@ fn num(v: f64) -> String {
     } else if v.is_finite() {
         let s = format!("{v:.6e}");
         let (m, e) = s.split_once('e').unwrap_or((&s, "0"));
-        let m = if m.contains('.') { m.trim_end_matches('0').trim_end_matches('.') } else { m };
-        if e == "0" { m.to_string() } else { format!("{m}e{e}") }
+        let m = if m.contains('.') {
+            m.trim_end_matches('0').trim_end_matches('.')
+        } else {
+            m
+        };
+        if e == "0" {
+            m.to_string()
+        } else {
+            format!("{m}e{e}")
+        }
     } else {
         "null".into()
     }
 }
 
 fn write_object(out: &mut String, o: &Object) {
-    let _ = write!(out, "{{\"name\":{:?},\"kind\":{:?},\"vertices\":[", o.name, o.kind);
+    let _ = write!(
+        out,
+        "{{\"name\":{:?},\"kind\":{:?},\"vertices\":[",
+        o.name, o.kind
+    );
     for (i, v) in o.vertices.iter().enumerate() {
         if i > 0 {
             out.push(',');
         }
         let _ = write!(out, "[{},{},{}]", num(v[0]), num(v[1]), num(v[2]));
     }
-    out.push_str(if o.kind == "curves" { "],\"edges\":[" } else { "],\"faces\":[" });
+    out.push_str(if o.kind == "curves" {
+        "],\"edges\":["
+    } else {
+        "],\"faces\":["
+    });
     for (i, c) in o.cells.iter().enumerate() {
         if i > 0 {
             out.push(',');
