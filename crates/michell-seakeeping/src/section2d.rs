@@ -108,6 +108,12 @@ impl Section {
         Some(Section { nodes })
     }
 
+    /// A section from its panel end points `(y, z)`, `z` up, from the
+    /// waterline to the keel.
+    pub fn from_nodes(nodes: Vec<[f64; 2]>) -> Section {
+        Section { nodes }
+    }
+
     /// A semicircle of radius `r` (a heaving half-immersed cylinder).
     pub fn semicircle(r: f64, panels: usize) -> Section {
         let nodes = (0..=panels)
@@ -134,6 +140,11 @@ impl Section {
             nodes.push([b * (1.0 - u), -t]);
         }
         Section { nodes }
+    }
+
+    /// The panel end points `(y, z)`, `z` up, from the waterline to the keel.
+    pub fn nodes(&self) -> &[[f64; 2]] {
+        &self.nodes
     }
 
     /// Half-beam at the waterline.
@@ -273,15 +284,35 @@ fn far_amplitude(panels: &[Panel], sigma: &[C64], nu: f64) -> C64 {
     C64::new(0.0, -1.0) * sum
 }
 
+/// Distance from `p` to the segment `a → b`.
+fn seg_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (dy, dz) = (b[0] - a[0], b[1] - a[1]);
+    let l2 = dy * dy + dz * dz;
+    let t = if l2 > 0.0 {
+        (((p[0] - a[0]) * dy + (p[1] - a[1]) * dz) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    ((p[0] - a[0] - t * dy).powi(2) + (p[1] - a[1] - t * dz).powi(2)).sqrt()
+}
+
 /// `∫ ln|p − q| ds_q` over the segment `a → b`, and its gradient in `p`.
-fn log_panel(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, [f64; 2]) {
+/// `on_panel` puts `p` on the segment's own line exactly (a panel's own
+/// midpoint): its normal offset is then taken as zero rather than as
+/// whatever roundoff leaves, whose sign would otherwise flip the principal
+/// value of the normal derivative by `±π`.
+fn log_panel(p: [f64; 2], a: [f64; 2], b: [f64; 2], on_panel: bool) -> (f64, [f64; 2]) {
     let (dy, dz) = (b[0] - a[0], b[1] - a[1]);
     let len = (dy * dy + dz * dz).sqrt();
     let t = [dy / len, dz / len];
     let nl = [-t[1], t[0]];
     let rel = [p[0] - a[0], p[1] - a[1]];
     let x0 = rel[0] * t[0] + rel[1] * t[1];
-    let y0 = rel[0] * nl[0] + rel[1] * nl[1];
+    let y0 = if on_panel {
+        0.0
+    } else {
+        rel[0] * nl[0] + rel[1] * nl[1]
+    };
     let (u1, u2) = (-x0, len - x0);
     let f = |u: f64| -> f64 {
         let q = u * u + y0 * y0;
@@ -291,7 +322,7 @@ fn log_panel(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> (f64, [f64; 2]) {
     };
     let value = f(u2) - f(u1);
     let gx = -0.5 * (u2 * u2 + y0 * y0).ln() + 0.5 * (u1 * u1 + y0 * y0).ln();
-    let gy = if y0.abs() < 1e-14 * len {
+    let gy = if y0 == 0.0 {
         0.0
     } else {
         (u2 / y0).atan() - (u1 / y0).atan()
@@ -315,22 +346,37 @@ fn influence(panels: &[Panel], nu: f64) -> (Vec<C64>, Vec<C64>) {
         let p = pi.mid;
         for (j, pj) in panels.iter().enumerate() {
             // Logarithms: the panel and its mirror, and both their images.
+            // The images' integrals `∫ ln r₁` also carry the logarithmic
+            // singularity of the wave part's vertical gradient (below).
             let mut val = 0.0;
             let mut grad = [0.0; 2];
-            for (a, b) in [
+            let mut image_logs = 0.0;
+            for (m, (a, b)) in [
                 (pj.a, pj.b),
                 (mirror(pj.b), mirror(pj.a)),
                 (image(pj.a), image(pj.b)),
                 (image(mirror(pj.b)), image(mirror(pj.a))),
-            ] {
-                let (v, g) = log_panel(p, a, b);
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (v, g) = log_panel(p, a, b, m == 0 && i == j);
                 val += v;
                 grad[0] += g[0];
                 grad[1] += g[1];
+                if m >= 2 {
+                    image_logs += v;
+                }
             }
-            // The bounded wave part, subdividing panels near the field point.
-            let dist = ((p[0] - pj.mid[0]).powi(2) + (p[1] - pj.mid[1]).powi(2)).sqrt();
-            let subs = if dist < 3.0 * pj.len { 6 } else { 1 };
+            // The wave part. Its value and horizontal gradient are bounded;
+            // its vertical gradient `−2ν Re P` goes as `2ν ln(ν r₁)` where the
+            // panel meets the waterline, so that logarithm is subtracted
+            // here and added back in closed form from `∫ ln r₁`. Panels are
+            // subdivided in proportion to their length over their distance.
+            let near = seg_distance(p, pj.a, pj.b)
+                .min(seg_distance(p, mirror(pj.a), mirror(pj.b)))
+                .max(1e-12 * pj.len);
+            let subs = ((2.0 * pj.len / near).ceil() as usize).clamp(1, 64);
             let mut wv = C64::ZERO;
             let mut wg = [C64::ZERO; 2];
             for sub in 0..subs {
@@ -342,13 +388,22 @@ fn influence(panels: &[Panel], nu: f64) -> (Vec<C64>, Vec<C64>) {
                     ];
                     let ds = 0.5 * w * pj.len / subs as f64;
                     for qy in [q[0], -q[0]] {
-                        let (v, gy, gz) = wave_part(nu, p[0] - qy, p[1] + q[1]);
+                        let (dy, zs) = (p[0] - qy, p[1] + q[1]);
+                        let (v, gy, gz) = wave_part(nu, dy, zs);
+                        let r1 = (dy * dy + zs * zs).sqrt();
+                        let gz_reg = if r1 > 0.0 {
+                            gz - C64::new(2.0 * nu * (nu * r1).ln(), 0.0)
+                        } else {
+                            gz
+                        };
                         wv = wv + v.scale(ds);
                         wg[0] = wg[0] + gy.scale(ds);
-                        wg[1] = wg[1] + gz.scale(ds);
+                        wg[1] = wg[1] + gz_reg.scale(ds);
                     }
                 }
             }
+            // ∫ 2ν ln(ν r₁) over the panel and its mirror.
+            wg[1] = wg[1] + C64::new(2.0 * nu * (image_logs + 2.0 * pj.len * nu.ln()), 0.0);
             s[i * n + j] = (C64::new(val, 0.0) + wv).scale(inv2pi);
             let dn = C64::new(grad[0] * pi.n[0] + grad[1] * pi.n[1], 0.0)
                 + wg[0].scale(pi.n[0])
@@ -390,6 +445,61 @@ mod tests {
                 "νR {nur}: b {} vs far {far}",
                 sol.damping
             );
+        }
+    }
+
+    /// Sections resampled from sampled curves — the path real hulls take —
+    /// with panels graded to millimetres at the waterline and keel: the
+    /// same energy balance, and agreement with the exact semicircle. (A
+    /// roundoff-signed self term once flipped these tiny panels' diagonal.)
+    #[test]
+    fn curve_sections_balance_energy() {
+        let r = 0.15;
+        let semi: Vec<(f64, f64)> = (0..=128)
+            .map(|i| {
+                let th = 0.5 * PI * i as f64 / 128.0;
+                (r * th.cos(), r * th.sin())
+            })
+            .collect();
+        let (b, t) = (0.15, 0.1875);
+        let para: Vec<(f64, f64)> = (0..=64)
+            .map(|i| {
+                let z = t * i as f64 / 64.0;
+                (b * (1.0 - (z / t).powi(2)), z)
+            })
+            .collect();
+        for &nu in &[2.0, 4.0, 8.0] {
+            let w = (nu * G).sqrt();
+            let exact = Section::semicircle(r, 64).heave(w, G, RHO).unwrap();
+            for (name, curve) in [("semicircle", &semi), ("parabola", &para)] {
+                for n in [16, 24, 40] {
+                    let sol = Section::from_curve(curve, n)
+                        .unwrap()
+                        .heave(w, G, RHO)
+                        .unwrap();
+                    let far = RHO * w * sol.far.abs_sq();
+                    assert!(sol.damping > 0.0, "{name} {n} ν {nu}: b {}", sol.damping);
+                    assert!(
+                        (sol.damping - far).abs() < 3e-2 * far,
+                        "{name} {n} ν {nu}: b {} vs {far}",
+                        sol.damping
+                    );
+                    if name == "semicircle" {
+                        assert!(
+                            (sol.added_mass - exact.added_mass).abs() < 3e-2 * exact.added_mass,
+                            "{n} ν {nu}: a {} vs {}",
+                            sol.added_mass,
+                            exact.added_mass
+                        );
+                        assert!(
+                            (sol.damping - exact.damping).abs() < 3e-2 * exact.damping,
+                            "{n} ν {nu}: b {} vs {}",
+                            sol.damping,
+                            exact.damping
+                        );
+                    }
+                }
+            }
         }
     }
 
