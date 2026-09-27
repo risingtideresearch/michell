@@ -30,11 +30,15 @@
 //!   close-fit method on each station's section curve — added mass,
 //!   damping, radiated waves, and the diffraction force by Haskind;
 //! - [`strip`]: Salvesen–Tuck–Faltinsen assembly at forward speed (transom
-//!   terms included) and the heave–pitch response in regular waves.
+//!   terms included) and the heave–pitch response in regular waves;
+//! - [`strip::added_resistance`]: mean added resistance by Gerritsma &
+//!   Beukelman's radiated energy (no short-wave correction);
+//! - [`sea`]: Bretschneider and JONSWAP spectra, significant motions and
+//!   accelerations, mean added resistance in a sea.
 //!
-//! Still to come: irregular seas (spectra, encounter-frequency mapping,
-//! significant motions) and added resistance; removing the section
-//! solver's irregular frequencies.
+//! Still to come: removing the section solver's irregular frequencies; a
+//! short-wave added-resistance correction; oblique-sea Froude–Krylov with
+//! its transverse variation.
 //!
 //! Checks: the source's principal value against quadrature, the section
 //! damping against the energy its waves carry, the Haskind diffraction
@@ -47,6 +51,7 @@ pub mod froude_krylov;
 pub mod green;
 pub mod linalg;
 pub mod restoring;
+pub mod sea;
 pub mod section2d;
 pub mod strip;
 pub mod waves;
