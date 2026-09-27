@@ -192,8 +192,18 @@
   <section>
     <h2>Cases</h2>
     <div class="fields" style="margin-bottom:10px">
-      <label class="wide">Froude number(s)
-        <input id="cfroude" type="text" placeholder="e.g. 0.3, or 0.3:0.6:0.05">
+      <label>Speed(s)
+        <input id="cfroude" type="text" placeholder="e.g. 6, or 4:8:0.5">
+      </label>
+      <label>Speed unit
+        <select id="cunit">
+          <option value="kn">knots</option>
+          <option value="fn">Froude number</option>
+          <option value="ms">m/s</option>
+        </select>
+      </label>
+      <label class="wide">Catamaran centre span(s) [m]
+        <input id="span" type="text" placeholder="blank: the hull on its own">
       </label>
       <label>Mass [kg]
         <input id="mass" type="text" placeholder="design">
@@ -202,7 +212,7 @@
         <input id="lcg" type="text" placeholder="at LCB">
       </label>
     </div>
-    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. Cases run one at a time; click a finished one to view it.</p>
+    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. A span doubles the hull into a catamaran with its demihulls' centreplanes that far apart. Cases run one at a time; click a finished one to view it.</p>
     <div style="display:flex;gap:8px">
       <button class="primary" id="flowgo" disabled style="flex:1">Add cases</button>
       <button id="plotbtn" title="Plot R_t across the finished cases">Plot</button>
@@ -241,13 +251,14 @@
       <b>Total resistance R<sub>t</sub> [N]</b>
       <label>against
         <select id="plotx">
+          <option value="knots">Speed [kn]</option>
           <option value="froude">Froude number</option>
           <option value="speed">Speed [m/s]</option>
-          <option value="knots">Speed [kn]</option>
           <option value="mass">Mass [kg]</option>
           <option value="lcg">LCG x [m]</option>
           <option value="sinkage">Sinkage [mm]</option>
           <option value="trim">Trim [°]</option>
+          <option value="span">Catamaran span [m]</option>
         </select>
       </label>
       <button class="x" id="plotclose" title="close">×</button>
@@ -269,7 +280,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 const $ = (id) => document.getElementById(id);
 const G = 9.81;
 let file = null, hulls = [], flowData = null, flowAbort = null;
-// The case queue: {id, froude, mass, lcg, status, data, error}.
+// The case queue: {id, froude, value, unit, mass, lcg, span, status, data, error}.
 let cases = [], nextCase = 1, viewing = null;
 const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
 
@@ -335,6 +346,16 @@ async function run() {
 // L_v = √2·√(d_T/ν) with ν = g/U² (i.e. √2·U·√(d_T/g)), at the viewed
 // case's speed (no hollow until a case is viewed).
 function speed() { return flowData ? flowData.speed : null; }
+function lRef() { return Math.max(0, ...hulls.map((h) => h.length)); }
+const KN = 0.514444;
+// A speed in the chosen unit as a Froude number on the longest hull.
+function toFroude(v, unit) {
+  const u = unit === "kn" ? v * KN : unit === "ms" ? v : null;
+  return u == null ? v : u / Math.sqrt(G * lRef());
+}
+function speedText(c) {
+  return c.unit === "kn" ? `${fmt(c.value, 2)} kn` : c.unit === "ms" ? `${fmt(c.value, 2)} m/s` : `Fn ${c.froude.toFixed(2)}`;
+}
 function hollowLength(depth) {
   const u = speed();
   if (!u) return null;
@@ -368,28 +389,32 @@ function values(id, fallback) {
 
 function addCases() {
   if (!file || !hulls.length) return;
-  let fns, masses, lcgs;
+  let fns, masses, lcgs, spans;
   try {
     fns = values("cfroude", null);
-    if (fns.includes(null)) throw new Error("Enter a Froude number (or a list or range of them)");
+    if (fns.includes(null)) throw new Error("Enter a speed (or a list or range of them)");
     masses = values("mass", null);
     lcgs = values("lcg", null);
+    spans = values("span", null);
   } catch (e) { $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
-  if (fns.some((f) => !(f > 0 && f < 5))) { $("flowout").innerHTML = `<div class="note">Froude numbers must lie in (0, 5)</div>`; return; }
+  const unit = $("cunit").value;
+  if (fns.some((v) => !(toFroude(v, unit) > 0 && toFroude(v, unit) < 5))) { $("flowout").innerHTML = `<div class="note">Speeds must be positive, below Fn 5</div>`; return; }
+  if (spans.some((s) => s != null && !(s > 0))) { $("flowout").innerHTML = `<div class="note">Spans must be positive</div>`; return; }
+  if (spans.some((s) => s != null) && hulls.length !== 1) { $("flowout").innerHTML = `<div class="note">A catamaran doubles a single hull; this file holds ${hulls.length}</div>`; return; }
   if (masses.some((m) => m != null && !(m > 0))) { $("flowout").innerHTML = `<div class="note">Masses must be positive</div>`; return; }
-  const n = fns.length * masses.length * lcgs.length;
+  const n = fns.length * masses.length * lcgs.length * spans.length;
   if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
-  for (const mass of masses) for (const lcg of lcgs) for (const froude of fns) {
-    cases.push({ id: nextCase++, froude, mass, lcg, status: "queued", data: null, error: null });
+  for (const span of spans) for (const mass of masses) for (const lcg of lcgs) for (const value of fns) {
+    cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span, status: "queued", data: null, error: null });
   }
   renderCases();
   pump();
 }
 $("flowgo").onclick = addCases;
-for (const id of ["cfroude", "mass", "lcg"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
+for (const id of ["cfroude", "mass", "lcg", "span"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
 
 // What makes two cases' attitudes comparable, for warm starts.
-const loadKey = (c) => JSON.stringify([c.mass, c.lcg]);
+const loadKey = (c) => JSON.stringify([c.mass, c.lcg, c.span == null]);
 
 // Run the queue, one case at a time: each one uses every core.
 let pumping = false;
@@ -422,12 +447,13 @@ async function runCase(c) {
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
   if (c.mass != null) q.set("mass", String(c.mass));
   if (c.lcg != null) q.set("lcg", String(c.lcg));
+  if (c.span != null) q.set("span", String(c.span));
   // Start from the nearest finished attitude with the same load: the solver
   // then skips its coarse search.
   {
     const near = cases
       .filter((o) => o.status === "done" && o.data.forces.solved && loadKey(o) === loadKey(c))
-      .sort((a, b) => Math.abs(a.froude - c.froude) - Math.abs(b.froude - c.froude))[0];
+      .sort((a, b) => dist(a, c) - dist(b, c))[0];
     if (near) q.set("warm", `${near.data.forces.sinkage},${near.data.forces.trim_rad}`);
   }
   const ctl = new AbortController();
@@ -463,10 +489,13 @@ async function runCase(c) {
   }
 }
 
+// How far apart two cases' conditions are, for picking a warm start.
+const dist = (a, b) => Math.abs(a.froude - b.froude) + (a.span == null ? 0 : Math.abs(a.span - b.span) / lRef());
+
 function caseLabel(c) {
   const load = c.mass == null && c.lcg == null ? "design load"
     : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg"}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
-  return `Fn ${c.froude.toFixed(2)} · ${load}`;
+  return `${speedText(c)}${c.span == null ? "" : ` · cat span ${fmt(c.span, 2)} m`} · ${load}`;
 }
 
 function renderCases() {
@@ -511,7 +540,15 @@ const PLOTX = {
   lcg: (c) => c.data.forces.lcg,
   sinkage: (c) => 1000 * c.data.forces.sinkage,
   trim: (c) => c.data.forces.trim_deg,
+  span: (c) => c.span,
 };
+// The inputs a series holds fixed: all but the one on the x-axis (speed
+// in any of its units counts as one).
+function seriesKey(c, xk) {
+  const k = { speed: c.froude, mass: c.mass, lcg: c.lcg, span: c.span };
+  delete k[{ froude: "speed", speed: "speed", knots: "speed", mass: "mass", lcg: "lcg", span: "span" }[xk] ?? "none"];
+  return JSON.stringify(k);
+}
 const SERIES = ["#1f6feb", "#d6336c", "#2f9e44", "#e8590c", "#7048e8", "#0c8599", "#a61e4d", "#5c940d"];
 $("plotbtn").onclick = () => { $("plot").hidden = !$("plot").hidden; drawPlot(); };
 $("plotclose").onclick = () => { $("plot").hidden = true; };
@@ -526,6 +563,16 @@ function ticks(a, b) {
   return out;
 }
 
+// What a series holds fixed, in words.
+function seriesLabel(c, xk) {
+  const parts = [];
+  if (!["froude", "speed", "knots"].includes(xk)) parts.push(speedText(c));
+  if (xk !== "span" && c.span != null) parts.push(`span ${fmt(c.span, 2)} m`);
+  if (xk !== "mass") parts.push(c.mass == null ? "design mass" : `${fmt(c.mass, 0)} kg`);
+  if (xk !== "lcg" && c.lcg != null) parts.push(`LCG ${fmt(c.lcg, 2)}`);
+  return parts.join(" · ");
+}
+
 function drawPlot() {
   if ($("plot").hidden) return;
   const svg = $("plotsvg"), key = $("plotkey"), xk = $("plotx").value, fx = PLOTX[xk];
@@ -535,7 +582,12 @@ function drawPlot() {
     key.innerHTML = "";
     return;
   }
-  const pts = done.map((c) => ({ c, x: fx(c), y: c.data.forces.rt }));
+  const pts = done.filter((c) => fx(c) != null).map((c) => ({ c, x: fx(c), y: c.data.forces.rt }));
+  if (!pts.length) {
+    svg.innerHTML = `<text class="empty" x="280" y="125" text-anchor="middle">No finished case has that input</text>`;
+    key.innerHTML = "";
+    return;
+  }
   const W = 560, H = 250, L = 48, R = 12, T = 10, B = 28;
   let [x0, x1] = [Math.min(...pts.map((p) => p.x)), Math.max(...pts.map((p) => p.x))];
   let [y0, y1] = [0, Math.max(...pts.map((p) => p.y))];
@@ -548,8 +600,8 @@ function drawPlot() {
   g += `<text x="${(L + W - R) / 2}" y="${H - 3}" text-anchor="middle">${$("plotx").selectedOptions[0].text}</text>`;
   // Series by load; joined along a speed axis.
   const groups = new Map();
-  for (const p of pts) { const k = loadKey(p.c); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
-  const joined = ["froude", "speed", "knots"].includes(xk);
+  for (const p of pts) { const k = seriesKey(p.c, xk); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  const joined = ["froude", "speed", "knots", "mass", "lcg", "span"].includes(xk);
   let i = 0, legend = "";
   for (const [, ps] of groups) {
     const col = SERIES[i++ % SERIES.length];
@@ -560,7 +612,7 @@ function drawPlot() {
       g += `<circle class="pt" data-id="${p.c.id}" cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${on ? 6 : 4}" fill="${on ? col : "var(--panel)"}" stroke="${col}" stroke-width="2"><title>Case ${p.c.id}: ${esc(caseLabel(p.c))} — R_t ${fmt(p.y, 1)} N</title></circle>`;
     }
     const c = ps[0].c;
-    legend += `<span style="color:${col}">● ${esc(c.mass == null && c.lcg == null ? "design load" : caseLabel(c).split(" · ").slice(1).join(" · "))}</span>`;
+    legend += `<span style="color:${col}">● ${esc(seriesLabel(c, xk))}</span>`;
   }
   svg.innerHTML = g;
   key.innerHTML = groups.size > 1 ? legend : "";

@@ -183,6 +183,9 @@ pub struct FlowRequest {
     /// LCB, so the hull floats at its design waterline at rest.
     pub mass: Option<f64>,
     pub lcg: Option<f64>,
+    /// Double the (single) hull into a catamaran with this centre span:
+    /// the distance between the demihulls' centreplanes [m].
+    pub span: Option<f64>,
     /// A previous solution `(sinkage [m], trim [rad])` to start the
     /// equilibrium from — the last speed's, as the slider moves.
     pub warm: Option<(f64, f64)>,
@@ -243,6 +246,12 @@ impl FlowRequest {
             dynamic,
             mass,
             lcg: num("lcg")?,
+            span: match num("span")? {
+                Some(s) if !(s > 0.0 && s.is_finite()) => {
+                    return Err(format!("span {s}: expected a positive centre span"))
+                }
+                s => s,
+            },
             warm,
         })
     }
@@ -349,8 +358,52 @@ pub fn flow_with_progress(
         1.0,
         format!("{} hull{}", cut.hulls.len(), if cut.hulls.len() == 1 { "" } else { "s" }),
     )?;
+    // The fleet: the file's hulls where they are, or its one hull doubled
+    // into a catamaran — each copy as `(hull index, pose)`, the pose's `dy`
+    // putting the copies' centreplanes at ±span/2.
+    let layout: Vec<(usize, HullPose)> = match req.span {
+        None => cut.index.iter().map(|&i| (i, HullPose::default())).collect(),
+        Some(span) => {
+            if cut.hulls.len() != 1 {
+                return Err(format!(
+                    "a catamaran doubles a single hull; this file holds {}",
+                    cut.hulls.len()
+                ));
+            }
+            let (yc, beam) = (cut.hulls[0].placement.y, michell_cli::fleet::max_beam(&cut.hulls[0].hull));
+            if span <= beam {
+                return Err(format!(
+                    "span {span} m: the demihulls overlap (beam {beam:.3} m)"
+                ));
+            }
+            [0.5 * span, -0.5 * span]
+                .map(|y| {
+                    (
+                        cut.index[0],
+                        HullPose {
+                            dy: y - yc,
+                            ..HullPose::default()
+                        },
+                    )
+                })
+                .to_vec()
+        }
+    };
+    let design_owned: Vec<(SectionalHull, Placement)> = layout
+        .iter()
+        .map(|(i, pose)| {
+            let h = &cut.hulls[cut.index.iter().position(|j| j == i).expect("a cut hull")];
+            (
+                h.hull.clone(),
+                Placement {
+                    x: h.placement.x,
+                    y: h.placement.y + pose.dy,
+                },
+            )
+        })
+        .collect();
     let design: Vec<(&SectionalHull, Placement)> =
-        cut.hulls.iter().map(|h| (&h.hull, h.placement)).collect();
+        design_owned.iter().map(|(h, p)| (h, *p)).collect();
     let l_ref = design.iter().map(|(h, _)| h.length()).fold(0.0f64, f64::max);
     let cond = Conditions::seawater(req.froude * (STANDARD_GRAVITY * l_ref).sqrt());
     let rho = cond.fluid.density;
@@ -377,14 +430,13 @@ pub fn flow_with_progress(
     let mut platform = Platform::default();
     let mut solved = None;
     let at_attitude: Vec<(SectionalHull, Placement)> = if req.dynamic {
-        let sources: Vec<SourceHull> = cut
-            .index
+        let sources: Vec<SourceHull> = layout
             .iter()
-            .map(|&index| SourceHull {
+            .map(|&(index, pose)| SourceHull {
                 source: cut.file.source.as_ref(),
                 index,
                 waterline_z: cut.file.waterline_z,
-                pose: HullPose::default(),
+                pose,
             })
             .collect();
         track.at(1, 0.0, "starting the Newton solve".into())?;
@@ -443,7 +495,7 @@ pub fn flow_with_progress(
         solved = Some((eq.sinkage, eq.trim, eq.iterations, eq.dynamic, eq.lift_fraction));
         eq.fleet.members
     } else {
-        cut.hulls.iter().map(|h| (h.hull.clone(), h.placement)).collect()
+        design_owned.clone()
     };
     let members: Vec<(&SectionalHull, Placement)> =
         at_attitude.iter().map(|(h, p)| (h, *p)).collect();
@@ -483,7 +535,37 @@ pub fn flow_with_progress(
                     && (o.length() - h.length()).abs() < tol
             })
     });
-    let g = if symmetric {
+    let g = if let Some(span) = req.span {
+        // A catamaran's field is its demihull's, twice, shifted by ±span/2
+        // (exact in thin-ship theory): one hull's field on a y-grid whose
+        // spacing divides span/2, summed at offset rows. Both demihulls are
+        // the same cut at the same attitude, and each is symmetric about its
+        // own centreplane, so the sum is symmetric too — half is computed.
+        let dxg = (x1 - x0) / (nx - 1) as f64;
+        let m = ((0.5 * span) / dxg).round().max(1.0) as usize;
+        let dy = 0.5 * span / m as f64;
+        let nh = (yh / dy).ceil() as usize + 1;
+        let (yh, ny) = ((nh - 1) as f64 * dy, 2 * nh - 1);
+        let rows = nh + m;
+        let (h0, p0) = members[0];
+        let one = [(h0, Placement { x: p0.x, y: 0.0 })];
+        let half = free_surface(&one, &cond, &nf, x0, x1, 0.0, (rows - 1) as f64 * dy, nx, rows)
+            .map_err(|e| e.to_string())?;
+        let row = |j: usize| &half.zeta[j * nx..(j + 1) * nx];
+        let mut zeta = Vec::with_capacity(nx * ny);
+        for iy in 0..ny {
+            let k = iy.abs_diff(nh - 1);
+            let (a, b) = (row(k.abs_diff(m)), row(k + m));
+            zeta.extend(a.iter().zip(b).map(|(a, b)| a + b));
+        }
+        michell::WaveGrid {
+            y0: -yh,
+            y1: yh,
+            ny,
+            zeta,
+            ..half
+        }
+    } else if symmetric {
         let half = free_surface(&members, &cond, &nf, x0, x1, 0.0, yh, nx, nh)
             .map_err(|e| e.to_string())?;
         let mut zeta = Vec::with_capacity(nx * ny);
@@ -560,11 +642,11 @@ pub fn flow_with_progress(
     // The whole hull at the attitude, topsides included, for display: the
     // source's tessellation, x forward, y across, z up from the water.
     let mut meshes = Vec::new();
-    for &i in &cut.index {
+    for (i, pose) in &layout {
         let (v, t) = cut
             .file
             .source
-            .posed_tessellation(i, cut.file.waterline_z, &HullPose::default(), &platform)
+            .posed_tessellation(*i, cut.file.waterline_z, pose, &platform)
             .map_err(|e| e.to_string())?;
         let flat: Vec<f32> = v.iter().flat_map(|p| p.map(|c| c as f32)).collect();
         let idx: Vec<u32> = t.iter().flatten().copied().collect();
@@ -877,6 +959,72 @@ mod tests {
         .unwrap_err();
         assert_eq!(e, CANCELLED);
         assert_eq!(calls, 3);
+    }
+
+    /// A catamaran's free surface, summed from one demihull's field shifted
+    /// by ±span/2, is the two-hull field computed directly.
+    #[test]
+    fn a_catamaran_field_is_its_demihulls_summed() {
+        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let pairs: Vec<(String, String)> =
+            [("froude", "0.35"), ("grid", "60"), ("attitude", "design"), ("span", "3.1")]
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        let v = flow("w.igs", text.clone().into_bytes(), &FlowRequest::from_query(&pairs).unwrap())
+            .unwrap();
+        let sfc = &v["surface"];
+        let get = |k: &str| sfc[k].as_f64().unwrap();
+        let (nx, ny) = (get("nx") as usize, get("ny") as usize);
+        let bytes = unb64(sfc["zeta"].as_str().unwrap());
+        let summed: Vec<f64> = bytes
+            .chunks(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+            .collect();
+        // The same two hulls, directly, on the same grid.
+        let hull = michell::iges::source_fleet(&text, 0.0)
+            .unwrap()
+            .situate_sectional(0, 0.0, &HullPose::default(), &Platform::default(), &Default::default())
+            .unwrap()
+            .unwrap()
+            .hull;
+        let fleet = [
+            (&hull, Placement { x: 0.0, y: 1.55 }),
+            (&hull, Placement { x: 0.0, y: -1.55 }),
+        ];
+        let cond = Conditions::seawater(0.35 * (STANDARD_GRAVITY * hull.length()).sqrt());
+        let direct = michell::nearfield::free_surface(
+            &fleet,
+            &cond,
+            &Default::default(),
+            get("x0"),
+            get("x1"),
+            get("y0"),
+            get("y1"),
+            nx,
+            ny,
+        )
+        .unwrap();
+        let peak = direct.zeta.iter().fold(0.0f64, |m, z| m.max(z.abs()));
+        let worst = summed
+            .iter()
+            .zip(&direct.zeta)
+            .fold(0.0f64, |m, (a, b)| m.max((a - b).abs()));
+        assert!(worst < 1e-4 * peak, "summed vs direct: {worst} of peak {peak}");
+        assert_eq!(v["hulls"].as_array().unwrap().len(), 2);
+    }
+
+    fn unb64(s: &str) -> Vec<u8> {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let val = |c: u8| A.iter().position(|&a| a == c).unwrap() as u32;
+        let mut out = Vec::new();
+        for q in s.as_bytes().chunks(4) {
+            let n = q.iter().take_while(|&&c| c != b'=').count();
+            let v = q[..n].iter().fold(0u32, |acc, &c| acc << 6 | val(c)) << (6 * (4 - n));
+            out.extend(&[(v >> 16) as u8, (v >> 8) as u8, v as u8][..n - 1]);
+        }
+        out
     }
 
     #[test]
