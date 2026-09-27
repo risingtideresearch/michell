@@ -19,37 +19,36 @@
 //!   ([`waves`]): complex amplitudes here are per unit wave amplitude, with
 //!   their phase relative to a crest at `x_ref`.
 //!
-//! ## What is here, and what comes next
-//!
-//! Done — the parts that need only the geometry:
+//! ## What is here
 //!
 //! - [`restoring`]: hydrostatic restoring coefficients `C₃₃, C₃₅, C₅₅`
 //!   from the waterplane;
-//! - [`froude_krylov`]: the incident-wave (Froude–Krylov) heave force and
-//!   pitch moment, in closed form per x-span from the sectional hull's
-//!   depth integrals `Z(x; k)` ([`michell_geometry::SectionalHull::x_transform`]).
+//! - [`froude_krylov`]: the incident-wave heave force and pitch moment, in
+//!   closed form per x-span from the sectional hull's depth integrals
+//!   ([`michell_geometry::SectionalHull::x_transform`]);
+//! - [`green`], [`section2d`]: the 2-D pulsating source and Frank's
+//!   close-fit method on each station's section curve — added mass,
+//!   damping, radiated waves, and the diffraction force by Haskind;
+//! - [`strip`]: Salvesen–Tuck–Faltinsen assembly at forward speed (transom
+//!   terms included) and the heave–pitch response in regular waves.
 //!
-//! To come:
+//! Still to come: irregular seas (spectra, encounter-frequency mapping,
+//! significant motions) and added resistance; removing the section
+//! solver's irregular frequencies.
 //!
-//! 1. 2-D section hydrodynamics: added mass `a₃₃(x, ω_e)`, damping
-//!    `b₃₃(x, ω_e)` and the diffraction force per station — Lewis forms
-//!    first, then a Frank close-fit source method on the section curves
-//!    ([`michell_geometry::SectionalHull::curves`]);
-//! 2. assembly into the forward-speed coefficients `A_jk, B_jk`
-//!    (Salvesen–Tuck–Faltinsen), the mass matrix (needs a pitch radius of
-//!    gyration on the load case) and the 2×2 heave–pitch RAOs;
-//! 3. irregular seas: spectra, encounter-frequency mapping, significant
-//!    motions and accelerations, and added resistance (Gerritsma–Beukelman
-//!    with a short-wave correction).
-//!
-//! Validation targets: the Wigley hulls I–III of Journée (1992) — heave and
-//! pitch RAOs and added resistance at Fn 0.2, 0.3 and 0.4.
+//! Checks: the source's principal value against quadrature, the section
+//! damping against the energy its waves carry, the Haskind diffraction
+//! force against the solved diffraction problem, long-wave limits of the
+//! full response. The external target is Journée's (1992) Wigley data —
+//! heave and pitch RAOs and added resistance at Fn 0.2–0.4 — not yet
+//! compared (the report was not reachable while this was written).
 
 pub mod froude_krylov;
 pub mod green;
 pub mod linalg;
 pub mod restoring;
 pub mod section2d;
+pub mod strip;
 pub mod waves;
 
 pub use froude_krylov::{froude_krylov, WaveLoad};
