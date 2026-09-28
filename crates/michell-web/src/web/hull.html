@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hull · michell</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  #name { font-size: 18px; font-weight: 700; border-color: transparent; background: transparent; padding: 2px 4px; margin: -2px -4px; width: 100%; }
+  #name:hover, #name:focus { border-color: var(--line); background: var(--bg); }
+  #notes { width: 100%; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions > * { flex: 1; text-align: center; }
+  #cases table { font-size: 12px; }
+  #cases th, #cases td { padding: 5px 8px; }
+  #cases td.what { white-space: normal; }
+  .saved { color: var(--ok); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <section>
+    <input id="name" type="text" aria-label="Name">
+    <textarea id="notes" rows="2" placeholder="Notes" style="margin-top:8px"></textarea>
+    <div class="saved" id="saved"></div>
+  </section>
+  <section class="actions">
+    <a class="button primary" id="newcases">New cases</a>
+    <a class="button" id="reimport" title="Cut the same file another way, as a new hull">Re-import</a>
+    <a class="button" id="download">Download file</a>
+  </section>
+  <section>
+    <h2>Source</h2>
+    <dl id="meta"></dl>
+  </section>
+  <div id="status"></div>
+  <section>
+    <h2>Cases <span class="muted" id="casecount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="cases"></div>
+  </section>
+  <section>
+    <h2>Hydrostatics at the design waterline</h2>
+    <div id="results"></div>
+  </section>
+</aside>
+<main id="view"></main>
+</div>
+
+<script type="module">
+import { $, api, caseLabel, esc, fmt, fmtTime, hullCards, lRef, nav, pathId, status } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+nav("hulls");
+
+const id = pathId();
+const viewer = createViewer($("view"));
+viewer.empty("Loading…");
+let hull;
+
+function renderMeta() {
+  const imp = hull.import || {};
+  const set = (v, unit = "") => v == null ? `<span class="muted">default</span>` : `${esc(v)}${unit}`;
+  $("meta").innerHTML = `
+    <dt>File</dt><dd class="mono">${esc(hull.file_name)}</dd>
+    <dt>Uploaded</dt><dd>${fmtTime(hull.created_at)}${hull.uploaded_by ? ` by ${esc(hull.uploaded_by)}` : ""}</dd>
+    ${hull.parent_id ? `<dt>Re-import of</dt><dd><a href="/hulls/${hull.parent_id}">#${hull.parent_id}</a></dd>` : ""}
+    <dt>Waterline z</dt><dd>${set(imp.waterline ?? 0, " m")}</dd>
+    <dt>Centreplane y</dt><dd>${set(imp.centerplane, " m")}</dd>
+    <dt>Stations</dt><dd>${set(imp.stations)}</dd>
+    <dt>Rays</dt><dd>${set(imp.rays)}</dd>
+    ${imp.units != null ? `<dt>Units</dt><dd>× ${esc(imp.units)} m</dd>` : ""}
+    <dt>Hull id</dt><dd>#${hull.id}</dd>`;
+}
+
+// This hull's cases, newest first: what each asks and, when done, its R_t.
+async function renderCases() {
+  const cases = await api(`/api/cases?hull=${id}`);
+  const l = lRef(hull.summary);
+  $("casecount").textContent = cases.length ? `· ${cases.length}` : "";
+  if (!cases.length) {
+    $("cases").innerHTML = `<p class="hint">No cases yet. <a href="/cases/new?hull=${id}">Ask for some</a>.</p>`;
+    return;
+  }
+  $("cases").innerHTML = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Case</th><th class="num">R<sub>t</sub> [N]</th></tr></thead><tbody>
+    ${cases.map((c) => {
+      const rs = c.results || [];
+      const rt = rs.length === 1 ? fmt(rs[0].scalars.rt, 1) : rs.length ? `${rs.length} spans` : "";
+      const st = c.stale && c.status === "done" ? "stale" : c.status;
+      return `<tr class="link" data-id="${c.id}">
+        <td><a href="/cases/${c.id}">${c.id}</a></td>
+        <td class="what">${esc(caseLabel(c.params, l))}<span class="sub"><span class="pill ${c.status}${c.stale ? " stale" : ""}">${st}</span>${c.error ? ` · ${esc(c.error)}` : ""}</span></td>
+        <td class="num">${rt}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+$("cases").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/cases/${row.dataset.id}`;
+});
+
+// Name and notes save when they change.
+async function saveText() {
+  const name = $("name").value.trim(), notes = $("notes").value.trim();
+  if (!name) { $("name").value = hull.name; return; }
+  if (name === hull.name && notes === hull.notes) return;
+  try {
+    hull = await api(`/api/hulls/${id}`, { json: { name, notes } });
+    document.title = `${hull.name} · michell`;
+    $("saved").textContent = "saved";
+    setTimeout(() => { $("saved").textContent = ""; }, 1500);
+  } catch (e) { status(e.message, true); }
+}
+$("name").addEventListener("change", saveText);
+$("name").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+$("notes").addEventListener("change", saveText);
+
+try {
+  if (id == null) throw new Error("no hull id in the address");
+  hull = await api(`/api/hulls/${id}`);
+  document.title = `${hull.name} · michell`;
+  $("name").value = hull.name;
+  $("notes").value = hull.notes;
+  $("newcases").href = `/cases/new?hull=${id}`;
+  $("reimport").href = `/hulls/new?from=${id}`;
+  $("download").href = `/api/hulls/${id}/file`;
+  $("download").download = hull.file_name;
+  renderMeta();
+  renderCases().catch((e) => status(e.message, true));
+  const [geometry, sections] = await Promise.all([
+    api(`/api/hulls/${id}/geometry`), api(`/api/hulls/${id}/sections`),
+  ]);
+  const wl = hull.import?.waterline ?? 0;
+  viewer.geometry(geometry.meshes, wl);
+  viewer.load(sections.hulls, wl);
+  $("results").innerHTML = hullCards(sections.hulls, sections.notes || []);
+} catch (e) {
+  status(e.message, true);
+  viewer.empty(e.message);
+}
+</script>
+</body>
+</html>

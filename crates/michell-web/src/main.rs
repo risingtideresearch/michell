@@ -6,8 +6,9 @@
 //! results are kept in `DIR` (default `$MICHELL_DATA`, else
 //! `./michell-data`); see `api.rs` for the queue's endpoints.
 //!
-//! Stateless endpoints (the upload page's preview, and the old page's):
-//!   GET  /                      the page
+//! The pages are in `web.rs`. Stateless endpoints (the upload page's
+//! preview, and the old single page's):
+//!   GET  /old                   the old single page
 //!   POST /api/loft?name=F&...   body = the file's bytes; returns the loft as
 //!                               JSON (see `michell_web::loft`), or
 //!                               `{"error": ...}` with status 400
@@ -30,6 +31,7 @@ use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 mod api;
+mod web;
 
 const PAGE: &str = include_str!("index.html");
 
@@ -111,8 +113,22 @@ fn handle(mut req: Request, app: &api::App) {
     if *req.method() == Method::Post && path == "/api/span_sweep" {
         return stream_sweep(req, &pairs);
     }
+    if method == Method::Get {
+        if let Some((body, kind)) = web::file(path) {
+            let _ = req.respond(
+                Response::from_string(body)
+                    .with_header(header("Content-Type", kind))
+                    .with_header(header("Cache-Control", "no-cache")),
+            );
+            return;
+        }
+    }
     let resp = match (req.method(), path) {
-        (Method::Get, "/") => Response::from_string(PAGE)
+        (Method::Get, "/") => Response::from_string("")
+            .with_status_code(302)
+            .with_header(header("Location", "/hulls")),
+        // The old single page, until the new ones replace it.
+        (Method::Get, "/old") => Response::from_string(PAGE)
             .with_header(header("Content-Type", "text/html; charset=utf-8")),
         (Method::Post, "/api/geometry") => {
             let name = pairs

@@ -185,11 +185,7 @@ impl Worker {
 
     /// The equilibrium of the nearest speed already solved for this case
     /// otherwise, to start the solve from — and which case it was.
-    fn warm_start(
-        &self,
-        hull_id: i64,
-        p: &CaseParams,
-    ) -> Result<Option<WarmStart>, String> {
+    fn warm_start(&self, hull_id: i64, p: &CaseParams) -> Result<Option<WarmStart>, String> {
         if !p.dynamic {
             return Ok(None);
         }
