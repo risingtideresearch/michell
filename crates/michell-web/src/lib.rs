@@ -15,11 +15,16 @@ use michell::{Conditions, Placement, TransomClosure, WaveOptions, STANDARD_GRAVI
 use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
 use serde_json::{json, Value};
 
+pub mod case;
+pub mod store;
+pub mod worker;
+
 /// Largest upload accepted [bytes]. Big enough for a finely tessellated STL.
 pub const MAX_UPLOAD: usize = 128 << 20;
 
 /// Import options the page can set.
-#[derive(Default)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct LoftRequest {
     /// Design waterline height in the file's frame [m] (IGES).
     pub waterline: Option<f64>,
@@ -208,15 +213,19 @@ where
 }
 
 /// How a case's mass is carried (see [`FlowRequest::mass_by`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum MassBy {
     /// The hull floats deeper or shallower: the waterline moves.
+    #[default]
+    #[serde(rename = "sinking")]
     Sinking,
     /// The hull is scaled uniformly, `k = (m/m₀)^(1/3)`, about its design
     /// waterline: the waterline stays.
+    #[serde(rename = "scale")]
     ScaleXyz,
     /// Beam and draft are scaled, `k = (m/m₀)^(1/2)`, the length kept: the
     /// waterline stays.
+    #[serde(rename = "scale_yz")]
     ScaleYz,
 }
 

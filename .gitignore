@@ -9,4 +9,6 @@
 /*.hull
 /*.csv
 /*.json
+# michell-web's default store of hulls, cases and results
+/michell-data/
 .DS_Store
