@@ -1203,6 +1203,9 @@ fn seakeeping_json(
         "mass": props.mass,
         "lcg": props.lcg,
         "bg": props.bg,
+        // G: at the LCG, on the centreplane (y = 0), this far above the
+        // waterline — the point the motions are about.
+        "vcg": sk.vcg.unwrap_or(0.0),
         "k_yy": props.radius_of_gyration,
         "k_xx": props.roll_radius_of_gyration,
         "k_zz": props.yaw_radius_of_gyration,

@@ -115,6 +115,14 @@
   #skplot .key span[data-id] { cursor: pointer; }
   #skplot .note { color: var(--muted); margin-top: 3px; }
   #skopts { margin-top: 8px; }
+  #skplot .anim { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 12px; }
+  #skplot .anim label { display: flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; }
+  #skplot .anim select, #skplot .anim input { padding: 2px 5px; font-size: 12px; }
+  #skplot .anim input { width: 64px; }
+  #skplot .anim button { padding: 2px 10px; font-size: 12px; }
+  #skplot .anim button.on { background: var(--accent, #1f6feb); color: #fff; border-color: transparent; }
+  #skaread { color: var(--muted); font-variant-numeric: tabular-nums; flex-basis: 100%; }
+  #sksvg circle.pick { cursor: pointer; }
   .sktable { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px; font-variant-numeric: tabular-nums; }
   .sktable th, .sktable td { text-align: right; padding: 2px 4px; border-bottom: 1px solid var(--line); }
   .sktable th:first-child, .sktable td:first-child { text-align: left; }
@@ -363,6 +371,13 @@
     </div>
     <svg id="sksvg" viewBox="0 0 560 250"></svg>
     <div class="key" id="skkey"></div>
+    <div class="anim">
+      <button id="skanim" title="Animate the viewed case in a regular wave at this heading">▶ Animate</button>
+      <label>λ/L <select id="skalam"></select></label>
+      <label>wave height [m] <input id="skaheight" type="text" placeholder="λ/30"></label>
+      <label>speed <select id="skarate"><option value="1">1×</option><option value="0.5">½×</option><option value="0.25">¼×</option></select></label>
+      <span id="skaread"></span>
+    </div>
     <div class="note" id="sknote"></div>
   </div>
   <div id="area">
@@ -788,7 +803,7 @@ $("cases").addEventListener("click", (e) => {
   if (act === "remove") {
     cases = cases.filter((o) => o !== c);
     c.abort?.abort();
-    if (viewing === c.id) { viewing = null; flowData = null; $("bigrt").hidden = true; scene3d.flow(null); $("flowout").innerHTML = ""; }
+    if (viewing === c.id) { stopAnim(); viewing = null; flowData = null; $("bigrt").hidden = true; scene3d.flow(null); $("flowout").innerHTML = ""; }
     renderCases();
   } else if (act === "retry") {
     c.status = "queued"; c.error = null;
@@ -911,11 +926,13 @@ const SKX = {
   omega_e: (p) => p.omega_e,
 };
 const cabs = (z) => Math.hypot(z[0], z[1]);
-$("skclose").onclick = () => { $("skplot").hidden = true; };
-for (const id of ["skq", "skh", "skx", "skall"]) $(id).onchange = drawSkPlot;
+$("skclose").onclick = () => { $("skplot").hidden = true; stopAnim(); };
+for (const id of ["skq", "skx", "skall"]) $(id).onchange = drawSkPlot;
+$("skh").onchange = () => { drawSkPlot(); fillAnimLambdas(); if (animOn) animate(); };
 
 function drawSkPlot() {
   if ($("skplot").hidden) return;
+  queueMicrotask(fillAnimLambdas);
   const svg = $("sksvg"), key = $("skkey"), q = SKQ[$("skq").value], fx = SKX[$("skx").value];
   const all = cases.filter((c) => c.status === "done" && c.data.seakeeping);
   // The heading choices: every heading among those cases.
@@ -929,7 +946,7 @@ function drawSkPlot() {
   const series = shown.map((c) => {
     const h = c.data.seakeeping.headings.find((h) => h.heading === heading);
     if (!h) return null;
-    const pts = h.points.filter((p) => !p.error).map((p) => ({ x: fx(p, c.data.seakeeping), y: q.y(p), y2: q.y2 ? q.y2(p) : null })).sort((a, b) => a.x - b.x);
+    const pts = h.points.filter((p) => !p.error).map((p) => ({ lambda: p.lambda, x: fx(p, c.data.seakeeping), y: q.y(p), y2: q.y2 ? q.y2(p) : null })).sort((a, b) => a.x - b.x);
     return pts.length ? { c, pts } : null;
   }).filter(Boolean);
   if (!series.length) {
@@ -962,7 +979,8 @@ function drawSkPlot() {
       }
     }
     g += `<polyline fill="none" stroke="${col}" stroke-width="${w}" points="${line(s.pts, (p) => p.y)}"/>`;
-    for (const p of s.pts) g += `<circle cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${on ? 2.5 : 1.8}" fill="${col}"><title>Case ${s.c.id}: ${fmt(p.x, 3)} → ${fmt(p.y, 3)}${p.y2 != null ? ` (far ${fmt(p.y2, 3)})` : ""}</title></circle>`;
+    const picked = on && animOn ? Number($("skalam").value) : null;
+    for (const p of s.pts) g += `<circle${on ? ` class="pick" data-lam="${p.lambda}"` : ""} cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${p.lambda === picked ? 5 : on ? 2.5 : 1.8}" fill="${col}"><title>Case ${s.c.id}: ${fmt(p.x, 3)} → ${fmt(p.y, 3)}${p.y2 != null ? ` (far ${fmt(p.y2, 3)})` : ""}${on ? " — click to animate" : ""}</title></circle>`;
     legend += `<span data-id="${s.c.id}" style="color:${col}${on ? ";font-weight:600" : ""}">— ${s.c.id}. ${esc(caseLabel(s.c))}</span>`;
   });
   if (q.y2 && !series.some((s) => s.pts.some((p) => p.y2 != null))) $("sknote").textContent += " The far field is not computed at this heading.";
@@ -971,6 +989,75 @@ function drawSkPlot() {
   key.innerHTML = legend;
 }
 $("skkey").addEventListener("click", (e) => { const id = e.target.dataset && e.target.dataset.id; if (id) view(Number(id)); });
+// A point of the viewed case picks the wavelength to animate.
+$("sksvg").addEventListener("click", (e) => {
+  const lam = e.target.dataset && e.target.dataset.lam;
+  if (lam == null) return;
+  $("skalam").value = lam;
+  if (animOn) animate();
+});
+
+// ---------------------------------------------------------------- animation
+// The viewed case in a regular wave: its heading from the plot's, its
+// wavelength from the list (or a clicked point).
+let animOn = false;
+function animPoints() {
+  const s = flowData && flowData.seakeeping;
+  if (!s) return null;
+  const h = s.headings.find((h) => h.heading === Number($("skh").value)) || s.headings[0];
+  return { s, h, pts: h.points.filter((p) => !p.error) };
+}
+function fillAnimLambdas() {
+  const a = animPoints(), sel = $("skalam"), keep = sel.value;
+  const opts = a ? a.pts.map((p) => `<option value="${p.lambda}">${fmt(p.lambda, 3)}</option>`).join("") : "";
+  if (sel.innerHTML !== opts) {
+    sel.innerHTML = opts;
+    if (a && a.pts.some((p) => String(p.lambda) === keep)) sel.value = keep;
+    else if (a && a.pts.length) {
+      // Start where the heave responds most: the interesting part.
+      const best = a.pts.reduce((b, p) => (cabs(p.heave) * (1 + 0.2 * p.lambda) > cabs(b.heave) * (1 + 0.2 * b.lambda) ? p : b));
+      sel.value = String(best.lambda);
+    }
+  }
+  $("skanim").disabled = !a || !a.pts.length;
+}
+function animate() {
+  const a = animPoints();
+  const p = a && a.pts.find((p) => String(p.lambda) === $("skalam").value);
+  if (!p) { stopAnim(); return; }
+  const s = a.s, lam = 2 * Math.PI / p.k;
+  const typed = Number($("skaheight").value);
+  const height = $("skaheight").value.trim() && typed > 0 ? typed : lam / 30;
+  const amp = height / 2;
+  const hs = flowData.hulls;
+  const xs = hs.flatMap((h) => [h.x[0], h.x[h.x.length - 1]]);
+  const ys = hs.flatMap((h) => [h.y - 0.5 * s.beam, h.y + 0.5 * s.beam]);
+  const L = s.length, pad = Math.max(0.6 * L, 1.5 * lam);
+  const extent = [Math.min(...xs) - pad, Math.max(...xs) + pad, Math.min(...ys) - Math.max(0.5 * L, lam), Math.max(...ys) + Math.max(0.5 * L, lam)];
+  scene3d.seaway({ k: p.k, heading: a.h.heading * Math.PI / 180, omega_e: p.omega_e, amp,
+    g: [s.lcg, 0, s.vcg ?? 0], eta: { sway: p.sway, heave: p.heave, roll: p.roll, pitch: p.pitch, yaw: p.yaw },
+    extent, rate: Number($("skarate").value) });
+  animOn = true;
+  $("skanim").textContent = "■ Stop";
+  $("skanim").classList.add("on");
+  const deg = (z) => fmt(amp * cabs(z) * 180 / Math.PI, 2);
+  const lateral = Math.abs(Math.sin(a.h.heading * Math.PI / 180)) > 1e-6
+    ? ` · sway ±${fmt(amp * cabs(p.sway), 3)} m · roll ±${deg(p.roll)}° · yaw ±${deg(p.yaw)}°` : "";
+  $("skaread").textContent = `λ ${fmt(lam, 2)} m · wave height ${fmt(height, 3)} m · encounter period ${fmt(2 * Math.PI / Math.abs(p.omega_e), 2)} s` +
+    ` · heave ±${fmt(amp * cabs(p.heave), 3)} m · pitch ±${deg(p.pitch)}°${lateral}` +
+    (Number($("skarate").value) < 1 ? ` · slowed ${$("skarate").selectedOptions[0].text}` : "");
+  if ($("views").querySelector(".on")?.dataset.view === "wake") pick("iso");
+}
+function stopAnim() {
+  if (animOn) scene3d.seaway(null);
+  animOn = false;
+  $("skanim").textContent = "▶ Animate";
+  $("skanim").classList.remove("on");
+  $("skaread").textContent = "";
+}
+$("skanim").onclick = () => (animOn ? stopAnim() : animate());
+for (const id of ["skalam", "skarate"]) $(id).onchange = () => { if (animOn) animate(); };
+$("skaheight").addEventListener("change", () => { if (animOn) animate(); });
 
 function view(id) {
   const c = cases.find((c) => c.id === id);
@@ -978,6 +1065,7 @@ function view(id) {
   if (!flowData) {
     drawArea();
   }
+  stopAnim();
   viewing = id;
   flowData = c.data;
   flowData.case = c;
@@ -1147,7 +1235,7 @@ const scene3d = (() => {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves", "seaway"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   // What is shown: the sections before any case, the case's flow after.
@@ -1155,7 +1243,7 @@ const scene3d = (() => {
   // the waterline, the cut below it — the cut's layers, relative to the
   // waterline they were cut at, raised by it. The flow view is relative to
   // the solved waterline.
-  const SHOWN = { cut: ["surface", "stations", "geom", "water"], flow: ["hull", "pressure", "waves"] };
+  const SHOWN = { cut: ["surface", "stations", "geom", "water"], flow: ["hull", "pressure", "waves"], sea: ["hull", "seaway"] };
   const CUT_FRAME = ["surface", "stations", "keel", "rays", "closure"];
   let mode = "cut", wlCut = 0, wlNow = 0, geomBounds = null;
   function show(which) {
@@ -1344,6 +1432,7 @@ const scene3d = (() => {
   // height field with the hulls' waterplanes cut out.
   let waveMesh = null;
   function flow(d) {
+    seaway(null);
     clear(layers.pressure); clear(layers.waves); clear(layers.hull);
     probes = []; waveMesh = null;
     const has = !!d;
@@ -1441,6 +1530,116 @@ const scene3d = (() => {
   }
 
 
+  // A regular wave and the hull moving in it: the incident elevation
+  //   ζ = A cos(k((x − x_G) cos β + y sin β) − ω_e t)
+  // in the frame moving with the boat, and each motion A·Re[η̂ e^{−iω_e t}]
+  // about G — sway to port, heave up, roll port side up, pitch bow up, yaw
+  // bow to port — from the case's complex responses (per unit amplitude).
+  // `spec`: { k, heading [rad], omega_e, amp [m], g: [x, y, z], eta:
+  // { sway, heave, roll, pitch, yaw } as [re, im], extent: [x0, x1, y0, y1],
+  // rate }, or null to stop and go back to the flow.
+  // Scene axes are (x, z up, y): P swaps the last two.
+  const SWAP = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+  let sea = null;
+  function seaway(spec) {
+    if (sea) { cancelAnimationFrame(sea.raf); sea = null; }
+    clear(layers.seaway);
+    layers.hull.matrixAutoUpdate = true;
+    layers.hull.position.set(0, 0, 0); layers.hull.rotation.set(0, 0, 0); layers.hull.updateMatrix();
+    if (!spec) {
+      if (mode === "sea") { show("flow"); for (const id of ["lgcp", "lgzeta"]) $(id).style.display = "block"; clipHull(); }
+      return;
+    }
+    show("sea");
+    for (const id of ["lgcp", "lgzeta"]) $(id).style.display = "none";
+    clipHull();
+    const [x0, x1, y0, y1] = spec.extent;
+    // About 16 points a wavelength, within a budget.
+    const lam = 2 * Math.PI / spec.k, step = Math.max(lam / 16, Math.sqrt((x1 - x0) * (y1 - y0) / 60000));
+    const nx = Math.max(2, Math.ceil((x1 - x0) / step) + 1), ny = Math.max(2, Math.ceil((y1 - y0) / step) + 1);
+    const pos = new Float32Array(nx * ny * 3), phase = new Float32Array(nx * ny);
+    const cb = Math.cos(spec.heading), sb = Math.sin(spec.heading);
+    for (let iy = 0; iy < ny; iy++) for (let ix = 0; ix < nx; ix++) {
+      const n = iy * nx + ix, x = x0 + (x1 - x0) * ix / (nx - 1), y = y0 + (y1 - y0) * iy / (ny - 1);
+      pos.set([x, 0, y], 3 * n);
+      phase[n] = spec.k * ((x - spec.g[0]) * cb + y * sb);
+    }
+    const index = new Uint32Array(6 * (nx - 1) * (ny - 1));
+    let m = 0;
+    for (let iy = 0; iy + 1 < ny; iy++) for (let ix = 0; ix + 1 < nx; ix++) {
+      const a = iy * nx + ix, b = a + 1, c = a + nx + 1, e = a + nx;
+      index.set([a, c, b, a, e, c], m); m += 6;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    // Shaded by elevation, troughs dark and crests light: at a real wave's
+    // steepness the lighting alone barely shows it.
+    const col = new Float32Array(nx * ny * 3);
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    geo.setIndex(new THREE.BufferAttribute(index, 1));
+    const water = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.05,
+      transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }));
+    water.renderOrder = 1;
+    layers.seaway.add(water);
+    // Walls down the patch's edges, so side-on views show the wave's
+    // profile (the surface itself is then edge-on): each edge point of the
+    // grid, and below it a point at the walls' depth.
+    const edge = [];
+    for (let ix = 0; ix < nx; ix++) edge.push(ix);
+    for (let iy = 1; iy < ny; iy++) edge.push(iy * nx + nx - 1);
+    for (let ix = nx - 2; ix >= 0; ix--) edge.push((ny - 1) * nx + ix);
+    for (let iy = ny - 2; iy >= 0; iy--) edge.push(iy * nx);
+    const depth = Math.min(0.35 * lam, 0.3 * (x1 - x0));
+    const wpos = new Float32Array(edge.length * 6), widx = [];
+    edge.forEach((n, i) => {
+      wpos.set([pos[3 * n], 0, pos[3 * n + 2], pos[3 * n], -depth, pos[3 * n + 2]], 6 * i);
+      if (i + 1 < edge.length) { const a = 2 * i; widx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    });
+    const wgeo = new THREE.BufferGeometry();
+    wgeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3));
+    wgeo.setIndex(widx);
+    const walls = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x2f74c0, transparent: true, opacity: 0.28,
+      side: THREE.DoubleSide, depthWrite: false }));
+    walls.renderOrder = 1;
+    layers.seaway.add(walls);
+    sea = { spec, geo, phase, t: 0, last: null, raf: 0 };
+    const DARK = [0.09, 0.3, 0.55], LIGHT = [0.62, 0.8, 0.95];
+    const re = (z, c, s) => z[0] * c + z[1] * s; // Re[(a + ib) e^{−iωt}]
+    const R = new THREE.Matrix4(), T = new THREE.Matrix4(), tmp = new THREE.Matrix4();
+    const tick = (now) => {
+      if (!sea || sea.spec !== spec) return;
+      if (sea.last != null) sea.t += Math.min(0.1, (now - sea.last) / 1000) * spec.rate;
+      sea.last = now;
+      const wt = spec.omega_e * sea.t, c = Math.cos(wt), s = Math.sin(wt), A = spec.amp;
+      const attr = geo.attributes.position;
+      const ca = geo.attributes.color.array;
+      for (let n = 0; n < phase.length; n++) {
+        const c1 = Math.cos(phase[n] - wt), u = 0.5 + 0.5 * c1;
+        attr.array[3 * n + 1] = A * c1;
+        for (let j = 0; j < 3; j++) ca[3 * n + j] = DARK[j] + u * (LIGHT[j] - DARK[j]);
+      }
+      attr.needsUpdate = true;
+      geo.attributes.color.needsUpdate = true;
+      geo.computeVertexNormals();
+      const wa = wgeo.attributes.position;
+      edge.forEach((n, i) => { wa.array[6 * i + 1] = attr.array[3 * n + 1]; });
+      wa.needsUpdate = true;
+      const e = spec.eta, [gx, gy, gz] = spec.g;
+      const d = { sway: A * re(e.sway, c, s), heave: A * re(e.heave, c, s), roll: A * re(e.roll, c, s),
+        pitch: A * re(e.pitch, c, s), yaw: A * re(e.yaw, c, s) };
+      // Hull frame (x fwd, y port, z up): about G, then into the scene.
+      R.makeRotationZ(d.yaw).multiply(tmp.makeRotationY(-d.pitch)).multiply(tmp.makeRotationX(d.roll));
+      T.makeTranslation(gx, gy + d.sway, gz + d.heave).multiply(R).multiply(tmp.makeTranslation(-gx, -gy, -gz));
+      layers.hull.matrixAutoUpdate = false;
+      layers.hull.matrix.copy(SWAP).multiply(T).multiply(SWAP);
+      layers.hull.matrixWorldNeedsUpdate = true;
+      controls.update();
+      renderer.render(scene, camera);
+      sea.raf = requestAnimationFrame(tick);
+    };
+    sea.raf = requestAnimationFrame(tick);
+  }
+
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
@@ -1519,7 +1718,7 @@ const scene3d = (() => {
   renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
 
-  return { load, closure, flow, setView, geometry, setWater, mode: (m) => { show(m); setView(view, true); } };
+  return { load, closure, flow, seaway, setView, geometry, setWater, mode: (m) => { show(m); setView(view, true); } };
 })();
 
 // ---------------------------------------------------------------- area panel

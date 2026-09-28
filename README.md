@@ -794,7 +794,11 @@ resistance against λ/L, λ or ω_e, overlaid across the finished cases, each
 with how far the validation (`docs/seakeeping-findings.md`) says to trust it.
 Added resistance is drawn as the band between the Gerritsma–Beukelman and
 far-field estimates; the far field is left out away from head and following
-seas.
+seas. **Animate** runs the viewed case in the 3-D view: the regular wave at the
+plot's heading and a chosen wavelength (or a clicked point) and height, and
+the hull moving in it — all five modes about G, at the encounter frequency
+(slowed if asked), with see-through walls on the wave patch so the profile and
+body views show the wave against the hull.
 
 ```text
 cargo run --release -p michell-web          # http://127.0.0.1:8080/
