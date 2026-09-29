@@ -1,4 +1,4 @@
-//! The JSON API: hulls, their configurations, runs on those, studies,
+//! The JSON API: hulls, their configurations, runs on those,
 //! results, and the queue. Bodies and answers are JSON unless noted.
 //!
 //! ```text
@@ -29,15 +29,13 @@
 //! POST /api/configs/:id                 {"name"?, "notes"?}
 //! GET  /api/configs/:id/statics         the whole statics (GZ curve, meshes at rest)
 //!
-//! GET  /api/studies                     every study, with run counts
 //! POST /api/runs                        {"config_ids": [..], "runs": [RunParams..],
-//!                                        "study"?: {"name", "notes"?} | "study_id"?,
 //!                                        "priority"?, "by"?, "dry_run"?}
 //!                                       every run on every configuration (a run in
 //!                                       waves brings its calm-water run) →
-//!                                       {"study_id", "runs": [..]}; a dry run
+//!                                       {"runs": [..]}; a dry run
 //!                                       queues nothing and says which exist
-//! GET  /api/runs?hull=&config=&study=&status=a,b&kind=&limit=&sort=finished
+//! GET  /api/runs?hull=&config=&ids=a,b&status=a,b&kind=&limit=&sort=finished
 //!                                       runs with their configuration and result
 //! GET  /api/runs/:id                    one run
 //! GET  /api/runs/:id/result             its whole answer (fields and all)
@@ -218,13 +216,12 @@ pub fn route(
             ))
         }),
 
-        (Get, ["studies"]) => list(s.studies()),
         (Post, ["runs"]) => json_body(body).and_then(|v| add_runs(app, &v, who)),
         (Get, ["runs"]) => (|| {
             let f = RunFilter {
                 hull: opt_id("hull")?,
                 config: opt_id("config")?,
-                study: opt_id("study")?,
+                ids: get("ids").map(String::from),
                 status: get("status").map(String::from),
                 kind: get("kind").map(String::from),
                 limit: opt_id("limit")?,
@@ -518,35 +515,15 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
 
     let by = by(who, v["by"].as_str().unwrap_or(""));
     let priority = v["priority"].as_i64().unwrap_or(0);
-    let study_id = match (&v["study"], v["study_id"].as_i64()) {
-        (Value::Object(st), None) => {
-            let name = st
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .ok_or(bad("study: a name is required"))?;
-            let notes = st.get("notes").and_then(Value::as_str).unwrap_or("");
-            Some(s.add_study(name, notes, by).map_err(internal)?)
-        }
-        (Value::Null, id) => id,
-        _ => return Err(bad("give study or study_id, not both")),
-    };
     let mut rs = Vec::new();
     for &cid in &configs {
         for (r, implied) in &runs {
             let (rid, created) = s
-                .add_run(
-                    cid,
-                    r,
-                    (!implied).then_some(study_id).flatten(),
-                    priority,
-                    by,
-                )
+                .add_run(cid, r, priority, by)
                 .map_err(internal)?;
             rs.push(json!({ "id": rid, "created": created, "config_id": cid, "implied": implied }));
         }
     }
     app.worker.poke();
-    Ok(Reply::Json(json!({ "study_id": study_id, "runs": rs })))
+    Ok(Reply::Json(json!({ "runs": rs })))
 }

@@ -69,13 +69,6 @@ CREATE TABLE IF NOT EXISTS configs (
     created_at     INTEGER NOT NULL,
     UNIQUE (hull_id, params_hash)
 );
-CREATE TABLE IF NOT EXISTS studies (
-    id         INTEGER PRIMARY KEY,
-    name       TEXT NOT NULL,
-    notes      TEXT NOT NULL DEFAULT '',
-    created_by TEXT NOT NULL DEFAULT '',
-    created_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS runs (
     id           INTEGER PRIMARY KEY,
     config_id    INTEGER NOT NULL REFERENCES configs(id),
@@ -95,11 +88,6 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS runs_queue ON runs (status, priority, id);
 CREATE INDEX IF NOT EXISTS runs_attitude ON runs (config_id, attitude_key);
-CREATE TABLE IF NOT EXISTS study_runs (
-    study_id INTEGER NOT NULL REFERENCES studies(id),
-    run_id   INTEGER NOT NULL REFERENCES runs(id),
-    PRIMARY KEY (study_id, run_id)
-);
 CREATE TABLE IF NOT EXISTS results (
     run_id         INTEGER PRIMARY KEY REFERENCES runs(id),
     scalars        TEXT NOT NULL,
@@ -550,44 +538,7 @@ impl Store {
         Ok(n > 0)
     }
 
-    // --- studies and runs ----------------------------------------------
-
-    pub fn add_study(&self, name: &str, notes: &str, by: &str) -> Result<i64, String> {
-        let db = self.db();
-        db.execute(
-            "INSERT INTO studies (name, notes, created_by, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![name, notes, by, now()],
-        )
-        .map_err(err)?;
-        Ok(db.last_insert_rowid())
-    }
-
-    pub fn studies(&self) -> Result<Vec<Value>, String> {
-        let db = self.db();
-        let mut q = db
-            .prepare(
-                "SELECT s.id, s.name, s.notes, s.created_by, s.created_at,
-                        (SELECT COUNT(*) FROM study_runs sr WHERE sr.study_id = s.id),
-                        (SELECT COUNT(*) FROM study_runs sr JOIN runs r ON r.id = sr.run_id
-                          WHERE sr.study_id = s.id AND r.status = 'done')
-                 FROM studies s ORDER BY s.id DESC",
-            )
-            .map_err(err)?;
-        let rows = q
-            .query_map([], |r| {
-                Ok(json!({
-                    "id": r.get::<_, i64>(0)?,
-                    "name": r.get::<_, String>(1)?,
-                    "notes": r.get::<_, String>(2)?,
-                    "created_by": r.get::<_, String>(3)?,
-                    "created_at": r.get::<_, i64>(4)?,
-                    "runs": r.get::<_, i64>(5)?,
-                    "done": r.get::<_, i64>(6)?,
-                }))
-            })
-            .map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)
-    }
+    // --- runs ----------------------------------------------------------
 
     /// The run already asked for on `config_id` with these parameters, if
     /// any: its id, status, and whether its result is stale.
@@ -609,13 +560,12 @@ impl Store {
     }
 
     /// Ask for a run on a configuration, returning `(id, created)`. A run
-    /// already asked for is not duplicated: it joins the study, and if it
-    /// failed or was cancelled it goes back on the queue.
+    /// already asked for is not duplicated: if it failed or was cancelled it
+    /// goes back on the queue.
     pub fn add_run(
         &self,
         config_id: i64,
         p: &RunParams,
-        study_id: Option<i64>,
         priority: i64,
         by: &str,
     ) -> Result<(i64, bool), String> {
@@ -676,13 +626,6 @@ impl Store {
                 (tx.last_insert_rowid(), true)
             }
         };
-        if let Some(s) = study_id {
-            tx.execute(
-                "INSERT OR IGNORE INTO study_runs (study_id, run_id) VALUES (?1, ?2)",
-                params![s, id],
-            )
-            .map_err(err)?;
-        }
         tx.commit().map_err(err)?;
         Ok((id, created))
     }
@@ -698,10 +641,10 @@ impl Store {
                  JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.run_id = r.id
                  WHERE (?1 IS NULL OR g.hull_id = ?1)
                    AND (?2 IS NULL OR r.config_id = ?2)
-                   AND (?3 IS NULL OR r.id IN (SELECT run_id FROM study_runs WHERE study_id = ?3))
-                   AND (?4 IS NULL OR instr(',' || ?4 || ',', ',' || r.status || ',') > 0)
-                   AND (?5 IS NULL OR r.kind = ?5)
-                 ORDER BY CASE WHEN ?7 THEN r.finished_at END DESC, r.id DESC LIMIT ?6"
+                   AND (?3 IS NULL OR instr(',' || ?3 || ',', ',' || r.status || ',') > 0)
+                   AND (?4 IS NULL OR r.kind = ?4)
+                   AND (?7 IS NULL OR instr(',' || ?7 || ',', ',' || r.id || ',') > 0)
+                 ORDER BY CASE WHEN ?6 THEN r.finished_at END DESC, r.id DESC LIMIT ?5"
             ))
             .map_err(err)?;
         let rows = q
@@ -709,11 +652,11 @@ impl Store {
                 params![
                     f.hull,
                     f.config,
-                    f.study,
                     f.status,
                     f.kind,
                     f.limit.unwrap_or(10_000),
-                    f.by_finish
+                    f.by_finish,
+                    f.ids
                 ],
                 run_row,
             )
@@ -723,8 +666,7 @@ impl Store {
 
     pub fn run(&self, id: i64) -> Result<Option<Value>, String> {
         let db = self.db();
-        let r = db
-            .query_row(
+        db.query_row(
                 &format!(
                     "SELECT {RUN_COLS} FROM runs r JOIN configs g ON g.id = r.config_id
                      JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.run_id = r.id
@@ -734,17 +676,7 @@ impl Store {
                 run_row,
             )
             .optional()
-            .map_err(err)?;
-        let Some(mut r) = r else { return Ok(None) };
-        let mut q = db
-            .prepare("SELECT study_id FROM study_runs WHERE run_id = ?1")
-            .map_err(err)?;
-        r["studies"] = json!(q
-            .query_map([id], |r| r.get::<_, i64>(0))
-            .map_err(err)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(err)?);
-        Ok(Some(r))
+            .map_err(err)
     }
 
     /// The field blob of a run's result.
@@ -1124,7 +1056,8 @@ fn fail(tx: &rusqlite::Transaction, id: i64, why: &str) -> Result<(), String> {
 pub struct RunFilter {
     pub hull: Option<i64>,
     pub config: Option<i64>,
-    pub study: Option<i64>,
+    /// These runs only: ids separated by commas.
+    pub ids: Option<String>,
     /// One status, or several separated by commas.
     pub status: Option<String>,
     /// `calm` or `waves`.

@@ -56,8 +56,9 @@
 import { $, api, configName, esc, fmt, fmtDuration, fmtTime, lRef, nav, runLabel, status } from "/static/common.js";
 nav("queue");
 
-const study = Number(new URLSearchParams(location.search).get("study")) || null;
-let lengths = new Map(), studyRuns = new Set(), typical = null, lastRunning = null;
+// `?highlight=ids`: the runs just asked for, marked out.
+const highlight = new URLSearchParams(location.search).get("highlight") || "";
+let lengths = new Map(), asked = new Set(highlight.split(",").filter(Boolean).map(Number)), typical = null, lastRunning = null;
 
 // Each hull's reference length, for speeds in knots.
 async function loadHulls() {
@@ -66,7 +67,7 @@ async function loadHulls() {
 }
 const label = (r) => runLabel(r.params, lengths.get(r.hull_id));
 const where = (r) => `<a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/configs/${r.config_id}">${esc(configName({ name: r.config_name, params: r.config }))}</a>`;
-const mine = (r) => studyRuns.has(r.id) ? " mine" : "";
+const mine = (r) => asked.has(r.id) ? " mine" : "";
 // What a finished run is summed up by: R_t in calm water, heave in waves.
 function outcome(r) {
   const s = r.result?.scalars;
@@ -190,11 +191,10 @@ $("stale").onclick = async () => {
 
 try {
   await loadHulls();
-  if (study) {
-    const [studies, runs] = await Promise.all([api("/api/studies"), api(`/api/runs?study=${study}`)]);
-    studyRuns = new Set(runs.map((r) => r.id));
-    const s = studies.find((s) => s.id === study);
-    if (s) $("banner").innerHTML = `<div class="note">Study “${esc(s.name)}”: ${s.runs} run${s.runs === 1 ? "" : "s"}, ${s.done} done. Its runs are highlighted. <a href="/plot?study=${s.id}">Its results</a></div>`;
+  if (asked.size) {
+    const runs = await api(`/api/runs?ids=${[...asked].join(",")}`);
+    const done = runs.filter((r) => r.status === "done").length;
+    $("banner").innerHTML = `<div class="note">Asked for ${asked.size} run${asked.size === 1 ? "" : "s"} (${done} done already); they are highlighted. <a href="/runs?ids=${[...asked].join(",")}">List them</a></div>`;
   }
   await loadRecent();
 } catch (e) { status(e.message, true); }

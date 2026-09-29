@@ -28,7 +28,6 @@
   <div class="filters">
     <label>Hull <select id="hull"><option value="">all hulls</option></select></label>
     <label>Configuration <select id="config"><option value="">all</option></select></label>
-    <label>Study <select id="study"><option value="">all</option></select></label>
     <label>Water <select id="kind"><option value="calm">calm water</option><option value="waves">waves</option></select></label>
     <label id="headlabel">Heading <select id="heading"><option value="">all</option></select></label>
     <label class="check"><input type="checkbox" id="stale" checked> include stale results</label>
@@ -140,7 +139,7 @@ function draw() {
   }
   const all = [...groups.values()].sort((a, b) => a.entity - b.entity);
   const series = all.slice(0, 8).map((g, i) => ({ name: g.name, points: g.points, color: slot(i) }));
-  $("hidden").textContent = all.length > 8 ? `${all.length - 8} more series not drawn: filter by hull, configuration or study to see them.` : "";
+  $("hidden").textContent = all.length > 8 ? `${all.length - 8} more series not drawn: filter by hull or configuration to see them.` : "";
   lineChart($("plot"), {
     title: ylab, series,
     x: { label: xlab, fmt: (v) => (+v.toPrecision(4)).toString() },
@@ -152,7 +151,7 @@ function draw() {
   });
   renderTable(rs);
   const q = new URLSearchParams();
-  for (const k of ["hull", "config", "study", "kind", "heading", "y", "x"]) if ($(k).value) q.set(k, $(k).value);
+  for (const k of ["hull", "config", "kind", "heading", "y", "x"]) if ($(k).value) q.set(k, $(k).value);
   if (!$("stale").checked) q.set("stale", "0");
   history.replaceState(null, "", `/plot?${q}`);
 }
@@ -203,7 +202,7 @@ $("csv").onclick = () => {
 
 async function fetchRuns() {
   const q = new URLSearchParams({ status: "done" });
-  for (const k of ["hull", "config", "study", "kind"]) if ($(k).value) q.set(k, $(k).value);
+  for (const k of ["hull", "config", "kind"]) if ($(k).value) q.set(k, $(k).value);
   runs = await api(`/api/runs?${q}`);
   const heads = [...new Set(runs.filter((r) => r.kind === "waves").map((r) => r.params.waves.heading))].sort((a, b) => a - b);
   options($("heading"), [["", "all"], ...heads.map((h) => [String(h), headingText(h)])], qs.get("heading") ?? $("heading").value);
@@ -216,7 +215,7 @@ function fillConfigs() {
   options($("config"), [["", "all"], ...cs.map((c) => [String(c.id), `${c.hull_name} › ${configName(c)}`])], qs.get("config") ?? $("config").value);
 }
 
-for (const k of ["hull", "config", "study", "kind"]) $(k).addEventListener("change", () => {
+for (const k of ["hull", "config", "kind"]) $(k).addEventListener("change", () => {
   qs.delete(k); qs.delete("y"); qs.delete("x");
   if (k === "hull") { qs.delete("config"); fillConfigs(); }
   if (k === "kind") fillAxes();
@@ -226,11 +225,10 @@ for (const k of ["heading", "y", "x"]) $(k).addEventListener("change", () => { q
 $("stale").addEventListener("change", draw);
 
 try {
-  const [hulls, cs, studies] = await Promise.all([api("/api/hulls"), api("/api/configs"), api("/api/studies")]);
+  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/configs")]);
   lengths = new Map(hulls.map((h) => [h.id, lRef(h.summary)]));
   configs = cs;
   options($("hull"), [["", "all hulls"], ...hulls.map((h) => [String(h.id), h.name])], qs.get("hull"));
-  options($("study"), [["", "all"], ...studies.map((s) => [String(s.id), s.name])], qs.get("study"));
   // A configuration given alone picks its hull.
   if (qs.get("config") && !qs.get("hull")) {
     const c = configs.find((c) => String(c.id) === qs.get("config"));

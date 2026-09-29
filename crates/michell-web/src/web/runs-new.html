@@ -115,14 +115,7 @@
   </details>
 
   <section>
-    <h2>Study</h2>
     <div class="fields">
-      <label class="wide">Name
-        <input id="study" type="text">
-      </label>
-      <label class="wide">Notes
-        <textarea id="studynotes" rows="2" placeholder="what this set of runs is for"></textarea>
-      </label>
       <label class="wide">Priority
         <select id="priority">
           <option value="0">normal</option>
@@ -196,19 +189,9 @@ function planned() {
   return { config_ids: ticked(), runs };
 }
 
-// The study's name when none is given: the hull, the speeds, the sea.
-function autoName() {
-  if (!hull) return "";
-  const s = $("speeds").value.trim(), u = { kn: "kn", fn: "Fn", ms: "m/s" }[$("unit").value];
-  const cs = ticked();
-  return [hull.name, cs.length === 1 ? configName(byId(cs[0])) : cs.length ? `${cs.length} configurations` : "",
-    s && (u === "Fn" ? `Fn ${s}` : `${s} ${u}`), $("waves").checked && `waves ${$("headings").value.trim() || "180"}°`].filter(Boolean).join(" · ");
-}
-
 // Plan, then ask the server (a dry run) which it already has.
 async function refresh() {
   const my = ++seq;
-  $("study").placeholder = autoName();
   $("wavefields").disabled = !$("waves").checked;
   try { plan = planned(); } catch (e) {
     plan = checked = null;
@@ -312,9 +295,9 @@ $("submit").onclick = async () => {
   try {
     const r = await api("/api/runs", { json: {
       ...plan, by: whoami(), priority: Number($("priority").value),
-      study: { name: $("study").value.trim() || autoName(), notes: $("studynotes").value.trim() },
     } });
-    location.href = `/queue?study=${r.study_id}`;
+    const asked = r.runs.filter((x) => !x.implied).map((x) => x.id);
+    location.href = `/queue?highlight=${asked.join(",")}`;
   } catch (e) {
     status(e.message, true);
     $("submit").disabled = false;
@@ -323,7 +306,7 @@ $("submit").onclick = async () => {
 
 // The form's fields can come in the address, to share or repeat a set of
 // runs: `?configs=4,5&speeds=4:8:1&unit=kn` (or `?hull=3`).
-for (const id of [...INPUTS, "study", "studynotes", "priority"]) {
+for (const id of [...INPUTS, "priority"]) {
   if (!qs.has(id)) continue;
   if ($(id).type === "checkbox") $(id).checked = qs.get(id) !== "0";
   else $(id).value = qs.get(id);

@@ -368,14 +368,13 @@ mod tests {
         let w = run(
             r#"{"froude": 0.35, "dynamic": false, "waves": {"heading": 180, "lambdas": [1, 2]}}"#,
         );
-        let study = store.add_study("speeds", "", "test").unwrap();
         // The run in waves first, and ahead: it waits for its calm run anyway.
-        let (iw, _) = store.add_run(cfg, &w, Some(study), 5, "test").unwrap();
-        let (ia, new_a) = store.add_run(cfg, &a, Some(study), 0, "test").unwrap();
-        let (ib, _) = store.add_run(cfg, &b, Some(study), 0, "test").unwrap();
+        let (iw, _) = store.add_run(cfg, &w, 5, "test").unwrap();
+        let (ia, new_a) = store.add_run(cfg, &a, 0, "test").unwrap();
+        let (ib, _) = store.add_run(cfg, &b, 0, "test").unwrap();
         assert!(new_a);
         assert_eq!(
-            store.add_run(cfg, &a, None, 0, "test").unwrap(),
+            store.add_run(cfg, &a, 0, "test").unwrap(),
             (ia, false)
         );
         assert_eq!(store.cancel_queued(ib).unwrap().as_deref(), Some("queued"));
@@ -392,7 +391,7 @@ mod tests {
 
         let done = store
             .runs(&RunFilter {
-                study: Some(study),
+                config: Some(cfg),
                 status: Some("done".into()),
                 ..RunFilter::default()
             })
@@ -415,7 +414,7 @@ mod tests {
 
         // Asking again for the cancelled run puts it back on the queue.
         assert_eq!(
-            store.add_run(cfg, &b, None, 0, "test").unwrap(),
+            store.add_run(cfg, &b, 0, "test").unwrap(),
             (ib, false)
         );
         assert_eq!(store.run(ib).unwrap().unwrap()["status"], "queued");

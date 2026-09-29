@@ -27,7 +27,6 @@
     <label>Status <select id="status_f">
       <option value="">any</option><option value="done">done</option><option value="queued,running">queued or running</option>
       <option value="failed,cancelled">failed or cancelled</option></select></label>
-    <label>Study <select id="study"><option value="">all</option></select></label>
   </div>
   <div id="status"></div>
   <div id="list"></div>
@@ -38,7 +37,7 @@ import { $, api, configName, esc, fmtDuration, fmtTime, lRef, nav, outcome, pill
 nav("runs");
 
 const qs = new URLSearchParams(location.search);
-const KEYS = { hull: "hull", config: "config", kind: "kind", status_f: "status", study: "study" };
+const KEYS = { hull: "hull", config: "config", kind: "kind", status_f: "status" };
 let lengths = new Map(), configs = [];
 
 function fillConfigs() {
@@ -51,6 +50,8 @@ function fillConfigs() {
 async function load() {
   const q = new URLSearchParams(), page = new URLSearchParams();
   for (const [id, k] of Object.entries(KEYS)) if ($(id).value) { q.set(k, $(id).value); page.set(k, $(id).value); }
+  // `?ids=`: just these runs (the queue's link to runs just asked for).
+  if (qs.get("ids")) { q.set("ids", qs.get("ids")); page.set("ids", qs.get("ids")); }
   history.replaceState(null, "", `/runs${page.size ? `?${page}` : ""}`);
   $("new").href = $("config").value ? `/runs/new?configs=${$("config").value}` : $("hull").value ? `/runs/new?hull=${$("hull").value}` : "/runs/new";
   q.set("limit", "500");
@@ -82,14 +83,13 @@ $("list").addEventListener("click", (e) => {
 });
 const reload = () => load().catch((e) => status(e.message, true));
 $("hull").addEventListener("change", () => { $("config").value = ""; fillConfigs(); reload(); });
-for (const id of ["config", "kind", "status_f", "study"]) $(id).addEventListener("change", reload);
+for (const id of ["config", "kind", "status_f"]) $(id).addEventListener("change", reload);
 
 try {
-  const [hulls, cs, studies] = await Promise.all([api("/api/hulls"), api("/api/configs"), api("/api/studies")]);
+  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/configs")]);
   lengths = new Map(hulls.map((h) => [h.id, lRef(h.summary)]));
   configs = cs;
   $("hull").innerHTML += hulls.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join("");
-  $("study").innerHTML += studies.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   for (const [id, k] of Object.entries(KEYS)) if (qs.get(k)) $(id).value = qs.get(k);
   // A configuration given alone picks its hull.
   const c = configs.find((c) => String(c.id) === qs.get("config"));
