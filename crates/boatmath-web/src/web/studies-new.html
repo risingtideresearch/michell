@@ -242,7 +242,7 @@ function render() {
     again && `<span class="pill failed">${again} to run again</span>`,
     have && `<span class="pill done">${have} already asked for</span>`].filter(Boolean).join("");
   $("submit").disabled = !n;
-  $("submit").textContent = n ? `Queue ${n} study${n === 1 ? "" : "s"}` : "Nothing new to queue";
+  $("submit").textContent = n ? `Queue ${n} ${n === 1 ? "study" : "studies"}` : "Nothing new to queue";
 }
 
 let timer = null;

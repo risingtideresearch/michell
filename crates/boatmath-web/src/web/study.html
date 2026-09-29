@@ -108,7 +108,7 @@ async function watch() {
     const ahead = q.studies.filter((r) => r.status === "queued").findIndex((r) => r.id === id);
     const r = await api(`/api/studies/${id}`);
     if (r.status !== study.status) return load();
-    $("progress").innerHTML = ahead >= 0 ? `<p class="hint">${ahead ? `${ahead} study${ahead === 1 ? "" : "s"} ahead of it` : "Next"}${study.kind === "waves" ? "; it waits for its calm-water study" : ""}. <a href="/queue">The queue</a></p>` : "";
+    $("progress").innerHTML = ahead >= 0 ? `<p class="hint">${ahead ? `${ahead} ${ahead === 1 ? "study" : "studies"} ahead of it` : "Next"}${study.kind === "waves" ? "; it waits for its calm-water study" : ""}. <a href="/queue">The queue</a></p>` : "";
   }
   polling = setTimeout(watch, 1500);
 }

@@ -164,7 +164,7 @@ function columns(kind) {
 
 function renderTable(rs) {
   const kind = $("kind").value, cols = columns(kind);
-  $("counts").innerHTML = `<span class="pill done">${rs.length} study${rs.length === 1 ? "" : "s"}</span>${rs.some((r) => r.result.stale) ? `<span class="pill stale">${rs.filter((r) => r.result.stale).length} stale</span>` : ""}`;
+  $("counts").innerHTML = `<span class="pill done">${rs.length} ${rs.length === 1 ? "study" : "studies"}</span>${rs.some((r) => r.result.stale) ? `<span class="pill stale">${rs.filter((r) => r.result.stale).length} stale</span>` : ""}`;
   if (!rs.length) { $("table").innerHTML = ""; return; }
   $("table").innerHTML = `<div class="tablewrap"><table><thead><tr>
     <th class="num">#</th><th>Hull › case</th><th>Study</th>${cols.map(([h]) => `<th class="num">${esc(h)}</th>`).join("")}

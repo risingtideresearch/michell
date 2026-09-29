@@ -100,7 +100,7 @@ function renderRunning(q) {
 
 function renderWaiting(q) {
   const waiting = q.studies.filter((r) => r.status === "queued");
-  $("eta").textContent = waiting.length && typical ? `· ${waiting.length} study${waiting.length === 1 ? "" : "s"}, about ${fmtDuration(waiting.length * typical)} at ${fmtDuration(typical)} each` : waiting.length ? `· ${waiting.length}` : "";
+  $("eta").textContent = waiting.length && typical ? `· ${waiting.length} ${waiting.length === 1 ? "study" : "studies"}, about ${fmtDuration(waiting.length * typical)} at ${fmtDuration(typical)} each` : waiting.length ? `· ${waiting.length}` : "";
   if (!waiting.length) { $("waiting").innerHTML = `<div class="card muted">The queue is empty.</div>`; return; }
   const top = Math.max(...waiting.map((r) => r.priority));
   $("waiting").innerHTML = `<div class="tablewrap"><table><thead><tr>
@@ -143,7 +143,7 @@ function renderCounts(q) {
     .filter(([s]) => k[s]).map(([s, w]) => `<span class="pill ${s}">${k[s]} ${w}</span>`).join("");
   $("version").textContent = `solver ${q.solver_version}`;
   $("stale").hidden = !k.stale;
-  $("stale").textContent = `Re-run ${k.stale} stale study${k.stale === 1 ? "" : "s"}`;
+  $("stale").textContent = `Re-run ${k.stale} stale ${k.stale === 1 ? "study" : "studies"}`;
 }
 
 async function loadRecent() {
@@ -194,7 +194,7 @@ try {
   if (asked.size) {
     const studies = await api(`/api/studies?ids=${[...asked].join(",")}`);
     const done = studies.filter((r) => r.status === "done").length;
-    $("banner").innerHTML = `<div class="note">Asked for ${asked.size} study${asked.size === 1 ? "" : "s"} (${done} done already); they are highlighted. <a href="/studies?ids=${[...asked].join(",")}">List them</a></div>`;
+    $("banner").innerHTML = `<div class="note">Asked for ${asked.size} ${asked.size === 1 ? "study" : "studies"} (${done} done already); they are highlighted. <a href="/studies?ids=${[...asked].join(",")}">List them</a></div>`;
   }
   await loadRecent();
 } catch (e) { status(e.message, true); }
