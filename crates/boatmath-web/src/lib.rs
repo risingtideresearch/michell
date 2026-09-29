@@ -21,7 +21,7 @@ pub mod store;
 pub mod worker;
 
 use params::{CaseParams, StudyParams};
-pub use platform::{statics, waves_with_progress};
+pub use platform::{statics, wave_gz, waves_with_progress};
 
 /// Largest upload accepted [bytes]. Big enough for a finely tessellated STL.
 pub const MAX_UPLOAD: usize = 128 << 20;

@@ -8,6 +8,7 @@
 //     series: [{ name, points: [[x, y, meta?], ...], dashed?, color? }],
 //     onPick: (meta) => …,   // a point clicked
 //     marks: "auto" | "always" | "never",
+//     direct: false,         // no end labels (the legend names the series)
 //   })
 //
 // `.mark(x)` draws a vertical rule at `x` (the current heel, say); null
@@ -50,7 +51,10 @@ export function lineChart(host, spec) {
   // Drawn at the host's own width, so text stays its size; redrawn when
   // that changes.
   let W = 640;
-  const H = spec.height || 260, L = 56, R = spec.series.length >= 2 && spec.series.length <= 4 ? 110 : 16, T = 10, B = 40;
+  // Direct end labels for two to four series, unless they would crowd
+  // (`direct: false`: curves that meet at their ends).
+  const direct = spec.direct !== false && spec.series.length >= 2 && spec.series.length <= 4;
+  const H = spec.height || 260, L = 56, R = direct ? 110 : 16, T = 10, B = 40;
   const xf = spec.x?.fmt || plain, yf = spec.y?.fmt || plain;
   const series = spec.series.map((s, i) => ({ ...s, color: s.color || slot(i), points: s.points.filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1])) }));
   const all = series.flatMap((s) => s.points);
@@ -124,7 +128,7 @@ export function lineChart(host, spec) {
         }
       }
       // Direct label at the line's end, for up to four series.
-      if (series.length >= 2 && series.length <= 4 && ps.length) {
+      if (direct && ps.length) {
         const last = ps[ps.length - 1];
         el("text", { class: "direct", x: X(last[0]) + 8, y: Y(last[1]) + 4 }, svg).textContent = s.name;
       }

@@ -77,6 +77,48 @@ pub struct GzOptions {
     /// Let the platform trim at each heel (else it keeps its upright trim).
     pub free_trim: bool,
     pub density: f64,
+    /// A wave frozen around the platform, in place of calm water (see
+    /// [`Wave`]); `None` in calm water.
+    pub wave: Option<Wave>,
+}
+
+/// A regular wave held still around the platform: the quasi-static GZ in
+/// waves, where the water's surface is the wave's rather than a plane. The
+/// elevation (up, from the mean water) is
+///
+/// ```text
+/// ζ(X, Y) = ½H cos(k (X cos μ + Y sin μ) − ψ),    k = 2π/λ,
+/// ```
+///
+/// in the water's axes (X fore, Y port), for a heading `μ` — 90° beam
+/// seas, crests along the platform; 45° stern quartering; 135° bow
+/// quartering; 0° or 180° crests across it — and a crest on the line
+/// `k (X cos μ + Y sin μ) = ψ`. The wave's orbital pressures (the Smith
+/// effect) and its dynamics are not modelled: the hull floats on the
+/// frozen surface as it would on still water shaped so.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wave {
+    /// Wavelength λ [m].
+    pub length: f64,
+    /// Crest-to-trough height H [m].
+    pub height: f64,
+    /// μ [rad].
+    pub heading: f64,
+    /// ψ [rad].
+    pub phase: f64,
+}
+
+impl Wave {
+    pub fn elevation(&self, x: f64, y: f64) -> f64 {
+        let k = 2.0 * std::f64::consts::PI / self.length;
+        0.5 * self.height
+            * (k * (x * self.heading.cos() + y * self.heading.sin()) - self.phase).cos()
+    }
+
+    /// The phase that puts a crest through `(x, y)`.
+    pub fn crest_at(length: f64, heading: f64, x: f64, y: f64) -> f64 {
+        2.0 * std::f64::consts::PI / length * (x * heading.cos() + y * heading.sin())
+    }
 }
 
 impl Default for GzOptions {
@@ -86,6 +128,7 @@ impl Default for GzOptions {
             heels: (0..=90).map(|i| (2.0 * i as f64).to_radians()).collect(),
             free_trim: true,
             density: crate::Fluid::SEAWATER_15C.density,
+            wave: None,
         }
     }
 }
@@ -185,16 +228,104 @@ fn clipped(poly: &[(f64, f64)], a: f64, b: f64, c: f64) -> (f64, f64, f64) {
     (area, cy / (3.0 * area2), cz / (3.0 * area2))
 }
 
+/// The part of `poly` (at station `x`) under a wave's surface, the platform
+/// at `(heel, trim, sinkage)`: the polygon clipped by `Z − ζ(X, Y) ≤ 0`,
+/// its crossings found linearly along each edge. The polygon is densified
+/// beforehand (see [`Prepared`]) so that the surface is near straight along
+/// an edge; between crossings the waterline is the chord, within
+/// `H k² w²/16` of the wave over a width `w` of section.
+fn clipped_wave(
+    poly: &[(f64, f64)],
+    x: f64,
+    heel: f64,
+    trim: f64,
+    sinkage: f64,
+    wave: &Wave,
+) -> (f64, f64, f64) {
+    let (cp, sp, ct, st) = (heel.cos(), heel.sin(), trim.cos(), trim.sin());
+    let f = |(y, z): (f64, f64)| {
+        let zr = y * sp + z * cp;
+        let (xe, ye, ze) = (
+            x * ct - st * zr,
+            y * cp - z * sp,
+            x * st + ct * zr - sinkage,
+        );
+        ze - wave.elevation(xe, ye)
+    };
+    clip_by(poly, f)
+}
+
+/// Area and centroid of the part of `poly` where `f ≤ 0`, `f` linear
+/// enough along each edge to find its crossing there.
+fn clip_by(poly: &[(f64, f64)], f: impl Fn((f64, f64)) -> f64) -> (f64, f64, f64) {
+    let n = poly.len();
+    if n < 3 {
+        return (0.0, 0.0, 0.0);
+    }
+    let fs: Vec<f64> = poly.iter().map(|&q| f(q)).collect();
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(n + 4);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let (p, q, fp, fq) = (poly[i], poly[j], fs[i], fs[j]);
+        if fp <= 0.0 {
+            out.push(p);
+        }
+        if (fp <= 0.0) != (fq <= 0.0) {
+            let t = fp / (fp - fq);
+            out.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+        }
+    }
+    shoelace(&out)
+}
+
+fn shoelace(out: &[(f64, f64)]) -> (f64, f64, f64) {
+    let m = out.len();
+    if m < 3 {
+        return (0.0, 0.0, 0.0);
+    }
+    let (mut area2, mut cy, mut cz) = (0.0, 0.0, 0.0);
+    for i in 0..m {
+        let (p, q) = (out[i], out[(i + 1) % m]);
+        let cross = p.0 * q.1 - q.0 * p.1;
+        area2 += cross;
+        cy += (p.0 + q.0) * cross;
+        cz += (p.1 + q.1) * cross;
+    }
+    if area2.abs() < 1e-300 {
+        return (0.0, 0.0, 0.0);
+    }
+    let area = 0.5 * area2.abs();
+    (area, cy / (3.0 * area2), cz / (3.0 * area2))
+}
+
+/// `poly` with no edge longer than `d`.
+fn densified(poly: &[(f64, f64)], d: f64) -> Vec<(f64, f64)> {
+    let n = poly.len();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        let len = (q.0 - p.0).hypot(q.1 - p.1);
+        let k = (len / d).ceil().max(1.0) as usize;
+        for j in 0..k {
+            let t = j as f64 / k as f64;
+            out.push((p.0 + t * (q.0 - p.0), p.1 + t * (q.1 - p.1)));
+        }
+    }
+    out
+}
+
 /// A station: its x and its section polygon.
 type Station = (f64, Vec<(f64, f64)>);
 
-/// Section polygons of the platform, per hull per station, with their x.
+/// Section polygons of the platform, per hull per station, with their x —
+/// densified for a wave's curved surface when there is one.
 struct Prepared {
     hulls: Vec<Vec<Station>>,
+    wave: Option<Wave>,
 }
 
 impl Prepared {
-    fn new(hulls: &[StabilityHull]) -> Prepared {
+    fn new(hulls: &[StabilityHull], wave: Option<Wave>) -> Prepared {
         Prepared {
             hulls: hulls
                 .iter()
@@ -203,12 +334,20 @@ impl Prepared {
                         .sections
                         .iter()
                         .filter(|s| s.half.len() >= 2)
-                        .map(|s| (s.x, polygon(&s.half, h.y)))
+                        .map(|s| {
+                            let p = polygon(&s.half, h.y);
+                            let p = match wave {
+                                Some(w) => densified(&p, w.length / 32.0),
+                                None => p,
+                            };
+                            (s.x, p)
+                        })
                         .collect();
                     s.sort_by(|a, b| a.0.total_cmp(&b.0));
                     s
                 })
                 .collect(),
+            wave,
         }
     }
 
@@ -220,7 +359,10 @@ impl Prepared {
             let cut: Vec<(f64, f64, f64, f64)> = stations
                 .iter()
                 .map(|(x, poly)| {
-                    let (area, cy, cz) = clipped(poly, a, b, x * trim.sin() - sinkage);
+                    let (area, cy, cz) = match &self.wave {
+                        Some(w) => clipped_wave(poly, *x, heel, trim, sinkage, w),
+                        None => clipped(poly, a, b, x * trim.sin() - sinkage),
+                    };
                     (*x, area, cy, cz)
                 })
                 .collect();
@@ -339,7 +481,7 @@ pub fn gz_curve(
     if load.mass.is_nan() || load.mass <= 0.0 {
         return Err(Error::InvalidInput("GZ: the mass must be positive".into()));
     }
-    let p = Prepared::new(hulls);
+    let p = Prepared::new(hulls, opts.wave);
     if p.hulls.iter().all(|h| h.len() < 2) {
         return Err(Error::InvalidInput("GZ: no sections".into()));
     }
@@ -438,7 +580,7 @@ fn summarise(
     }
     let mut vanishing = None;
     // Unstable upright: no range of positive stability to vanish at.
-    let upright_unstable = !(gm > 0.0)
+    let upright_unstable = gm.is_nan() || gm <= 0.0
         || points
             .iter()
             .find(|q| q.heel > 0.0)
@@ -564,6 +706,129 @@ mod tests {
         .unwrap();
         assert!(c.gm < 0.0, "{}", c.gm);
         assert_eq!(c.vanishing, Some(0.0));
+    }
+
+    /// A wave too low to matter is calm water; so is a wave so long that
+    /// the platform sits on its crest, which only lifts the water.
+    #[test]
+    fn a_negligible_wave_is_calm_water() {
+        let hull = boxy(10.0, 2.0, 1.5, 0.5, 0.0, 11);
+        let rho = GzOptions::default().density;
+        let load = StabilityLoad {
+            mass: rho * 10.0,
+            lcg: 5.0,
+            vcg: 0.1,
+        };
+        let heels = [0.0, 10.0, 30.0, 60.0];
+        let calm = gz_curve(std::slice::from_ref(&hull), &load, &opts(&heels)).unwrap();
+        for wave in [
+            Wave {
+                length: 20.0,
+                height: 1e-9,
+                heading: 0.5 * std::f64::consts::PI,
+                phase: 0.3,
+            },
+            // λ 10 km, the crest over the platform: the water raised 0.2 m.
+            Wave {
+                length: 1e4,
+                height: 0.4,
+                heading: 0.5 * std::f64::consts::PI,
+                phase: 0.0,
+            },
+        ] {
+            let c = gz_curve(
+                std::slice::from_ref(&hull),
+                &load,
+                &GzOptions {
+                    wave: Some(wave),
+                    ..opts(&heels)
+                },
+            )
+            .unwrap();
+            for (a, b) in calm.points.iter().zip(&c.points) {
+                assert!(
+                    (a.gz - b.gz).abs() < 2e-5,
+                    "{wave:?} at {:.0}°: {} vs {}",
+                    a.heel.to_degrees(),
+                    b.gz,
+                    a.gz
+                );
+            }
+        }
+    }
+
+    /// A catamaran in beam seas, λ twice its span: with a crest under the
+    /// windward (port, lifting) hull and a trough under the lee, the water
+    /// slopes down to leeward — the way the platform heels — so the
+    /// platform heels less against the water than against the vertical,
+    /// both hulls stay in, and the arm is far smaller than in calm water;
+    /// with the crest under the lee hull the slope runs the other way and
+    /// the windward hull lifts sooner.
+    #[test]
+    fn a_beam_sea_crest_moves_the_arm() {
+        let (l, b, d, t, span) = (10.0, 0.8, 1.2, 0.4, 4.0);
+        let rho = GzOptions::default().density;
+        let load = StabilityLoad {
+            mass: rho * 2.0 * l * b * t,
+            lcg: 0.5 * l,
+            vcg: 1.0,
+        };
+        let hulls = [
+            boxy(l, b, d, t, 0.5 * span, 11),
+            boxy(l, b, d, t, -0.5 * span, 11),
+        ];
+        let heels = [0.0, 5.0, 15.0, 25.0];
+        let calm = gz_curve(&hulls, &load, &opts(&heels)).unwrap();
+        let beam = 0.5 * std::f64::consts::PI;
+        let (lambda, h) = (2.0 * span, 0.8);
+        let at = |y: f64| Wave {
+            length: lambda,
+            height: h,
+            heading: beam,
+            phase: Wave::crest_at(lambda, beam, 0.0, y),
+        };
+        let windward = gz_curve(
+            &hulls,
+            &load,
+            &GzOptions {
+                wave: Some(at(0.5 * span)),
+                ..opts(&heels)
+            },
+        )
+        .unwrap();
+        let lee = gz_curve(
+            &hulls,
+            &load,
+            &GzOptions {
+                wave: Some(at(-0.5 * span)),
+                ..opts(&heels)
+            },
+        )
+        .unwrap();
+        let k = 2; // 15°: the calm-water windward hull is clear.
+        assert!(
+            windward.points[k].gz < 0.5 * calm.points[k].gz,
+            "{} vs {}",
+            windward.points[k].gz,
+            calm.points[k].gz
+        );
+        // With the crest to leeward the windward hull lifts sooner: at 5°,
+        // with both hulls still in in calm water, a larger arm; by 15°, the
+        // lee hull carrying all either way, about the same.
+        assert!(
+            lee.points[1].gz > calm.points[1].gz,
+            "{} vs {}",
+            lee.points[1].gz,
+            calm.points[1].gz
+        );
+        assert!((lee.points[k].gz - calm.points[k].gz).abs() < 0.02 * calm.points[k].gz);
+        // Upright, the slope to leeward heels it: a negative arm.
+        assert!(windward.points[0].gz < 0.0 && lee.points[0].gz > 0.0);
+        for c in [&windward, &lee] {
+            for q in &c.points {
+                assert!((q.volume * rho - load.mass).abs() < 1e-6 * load.mass);
+            }
+        }
     }
 
     /// Heeling the other way mirrors the curve.

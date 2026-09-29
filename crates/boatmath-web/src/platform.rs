@@ -9,7 +9,9 @@
 use crate::params::{default_lambdas, CaseParams, StudyParams};
 use crate::{setup, LoftRequest, Progress, Setup, Tracker, CANCELLED};
 use michell_geometry::iges::Platform;
-use michell_geometry::stability::{gz_curve, FullSection, GzOptions, StabilityHull, StabilityLoad};
+use michell_geometry::stability::{
+    gz_curve, FullSection, GzCurve, GzOptions, StabilityHull, StabilityLoad, Wave,
+};
 use michell_geometry::{Conditions, Placement, SectionalHull, STANDARD_GRAVITY};
 use michell_seakeeping::platform::{self as sk, Loading};
 use michell_seakeeping::strip::StripOptions;
@@ -207,6 +209,212 @@ pub fn statics(
         "meshes": s.meshes(&at_rest)?,
         // The hull at its design pose, in its own axes (the GZ curve's).
         "body_meshes": s.meshes(&Platform::default())?,
+        "seconds": t0.elapsed().as_secs_f64(),
+    }))
+}
+
+/// A case's GZ curves in a regular wave of length `length` and height
+/// `height` held still around it (quasi-static: see
+/// [`michell_geometry::stability::Wave`]), beam, stern quartering and bow
+/// quartering, with the crest at eight places along a wavelength and
+/// under each hull; for each heading the worst of them — the lowest peak
+/// arm — and in beam seas the crest under the windward and under the lee
+/// hull. Beside each, the calm-water curve at the same heels, and for each
+/// the energy to heel from where it rests to the peak arm, `W ∫ GZ dφ`;
+/// the worst crest of a heading is the one needing least.
+pub fn wave_gz(
+    name: &str,
+    bytes: Vec<u8>,
+    cut: &LoftRequest,
+    c: &CaseParams,
+    length: f64,
+    height: f64,
+) -> Result<Value, String> {
+    use std::f64::consts::PI;
+    if !(length > 0.0 && height > 0.0 && length.is_finite() && height.is_finite()) {
+        return Err("the wave needs a positive length and height".into());
+    }
+    if height / length > 1.0 / 7.0 {
+        return Err(format!(
+            "H/λ {:.3}: steeper than a wave can stand (1/7)",
+            height / length
+        ));
+    }
+    let t0 = std::time::Instant::now();
+    let s = setup(name, bytes, cut, c)?;
+    let hulls = whole_sections(&s)?;
+    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let load = StabilityLoad {
+        mass: s.mass,
+        lcg: s.lcg,
+        vcg: c.vcg.unwrap_or(0.0),
+    };
+    let heels: Vec<f64> = (0..=40).map(|i| (3.0 * i as f64).to_radians()).collect();
+    let weight = s.mass * STANDARD_GRAVITY;
+    // What a curve is summed up by: its peak arm and heel, the heel it
+    // rests at, and the energy to heel from there to the peak. On a wave
+    // whose slope heels it (a negative arm upright), it rests where the arm
+    // crosses zero on the way up; one that pushes it back (a positive arm
+    // upright) rests at a negative heel, off the curve, so upright stands
+    // in for it — which understates the energy, erring toward the smaller
+    // wave.
+    let summary = |c: &GzCurve| {
+        let pts = &c.points;
+        let (mut k, mut best) = (0usize, f64::NEG_INFINITY);
+        for (i, q) in pts.iter().enumerate() {
+            if q.gz > best {
+                best = q.gz;
+                k = i;
+            }
+        }
+        let (rest, from) = if pts[0].gz < 0.0 {
+            match (0..k).find(|&i| pts[i].gz < 0.0 && pts[i + 1].gz >= 0.0) {
+                Some(i) => {
+                    let f = -pts[i].gz / (pts[i + 1].gz - pts[i].gz);
+                    (pts[i].heel + f * (pts[i + 1].heel - pts[i].heel), i)
+                }
+                None => (pts[k].heel, k),
+            }
+        } else {
+            (0.0, 0)
+        };
+        // ∫ GZ dφ from the resting heel to the peak, trapezoidal, the
+        // first interval from the crossing (where the arm is zero).
+        let mut area = 0.0;
+        if from < k {
+            let q = &pts[from + 1];
+            area += 0.5 * (q.heel - rest) * q.gz.max(0.0);
+            area += pts[from + 1..=k]
+                .windows(2)
+                .map(|w| 0.5 * (w[1].heel - w[0].heel) * (w[0].gz + w[1].gz))
+                .sum::<f64>();
+        }
+        json!({
+            "gz": pts.iter().map(|q| q.gz).collect::<Vec<_>>(),
+            "max_gz": best,
+            "heel_at_max_deg": pts[k].heel.to_degrees(),
+            "rest_heel_deg": rest.to_degrees(),
+            // Pushed back past upright: it rests at a negative heel, and
+            // heeling that way is the mirrored crest heeling this way.
+            "rests_negative": pts[0].gz > 1e-4,
+            "energy_to_peak": weight * area,
+        })
+    };
+    let opts = |wave| GzOptions {
+        heels: heels.clone(),
+        density: rho,
+        wave,
+        ..GzOptions::default()
+    };
+    let calm = gz_curve(&hulls, &load, &opts(None)).map_err(|e| e.to_string())?;
+    // The windward hull is the port one (a positive heel lifts +y).
+    let half = 0.5 * c.span.unwrap_or(0.0);
+    let headings = [
+        (90.0, "beam"),
+        (45.0, "stern quartering"),
+        (135.0, "bow quartering"),
+    ];
+    // (heading, phase, label) for every curve, computed across the cores.
+    let mut jobs: Vec<(usize, f64, String)> = Vec::new();
+    for (h, &(deg, _)) in headings.iter().enumerate() {
+        let mu = f64::to_radians(deg);
+        for j in 0..8 {
+            jobs.push((h, 2.0 * PI * j as f64 / 8.0, format!("crest at {}/8 λ", j)));
+        }
+        if half > 0.0 {
+            jobs.push((
+                h,
+                Wave::crest_at(length, mu, s.lcg, half),
+                "crest under the windward hull".into(),
+            ));
+            jobs.push((
+                h,
+                Wave::crest_at(length, mu, s.lcg, -half),
+                "crest under the lee hull".into(),
+            ));
+        } else {
+            jobs.push((
+                h,
+                Wave::crest_at(length, mu, s.lcg, 0.0),
+                "crest amidships".into(),
+            ));
+            jobs.push((
+                h,
+                Wave::crest_at(length, mu, s.lcg, 0.0) + PI,
+                "trough amidships".into(),
+            ));
+        }
+    }
+    let curves = michell_geometry::parallel::map_indexed(
+        jobs.len(),
+        || (),
+        |_, i| {
+            let (h, phase, _) = &jobs[i];
+            let wave = Wave {
+                length,
+                height,
+                heading: headings[*h].0.to_radians(),
+                phase: *phase,
+            };
+            gz_curve(&hulls, &load, &opts(Some(wave))).map_err(|e| e.to_string())
+        },
+    );
+    let mut out = Vec::new();
+    for (h, &(deg, what)) in headings.iter().enumerate() {
+        let mine: Vec<(usize, Value)> = jobs
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| j.0 == h)
+            .map(|(i, j)| {
+                let v = match &curves[i] {
+                    Ok(c) => {
+                        let mut v = summary(c);
+                        v["label"] = json!(j.2);
+                        v["phase"] = json!(j.1);
+                        v
+                    }
+                    Err(e) => json!({ "label": j.2, "phase": j.1, "error": e }),
+                };
+                (i, v)
+            })
+            .collect();
+        // The worst crest: the least energy to reach the peak arm (what a
+        // breaking wave must supply), of those it rests at a positive heel
+        // on (the others are their mirrored crests, heeling the other way).
+        let worst = mine
+            .iter()
+            .filter(|(_, v)| v["error"].is_null() && v["rests_negative"] != true)
+            .min_by(|a, b| {
+                a.1["energy_to_peak"]
+                    .as_f64()
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&b.1["energy_to_peak"].as_f64().unwrap_or(f64::INFINITY))
+            })
+            .map(|(_, v)| v.clone());
+        out.push(json!({
+            "heading_deg": deg,
+            "name": what,
+            "worst": worst,
+            "curves": mine.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+        }));
+    }
+    let l = hulls
+        .iter()
+        .flat_map(|h| h.sections.iter().map(|q| q.x))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+            (a.min(x), b.max(x))
+        });
+    Ok(json!({
+        "wave": { "length": length, "height": height },
+        "heel_deg": heels.iter().map(|h| h.to_degrees()).collect::<Vec<_>>(),
+        "calm": summary(&calm),
+        "headings": out,
+        "mass": s.mass,
+        "weight": weight,
+        "vcg": load.vcg,
+        "vcg_given": c.vcg.is_some(),
+        // The length a beam-on breaking crest strikes along: the hull's.
+        "struck_length": l.1 - l.0,
         "seconds": t0.elapsed().as_secs_f64(),
     }))
 }

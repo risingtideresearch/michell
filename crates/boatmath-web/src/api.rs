@@ -34,6 +34,10 @@
 //!                                       checks it and answers {"params", "existing"}
 //! GET  /api/cases/:id                 one (its statics computed again if stale)
 //! POST /api/cases/:id                 {"name"?, "notes"?}
+//! GET  /api/cases/:id/gz_waves?length=&height=
+//!                                       its GZ curves in a regular wave held still
+//!                                       around it: beam and quartering, the worst
+//!                                       crest of each, and the energy to peak GZ
 //! GET  /api/cases/:id/statics         the whole statics (GZ curve, meshes at rest)
 //!
 //! POST /api/studies                        {"case_ids": [..], "studies": [StudyParams..],
@@ -56,7 +60,7 @@
 use boatmath_web::params::{CaseParams, StudyParams};
 use boatmath_web::store::{NewHull, Store, StudyFilter, SOLVER_VERSION};
 use boatmath_web::worker::Worker;
-use boatmath_web::{geometry, loft, statics, LoftRequest};
+use boatmath_web::{geometry, loft, statics, wave_gz, LoftRequest};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tiny_http::Method;
@@ -210,6 +214,24 @@ pub fn route(
             } else {
                 Err(missing("case"))
             }
+        }),
+        (Get, ["cases", c, "gz_waves"]) => id(c).and_then(|c| {
+            let num = |k: &str| {
+                get(k)
+                    .ok_or(bad(format!("{k} is required")))?
+                    .parse::<f64>()
+                    .map_err(|_| bad(format!("{k}: expected a number")))
+            };
+            let (length, height) = (num("length")?, num("height")?);
+            let (hull, p, _) = s.case_source(c).map_err(internal)?.ok_or(missing("case"))?;
+            let src = s
+                .hull_source(hull)
+                .map_err(internal)?
+                .ok_or(missing("hull"))?;
+            let bytes = s.blob(&src.file_blob).map_err(internal)?;
+            wave_gz(&src.file_name, bytes, &src.import, &p, length, height)
+                .map(Reply::Json)
+                .map_err(bad)
         }),
         (Get, ["cases", c, "statics"]) => id(c).and_then(|c| {
             let (_, _, blob) = s.case_source(c).map_err(internal)?.ok_or(missing("case"))?;

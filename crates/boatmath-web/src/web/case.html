@@ -22,6 +22,14 @@
   .split > main.stack { display: grid; grid-template-rows: minmax(260px, 55%) auto; overflow-y: auto; background: var(--bg); }
   #view { position: relative; background: var(--canvas); min-height: 260px; }
   #gzpanel { padding: 14px 18px 24px; }
+  #wavepanel { padding: 4px 18px 28px; }
+  #wavepanel .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 10px; }
+  #wavepanel .row label { width: 130px; }
+  #wavetable table { font-size: 12px; }
+  #wavetable td.what { white-space: normal; }
+  #wavetable tr.calm td { font-weight: 600; }
+  #breaking { margin-top: 12px; }
+  #breaking .row label { width: 200px; }
   #studies table { font-size: 12px; }
   #studies th, #studies td { padding: 5px 8px; }
   #studies td.what { white-space: normal; }
@@ -76,6 +84,28 @@
     </div>
     <div id="gz"></div>
     <p class="hint" id="gznote"></p>
+  </div>
+  <div id="wavepanel" hidden>
+    <h2>In waves</h2>
+    <div class="row">
+      <label>Wavelength λ [m] <input id="wlen" type="number" step="any" min="0"></label>
+      <label>Height H [m] <input id="whgt" type="number" step="any" min="0"></label>
+      <button id="wgo">Compute</button>
+      <span class="hint" id="wstatus"></span>
+    </div>
+    <div id="wavegz"></div>
+    <div id="wavetable"></div>
+    <div id="breaking">
+      <h2>Breaking wave to reach the peak</h2>
+      <div class="row">
+        <label>Energy transfer η <input id="eta" type="number" step="any" min="0" max="1" value="0.1"></label>
+      </div>
+      <div id="breakout"></div>
+    </div>
+    <p class="hint">Quasi-static: the wave is frozen and the platform floats on its surface as on still water so shaped — balanced at each heel in sinkage and free trim — without the wave's orbital pressures or any dynamics. Beam seas run the crests along the platform, quartering seas at 45° to it; for each, the crest is set at eight places along a wavelength and under each hull, and the worst is the crest needing least energy to heel from where the platform rests on it to its peak arm (a crest that pushes it back past upright is its mirror heeling the other way, and is left out). Energy to peak is the weight times the area under the curve from the resting heel to the peak.</p>
+    <p class="hint">The breaking-wave height is a rough estimate, not a criterion: a crest breaking at H/λ ≈ 1/7 strikes at the wave's celerity c = √(gλ/2π), its water above the mean over the hull's length carrying ½ρ(Hλ/2π)·L·c²; if a fraction η of that goes into roll, the height whose crest supplies the energy to peak is H = [8π²E / (49 η ρ g L)]<sup>⅓</sup>. There is no calibrated η: it goes as η<sup>−⅓</sup>, so a factor of ten in η is 2.2× in H. Calibrate it against a capsize you know of.</p>
+  </div>
+  <div hidden>
   </div>
 </main>
 </div>
@@ -177,6 +207,83 @@ $("play").addEventListener("click", () => {
   }, 120);
 });
 
+// ---------------------------------------------------------------- in waves
+let waveData = null;
+async function computeWaves() {
+  const L = Number($("wlen").value), H = Number($("whgt").value);
+  if (!(L > 0 && H > 0)) { $("wstatus").textContent = "give a wavelength and a height"; return; }
+  $("wgo").disabled = true;
+  $("wstatus").textContent = "computing the curves in waves…";
+  try {
+    waveData = await api(`/api/cases/${id}/gz_waves?length=${L}&height=${H}`);
+    $("wstatus").textContent = `${waveData.headings.reduce((n, h) => n + h.curves.length, 0) + 1} curves in ${fmt(waveData.seconds, 1)} s`;
+    renderWaves();
+  } catch (e) {
+    $("wstatus").textContent = e.message;
+  } finally {
+    $("wgo").disabled = false;
+  }
+}
+$("wgo").addEventListener("click", computeWaves);
+for (const k of ["wlen", "whgt"]) $(k).addEventListener("keydown", (e) => { if (e.key === "Enter") computeWaves(); });
+$("eta").addEventListener("input", () => { if (waveData) renderBreaking(); });
+
+function renderWaves() {
+  const d = waveData, heels = d.heel_deg;
+  const series = [{ name: "calm water", points: heels.map((h, i) => [h, d.calm.gz[i]]) }];
+  for (const h of d.headings) {
+    if (h.worst) series.push({ name: `${h.name} (worst)`, points: heels.map((x, i) => [x, h.worst.gz[i]]) });
+  }
+  lineChart($("wavegz"), {
+    title: `GZ in a wave λ ${fmt(d.wave.length, 2)} m, H ${fmt(d.wave.height, 2)} m`,
+    x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
+    y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString(), zero: true },
+    series, marks: "never", direct: false,
+  });
+  const rows = [{ what: "calm water", c: d.calm, calm: true }];
+  for (const h of d.headings) {
+    if (h.worst) rows.push({ what: `${h.name}, worst: ${h.worst.label}`, c: h.worst });
+    if (h.name === "beam") {
+      for (const c of h.curves) if (/hull|amidships/.test(c.label) && c !== h.worst && c.label !== h.worst?.label) rows.push({ what: `beam, ${c.label}`, c, mirror: c.rests_negative });
+    }
+  }
+  waveRows = rows;
+  $("wavetable").innerHTML = `<div class="tablewrap"><table><thead><tr>
+    <th>Wave</th><th class="num">Rests at</th><th class="num">Max GZ [m]</th><th class="num">at</th><th class="num">Energy to peak [kJ]</th><th class="num">Breaking H [m]</th>
+  </tr></thead><tbody>${rows.map((r) => `<tr class="${r.calm ? "calm" : ""}">
+    <td class="what">${esc(r.what)}${r.mirror ? `<span class="sub">pushed back past upright: see its mirror</span>` : ""}</td>
+    <td class="num">${r.mirror ? "&lt; 0°" : `${fmt(r.c.rest_heel_deg, 1)}°`}</td>
+    <td class="num">${fmt(r.c.max_gz, 3)}</td>
+    <td class="num">${fmt(r.c.heel_at_max_deg, 0)}°</td>
+    <td class="num">${r.mirror ? "—" : fmt(r.c.energy_to_peak / 1000, 2)}</td>
+    <td class="num" data-e="${r.mirror ? "" : r.c.energy_to_peak}"></td>
+  </tr>`).join("")}</tbody></table></div>`;
+  renderBreaking();
+}
+let waveRows = [];
+
+// H = [8π² E / (49 η ρ g L)]^⅓: the breaking crest whose energy, a fraction
+// η of it going into roll, heels the platform from rest to its peak arm.
+function breakingHeight(e, eta) {
+  if (!(e > 0) || !(eta > 0)) return null;
+  return Math.cbrt(8 * Math.PI ** 2 * e / (49 * eta * 1025.9 * 9.81 * waveData.struck_length));
+}
+function renderBreaking() {
+  const eta = Number($("eta").value);
+  for (const td of document.querySelectorAll("#wavetable td[data-e]")) {
+    const h = breakingHeight(Number(td.dataset.e), eta);
+    td.textContent = td.dataset.e === "" ? "—" : h == null ? "—" : fmt(h, 2);
+  }
+  const worst = waveRows.filter((r) => !r.calm && !r.mirror).reduce((a, r) => (a && a.c.energy_to_peak <= r.c.energy_to_peak ? a : r), null);
+  const calmE = waveData.calm.energy_to_peak, worstE = worst?.c.energy_to_peak;
+  const sens = [0.3, 0.1, 0.03, 0.01].map((x) => `η ${x}: ${fmt(breakingHeight(worstE ?? calmE, x), 2)} m`).join(" · ");
+  $("breakout").innerHTML = `<div class="figs">
+    <div class="fig"><div class="v">${fmt(breakingHeight(calmE, eta), 2)}<small> m</small></div><div class="k">breaking wave, calm-water curve (${fmt(calmE / 1000, 2)} kJ to peak)</div></div>
+    ${worst ? `<div class="fig"><div class="v">${fmt(breakingHeight(worstE, eta), 2)}<small> m</small></div><div class="k">breaking wave, worst in waves: ${esc(worst.what)} (${fmt(worstE / 1000, 2)} kJ)</div></div>` : ""}
+  </div>
+  <p class="hint">Across η, for the ${worst ? "worst wave" : "calm-water curve"}: ${sens}.${waveData.vcg_given ? "" : " <b>No VCG was given</b>: G is at the design waterline, which flatters every curve and energy here."}</p>`;
+}
+
 async function renderRuns() {
   const studies = await api(`/api/studies?case=${id}`);
   const l = lRef(hull.summary);
@@ -237,6 +344,15 @@ try {
     const s = await api(`/api/cases/${id}/statics`);
     renderRest(s);
     renderStability(s);
+    if (!s.gz?.error) {
+      // The wave, by default twice the overall beam long and a tenth as
+      // high as it is long.
+      const boa = (cfg.params.span ?? 0) + (s.hydrostatics.beam || 0);
+      $("wlen").value = +(2 * boa).toPrecision(3);
+      $("whgt").value = +(0.2 * boa).toPrecision(3);
+      $("wavepanel").hidden = false;
+      computeWaves();
+    }
     // The hull at rest, z up from the water.
     if (s.body_meshes && s.gz?.cb) {
       // The hull heeled along its GZ curve, upright to start.
