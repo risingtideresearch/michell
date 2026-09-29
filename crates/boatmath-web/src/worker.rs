@@ -329,7 +329,7 @@ mod tests {
             .into_bytes();
         let import = LoftRequest::default();
         let sections = crate::loft("w.igs", bytes.clone(), &import).unwrap();
-        let geometry = crate::geometry("w.igs", bytes.clone(), None).unwrap();
+        let geometry = crate::geometry("w.igs", bytes.clone(), &import).unwrap();
         let new = NewHull {
             name: "wigley",
             notes: "",

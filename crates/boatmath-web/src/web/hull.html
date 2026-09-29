@@ -22,6 +22,9 @@
   #cases th, #cases td { padding: 5px 8px; }
   #cases td.what { white-space: normal; }
   .saved { color: var(--ok); font-size: 12px; }
+  #scaling .row { display: flex; gap: 8px; align-items: end; }
+  #scaling .row > label { flex: 1; }
+  #scaleprev dl { margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -42,6 +45,32 @@
     <dl id="meta"></dl>
   </section>
   <div id="status"></div>
+  <details id="scaling">
+    <summary>Scale into a new hull</summary>
+    <div class="fields" style="margin-top:8px">
+      <label class="wide">Scale
+        <select id="smode">
+          <option value="xyz">the whole hull — length, beam and draft together</option>
+          <option value="yz">beam and draft only — the length kept</option>
+        </select>
+      </label>
+      <label class="wide">To
+        <select id="starget">
+          <option value="length">a waterline length [m]</option>
+          <option value="displacement">a displacement at the waterline [kg]</option>
+        </select>
+      </label>
+      <label class="wide" id="svaluelabel">Waterline length [m]
+        <input id="svalue" type="number" step="any" min="0">
+      </label>
+      <label class="wide">Name
+        <input id="sname" type="text">
+      </label>
+    </div>
+    <div id="scaleprev"></div>
+    <button class="primary" id="scalego" disabled style="width:100%;margin-top:8px">Make the scaled hull</button>
+    <p class="hint">About the design waterline, so the waterline stays where it is: the scaled hull is this file with a scale in its settings, cut and measured afresh. Its cases can scale it again to carry a mass.</p>
+  </details>
   <section>
     <h2>Cases <span class="muted" id="casecount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
     <div id="cases"></div>
@@ -55,7 +84,7 @@
 </div>
 
 <script type="module">
-import { $, api, caseLabel, caseName, esc, fmt, fmtTime, hullCards, nav, pathId, status } from "/static/common.js";
+import { $, api, caseLabel, caseName, esc, fmt, fmtTime, hullCards, nav, pathId, status, whoami } from "/static/common.js";
 import { createViewer } from "/static/viewer.js";
 nav("hulls");
 
@@ -70,12 +99,14 @@ function renderMeta() {
   $("meta").innerHTML = `
     <dt>File</dt><dd class="mono">${esc(hull.file_name)}</dd>
     <dt>Uploaded</dt><dd>${fmtTime(hull.created_at)}${hull.uploaded_by ? ` by ${esc(hull.uploaded_by)}` : ""}</dd>
-    ${hull.parent_id ? `<dt>Re-import of</dt><dd><a href="/hulls/${hull.parent_id}">#${hull.parent_id}</a></dd>` : ""}
+    ${hull.parent_id ? `<dt>${imp.scale != null || imp.scale_yz != null ? "Scaled from" : "Re-import of"}</dt><dd><a href="/hulls/${hull.parent_id}">#${hull.parent_id}</a></dd>` : ""}
     <dt>Waterline z</dt><dd>${set(imp.waterline ?? 0, " m")}</dd>
     <dt>Centreplane y</dt><dd>${set(imp.centerplane, " m")}</dd>
     <dt>Stations</dt><dd>${set(imp.stations)}</dd>
     <dt>Rays</dt><dd>${set(imp.rays)}</dd>
     ${imp.units != null ? `<dt>Units</dt><dd>× ${esc(imp.units)} m</dd>` : ""}
+    ${imp.scale != null ? `<dt>Scaled</dt><dd>× ${fmt(imp.scale, 4)} (length, beam and draft)</dd>` : ""}
+    ${imp.scale_yz != null ? `<dt>Scaled</dt><dd>× ${fmt(imp.scale_yz, 4)} (beam and draft)</dd>` : ""}
     <dt>Hull id</dt><dd>#${hull.id}</dd>`;
 }
 
@@ -104,6 +135,52 @@ $("cases").addEventListener("click", (e) => {
   if (row) location.href = `/cases/${row.dataset.id}`;
 });
 
+// Scaling into a new hull: xyz to a length or a displacement, yz to a
+// displacement (it keeps the length). A dry run previews the factor.
+const single = () => (hull.summary?.hulls || []).length === 1;
+function scaleBody() {
+  const mode = $("smode").value, target = $("starget").value, v = Number($("svalue").value);
+  return { mode, [target]: v };
+}
+let scaleSeq = 0;
+async function scalePreview() {
+  const mode = $("smode").value, target = $("starget").value;
+  // yz keeps the length: only a displacement can be its target.
+  const lengthOpt = $("starget").querySelector("option[value=length]");
+  lengthOpt.disabled = mode === "yz";
+  if (mode === "yz" && target === "length") { $("starget").value = "displacement"; return scalePreview(); }
+  $("svaluelabel").firstChild.textContent = $("starget").value === "length" ? "Waterline length [m]" : "Displacement at the waterline [kg]";
+  const h0 = hull.summary.hulls[0];
+  $("svalue").placeholder = $("starget").value === "length" ? fmt(h0.length, 3) : fmt(1025.9 * h0.displaced_volume, 1);
+  const my = ++scaleSeq;
+  $("scalego").disabled = true;
+  if (!($("svalue").value.trim() && Number($("svalue").value) > 0)) { $("scaleprev").innerHTML = ""; return; }
+  try {
+    const d = await api(`/api/hulls/${id}/scale`, { json: { ...scaleBody(), dry_run: true } });
+    if (my !== scaleSeq) return;
+    const f = d.from, row = (k, label, unit, dp) => `<dt>${label}</dt><dd>${fmt(f[k], dp)} → <b>${fmt(d[k], dp)}</b> ${unit}</dd>`;
+    $("scaleprev").innerHTML = `<dl>
+      <dt>Factor</dt><dd><b>× ${fmt(d.factor, 4)}</b> ${d.mode === "yz" ? "on beam and draft" : "on every length"}</dd>
+      ${row("length", "Waterline length", "m", 3)}${row("beam", "Beam", "m", 3)}${row("draft", "Draft", "m", 3)}${row("displacement", "Displacement", "kg", 1)}
+    </dl>`;
+    $("sname").placeholder = `${hull.name} scaled to ${$("svalue").value.trim()} ${$("starget").value === "length" ? "m" : "kg"}`;
+    $("scalego").disabled = false;
+  } catch (e) {
+    if (my !== scaleSeq) return;
+    $("scaleprev").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+for (const k of ["smode", "starget", "svalue"]) { $(k).addEventListener("input", scalePreview); $(k).addEventListener("change", scalePreview); }
+$("scalego").onclick = async () => {
+  $("scalego").disabled = true;
+  status("Cutting the scaled hull…");
+  try {
+    const name = $("sname").value.trim();
+    const r = await api(`/api/hulls/${id}/scale`, { json: { ...scaleBody(), ...(name ? { name } : {}), by: whoami() } });
+    location.href = `/hulls/${r.id}`;
+  } catch (e) { status(e.message, true); $("scalego").disabled = false; }
+};
+
 // Name and notes save when they change.
 async function saveText() {
   const name = $("name").value.trim(), notes = $("notes").value.trim();
@@ -131,6 +208,9 @@ try {
   $("download").href = `/api/hulls/${id}/file`;
   $("download").download = hull.file_name;
   renderMeta();
+  if (single()) scalePreview(); else $("scaling").hidden = true;
+  // `#scale` opens the scaling section.
+  if (location.hash === "#scale") $("scaling").open = true;
   renderCases().catch((e) => status(e.message, true));
   const [geometry, sections] = await Promise.all([
     api(`/api/hulls/${id}/geometry`), api(`/api/hulls/${id}/sections`),

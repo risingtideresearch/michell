@@ -18,6 +18,13 @@
 //! GET  /api/hulls/:id/sections          the cut (as /api/loft answers)
 //! GET  /api/hulls/:id/geometry          the display geometry (as /api/geometry)
 //! GET  /api/hulls/:id/file              the uploaded file
+//! POST /api/hulls/:id/scale             {"mode": "xyz" | "yz", "length"? | "displacement"?,
+//!                                        "name"?, "notes"?, "by"?, "dry_run"?}
+//!                                       a new hull: this one scaled about its design
+//!                                       waterline to a waterline length [m] (xyz) or
+//!                                       a displacement there [kg] → {"id", "created",
+//!                                       "hull", "factor"}; a dry run answers the factor
+//!                                       and the dimensions it gives
 //!
 //! GET  /api/cases?hull=               cases, with their statics' summary
 //! POST /api/cases                     {"hull", "params": CaseParams, "name"?, "by"?,
@@ -137,6 +144,9 @@ pub fn route(
         (Get, ["hulls"]) => list(s.hulls()),
         (Post, ["hulls"]) => upload(app, q, who, body),
         (Get, ["hulls", h]) => id(h).and_then(|h| one(s.hull(h), "hull")),
+        (Post, ["hulls", h, "scale"]) => {
+            id(h).and_then(|h| json_body(body).and_then(|v| scale_hull(app, h, &v, who)))
+        }
         (Post, ["hulls", h]) => id(h).and_then(|h| {
             let v = json_body(body)?;
             let text = |k| v[k].as_str().map(str::trim);
@@ -276,6 +286,120 @@ pub fn route(
     Some(r)
 }
 
+/// `POST /api/hulls/:id/scale`: a new hull, the same file cut with a scale
+/// added to its settings — about its design waterline, so the waterline
+/// stays: the whole hull by `k` to a waterline length (`L/L₀`) or a
+/// displacement (`(Δ/Δ₀)^⅓`), or its beam and draft only to a displacement
+/// (`(Δ/Δ₀)^½`; the length is kept, so a length cannot be the target). A
+/// hull already scaled is scaled again: the factors multiply. A file of
+/// several hulls is refused (each would scale about its own centre, not
+/// the gaps between them).
+fn scale_hull(app: &App, id: i64, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
+    let s = &app.store;
+    let hull = s.hull(id).map_err(internal)?.ok_or(missing("hull"))?;
+    let src = s
+        .hull_source(id)
+        .map_err(internal)?
+        .ok_or(missing("hull"))?;
+    let hs = hull["summary"]["hulls"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if hs.len() != 1 {
+        return Err(bad(format!(
+            "scaling makes a new hull of a file with one hull; this one holds {}",
+            hs.len()
+        )));
+    }
+    let h0 = &hs[0];
+    let dim = |k: &str| h0[k].as_f64().filter(|x| *x > 0.0);
+    let (l0, b0, t0, v0) = match (
+        dim("length"),
+        dim("beam"),
+        dim("draft"),
+        dim("displaced_volume"),
+    ) {
+        (Some(l), Some(b), Some(t), Some(vol)) => (l, b, t, vol),
+        _ => return Err(bad("this hull's dimensions are unknown")),
+    };
+    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let d0 = rho * v0;
+    let target = |k: &str| v[k].as_f64().filter(|x| x.is_finite());
+    let yz = match v["mode"].as_str().unwrap_or("xyz") {
+        "xyz" => false,
+        "yz" => true,
+        m => return Err(bad(format!("mode {m:?}: expected xyz or yz"))),
+    };
+    let (factor, what) = match (yz, target("length"), target("displacement")) {
+        (_, Some(_), Some(_)) => return Err(bad("give a length or a displacement, not both")),
+        (false, Some(l), None) => (l / l0, format!("L {l} m")),
+        (true, Some(_), None) => {
+            return Err(bad(
+                "scaling beam and draft keeps the length; give a displacement",
+            ))
+        }
+        (false, None, Some(d)) => ((d / d0).cbrt(), format!("{d} kg")),
+        (true, None, Some(d)) => ((d / d0).sqrt(), format!("{d} kg, beam and draft")),
+        (_, None, None) => return Err(bad("give a length [m] or a displacement [kg]")),
+    };
+    if !(factor > 0.05 && factor < 20.0) {
+        return Err(bad(format!(
+            "that is a factor of {factor:.4}; expected between 0.05 and 20"
+        )));
+    }
+    let (kl, kb, kv) = if yz {
+        (1.0, factor, factor * factor)
+    } else {
+        (factor, factor, factor.powi(3))
+    };
+    let dims = json!({
+        "factor": factor,
+        "mode": if yz { "yz" } else { "xyz" },
+        "length": l0 * kl, "beam": b0 * kb, "draft": t0 * kb,
+        "displacement": d0 * kv,
+        "from": { "length": l0, "beam": b0, "draft": t0, "displacement": d0 },
+    });
+    if v["dry_run"].as_bool() == Some(true) {
+        return Ok(Reply::Json(dims));
+    }
+    let mut import = src.import;
+    if yz {
+        import.scale_yz = Some(import.scale_yz.unwrap_or(1.0) * factor);
+    } else {
+        import.scale = Some(import.scale.unwrap_or(1.0) * factor);
+    }
+    let bytes = s.blob(&src.file_blob).map_err(internal)?;
+    let sections = loft(&src.file_name, bytes.clone(), &import).map_err(bad)?;
+    let geom = geometry(&src.file_name, bytes.clone(), &import).map_err(bad)?;
+    let parent_name = hull["name"].as_str().unwrap_or("hull");
+    let default_name = format!("{parent_name} scaled to {what}");
+    let name = v["name"]
+        .as_str()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(&default_name);
+    let (nid, created) = s
+        .add_hull(&NewHull {
+            name,
+            notes: v["notes"].as_str().unwrap_or("").trim(),
+            uploaded_by: by(who, v["by"].as_str().unwrap_or("")),
+            file_name: &src.file_name,
+            bytes: &bytes,
+            import,
+            parent_id: Some(id),
+            sections: &sections,
+            geometry: &geom,
+        })
+        .map_err(internal)?;
+    Ok(Reply::Json(json!({
+        "id": nid,
+        "created": created,
+        "factor": factor,
+        "expected": dims,
+        "hull": s.hull(nid).map_err(internal)?,
+    })))
+}
+
 /// `POST /api/hulls`: cut the upload (refusing what cannot be cut) and save
 /// it with its sections and display geometry.
 fn upload(
@@ -300,7 +424,7 @@ fn upload(
     let bytes = body().map_err(bad)?;
     let t0 = std::time::Instant::now();
     let sections = loft(file, bytes.clone(), &import).map_err(bad)?;
-    let geom = geometry(file, bytes.clone(), import.units).map_err(bad)?;
+    let geom = geometry(file, bytes.clone(), &import).map_err(bad)?;
     let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
     let name = match get("name") {
         "" => stem,

@@ -106,9 +106,8 @@ async function choose(f, keepWaterline = false) {
 // z range bounds the slider, which starts at the file's 0 if that lies
 // within the hull, else a fifth of the way up from the keel.
 async function loadGeometry() {
-  const q = new URLSearchParams({ name: file.name });
-  const u = $("units").value.trim();
-  if (u) q.set("units", u);
+  const q = settings();
+  q.set("name", file.name);
   status(`Reading ${file.name}…`);
   try {
     const data = await api(`/api/geometry?${q}`, { body: file });
@@ -132,6 +131,8 @@ async function loadGeometry() {
 function settings() {
   const q = new URLSearchParams();
   for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
+  // A scaled hull re-imported stays scaled.
+  for (const k of ["scale", "scale_yz"]) if (parent?.import?.[k] != null) q.set(k, parent.import[k]);
   return q;
 }
 

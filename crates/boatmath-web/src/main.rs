@@ -148,14 +148,10 @@ fn handle(mut req: Request, app: &api::App, trust: bool) {
         (Method::Get, "/") => Response::from_string("")
             .with_status_code(302)
             .with_header(header("Location", "/hulls")),
-        (Method::Post, "/api/geometry") => {
-            let units = pairs
-                .iter()
-                .find(|(k, v)| k == "units" && !v.trim().is_empty())
-                .map(|(_, v)| michell_cli::parse_units(v.trim()))
-                .transpose();
-            answer(units.and_then(|u| geometry(&name, read_body(&mut req)?, u)))
-        }
+        (Method::Post, "/api/geometry") => answer(
+            LoftRequest::from_query(&pairs)
+                .and_then(|opts| geometry(&name, read_body(&mut req)?, &opts)),
+        ),
         (Method::Post, "/api/loft") => answer(
             LoftRequest::from_query(&pairs)
                 .and_then(|opts| loft(&name, read_body(&mut req)?, &opts)),

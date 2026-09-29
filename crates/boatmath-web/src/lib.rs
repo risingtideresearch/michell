@@ -41,6 +41,24 @@ pub struct LoftRequest {
     /// Scale to metres (STL, which carries no units): mm, m, in, ... or a
     /// number.
     pub units: Option<f64>,
+    /// A hull made by scaling another: the whole hull by this factor, about
+    /// its design waterline (length, beam and draft alike) …
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<f64>,
+    /// … and/or its beam and draft only, the length kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale_yz: Option<f64>,
+}
+
+impl LoftRequest {
+    /// The design pose the settings put each hull in: its scale, if any.
+    pub fn pose(&self) -> HullPose {
+        HullPose {
+            scale: self.scale.unwrap_or(1.0),
+            scale_yz: self.scale_yz.unwrap_or(1.0),
+            ..HullPose::default()
+        }
+    }
 }
 
 impl LoftRequest {
@@ -68,6 +86,8 @@ impl LoftRequest {
                 "stations" => r.stations = Some(count(k, v, 8)?),
                 "rays" => r.rays = Some(count(k, v, 5)?),
                 "units" => r.units = Some(michell_cli::parse_units(v.trim())?),
+                "scale" => r.scale = Some(num(k, v)?).filter(|&k| k != 1.0),
+                "scale_yz" => r.scale_yz = Some(num(k, v)?).filter(|&k| k != 1.0),
                 _ => {}
             }
         }
@@ -96,21 +116,25 @@ pub fn loft(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, Stri
 /// The whole of an upload's geometry for display, topsides and all, in the
 /// file's own frame (z up, metres): each hull's tessellation as base64
 /// little-endian arrays, and the geometry's z range — what the waterline
-/// can be set within.
-pub fn geometry(name: &str, bytes: Vec<u8>, units: Option<f64>) -> Result<Value, String> {
+/// can be set within. Its units and scale are the settings'; a scale is
+/// about the design waterline.
+pub fn geometry(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
     let settings = LoadSettings {
-        units,
+        units: req.units,
         ..LoadSettings::default()
     };
     let file = michell_cli::fleet::open_geometry(name, bytes, &settings)?;
+    let wl = req.waterline.unwrap_or(0.0);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut meshes = Vec::new();
     for i in 0..file.source.len() {
-        let (v, t) = file
+        let (mut v, t) = file
             .source
-            .posed_tessellation(i, 0.0, &HullPose::default(), &Platform::default())
+            .posed_tessellation(i, wl, &req.pose(), &Platform::default())
             .map_err(|e| e.to_string())?;
-        for p in &v {
+        // Posed about the waterline, z up from it: back into the file's frame.
+        for p in v.iter_mut() {
+            p[2] += wl;
             lo = lo.min(p[2]);
             hi = hi.max(p[2]);
         }
@@ -154,7 +178,7 @@ fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
         match file.source.situate_sectional(
             i,
             file.waterline_z,
-            &HullPose::default(),
+            &req.pose(),
             &Platform::default(),
             &opts,
         ) {
@@ -349,12 +373,10 @@ pub(crate) fn setup(
 ) -> Result<Setup, String> {
     let cut = cut(name, bytes, cut_req)?;
     let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    // Each hull in the pose its cut settings give it (a scaled hull's scale).
+    let base = cut_req.pose();
     let mut layout: Vec<(usize, HullPose)> = match c.span {
-        None => cut
-            .index
-            .iter()
-            .map(|&i| (i, HullPose::default()))
-            .collect(),
+        None => cut.index.iter().map(|&i| (i, base)).collect(),
         Some(span) => {
             if cut.hulls.len() != 1 {
                 return Err(format!(
@@ -373,15 +395,7 @@ pub(crate) fn setup(
             }
             // The pose's `dy` puts the copies' centreplanes at ±span/2.
             [0.5 * span, -0.5 * span]
-                .map(|y| {
-                    (
-                        cut.index[0],
-                        HullPose {
-                            dy: y - yc,
-                            ..HullPose::default()
-                        },
-                    )
-                })
+                .map(|y| (cut.index[0], HullPose { dy: y - yc, ..base }))
                 .to_vec()
         }
     };
@@ -407,9 +421,10 @@ pub(crate) fn setup(
         if by != MassBy::Sinking {
             let ratio = m / (rho * vol);
             for (_, pose) in layout.iter_mut() {
+                // On top of the hull's own scale, if it has one.
                 match by {
-                    MassBy::ScaleXyz => pose.scale = ratio.cbrt(),
-                    _ => pose.scale_yz = ratio.sqrt(),
+                    MassBy::ScaleXyz => pose.scale = base.scale * ratio.cbrt(),
+                    _ => pose.scale_yz = base.scale_yz * ratio.sqrt(),
                 }
             }
             design = layout
@@ -1335,6 +1350,48 @@ mod tests {
         assert!(p["raw_far"].is_f64());
         let bow = go(&study(120.0));
         assert!(bow["seakeeping"]["headings"][0]["points"][0]["raw_far"].is_null());
+    }
+
+    /// A hull scaled in its settings is cut scaled about its design
+    /// waterline: the whole Wigley's length by k and volume by k³, its beam
+    /// and draft only its volume by k² and its length kept.
+    #[test]
+    fn a_scaled_hull_is_cut_scaled() {
+        let exact = 4.0 / 9.0 * 10.0 * 0.625;
+        for (req, length, volume) in [
+            (
+                LoftRequest {
+                    scale: Some(1.2),
+                    ..LoftRequest::default()
+                },
+                12.0,
+                exact * 1.2f64.powi(3),
+            ),
+            (
+                LoftRequest {
+                    scale_yz: Some(0.9),
+                    ..LoftRequest::default()
+                },
+                10.0,
+                exact * 0.81,
+            ),
+        ] {
+            let v = loft("w.igs", wigley(), &req).unwrap();
+            let h = &v["hulls"][0];
+            let (l, vol) = (
+                h["length"].as_f64().unwrap(),
+                h["displaced_volume"].as_f64().unwrap(),
+            );
+            assert!((l - length).abs() < 1e-6 * length, "{req:?}: length {l}");
+            assert!(
+                (vol - volume).abs() < 1e-6 * volume,
+                "{req:?}: volume {vol}"
+            );
+        }
+        // Unset, the scale is not in the stored settings: an unscaled hull's
+        // settings are what they were before hulls could be scaled.
+        let plain = serde_json::to_string(&LoftRequest::default()).unwrap();
+        assert!(!plain.contains("scale"), "{plain}");
     }
 
     #[test]
