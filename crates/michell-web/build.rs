@@ -5,7 +5,13 @@
 
 use std::process::Command;
 
-const SOLVER: &[&str] = &["../michell/src", "../michell-cli/src", "src/lib.rs"];
+const SOLVER: &[&str] = &[
+    "../michell-geometry/src",
+    "../michell/src",
+    "../michell-seakeeping/src",
+    "../michell-cli/src",
+    "src/lib.rs",
+];
 
 fn git(args: &[&str]) -> Option<(bool, String)> {
     let out = Command::new("git").args(args).output().ok()?;

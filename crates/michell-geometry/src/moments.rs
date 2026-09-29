@@ -5,7 +5,7 @@
 //! a polynomial times `exp(i k x)` in x and a polynomial times `exp(-κ z)` in
 //! z, and both families of moments below have closed forms.
 
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// Minimal complex number (kept local to avoid any dependency).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,6 +16,9 @@ pub struct C64 {
 
 impl C64 {
     pub const ZERO: C64 = C64 { re: 0.0, im: 0.0 };
+    pub const ONE: C64 = C64 { re: 1.0, im: 0.0 };
+    /// The imaginary unit.
+    pub const I: C64 = C64 { re: 0.0, im: 1.0 };
 
     #[inline]
     pub fn new(re: f64, im: f64) -> C64 {
@@ -58,6 +61,24 @@ impl C64 {
         }
     }
 
+    /// Complex conjugate.
+    #[inline]
+    pub fn conj(self) -> C64 {
+        C64 {
+            re: self.re,
+            im: -self.im,
+        }
+    }
+
+    /// Principal logarithm, `arg ∈ (−π, π]`.
+    #[inline]
+    pub fn ln(self) -> C64 {
+        C64 {
+            re: self.abs().ln(),
+            im: self.im.atan2(self.re),
+        }
+    }
+
     /// Reciprocal `1/z = conj(z)/|z|²`.
     #[inline]
     pub fn recip(self) -> C64 {
@@ -82,6 +103,22 @@ impl Sub for C64 {
     #[inline]
     fn sub(self, o: C64) -> C64 {
         C64::new(self.re - o.re, self.im - o.im)
+    }
+}
+
+impl Div for C64 {
+    type Output = C64;
+    #[inline]
+    fn div(self, o: C64) -> C64 {
+        self * o.recip()
+    }
+}
+
+impl Neg for C64 {
+    type Output = C64;
+    #[inline]
+    fn neg(self) -> C64 {
+        C64::new(-self.re, -self.im)
     }
 }
 

@@ -3,8 +3,10 @@
 //! waterline clipping, centreplane detection, multihull clustering, posing
 //! and equilibrium — validated against the exact Wigley hull.
 
-use michell::iges::{self, HullPose, Platform, SectionalImport, SectionalOptions, SourceFleet};
 use michell::{sectional, Conditions, Placement, SectionalHull, WaveOptions};
+use michell_geometry::iges::{
+    self, HullPose, Platform, SectionalImport, SectionalOptions, SourceFleet,
+};
 
 fn line(content: &str, section: char, seq: usize) -> String {
     format!("{content:<72}{section}{seq:>7}\n")
@@ -647,8 +649,8 @@ fn situate_trim_is_symmetric_for_symmetric_hull() {
 
 #[test]
 fn equilibrium_matches_analytic_wigley() {
-    use michell::float::{solve_equilibrium_sectional, LoadCase};
-    use michell::source::SourceHull;
+    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
+    use michell_geometry::source::SourceHull;
     // Wigley shell at design draft T0 = 0.625 under waterline 0.7. Target
     // immersion d = 0.5 -> analytic volume and sinkage = -0.125.
     let (l, b, t0, d) = (10.0f64, 1.0f64, 0.625f64, 0.5f64);
@@ -753,7 +755,11 @@ fn wigley_stl_ascii(y0s: &[f64], nx: usize, nz: usize) -> String {
 }
 
 /// Cut hull `idx` of an STL fleet at `waterline_z`.
-fn cut_mesh(mf: &michell::stl::MeshFleet, idx: usize, waterline_z: f64) -> SectionalImport {
+fn cut_mesh(
+    mf: &michell_geometry::stl::MeshFleet,
+    idx: usize,
+    waterline_z: f64,
+) -> SectionalImport {
     let opts = SectionalOptions {
         waterline_z,
         ..SectionalOptions::default()
@@ -772,7 +778,7 @@ fn cut_mesh(mf: &michell::stl::MeshFleet, idx: usize, waterline_z: f64) -> Secti
 #[test]
 fn stl_import_matches_reference_wigley() {
     let stl = wigley_stl_ascii(&[0.0], 160, 48);
-    let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
+    let mf = michell_geometry::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
     assert_eq!(mf.len(), 1, "one hull expected");
     let m = cut_mesh(&mf, 0, 0.7);
     assert!(m.report.two_sided);
@@ -792,7 +798,7 @@ fn stl_import_matches_reference_wigley() {
 #[test]
 fn stl_catamaran_clusters_into_two_hulls() {
     let stl = wigley_stl_ascii(&[3.0, -3.0], 60, 20);
-    let mf = michell::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
+    let mf = michell_geometry::stl::mesh_fleet(stl.as_bytes(), 1.0, 0.7).unwrap();
     assert_eq!(mf.len(), 2, "two hulls expected");
     assert!((cut_mesh(&mf, 0, 0.7).placement.y + 3.0).abs() < 1e-3);
     assert!((cut_mesh(&mf, 1, 0.7).placement.y - 3.0).abs() < 1e-3);

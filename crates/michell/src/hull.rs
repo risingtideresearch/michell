@@ -1,12 +1,61 @@
 //! Test oracle: a validated B-spline half-breadth surface `y = f(x, z)` plus
 //! the span polynomials the exact kernel (`crate::michell::InnerIntegral`)
 //! integrates, precomputed once. The sectional kernel is checked against it,
-//! through [`crate::sectional::SectionalHull::from_hull`].
+//! through [`FromHull::from_hull`].
 
-use crate::bspline::BSplineSurface;
-use crate::error::{Error, Result};
-use crate::quadrature::gauss_legendre;
-use crate::sectional::{Span, Transom, TRANSOM_AREA_REL};
+use michell_geometry::bspline::BSplineSurface;
+use michell_geometry::quadrature::gauss_legendre;
+use michell_geometry::sectional::{
+    DepthQuadrature, SectionNodes, SectionalHull, Span, Transom, TRANSOM_AREA_REL,
+};
+use michell_geometry::{Error, Result};
+
+/// The oracle's transom: the geometry crate's description plus the exact
+/// section polynomial the B-spline kernel integrates.
+#[derive(Debug, Clone)]
+pub struct HullTransom {
+    pub section: Transom,
+    /// Per-z-span polynomial coefficients `f_T(z) = Σ_b c[b] (z − z0_sz)^b`,
+    /// flattened as `[sz * (q + 1) + b]`.
+    pub coeff: Vec<f64>,
+}
+
+impl std::ops::Deref for HullTransom {
+    type Target = Transom;
+    fn deref(&self) -> &Transom {
+        &self.section
+    }
+}
+
+/// The reference construction of a sectional hull from the oracle.
+pub(crate) trait FromHull: Sized {
+    fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self>;
+}
+
+impl FromHull for SectionalHull {
+    /// Sections of a B-spline hull at the Greville points of its own x
+    /// knots, depth-integrated panel by panel between its z knots.
+    /// `Z(x; κ)` is then exactly in the interpolating space, so the only
+    /// approximation is the depth quadrature. The spline's own transom
+    /// description (its depth measure samples the spline, not the
+    /// quadrature nodes) replaces the end station's, so the harness checks
+    /// the closure machinery exactly.
+    fn from_hull(hull: &Hull, opts: &DepthQuadrature) -> Result<Self> {
+        let s = hull.surface();
+        let (p, n) = (s.degree_x(), s.n_ctrl_x());
+        let kx = s.knots_x();
+        let xs: Vec<f64> = (0..n)
+            .map(|i| kx[i + 1..=i + p].iter().sum::<f64>() / p.max(1) as f64)
+            .collect();
+        let depth = s.z_domain().1;
+        let sections = xs
+            .iter()
+            .map(|&x| SectionNodes::from_depth_function(depth, s.knots_z(), |z| s.eval(x, z), opts))
+            .collect();
+        Ok(SectionalHull::new(p, kx.to_vec(), &xs, sections)?
+            .with_transom(hull.transom().map(|t| t.section.clone())))
+    }
+}
 
 /// A validated hull.
 ///
@@ -41,7 +90,7 @@ pub struct Hull {
     waterplane_moment: f64,
     waterplane_second_moment: f64,
     max_section_area: f64,
-    transom: Option<Transom>,
+    transom: Option<HullTransom>,
 }
 
 impl Hull {
@@ -268,7 +317,7 @@ impl Hull {
     /// (low-`x`) end. `None` for a hull that closes there — which is what
     /// classical Michell theory assumes, and the only case this crate's wave
     /// integral currently models.
-    pub fn transom(&self) -> Option<&Transom> {
+    pub fn transom(&self) -> Option<&HullTransom> {
         self.transom.as_ref()
     }
 
@@ -384,7 +433,7 @@ fn detect_transom(
     spans_z: &[Span],
     draft: f64,
     max_section_area: f64,
-) -> Option<Transom> {
+) -> Option<HullTransom> {
     let q = surface.degree_z();
     let x_t = surface.x_domain().0;
 
@@ -427,11 +476,13 @@ fn detect_transom(
         0.0
     };
 
-    Some(Transom {
-        x: x_t,
-        depth,
-        area,
-        half_beam: surface.eval(x_t, 0.0),
+    Some(HullTransom {
+        section: Transom {
+            x: x_t,
+            depth,
+            area,
+            half_beam: surface.eval(x_t, 0.0),
+        },
         coeff,
     })
 }

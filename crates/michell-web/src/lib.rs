@@ -9,10 +9,10 @@
 //! and the transom with what the closure needs to draw its virtual appendage
 //! at any speed.
 
-use michell::iges::{HullPose, Platform, SectionalImport};
-use michell::sectional::SectionalHull;
 use michell::{Conditions, Placement, TransomClosure, WaveOptions, STANDARD_GRAVITY};
 use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
+use michell_geometry::iges::{HullPose, Platform, SectionalImport};
+use michell_geometry::SectionalHull;
 use serde_json::{json, Value};
 
 pub mod case;
@@ -128,7 +128,7 @@ struct Cut {
     /// Each cut hull's index in the file.
     index: Vec<usize>,
     hulls: Vec<SectionalImport>,
-    opts: michell::iges::SectionalOptions,
+    opts: michell_geometry::iges::SectionalOptions,
     notes: Vec<String>,
 }
 
@@ -186,14 +186,14 @@ struct Counted<'a, R> {
     report: R,
 }
 
-impl<R> michell::float::DynamicModel<SectionalHull> for Counted<'_, R>
+impl<R> michell_geometry::float::DynamicModel<SectionalHull> for Counted<'_, R>
 where
-    R: FnMut(&michell::float::DynamicLoad, f64) -> michell::Result<()>,
+    R: FnMut(&michell_geometry::float::DynamicLoad, f64) -> michell::Result<()>,
 {
     fn load(
         &mut self,
-        fleet: &michell::float::FleetState<SectionalHull>,
-    ) -> michell::Result<michell::float::DynamicLoad> {
+        fleet: &michell_geometry::float::FleetState<SectionalHull>,
+    ) -> michell::Result<michell_geometry::float::DynamicLoad> {
         let d = self.inner.load(fleet)?;
         let vol: f64 = fleet
             .members
@@ -206,8 +206,8 @@ where
 
     fn probe(
         &mut self,
-        fleet: &michell::float::FleetState<SectionalHull>,
-    ) -> Option<michell::Result<michell::float::DynamicLoad>> {
+        fleet: &michell_geometry::float::FleetState<SectionalHull>,
+    ) -> Option<michell::Result<michell_geometry::float::DynamicLoad>> {
         self.inner.probe(fleet)
     }
 }
@@ -257,6 +257,78 @@ pub struct FlowRequest {
     /// Hold the platform at this `(sinkage [m], trim [rad])` instead of
     /// solving for it (a fast span sweep's shared attitude).
     pub hold: Option<(f64, f64)>,
+    /// Also compute the platform's seakeeping at this attitude.
+    pub seakeeping: Option<SeakeepingRequest>,
+}
+
+/// Seakeeping in regular waves (and optionally one irregular sea) for a
+/// flow case, at the case's load and attitude.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeakeepingRequest {
+    /// Headings [deg]: 180 head seas, 90 beam, 0 following.
+    pub headings: Vec<f64>,
+    /// Wavelengths over the longest hull's length.
+    pub lambdas: Vec<f64>,
+    /// Centre of gravity above the waterline [m] (default 0).
+    pub vcg: Option<f64>,
+    /// Radii of gyration: pitch as a fraction of L, roll and yaw in metres.
+    pub kyy: Option<f64>,
+    pub kxx: Option<f64>,
+    pub kzz: Option<f64>,
+    /// Roll damping as a fraction of critical.
+    pub roll_damping: f64,
+    pub sea: Option<michell_seakeeping::sea::Spectrum>,
+}
+
+impl SeakeepingRequest {
+    /// `sk=1` turns it on; `sk_heading` (a list or range, degrees),
+    /// `sk_lambda` (a range), `sk_vcg`, `sk_kyy` (of L), `sk_kxx`,
+    /// `sk_kzz`, `sk_damping`, `sk_sea` (`hs=H,tp=T[,gamma=G]`).
+    pub fn from_query(pairs: &[(String, String)]) -> Result<Option<SeakeepingRequest>, String> {
+        let get = |k: &str| {
+            pairs
+                .iter()
+                .find(|(q, _)| q == k)
+                .map(|(_, v)| v.trim())
+                .filter(|v| !v.is_empty())
+        };
+        if !matches!(get("sk"), Some("1" | "true" | "on")) {
+            return Ok(None);
+        }
+        let num = |k: &str| -> Result<Option<f64>, String> {
+            get(k)
+                .map(|v| {
+                    v.parse::<f64>()
+                        .map_err(|_| format!("{k}: expected a number, got {v:?}"))
+                })
+                .transpose()
+        };
+        let list = |k: &str, default: &str| -> Result<Vec<f64>, String> {
+            let mut out = Vec::new();
+            for part in get(k).unwrap_or(default).split(',') {
+                out.extend(michell_cli::parse_range(part.trim()).map_err(|e| format!("{k}: {e}"))?);
+            }
+            Ok(out)
+        };
+        let headings = list("sk_heading", "180")?;
+        let lambdas = list("sk_lambda", "0.5:3:0.125")?;
+        if lambdas.is_empty() || lambdas.len() > 200 || lambdas.iter().any(|&l| !(l > 0.0)) {
+            return Err("sk_lambda: expected 1 to 200 positive wavelengths (λ/L)".into());
+        }
+        if headings.is_empty() || headings.len() > 12 {
+            return Err("sk_heading: expected 1 to 12 headings per case".into());
+        }
+        Ok(Some(SeakeepingRequest {
+            headings,
+            lambdas,
+            vcg: num("sk_vcg")?,
+            kyy: num("sk_kyy")?,
+            kxx: num("sk_kxx")?,
+            kzz: num("sk_kzz")?,
+            roll_damping: num("sk_damping")?.unwrap_or(0.0).max(0.0),
+            sea: get("sk_sea").map(michell_cli::parse_sea).transpose()?,
+        }))
+    }
 }
 
 impl FlowRequest {
@@ -343,6 +415,7 @@ impl FlowRequest {
                 s => s,
             },
             warm,
+            seakeeping: SeakeepingRequest::from_query(pairs)?,
         })
     }
 }
@@ -366,10 +439,16 @@ pub struct Progress {
 /// The stages of a flow and their typical shares of its time: floating the
 /// hull at speed dominates when it is solved; otherwise the free surface
 /// and the dynamic force (then computed at the forces stage) do.
-fn flow_stages(dynamic: bool) -> [(&'static str, f64); 5] {
+fn flow_stages(dynamic: bool, seakeeping: Option<&SeakeepingRequest>) -> [(&'static str, f64); 6] {
     // Measured on e12 (Fn 0.3, dynamic: 0.04 / 8.4 / 0.6 / 3.6 / 7.2 s):
     // the forces stage also encodes the hull meshes into the answer.
-    if dynamic {
+    // Seakeeping: ~7 s per heading for 21 head-sea wavelengths, as much
+    // again for an irregular sea.
+    let sk = seakeeping.map_or(0.0, |s| {
+        let sea = if s.sea.is_some() { 1.0 } else { 0.0 };
+        0.4 * s.headings.len() as f64 * (s.lambdas.len() as f64 / 21.0 + sea)
+    });
+    let [a, b, c, d, e] = if dynamic {
         [
             ("Cutting sections", 0.01),
             ("Floating at speed", 0.5),
@@ -385,13 +464,14 @@ fn flow_stages(dynamic: bool) -> [(&'static str, f64); 5] {
             ("Free surface", 0.35),
             ("Forces", 0.55),
         ]
-    }
+    };
+    [a, b, c, d, e, ("Seakeeping", sk)]
 }
 
 /// Reports progress through the caller's callback, and turns its refusal
 /// (the client has gone) into an error that stops the computation.
 struct Tracker<'a> {
-    stages: [(&'static str, f64); 5],
+    stages: [(&'static str, f64); 6],
     report: &'a mut dyn FnMut(&Progress) -> bool,
 }
 
@@ -452,12 +532,12 @@ fn flow_inner(
     report: &mut dyn FnMut(&Progress) -> bool,
     mut shared: Option<&mut SweepField>,
 ) -> Result<Value, String> {
-    use michell::float::{solve_equilibrium_sectional_dynamic, LoadCase};
     use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
-    use michell::source::SourceHull;
+    use michell_geometry::float::{solve_equilibrium_sectional_dynamic, LoadCase};
+    use michell_geometry::source::SourceHull;
     let t0 = std::time::Instant::now();
     let mut track = Tracker {
-        stages: flow_stages(req.dynamic),
+        stages: flow_stages(req.dynamic, req.seakeeping.as_ref()),
         report,
     };
     track.at(0, 0.0, name.to_string())?;
@@ -640,7 +720,7 @@ fn flow_inner(
         let mut evaluations = 0usize;
         let weight = mass * cond.gravity;
         let track_ref = &mut track;
-        let report = move |d: &michell::float::DynamicLoad, vol: f64| {
+        let report = move |d: &michell_geometry::float::DynamicLoad, vol: f64| {
             evaluations += 1;
             track_ref
                 .at(
@@ -978,7 +1058,14 @@ fn flow_inner(
     ] {
         forces[k] = json!(v);
     }
+    let seakeeping = match &req.seakeeping {
+        Some(sk) => Some(seakeeping_json(
+            &members, mass, lcg, cond.speed, sk, &mut track,
+        )?),
+        None => None,
+    };
     Ok(json!({
+        "seakeeping": seakeeping,
         "froude": req.froude,
         "speed": cond.speed,
         "transverse_wavelength": 2.0 * std::f64::consts::PI * cond.speed * cond.speed / cond.gravity,
@@ -990,6 +1077,153 @@ fn flow_inner(
             "zeta": b64(bytemuck_f32(&g.zeta.iter().map(|&z| z as f32).collect::<Vec<_>>())),
         },
         "forces": forces,
+    }))
+}
+
+/// The seakeeping block of a flow case: roll stability, and per heading the
+/// responses over the wavelengths and the irregular sea's statistics.
+fn seakeeping_json(
+    members: &[(&SectionalHull, Placement)],
+    mass: f64,
+    lcg: f64,
+    speed: f64,
+    sk: &SeakeepingRequest,
+    track: &mut Tracker,
+) -> Result<Value, String> {
+    use michell_seakeeping::platform::{self, Loading};
+    use michell_seakeeping::sea::sea_response_fleet;
+    use michell_seakeeping::strip::StripOptions;
+    let cond = Conditions::seawater(speed);
+    let opts = StripOptions {
+        density: cond.fluid.density,
+        gravity: cond.gravity,
+        roll_damping: sk.roll_damping,
+        ..StripOptions::default()
+    };
+    let l = platform::length(members);
+    let props = platform::mass_properties(
+        members,
+        opts.density,
+        &Loading {
+            mass: Some(mass),
+            lcg: Some(lcg),
+            vcg: sk.vcg,
+            k_yy: sk.kyy.map(|f| f * l),
+            k_xx: sk.kxx,
+            k_zz: sk.kzz,
+        },
+    );
+    track.at(5, 0.0, "roll stability".into())?;
+    let roll = platform::roll_stability(members, &props, &opts);
+    // Progress: each heading's sweep, then its sea, in equal shares.
+    let n = sk.lambdas.len();
+    let per = n + if sk.sea.is_some() { n } else { 0 };
+    let total = (sk.headings.len() * per).max(1) as f64;
+    let x_bow = members
+        .iter()
+        .map(|(h, pl)| h.x_range().1 + pl.x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let c = |z: michell_geometry::C64| json!([z.re, z.im]);
+    let mut headings = Vec::new();
+    for (j, &deg) in sk.headings.iter().enumerate() {
+        let done = (j * per) as f64;
+        // The far field's sections carry only the symmetric part of the
+        // diffraction problem: head and following seas only.
+        let far = |v: f64| (deg.to_radians().sin().abs() < 0.1).then_some(v);
+        let mut stopped = false;
+        let points = platform::rao_sweep(
+            members,
+            &props,
+            deg.to_radians(),
+            speed,
+            &sk.lambdas,
+            &opts,
+            &mut |i| {
+                stopped = track
+                    .at(
+                        5,
+                        (done + i as f64 + 1.0) / total,
+                        format!("heading {deg:.0}° · λ/L {:.2}", sk.lambdas[i]),
+                    )
+                    .is_err();
+                !stopped
+            },
+        );
+        if stopped {
+            return Err(CANCELLED.into());
+        }
+        let points: Vec<Value> = points
+            .into_iter()
+            .zip(&sk.lambdas)
+            .map(|(p, lam)| match p {
+                Ok(p) => json!({
+                    "lambda": p.lambda_over_l,
+                    "omega": p.omega,
+                    "omega_e": p.omega_e,
+                    "k": p.k,
+                    "heave": c(p.heave),
+                    "pitch": c(p.pitch),
+                    "sway": c(p.sway),
+                    "roll": c(p.roll),
+                    "yaw": c(p.yaw),
+                    "raw_gb": p.added_resistance,
+                    "raw_far": far(p.added_resistance_far_field),
+                }),
+                Err(e) => json!({ "lambda": lam, "error": e }),
+            })
+            .collect();
+        let sea = match &sk.sea {
+            Some(spectrum) => {
+                track.at(
+                    5,
+                    (done + n as f64) / total,
+                    format!("heading {deg:.0}° · irregular sea"),
+                )?;
+                match sea_response_fleet(
+                    members,
+                    &props,
+                    spectrum,
+                    deg.to_radians(),
+                    speed,
+                    &[x_bow, lcg],
+                    41,
+                    &opts,
+                ) {
+                    Ok(r) => json!({
+                        "heave": r.heave,
+                        "pitch_deg": r.pitch.to_degrees(),
+                        "accel_bow": r.accelerations[0],
+                        "accel_lcg": r.accelerations[1],
+                        "raw_gb": r.added_resistance,
+                        "raw_far": far(r.added_resistance_far_field),
+                        "skipped_energy": r.skipped_energy,
+                    }),
+                    Err(e) => json!({ "error": e.to_string() }),
+                }
+            }
+            None => Value::Null,
+        };
+        headings.push(json!({ "heading": deg, "points": points, "sea": sea }));
+    }
+    track.at(5, 1.0, "done".into())?;
+    Ok(json!({
+        "length": l,
+        "beam": platform::hull_beam(members),
+        "mass": props.mass,
+        "lcg": props.lcg,
+        "bg": props.bg,
+        // G: at the LCG, on the centreplane (y = 0), this far above the
+        // waterline — the point the motions are about.
+        "vcg": sk.vcg.unwrap_or(0.0),
+        "k_yy": props.radius_of_gyration,
+        "k_xx": props.roll_radius_of_gyration,
+        "k_zz": props.yaw_radius_of_gyration,
+        "roll_damping": sk.roll_damping,
+        "gm_t": roll.gm,
+        "roll_period_dry": roll.period_dry,
+        "roll_period": roll.period,
+        "sea": sk.sea.map(|s| format!("{s:?}")),
+        "headings": headings,
     }))
 }
 
@@ -1055,6 +1289,7 @@ pub fn span_sweep_with_progress(
             span: Some(spans[i]),
             hold,
             cut: LoftRequest { ..req.cut },
+            seakeeping: req.seakeeping.clone(),
             ..*req
         };
         // The solved span is most of the work; weight it as such.
@@ -1264,8 +1499,8 @@ mod tests {
     /// The exact Wigley as IGES, shown by sections.
     #[test]
     fn a_wigley_is_shown_in_sections() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let v = loft("w.igs", text.into_bytes(), &LoftRequest::default()).unwrap();
         let h = &v["hulls"][0];
         let vol = h["displaced_volume"].as_f64().unwrap();
@@ -1280,8 +1515,8 @@ mod tests {
     /// and a dynamic lift that sinks the hull.
     #[test]
     fn a_wigley_flow_has_pressure_waves_and_lift() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         // This Wigley ends at its waterline (no topsides to sink into), so
         // at the design attitude.
         let pairs: Vec<(String, String)> =
@@ -1307,8 +1542,8 @@ mod tests {
     }
 
     fn wigley_flow_request() -> (Vec<u8>, FlowRequest) {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let pairs: Vec<(String, String)> =
             [("froude", "0.35"), ("grid", "40"), ("attitude", "design")]
                 .iter()
@@ -1345,8 +1580,8 @@ mod tests {
     /// by ±span/2, is the two-hull field computed directly.
     #[test]
     fn a_catamaran_field_is_its_demihulls_summed() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let pairs: Vec<(String, String)> = [
             ("froude", "0.35"),
             ("grid", "60"),
@@ -1371,7 +1606,7 @@ mod tests {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
             .collect();
         // The same two hulls, directly, on the same grid.
-        let hull = michell::iges::source_fleet(&text, 0.0)
+        let hull = michell_geometry::iges::source_fleet(&text, 0.0)
             .unwrap()
             .situate_sectional(
                 0,
@@ -1429,8 +1664,8 @@ mod tests {
     /// cube root of the mass ratio (x, y, z) or kept (beam and draft only).
     #[test]
     fn a_mass_carried_by_scaling_keeps_the_waterline() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let rho = Conditions::seawater(1.0).fluid.density;
         let v0 = 4.0 / 9.0 * 10.0 * 0.625;
         let mass = 1.2 * rho * v0;
@@ -1469,13 +1704,101 @@ mod tests {
         }
     }
 
+    #[test]
+    fn seakeeping_keys_parse() {
+        let pairs = |kv: &[(&str, &str)]| -> Vec<(String, String)> {
+            kv.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert_eq!(
+            SeakeepingRequest::from_query(&pairs(&[("sk_vcg", "1")])),
+            Ok(None)
+        );
+        let r = SeakeepingRequest::from_query(&pairs(&[("sk", "1")]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.headings, vec![180.0]);
+        assert_eq!(r.lambdas.len(), 21);
+        assert!(r.sea.is_none() && r.vcg.is_none());
+        let r = SeakeepingRequest::from_query(&pairs(&[
+            ("sk", "1"),
+            ("sk_heading", "180, 90:150:30"),
+            ("sk_lambda", "1,2"),
+            ("sk_sea", "hs=0.5,tp=4,gamma=3.3"),
+            ("sk_damping", "0.05"),
+        ]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.headings, vec![180.0, 90.0, 120.0, 150.0]);
+        assert_eq!(r.lambdas, vec![1.0, 2.0]);
+        assert_eq!(r.roll_damping, 0.05);
+        assert!(matches!(
+            r.sea,
+            Some(michell_seakeeping::sea::Spectrum::Jonswap { .. })
+        ));
+        for bad in [("sk_lambda", "0"), ("sk_sea", "hs=1"), ("sk_vcg", "x")] {
+            assert!(
+                SeakeepingRequest::from_query(&pairs(&[("sk", "1"), bad])).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// A flow case with seakeeping carries its responses: in long head
+    /// waves a Wigley hull heaves and pitches with the water, and the far
+    /// field is reported only where it applies.
+    #[test]
+    fn a_flow_case_carries_its_seakeeping() {
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
+        let pairs: Vec<(String, String)> = [
+            ("froude", "0.2"),
+            ("grid", "40"),
+            ("attitude", "design"),
+            ("sk", "1"),
+            ("sk_heading", "180,120"),
+            ("sk_lambda", "6"),
+            // A deep, narrow Wigley hull rolls over with G at the waterline.
+            ("sk_vcg", "-0.3"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let v = flow(
+            "w.igs",
+            text.into_bytes(),
+            &FlowRequest::from_query(&pairs).unwrap(),
+        )
+        .unwrap();
+        let sk = &v["seakeeping"];
+        assert!(sk["gm_t"].as_f64().unwrap() > 0.0, "{}", sk);
+        let heads = sk["headings"].as_array().unwrap();
+        assert_eq!(heads.len(), 2);
+        let p = &heads[0]["points"][0];
+        let abs = |z: &Value| z[0].as_f64().unwrap().hypot(z[1].as_f64().unwrap());
+        let k = p["k"].as_f64().unwrap();
+        assert!(
+            (abs(&p["heave"]) - 1.0).abs() < 0.1,
+            "heave {}",
+            abs(&p["heave"])
+        );
+        assert!(
+            (abs(&p["pitch"]) / k - 1.0).abs() < 0.15,
+            "pitch {}",
+            abs(&p["pitch"]) / k
+        );
+        assert!(p["raw_far"].is_f64());
+        assert!(heads[1]["points"][0]["raw_far"].is_null());
+    }
+
     /// A span sweep at the design attitude is, span by span, the single
     /// catamaran flows: the held path and the shared field change nothing
     /// but the cost.
     #[test]
     fn a_span_sweep_is_its_spans_flows() {
-        let surfaces = michell::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
         let q = |extra: &[(&str, &str)]| -> FlowRequest {
             let mut pairs: Vec<(String, String)> =
                 [("froude", "0.35"), ("grid", "60"), ("attitude", "design")]

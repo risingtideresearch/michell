@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// The solver version results are stamped with: the last commit to touch
-/// the solver's code (the `michell` and `michell-cli` crates and the web
-/// crate's flow wrapper), `-dirty` if they have uncommitted changes. Set by
+/// the solver's code (the geometry, thin-ship, seakeeping and CLI crates,
+/// and the web crate's flow wrapper), `-dirty` if they have uncommitted changes. Set by
 /// `build.rs`; `MICHELL_SOLVER_VERSION` at build time overrides it.
 pub const SOLVER_VERSION: &str = env!("MICHELL_SOLVER_VERSION");
 

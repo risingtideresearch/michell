@@ -5,13 +5,15 @@
 //! splines at their own stations.
 
 mod wigley {
-    use crate::bspline::BSplineSurface;
+    use crate::hull::FromHull;
     use crate::hull::Hull;
     use crate::hulls;
-    use crate::sectional::{self, DepthQuadrature, SectionalHull};
+    use crate::sectional;
     use crate::{Conditions, Placement, ViscousOptions, WaveOptions};
+    use michell_geometry::bspline::BSplineSurface;
+    use michell_geometry::sectional::{DepthQuadrature, SectionalHull};
 
-    const G: f64 = crate::STANDARD_GRAVITY;
+    const G: f64 = michell_geometry::STANDARD_GRAVITY;
 
     /// The sectional hull cut from a B-spline one at its own Greville stations:
     /// exact up to the depth quadrature.
@@ -564,11 +566,14 @@ mod wigley {
 /// Transom detection (does the half-breadth close at the aft end, and if
 /// not, how much of a transom is it?) and the virtual-appendage closure.
 mod transom {
-    use crate::bspline::BSplineSurface;
+    use crate::hull::FromHull;
     use crate::hull::Hull;
     use crate::hulls;
-    use crate::sectional::{self, DepthQuadrature, SectionalHull};
+    use crate::sectional;
+    use crate::SectionalWave;
     use crate::{Conditions, Placement, TransomClosure, WaveOptions};
+    use michell_geometry::bspline::BSplineSurface;
+    use michell_geometry::sectional::{DepthQuadrature, SectionalHull};
 
     /// A wedge closing linearly toward the bow: `f = A (1 − x/L)(1 − z/T)`, so the
     /// aft section is the full `f_T(z) = A(1 − z/T)` and every quantity the

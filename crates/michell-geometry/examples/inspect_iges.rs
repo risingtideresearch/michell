@@ -7,7 +7,7 @@ fn main() {
         .nth(1)
         .expect("usage: inspect_iges <file.igs>");
     let text = std::fs::read_to_string(&path).expect("read file");
-    let file = michell::iges::parse(&text).expect("parse");
+    let file = michell_geometry::iges::parse(&text).expect("parse");
     println!("units scale: {}", file.units_scale);
     println!("entities: {:?}", file.entity_counts);
     println!("surfaces: {}", file.surfaces.len());

@@ -172,6 +172,7 @@ impl CaseParams {
             span: self.span,
             warm,
             hold: None,
+            seakeeping: None,
         }
     }
 

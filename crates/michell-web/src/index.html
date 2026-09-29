@@ -96,18 +96,36 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     pointer-events: none; display: none;
   }
-  #plot { position: absolute; left: 12px; bottom: 12px; width: min(580px, calc(100% - 260px));
+  #plot, #skplot { position: absolute; left: 12px; bottom: 12px; width: min(580px, calc(100% - 260px));
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 6px;
     font-size: 11px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-  #plot .head { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-  #plot .head label { flex-direction: row; align-items: center; gap: 6px; margin-left: auto; }
-  #plot .head select { padding: 2px 5px; font-size: 12px; }
-  #plot .x { border: 0; background: none; font-size: 15px; color: var(--muted); padding: 0 2px; }
-  #plot svg { width: 100%; height: auto; display: block; margin-top: 4px; }
-  #plot svg text { font: 10px system-ui, sans-serif; fill: var(--muted); }
-  #plot svg .pt { cursor: pointer; }
-  #plot .key { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
-  #plot .empty { fill: var(--muted); font-size: 12px; }
+  #plot .head, #skplot .head { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  #plot .head label, #skplot .head label { flex-direction: row; align-items: center; gap: 6px; margin-left: auto; }
+  #plot .head select, #skplot .head select { padding: 2px 5px; font-size: 12px; }
+  #plot .x, #skplot .x { border: 0; background: none; font-size: 15px; color: var(--muted); padding: 0 2px; }
+  #plot svg, #skplot svg { width: 100%; height: auto; display: block; margin-top: 4px; }
+  #plot svg text, #skplot svg text { font: 10px system-ui, sans-serif; fill: var(--muted); }
+  #plot svg .pt, #skplot svg .pt { cursor: pointer; }
+  #plot .key, #skplot .key { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
+  #plot .empty, #skplot .empty { fill: var(--muted); font-size: 12px; }
+  #skplot .head { flex-wrap: wrap; row-gap: 4px; }
+  #skplot .head b { flex: 1 0 100%; order: -2; }
+  #skplot .head .x { order: -1; position: absolute; right: 8px; top: 4px; }
+  #skplot .head label { margin-left: 0; white-space: nowrap; }
+  #skplot .key span[data-id] { cursor: pointer; }
+  #skplot .note { color: var(--muted); margin-top: 3px; }
+  #skopts { margin-top: 8px; }
+  #skplot .anim { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 4px; font-size: 12px; }
+  #skplot .anim label { display: flex; flex-direction: row; align-items: center; gap: 5px; white-space: nowrap; }
+  #skplot .anim select, #skplot .anim input { padding: 2px 5px; font-size: 12px; }
+  #skplot .anim input { width: 64px; }
+  #skplot .anim button { padding: 2px 10px; font-size: 12px; }
+  #skplot .anim button.on { background: var(--accent, #1f6feb); color: #fff; border-color: transparent; }
+  #skaread { color: var(--muted); font-variant-numeric: tabular-nums; flex-basis: 100%; }
+  #sksvg circle.pick { cursor: pointer; }
+  .sktable { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .sktable th, .sktable td { text-align: right; padding: 2px 4px; border-bottom: 1px solid var(--line); }
+  .sktable th:first-child, .sktable td:first-child { text-align: left; }
   #area { position: absolute; left: 12px; bottom: 12px; width: min(620px, calc(100% - 24px));
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 4px;
     font-size: 11px; display: none; }
@@ -234,6 +252,42 @@
         </select>
       </label>
     </div>
+    <label style="display:flex;flex-direction:row;align-items:center;gap:6px;margin-bottom:6px">
+      <input type="checkbox" id="skon"> Also compute seakeeping in waves (strip theory)
+    </label>
+    <div id="skopts" class="fields" hidden style="margin-bottom:10px">
+      <label>Heading(s) [°]
+        <input id="skhead" type="text" placeholder="180 (head seas)">
+      </label>
+      <label>Wavelengths λ/L
+        <input id="sklam" type="text" placeholder="0.5:3:0.125">
+      </label>
+      <label>VCG above WL [m]
+        <input id="skvcg" type="text" placeholder="0">
+      </label>
+      <label>Roll damping [of critical]
+        <input id="skdamp" type="text" placeholder="0">
+      </label>
+      <label><span>Pitch k<sub>yy</sub> [of L]</span>
+        <input id="skkyy" type="text" placeholder="0.25">
+      </label>
+      <label><span>Roll k<sub>xx</sub> [m]</span>
+        <input id="skkxx" type="text" placeholder="auto">
+      </label>
+      <label><span>Yaw k<sub>zz</sub> [m]</span>
+        <input id="skkzz" type="text" placeholder="auto">
+      </label>
+      <label><span>Sea H<sub>s</sub> [m]</span>
+        <input id="skhs" type="text" placeholder="none">
+      </label>
+      <label><span>Sea T<sub>p</sub> [s]</span>
+        <input id="sktp" type="text" placeholder="—">
+      </label>
+      <label>JONSWAP γ
+        <input id="skgamma" type="text" placeholder="Bretschneider">
+      </label>
+    </div>
+    <p class="hint" id="skhint" hidden>Each case also gets its motions in regular waves at every heading and wavelength listed (180° head seas, 90° beam, 0° following), at the case's load and attitude, and — with H<sub>s</sub> and T<sub>p</sub> — its statistics in that irregular sea. About 7 s per heading for the default 21 wavelengths, as much again for a sea state; oblique headings take longer. Roll: 0.35 of the beam plus the hulls' spread by default; potential flow barely damps a monohull's roll, so give a few percent of critical.</p>
     <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>); every combination becomes a case. A span doubles the hull into a catamaran with its demihulls' centreplanes that far apart. Cases run one at a time; click a finished one to view it.</p>
     <div style="display:flex;gap:8px">
       <button class="primary" id="flowgo" disabled style="flex:1">Add cases</button>
@@ -288,6 +342,43 @@
     </div>
     <svg id="plotsvg" viewBox="0 0 560 250"></svg>
     <div class="key" id="plotkey"></div>
+  </div>
+  <div id="skplot" hidden>
+    <div class="head">
+      <b id="sktitle">Response in waves</b>
+      <label>
+        <select id="skq">
+          <option value="heave">Heave</option>
+          <option value="pitch">Pitch</option>
+          <option value="roll">Roll</option>
+          <option value="sway">Sway</option>
+          <option value="yaw">Yaw</option>
+          <option value="raw">Added resistance</option>
+        </select>
+      </label>
+      <label>at
+        <select id="skh"></select>
+      </label>
+      <label>against
+        <select id="skx">
+          <option value="lambda">λ/L</option>
+          <option value="lambda_m">λ [m]</option>
+          <option value="omega_e">ω_e [rad/s]</option>
+        </select>
+      </label>
+      <label title="overlay every finished case that has seakeeping"><input type="checkbox" id="skall" checked> all cases</label>
+      <button class="x" id="skclose" title="close">×</button>
+    </div>
+    <svg id="sksvg" viewBox="0 0 560 250"></svg>
+    <div class="key" id="skkey"></div>
+    <div class="anim">
+      <button id="skanim" title="Animate the viewed case in a regular wave at this heading">▶ Animate</button>
+      <label>λ/L <select id="skalam"></select></label>
+      <label>wave height [m] <input id="skaheight" type="text" placeholder="λ/30"></label>
+      <label>speed <select id="skarate"><option value="1">1×</option><option value="0.5">½×</option><option value="0.25">¼×</option></select></label>
+      <span id="skaread"></span>
+    </div>
+    <div class="note" id="sknote"></div>
   </div>
   <div id="area">
     <div class="key"><span>What the kernel integrates along x: each station's depth integral Z(x; κ) (dots), its interpolant (line), and the closure's Z_T·φ(s) over the hollow (dashed), each scaled to its peak</span></div>
@@ -495,6 +586,8 @@ function addCases() {
   if (spans.some((s) => s != null && !(s > 0))) { $("flowout").innerHTML = `<div class="note">Spans must be positive</div>`; return; }
   if (spans.some((s) => s != null) && hulls.length !== 1) { $("flowout").innerHTML = `<div class="note">A catamaran doubles a single hull; this file holds ${hulls.length}</div>`; return; }
   if (masses.some((m) => m != null && !(m > 0))) { $("flowout").innerHTML = `<div class="note">Masses must be positive</div>`; return; }
+  let sk;
+  try { sk = skParams(); } catch (e) { $("flowout").innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
   const n = fns.length * masses.length * lcgs.length * spans.length;
   if (n > 100) { $("flowout").innerHTML = `<div class="note">That is ${n} cases; add at most 100 at a time</div>`; return; }
   // A fast span sweep: the spans of each (speed, load) share one request,
@@ -504,7 +597,7 @@ function addCases() {
     const group = fast ? nextGroup++ : null;
     for (const span of spans) {
       cases.push({ id: nextCase++, froude: toFroude(value, unit), value, unit, mass, lcg, span, group,
-        massBy: mass == null ? "sinking" : $("massby").value, status: "queued", data: null, error: null });
+        massBy: mass == null ? "sinking" : $("massby").value, sk, status: "queued", data: null, error: null });
     }
   }
   renderCases();
@@ -512,6 +605,38 @@ function addCases() {
   pump();
 }
 $("flowgo").onclick = addCases;
+$("skon").onchange = () => { $("skopts").hidden = $("skhint").hidden = !$("skon").checked; };
+
+// The seakeeping query keys for new cases (null when off), checked here so a
+// typo shows before any case runs.
+function skParams() {
+  if (!$("skon").checked) return null;
+  const q = { sk: "1" };
+  const text = (id, key) => { const v = $(id).value.trim(); if (v) q[key] = v; };
+  const num = (id, key, what) => {
+    const v = $(id).value.trim();
+    if (!v) return null;
+    if (!Number.isFinite(Number(v))) throw new Error(`${what}: cannot read ${JSON.stringify(v)}`);
+    q[key] = v;
+    return Number(v);
+  };
+  text("skhead", "sk_heading");
+  text("sklam", "sk_lambda");
+  num("skvcg", "sk_vcg", "VCG");
+  num("skdamp", "sk_damping", "Roll damping");
+  num("skkyy", "sk_kyy", "k_yy");
+  num("skkxx", "sk_kxx", "k_xx");
+  num("skkzz", "sk_kzz", "k_zz");
+  const hs = num("skhs", "_hs", "H_s"), tp = num("sktp", "_tp", "T_p"), gamma = num("skgamma", "_gamma", "γ");
+  delete q._hs; delete q._tp; delete q._gamma;
+  if ((hs == null) !== (tp == null)) throw new Error("An irregular sea needs both H_s and T_p");
+  if (hs != null) {
+    if (!(hs > 0 && tp > 0)) throw new Error("H_s and T_p must be positive");
+    q.sk_sea = `hs=${hs},tp=${tp}` + (gamma != null ? `,gamma=${gamma}` : "");
+  }
+  return q;
+}
+const setSk = (q, c) => { if (c.sk) for (const [k, v] of Object.entries(c.sk)) q.set(k, v); };
 for (const id of ["cfroude", "mass", "lcg", "span"]) $(id).addEventListener("keydown", (e) => e.key === "Enter" && addCases());
 
 // What makes two cases' attitudes comparable, for warm starts.
@@ -576,6 +701,7 @@ async function runGroup(group) {
   if (c0.mass != null) q.set("mass", String(c0.mass));
   if (c0.lcg != null) q.set("lcg", String(c0.lcg));
   if (c0.massBy !== "sinking") q.set("mass_by", c0.massBy);
+  setSk(q, c0);
   const ctl = new AbortController();
   flowAbort = ctl;
   for (const c of group) { c.status = "running"; c.abort = ctl; }
@@ -617,6 +743,7 @@ async function runCase(c) {
   if (c.lcg != null) q.set("lcg", String(c.lcg));
   if (c.span != null) q.set("span", String(c.span));
   if (c.massBy !== "sinking") q.set("mass_by", c.massBy);
+  setSk(q, c);
   // Start from the nearest finished attitude with the same load: the solver
   // then skips its coarse search.
   {
@@ -650,11 +777,12 @@ function caseLabel(c) {
   const how = { sinking: "", scale: " (scaled xyz)", scale_yz: " (scaled yz)" }[c.massBy];
   const load = c.mass == null && c.lcg == null ? "design load"
     : `${c.mass == null ? "design" : fmt(c.mass, 0) + " kg" + how}${c.lcg == null ? "" : ` at x ${fmt(c.lcg, 2)}`}`;
-  return `${speedText(c)}${c.span == null ? "" : ` · cat span ${fmt(c.span, 2)} m`} · ${load}`;
+  return `${speedText(c)}${c.span == null ? "" : ` · cat span ${fmt(c.span, 2)} m`} · ${load}${c.sk ? " · waves" : ""}`;
 }
 
 function renderCases() {
   drawPlot();
+  drawSkPlot();
   $("cases").innerHTML = cases.map((c) => {
     const f = c.data && c.data.forces;
     const res = f ? `R<sub>t</sub> ${fmt(f.rt, 1)} N · ${fmt(1000 * f.sinkage, 1)} mm · ${fmt(f.trim_deg, 2)}°${f.held ? " · held" : ""}`
@@ -675,7 +803,7 @@ $("cases").addEventListener("click", (e) => {
   if (act === "remove") {
     cases = cases.filter((o) => o !== c);
     c.abort?.abort();
-    if (viewing === c.id) { viewing = null; flowData = null; $("bigrt").hidden = true; scene3d.flow(null); $("flowout").innerHTML = ""; }
+    if (viewing === c.id) { stopAnim(); viewing = null; flowData = null; $("bigrt").hidden = true; scene3d.flow(null); $("flowout").innerHTML = ""; }
     renderCases();
   } else if (act === "retry") {
     c.status = "queued"; c.error = null;
@@ -705,7 +833,7 @@ function seriesKey(c, xk) {
   return JSON.stringify(k);
 }
 const SERIES = ["#1f6feb", "#d6336c", "#2f9e44", "#e8590c", "#7048e8", "#0c8599", "#a61e4d", "#5c940d"];
-$("plotbtn").onclick = () => { $("plot").hidden = !$("plot").hidden; drawPlot(); };
+$("plotbtn").onclick = () => { $("plot").hidden = !$("plot").hidden; $("skplot").hidden = true; drawPlot(); };
 $("plotclose").onclick = () => { $("plot").hidden = true; };
 $("plotx").onchange = drawPlot;
 
@@ -775,12 +903,169 @@ function drawPlot() {
 }
 $("plotsvg").addEventListener("click", (e) => { const id = e.target.dataset && e.target.dataset.id; if (id) view(Number(id)); });
 
+// ---------------------------------------------------------------- waves
+// Response amplitude per unit wave amplitude against wavelength, for the
+// viewed case or overlaid for every finished case with seakeeping.
+const SKQ = {
+  heave: { y: (p) => cabs(p.heave), label: "Heave |η₃|/ζ",
+    note: "Heave: within about 10–15% of Journée's Wigley experiments, resonance included — the most trustworthy comparison." },
+  pitch: { y: (p) => cabs(p.pitch) / p.k, label: "Pitch |η₅|/kζ",
+    note: "Pitch: a rough guide. At speed strip theory's pitch inertia is ~30% low and its damping grows with U² where the tank's does not (Wigley hulls, Fn 0.2–0.4): compare large differences only." },
+  roll: { y: (p) => cabs(p.roll) / p.k, label: "Roll |η₄|/kζ",
+    note: "Roll: section coefficients within ~1–12% of Vugts' experiments, but only potential-flow damping (plus the roll damping set) — a monohull's resonance is overstated. A multihull's roll is mostly its demihulls' heave, and sounder." },
+  sway: { y: (p) => cabs(p.sway), label: "Sway |η₂|/ζ",
+    note: "Sway: checked by long-wave limits, reciprocity and symmetry; the 3-D lateral response has no experimental validation yet." },
+  yaw: { y: (p) => cabs(p.yaw) / p.k, label: "Yaw |η₆|/kζ",
+    note: "Yaw: checked by long-wave limits, reciprocity and symmetry; the 3-D lateral response has no experimental validation yet." },
+  raw: { y: (p) => p.raw_gb, y2: (p) => p.raw_far, label: "Added resistance R<sub>aw</sub>/ζ² [N/m²]",
+    note: "Added resistance: solid Gerritsma–Beukelman (radiated energy), dashed Maruo far field (head and following seas only), shaded between. On Journée's Wigley hulls GB is near the tank at Fn 0.2 and 2–6× high at Fn 0.3–0.4; the far field is within 2× there and about half at Fn 0.2. Treat the band as the uncertainty — neither ranks hulls reliably." },
+};
+const SKX = {
+  lambda: (p) => p.lambda,
+  lambda_m: (p, s) => p.lambda * s.length,
+  omega_e: (p) => p.omega_e,
+};
+const cabs = (z) => Math.hypot(z[0], z[1]);
+$("skclose").onclick = () => { $("skplot").hidden = true; stopAnim(); };
+for (const id of ["skq", "skx", "skall"]) $(id).onchange = drawSkPlot;
+$("skh").onchange = () => { drawSkPlot(); fillAnimLambdas(); if (animOn) animate(); };
+
+function drawSkPlot() {
+  if ($("skplot").hidden) return;
+  queueMicrotask(fillAnimLambdas);
+  const svg = $("sksvg"), key = $("skkey"), q = SKQ[$("skq").value], fx = SKX[$("skx").value];
+  const all = cases.filter((c) => c.status === "done" && c.data.seakeeping);
+  // The heading choices: every heading among those cases.
+  const hs = [...new Set(all.flatMap((c) => c.data.seakeeping.headings.map((h) => h.heading)))].sort((a, b) => b - a);
+  const hsel = $("skh"), keep = hsel.value;
+  const opts = hs.map((h) => `<option value="${h}">${fmt(h, 0)}°${h === 180 ? " (head)" : h === 90 ? " (beam)" : h === 0 ? " (following)" : ""}</option>`).join("");
+  if (hsel.innerHTML !== opts) { hsel.innerHTML = opts; if (hs.map(String).includes(keep)) hsel.value = keep; }
+  const heading = Number(hsel.value);
+  const shown = $("skall").checked ? all : all.filter((c) => c.id === viewing);
+  $("sknote").textContent = q.note;
+  const series = shown.map((c) => {
+    const h = c.data.seakeeping.headings.find((h) => h.heading === heading);
+    if (!h) return null;
+    const pts = h.points.filter((p) => !p.error).map((p) => ({ lambda: p.lambda, x: fx(p, c.data.seakeeping), y: q.y(p), y2: q.y2 ? q.y2(p) : null })).sort((a, b) => a.x - b.x);
+    return pts.length ? { c, pts } : null;
+  }).filter(Boolean);
+  if (!series.length) {
+    svg.innerHTML = `<text class="empty" x="280" y="125" text-anchor="middle">${all.length ? "No case has this heading" : "No finished case with seakeeping yet"}</text>`;
+    key.innerHTML = "";
+    return;
+  }
+  const W = 560, H = 250, L = 48, R = 12, T = 10, B = 28;
+  const xs = series.flatMap((s) => s.pts.map((p) => p.x));
+  const ys = series.flatMap((s) => s.pts.flatMap((p) => [p.y, p.y2].filter((v) => v != null && Number.isFinite(v))));
+  let [x0, x1] = [Math.min(...xs), Math.max(...xs)];
+  let [y0, y1] = [Math.min(0, ...ys), Math.max(...ys, 1e-12)];
+  if (x1 - x0 < 1e-12) { x0 -= 0.5; x1 += 0.5; }
+  y1 *= 1.08;
+  const X = (x) => L + (W - L - R) * (x - x0) / (x1 - x0), Y = (y) => H - B - (H - T - B) * (y - y0) / (y1 - y0);
+  const line = (pts, f) => pts.filter((p) => f(p) != null).map((p) => `${X(p.x).toFixed(1)},${Y(f(p)).toFixed(1)}`).join(" ");
+  let g = "";
+  for (const t of ticks(y0, y1)) g += `<line x1="${L}" x2="${W - R}" y1="${Y(t)}" y2="${Y(t)}" stroke="currentColor" opacity=".12"/><text x="${L - 5}" y="${Y(t) + 3}" text-anchor="end">${t}</text>`;
+  for (const t of ticks(x0, x1)) g += `<line x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${H - B}" stroke="currentColor" opacity=".08"/><text x="${X(t)}" y="${H - B + 13}" text-anchor="middle">${t}</text>`;
+  g += `<text x="${(L + W - R) / 2}" y="${H - 3}" text-anchor="middle">${$("skx").selectedOptions[0].textContent}</text>`;
+  let legend = "";
+  series.forEach((s, i) => {
+    const col = SERIES[i % SERIES.length], on = s.c.id === viewing, w = on ? 2.4 : 1.4;
+    if (q.y2) {
+      const both = s.pts.filter((p) => p.y2 != null);
+      if (both.length > 1) {
+        const band = both.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).concat(both.slice().reverse().map((p) => `${X(p.x).toFixed(1)},${Y(p.y2).toFixed(1)}`)).join(" ");
+        g += `<polygon points="${band}" fill="${col}" opacity=".12"/>`;
+        g += `<polyline fill="none" stroke="${col}" stroke-width="${w}" stroke-dasharray="5 3" points="${line(both, (p) => p.y2)}"/>`;
+      }
+    }
+    g += `<polyline fill="none" stroke="${col}" stroke-width="${w}" points="${line(s.pts, (p) => p.y)}"/>`;
+    const picked = on && animOn ? Number($("skalam").value) : null;
+    for (const p of s.pts) g += `<circle${on ? ` class="pick" data-lam="${p.lambda}"` : ""} cx="${X(p.x).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="${p.lambda === picked ? 5 : on ? 2.5 : 1.8}" fill="${col}"><title>Case ${s.c.id}: ${fmt(p.x, 3)} → ${fmt(p.y, 3)}${p.y2 != null ? ` (far ${fmt(p.y2, 3)})` : ""}${on ? " — click to animate" : ""}</title></circle>`;
+    legend += `<span data-id="${s.c.id}" style="color:${col}${on ? ";font-weight:600" : ""}">— ${s.c.id}. ${esc(caseLabel(s.c))}</span>`;
+  });
+  if (q.y2 && !series.some((s) => s.pts.some((p) => p.y2 != null))) $("sknote").textContent += " The far field is not computed at this heading.";
+  $("sktitle").innerHTML = q.label;
+  svg.innerHTML = g;
+  key.innerHTML = legend;
+}
+$("skkey").addEventListener("click", (e) => { const id = e.target.dataset && e.target.dataset.id; if (id) view(Number(id)); });
+// A point of the viewed case picks the wavelength to animate.
+$("sksvg").addEventListener("click", (e) => {
+  const lam = e.target.dataset && e.target.dataset.lam;
+  if (lam == null) return;
+  $("skalam").value = lam;
+  if (animOn) animate();
+});
+
+// ---------------------------------------------------------------- animation
+// The viewed case in a regular wave: its heading from the plot's, its
+// wavelength from the list (or a clicked point).
+let animOn = false;
+function animPoints() {
+  const s = flowData && flowData.seakeeping;
+  if (!s) return null;
+  const h = s.headings.find((h) => h.heading === Number($("skh").value)) || s.headings[0];
+  return { s, h, pts: h.points.filter((p) => !p.error) };
+}
+function fillAnimLambdas() {
+  const a = animPoints(), sel = $("skalam"), keep = sel.value;
+  const opts = a ? a.pts.map((p) => `<option value="${p.lambda}">${fmt(p.lambda, 3)}</option>`).join("") : "";
+  if (sel.innerHTML !== opts) {
+    sel.innerHTML = opts;
+    if (a && a.pts.some((p) => String(p.lambda) === keep)) sel.value = keep;
+    else if (a && a.pts.length) {
+      // Start where the heave responds most: the interesting part.
+      const best = a.pts.reduce((b, p) => (cabs(p.heave) * (1 + 0.2 * p.lambda) > cabs(b.heave) * (1 + 0.2 * b.lambda) ? p : b));
+      sel.value = String(best.lambda);
+    }
+  }
+  $("skanim").disabled = !a || !a.pts.length;
+}
+function animate() {
+  const a = animPoints();
+  const p = a && a.pts.find((p) => String(p.lambda) === $("skalam").value);
+  if (!p) { stopAnim(); return; }
+  const s = a.s, lam = 2 * Math.PI / p.k;
+  const typed = Number($("skaheight").value);
+  const height = $("skaheight").value.trim() && typed > 0 ? typed : lam / 30;
+  const amp = height / 2;
+  const hs = flowData.hulls;
+  const xs = hs.flatMap((h) => [h.x[0], h.x[h.x.length - 1]]);
+  const ys = hs.flatMap((h) => [h.y - 0.5 * s.beam, h.y + 0.5 * s.beam]);
+  const L = s.length, pad = Math.max(0.6 * L, 1.5 * lam);
+  const extent = [Math.min(...xs) - pad, Math.max(...xs) + pad, Math.min(...ys) - Math.max(0.5 * L, lam), Math.max(...ys) + Math.max(0.5 * L, lam)];
+  scene3d.seaway({ k: p.k, heading: a.h.heading * Math.PI / 180, omega_e: p.omega_e, amp,
+    g: [s.lcg, 0, s.vcg ?? 0], eta: { sway: p.sway, heave: p.heave, roll: p.roll, pitch: p.pitch, yaw: p.yaw },
+    extent, rate: Number($("skarate").value) });
+  animOn = true;
+  $("skanim").textContent = "■ Stop";
+  $("skanim").classList.add("on");
+  const deg = (z) => fmt(amp * cabs(z) * 180 / Math.PI, 2);
+  const lateral = Math.abs(Math.sin(a.h.heading * Math.PI / 180)) > 1e-6
+    ? ` · sway ±${fmt(amp * cabs(p.sway), 3)} m · roll ±${deg(p.roll)}° · yaw ±${deg(p.yaw)}°` : "";
+  $("skaread").textContent = `λ ${fmt(lam, 2)} m · wave height ${fmt(height, 3)} m · encounter period ${fmt(2 * Math.PI / Math.abs(p.omega_e), 2)} s` +
+    ` · heave ±${fmt(amp * cabs(p.heave), 3)} m · pitch ±${deg(p.pitch)}°${lateral}` +
+    (Number($("skarate").value) < 1 ? ` · slowed ${$("skarate").selectedOptions[0].text}` : "");
+  if ($("views").querySelector(".on")?.dataset.view === "wake") pick("iso");
+}
+function stopAnim() {
+  if (animOn) scene3d.seaway(null);
+  animOn = false;
+  $("skanim").textContent = "▶ Animate";
+  $("skanim").classList.remove("on");
+  $("skaread").textContent = "";
+}
+$("skanim").onclick = () => (animOn ? stopAnim() : animate());
+for (const id of ["skalam", "skarate"]) $(id).onchange = () => { if (animOn) animate(); };
+$("skaheight").addEventListener("change", () => { if (animOn) animate(); });
+
 function view(id) {
   const c = cases.find((c) => c.id === id);
   if (!c || !c.data) return;
   if (!flowData) {
     drawArea();
   }
+  stopAnim();
   viewing = id;
   flowData = c.data;
   flowData.case = c;
@@ -851,7 +1136,34 @@ function renderFlow() {
       ? "at the attitude the span sweep solved for its middle span, held (not re-balanced for this span): the dynamic lift shown is what this span would feel there. Resistance and flow are for the hull at that attitude."
       : f.solved
       ? `at the dynamic equilibrium (${f.iterations} Newton iterations); resistance and flow are for the hull at that attitude. Stations, keel and closure layers stay at the design waterline.`
-      : "at the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}</p>`;
+      : "at the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}</p>
+    ${d.seakeeping ? skSummary(d.seakeeping) : ""}`;
+  const b = $("skplotbtn");
+  if (b) b.onclick = () => { $("plot").hidden = true; $("skplot").hidden = false; drawSkPlot(); };
+}
+
+function skSummary(s) {
+  const period = (t) => t == null ? "—" : `${fmt(t, 2)} s`;
+  const seas = s.headings.filter((h) => h.sea);
+  const table = seas.length ? `
+    <table class="sktable">
+      <tr><th>${esc(s.sea.replace(/ \{.*/, ""))}</th><th>heave</th><th>pitch</th><th>bow acc.</th><th>LCG acc.</th><th>R<sub>aw</sub> GB</th><th>far</th></tr>
+      ${seas.map((h) => h.sea.error ? `<tr><td>${fmt(h.heading, 0)}°</td><td colspan="6">${esc(h.sea.error)}</td></tr>` : `<tr>
+        <td>${fmt(h.heading, 0)}°</td><td>${fmt(h.sea.heave, 3)} m</td><td>${fmt(h.sea.pitch_deg, 2)}°</td>
+        <td>${fmt(h.sea.accel_bow, 2)}</td><td>${fmt(h.sea.accel_lcg, 2)}</td>
+        <td>${fmt(h.sea.raw_gb, 1)} N</td><td>${h.sea.raw_far == null ? "—" : fmt(h.sea.raw_far, 1) + " N"}</td></tr>`).join("")}
+    </table>
+    <p class="hint">Significant (1/3-highest) amplitudes; accelerations in m/s²; mean added resistance by radiated energy (GB) and far-field momentum (far, head and following seas only).${seas.some((h) => h.sea.skipped_energy > 0) ? " Part of the sea overtakes the boat and is left out." : ""}</p>` : "";
+  return `
+    <h3 style="margin:14px 0 0;font-size:13px">Seakeeping</h3>
+    <dl style="margin-top:6px">
+      <dt>GM<sub>T</sub></dt><dd>${fmt(s.gm_t, 3)} m (BG ${fmt(s.bg, 3)} m)</dd>
+      <dt>Natural roll period</dt><dd>${period(s.roll_period)}${s.roll_period_dry != null ? ` (${period(s.roll_period_dry)} without added inertia)` : s.gm_t > 0 ? "" : " — unstable"}</dd>
+      <dt>Radii of gyration</dt><dd>k<sub>xx</sub> ${fmt(s.k_xx, 2)} · k<sub>yy</sub> ${fmt(s.k_yy, 2)} · k<sub>zz</sub> ${fmt(s.k_zz, 2)} m</dd>
+      <dt>Headings</dt><dd>${s.headings.map((h) => `${fmt(h.heading, 0)}°`).join(", ")}</dd>
+    </dl>
+    ${table}
+    <button id="skplotbtn" style="width:100%;margin-top:8px">Response plot</button>`;
 }
 
 // Base64 to an ArrayBuffer (the server's little-endian typed arrays).
@@ -923,7 +1235,7 @@ const scene3d = (() => {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves", "seaway"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   // What is shown: the sections before any case, the case's flow after.
@@ -931,7 +1243,7 @@ const scene3d = (() => {
   // the waterline, the cut below it — the cut's layers, relative to the
   // waterline they were cut at, raised by it. The flow view is relative to
   // the solved waterline.
-  const SHOWN = { cut: ["surface", "stations", "geom", "water"], flow: ["hull", "pressure", "waves"] };
+  const SHOWN = { cut: ["surface", "stations", "geom", "water"], flow: ["hull", "pressure", "waves"], sea: ["hull", "seaway"] };
   const CUT_FRAME = ["surface", "stations", "keel", "rays", "closure"];
   let mode = "cut", wlCut = 0, wlNow = 0, geomBounds = null;
   function show(which) {
@@ -1120,6 +1432,7 @@ const scene3d = (() => {
   // height field with the hulls' waterplanes cut out.
   let waveMesh = null;
   function flow(d) {
+    seaway(null);
     clear(layers.pressure); clear(layers.waves); clear(layers.hull);
     probes = []; waveMesh = null;
     const has = !!d;
@@ -1217,6 +1530,116 @@ const scene3d = (() => {
   }
 
 
+  // A regular wave and the hull moving in it: the incident elevation
+  //   ζ = A cos(k((x − x_G) cos β + y sin β) − ω_e t)
+  // in the frame moving with the boat, and each motion A·Re[η̂ e^{−iω_e t}]
+  // about G — sway to port, heave up, roll port side up, pitch bow up, yaw
+  // bow to port — from the case's complex responses (per unit amplitude).
+  // `spec`: { k, heading [rad], omega_e, amp [m], g: [x, y, z], eta:
+  // { sway, heave, roll, pitch, yaw } as [re, im], extent: [x0, x1, y0, y1],
+  // rate }, or null to stop and go back to the flow.
+  // Scene axes are (x, z up, y): P swaps the last two.
+  const SWAP = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+  let sea = null;
+  function seaway(spec) {
+    if (sea) { cancelAnimationFrame(sea.raf); sea = null; }
+    clear(layers.seaway);
+    layers.hull.matrixAutoUpdate = true;
+    layers.hull.position.set(0, 0, 0); layers.hull.rotation.set(0, 0, 0); layers.hull.updateMatrix();
+    if (!spec) {
+      if (mode === "sea") { show("flow"); for (const id of ["lgcp", "lgzeta"]) $(id).style.display = "block"; clipHull(); }
+      return;
+    }
+    show("sea");
+    for (const id of ["lgcp", "lgzeta"]) $(id).style.display = "none";
+    clipHull();
+    const [x0, x1, y0, y1] = spec.extent;
+    // About 16 points a wavelength, within a budget.
+    const lam = 2 * Math.PI / spec.k, step = Math.max(lam / 16, Math.sqrt((x1 - x0) * (y1 - y0) / 60000));
+    const nx = Math.max(2, Math.ceil((x1 - x0) / step) + 1), ny = Math.max(2, Math.ceil((y1 - y0) / step) + 1);
+    const pos = new Float32Array(nx * ny * 3), phase = new Float32Array(nx * ny);
+    const cb = Math.cos(spec.heading), sb = Math.sin(spec.heading);
+    for (let iy = 0; iy < ny; iy++) for (let ix = 0; ix < nx; ix++) {
+      const n = iy * nx + ix, x = x0 + (x1 - x0) * ix / (nx - 1), y = y0 + (y1 - y0) * iy / (ny - 1);
+      pos.set([x, 0, y], 3 * n);
+      phase[n] = spec.k * ((x - spec.g[0]) * cb + y * sb);
+    }
+    const index = new Uint32Array(6 * (nx - 1) * (ny - 1));
+    let m = 0;
+    for (let iy = 0; iy + 1 < ny; iy++) for (let ix = 0; ix + 1 < nx; ix++) {
+      const a = iy * nx + ix, b = a + 1, c = a + nx + 1, e = a + nx;
+      index.set([a, c, b, a, e, c], m); m += 6;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    // Shaded by elevation, troughs dark and crests light: at a real wave's
+    // steepness the lighting alone barely shows it.
+    const col = new Float32Array(nx * ny * 3);
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    geo.setIndex(new THREE.BufferAttribute(index, 1));
+    const water = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.05,
+      transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }));
+    water.renderOrder = 1;
+    layers.seaway.add(water);
+    // Walls down the patch's edges, so side-on views show the wave's
+    // profile (the surface itself is then edge-on): each edge point of the
+    // grid, and below it a point at the walls' depth.
+    const edge = [];
+    for (let ix = 0; ix < nx; ix++) edge.push(ix);
+    for (let iy = 1; iy < ny; iy++) edge.push(iy * nx + nx - 1);
+    for (let ix = nx - 2; ix >= 0; ix--) edge.push((ny - 1) * nx + ix);
+    for (let iy = ny - 2; iy >= 0; iy--) edge.push(iy * nx);
+    const depth = Math.min(0.35 * lam, 0.3 * (x1 - x0));
+    const wpos = new Float32Array(edge.length * 6), widx = [];
+    edge.forEach((n, i) => {
+      wpos.set([pos[3 * n], 0, pos[3 * n + 2], pos[3 * n], -depth, pos[3 * n + 2]], 6 * i);
+      if (i + 1 < edge.length) { const a = 2 * i; widx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    });
+    const wgeo = new THREE.BufferGeometry();
+    wgeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3));
+    wgeo.setIndex(widx);
+    const walls = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x2f74c0, transparent: true, opacity: 0.28,
+      side: THREE.DoubleSide, depthWrite: false }));
+    walls.renderOrder = 1;
+    layers.seaway.add(walls);
+    sea = { spec, geo, phase, t: 0, last: null, raf: 0 };
+    const DARK = [0.09, 0.3, 0.55], LIGHT = [0.62, 0.8, 0.95];
+    const re = (z, c, s) => z[0] * c + z[1] * s; // Re[(a + ib) e^{−iωt}]
+    const R = new THREE.Matrix4(), T = new THREE.Matrix4(), tmp = new THREE.Matrix4();
+    const tick = (now) => {
+      if (!sea || sea.spec !== spec) return;
+      if (sea.last != null) sea.t += Math.min(0.1, (now - sea.last) / 1000) * spec.rate;
+      sea.last = now;
+      const wt = spec.omega_e * sea.t, c = Math.cos(wt), s = Math.sin(wt), A = spec.amp;
+      const attr = geo.attributes.position;
+      const ca = geo.attributes.color.array;
+      for (let n = 0; n < phase.length; n++) {
+        const c1 = Math.cos(phase[n] - wt), u = 0.5 + 0.5 * c1;
+        attr.array[3 * n + 1] = A * c1;
+        for (let j = 0; j < 3; j++) ca[3 * n + j] = DARK[j] + u * (LIGHT[j] - DARK[j]);
+      }
+      attr.needsUpdate = true;
+      geo.attributes.color.needsUpdate = true;
+      geo.computeVertexNormals();
+      const wa = wgeo.attributes.position;
+      edge.forEach((n, i) => { wa.array[6 * i + 1] = attr.array[3 * n + 1]; });
+      wa.needsUpdate = true;
+      const e = spec.eta, [gx, gy, gz] = spec.g;
+      const d = { sway: A * re(e.sway, c, s), heave: A * re(e.heave, c, s), roll: A * re(e.roll, c, s),
+        pitch: A * re(e.pitch, c, s), yaw: A * re(e.yaw, c, s) };
+      // Hull frame (x fwd, y port, z up): about G, then into the scene.
+      R.makeRotationZ(d.yaw).multiply(tmp.makeRotationY(-d.pitch)).multiply(tmp.makeRotationX(d.roll));
+      T.makeTranslation(gx, gy + d.sway, gz + d.heave).multiply(R).multiply(tmp.makeTranslation(-gx, -gy, -gz));
+      layers.hull.matrixAutoUpdate = false;
+      layers.hull.matrix.copy(SWAP).multiply(T).multiply(SWAP);
+      layers.hull.matrixWorldNeedsUpdate = true;
+      controls.update();
+      renderer.render(scene, camera);
+      sea.raf = requestAnimationFrame(tick);
+    };
+    sea.raf = requestAnimationFrame(tick);
+  }
+
   let fitW = 1, fitH = 1;
   function setView(name, keepDir = false) {
     view = name;
@@ -1295,7 +1718,7 @@ const scene3d = (() => {
   renderer.domElement.addEventListener("pointerleave", () => { $("readout3d").style.display = "none"; });
 
 
-  return { load, closure, flow, setView, geometry, setWater, mode: (m) => { show(m); setView(view, true); } };
+  return { load, closure, flow, seaway, setView, geometry, setWater, mode: (m) => { show(m); setView(view, true); } };
 })();
 
 // ---------------------------------------------------------------- area panel

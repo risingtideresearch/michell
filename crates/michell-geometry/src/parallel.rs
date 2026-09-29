@@ -82,7 +82,7 @@ pub fn with_threads<R>(n: usize, f: impl FnOnce() -> R) -> R {
 /// the items independent. Serial when the budget is one or `n` is small; in
 /// either case the per-item arithmetic is exactly that of a plain loop, and
 /// the caller's reduction over the returned `Vec` fixes the summation order.
-pub(crate) fn map_indexed<S, R, I, F>(n: usize, init: I, f: F) -> Vec<R>
+pub fn map_indexed<S, R, I, F>(n: usize, init: I, f: F) -> Vec<R>
 where
     S: Send,
     R: Send,
