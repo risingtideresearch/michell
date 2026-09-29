@@ -44,7 +44,7 @@
   </section>
   <section class="actions">
     <a class="button primary" id="newruns">New runs</a>
-    <a class="button" id="results">Results</a>
+    <a class="button" id="results">Plot</a>
   </section>
   <div id="status"></div>
   <section>
@@ -75,7 +75,7 @@
 import { $, api, configLabel, configName, esc, fmt, lRef, nav, pathId, runLabel, status } from "/static/common.js";
 import { createViewer } from "/static/viewer.js";
 import { lineChart } from "/static/chart.js";
-nav("hulls");
+nav("configs");
 
 const id = pathId();
 const viewer = createViewer($("view"));
@@ -187,7 +187,7 @@ try {
   $("name").placeholder = configLabel(cfg.params);
   $("notes").value = cfg.notes;
   $("newruns").href = `/runs/new?config=${id}`;
-  $("results").href = `/results?config=${id}`;
+  $("results").href = `/plot?config=${id}`;
   renderParams();
   renderRuns().catch((e) => status(e.message, true));
   if (cfg.error) {

@@ -12,11 +12,14 @@ const FILES: &[(&str, &str)] = &[
     ("hulls.html", include_str!("web/hulls.html")),
     ("hull-new.html", include_str!("web/hull-new.html")),
     ("hull.html", include_str!("web/hull.html")),
+    ("configs.html", include_str!("web/configs.html")),
+    ("config-new.html", include_str!("web/config-new.html")),
     ("config.html", include_str!("web/config.html")),
+    ("runs.html", include_str!("web/runs.html")),
     ("runs-new.html", include_str!("web/runs-new.html")),
-    ("queue.html", include_str!("web/queue.html")),
     ("run.html", include_str!("web/run.html")),
-    ("results.html", include_str!("web/results.html")),
+    ("queue.html", include_str!("web/queue.html")),
+    ("plot.html", include_str!("web/plot.html")),
 ];
 
 /// The page a path shows, if any.
@@ -27,11 +30,15 @@ fn page(path: &str) -> Option<&'static str> {
         ["hulls"] => "hulls.html",
         ["hulls", "new"] => "hull-new.html",
         ["hulls", id] if is_id(id) => "hull.html",
+        ["configs"] => "configs.html",
+        ["configs", "new"] => "config-new.html",
         ["configs", id] if is_id(id) => "config.html",
+        ["runs"] => "runs.html",
         ["runs", "new"] => "runs-new.html",
         ["runs", id] if is_id(id) => "run.html",
         ["queue"] => "queue.html",
-        ["results"] => "results.html",
+        // Results was the plot's first name.
+        ["plot"] | ["results"] => "plot.html",
         _ => return None,
     })
 }
@@ -72,7 +79,11 @@ mod tests {
         assert_eq!(page("/runs/new"), Some("runs-new.html"));
         assert_eq!(page("/configs/4"), Some("config.html"));
         assert_eq!(page("/runs/7"), Some("run.html"));
-        assert_eq!(page("/results"), Some("results.html"));
+        assert_eq!(page("/results"), Some("plot.html"));
+        assert_eq!(page("/plot"), Some("plot.html"));
+        assert_eq!(page("/configs"), Some("configs.html"));
+        assert_eq!(page("/configs/new"), Some("config-new.html"));
+        assert_eq!(page("/runs"), Some("runs.html"));
         assert_eq!(page("/queue"), Some("queue.html"));
         assert!(file("/static/viewer.js").is_some());
         assert!(file("/static/../main.rs").is_none());

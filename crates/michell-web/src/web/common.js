@@ -113,10 +113,36 @@ export function runLabel(p, l) {
 
 const TABS = [
   ["hulls", "/hulls", "Hulls"],
-  ["new-runs", "/runs/new", "New runs"],
+  ["configs", "/configs", "Configurations"],
+  ["runs", "/runs", "Runs"],
   ["queue", "/queue", "Queue"],
-  ["results", "/results", "Results"],
+  ["plot", "/plot", "Plot"],
 ];
+
+// A field's values: blank (the fallback), `a`, `a, b, …`, or `a:b:step`.
+export function values(input, fallback) {
+  const t = input.value.trim();
+  if (!t) return [fallback];
+  const out = [];
+  for (const part of t.split(/[,\s]+/).filter(Boolean)) {
+    const r = part.split(":").map(Number);
+    if (r.length === 3 && r.every(Number.isFinite) && r[2] > 0 && r[1] >= r[0]) {
+      for (let k = 0; r[0] + k * r[2] <= r[1] + 1e-9 * Math.abs(r[2]); k++) out.push(+(r[0] + k * r[2]).toPrecision(12));
+    } else if (r.length === 1 && Number.isFinite(r[0])) out.push(r[0]);
+    else throw new Error(`${input.closest("label").firstChild.textContent.trim()}: cannot read “${part}”`);
+  }
+  return out;
+}
+
+// A run's outcome in brief: R_t in calm water, the heave peak in waves.
+export function outcome(r) {
+  const s = r.result?.scalars;
+  if (!s) return "";
+  return r.kind === "calm" ? `R<sub>t</sub> ${fmt(s.rt, 1)} N` : `heave ${fmt(s.heave_peak, 2)} m/m`;
+}
+
+// A status pill; a done run with a stale result says so.
+export const pill = (r) => `<span class="pill ${r.status}${r.stale ? " stale" : ""}">${r.stale && r.status === "done" ? "stale" : r.status}</span>`;
 
 // The top bar: the pages, the queue's length, and who is asking.
 export function nav(on) {

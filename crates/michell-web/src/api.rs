@@ -20,22 +20,23 @@
 //! GET  /api/hulls/:id/file              the uploaded file
 //!
 //! GET  /api/configs?hull=               configurations, with their statics' summary
-//! POST /api/configs                     {"hull", "params": ConfigParams, "name"?, "by"?}
+//! POST /api/configs                     {"hull", "params": ConfigParams, "name"?, "by"?,
+//!                                        "dry_run"?}
 //!                                       → {"id", "created", "config"}; the statics
-//!                                       are computed before it is saved
+//!                                       are computed before it is saved. A dry run
+//!                                       checks it and answers {"params", "existing"}
 //! GET  /api/configs/:id                 one (its statics computed again if stale)
 //! POST /api/configs/:id                 {"name"?, "notes"?}
 //! GET  /api/configs/:id/statics         the whole statics (GZ curve, meshes at rest)
 //!
 //! GET  /api/studies                     every study, with run counts
-//! POST /api/runs                        {"hull", "configs": [{"params", "name"?}..],
-//!                                        "runs": [RunParams..],
+//! POST /api/runs                        {"config_ids": [..], "runs": [RunParams..],
 //!                                        "study"?: {"name", "notes"?} | "study_id"?,
 //!                                        "priority"?, "by"?, "dry_run"?}
 //!                                       every run on every configuration (a run in
 //!                                       waves brings its calm-water run) →
-//!                                       {"study_id", "configs": [..], "runs": [..]};
-//!                                       a dry run saves nothing and says which exist
+//!                                       {"study_id", "runs": [..]}; a dry run
+//!                                       queues nothing and says which exist
 //! GET  /api/runs?hull=&config=&study=&status=a,b&kind=&limit=&sort=finished
 //!                                       runs with their configuration and result
 //! GET  /api/runs/:id                    one run
@@ -166,6 +167,14 @@ pub fn route(
         (Post, ["configs"]) => json_body(body).and_then(|v| {
             let hull = v["hull"].as_i64().ok_or(bad("hull (an id) is required"))?;
             let p = config_params(&v["params"])?;
+            if v["dry_run"].as_bool() == Some(true) {
+                // Checked, and found if it exists; nothing made.
+                check_config(app, hull, &p)?;
+                return Ok(Reply::Json(json!({
+                    "params": p,
+                    "existing": s.find_config(hull, &p).map_err(internal)?,
+                })));
+            }
             let by = by(who, v["by"].as_str().unwrap_or(""));
             let (id, created, _) = make_config(app, hull, &p, v["name"].as_str(), by)?;
             Ok(Reply::Json(json!({
@@ -422,27 +431,29 @@ fn recompute(app: &App, id: i64) -> Result<(), Fail> {
         .map_err(internal)
 }
 
-/// `POST /api/runs`: every run on every configuration, each checked before
-/// anything is made; a run in waves brings the calm-water run it is taken
-/// about (with the grid of a calm run asked for alongside, if any).
+/// `POST /api/runs`: every run on every configuration named (each made
+/// already, its statics computed), all checked before anything is queued; a
+/// run in waves brings the calm-water run it is taken about (with the grid
+/// of a calm run asked for alongside, if any).
 fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
     let s = &app.store;
-    let hull = v["hull"].as_i64().ok_or(bad("hull (an id) is required"))?;
-    if s.hull(hull).map_err(internal)?.is_none() {
-        return Err(missing("hull"));
-    }
-    let configs: Vec<(ConfigParams, Option<String>)> = v["configs"]
+    let configs: Vec<i64> = v["config_ids"]
         .as_array()
         .filter(|a| !a.is_empty())
-        .ok_or(bad("configs: expected a list of configurations"))?
+        .ok_or(bad("config_ids: expected a list of configuration ids"))?
         .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let p = config_params(&c["params"])
-                .map_err(|(_, e)| bad(format!("configuration {}: {e}", i + 1)))?;
-            check_config(app, hull, &p)
-                .map_err(|(k, e)| (k, format!("configuration {}: {e}", i + 1)))?;
-            Ok((p, c["name"].as_str().map(String::from)))
+        .map(|c| {
+            let id = c.as_i64().ok_or(bad(format!("config_ids: bad id {c}")))?;
+            let cfg = s
+                .config(id)
+                .map_err(internal)?
+                .ok_or(missing("configuration"))?;
+            if let Some(e) = cfg["error"].as_str() {
+                return Err(bad(format!(
+                    "configuration #{id} has no statics, so nothing can float on it: {e}"
+                )));
+            }
+            Ok(id)
         })
         .collect::<Result<_, Fail>>()?;
     let asked: Vec<RunParams> = v["runs"]
@@ -487,18 +498,12 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
     }
 
     if v["dry_run"].as_bool() == Some(true) {
-        let mut cs = Vec::new();
         let mut rs = Vec::new();
-        for (i, (p, name)) in configs.iter().enumerate() {
-            let existing = s.find_config(hull, p).map_err(internal)?;
-            cs.push(json!({ "params": p, "name": name, "existing": existing }));
+        for &c in &configs {
             for (r, implied) in &runs {
-                let found = match existing {
-                    Some(c) => s.find_run(c, r).map_err(internal)?,
-                    None => None,
-                };
+                let found = s.find_run(c, r).map_err(internal)?;
                 rs.push(json!({
-                    "config": i,
+                    "config_id": c,
                     "params": r,
                     "kind": r.kind(),
                     "implied": implied,
@@ -508,7 +513,7 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
                 }));
             }
         }
-        return Ok(Reply::Json(json!({ "configs": cs, "runs": rs })));
+        return Ok(Reply::Json(json!({ "runs": rs })));
     }
 
     let by = by(who, v["by"].as_str().unwrap_or(""));
@@ -527,15 +532,8 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
         (Value::Null, id) => id,
         _ => return Err(bad("give study or study_id, not both")),
     };
-    let mut cs = Vec::new();
     let mut rs = Vec::new();
-    for (p, name) in &configs {
-        let (cid, created, error) = make_config(app, hull, p, name.as_deref(), by)?;
-        cs.push(json!({ "id": cid, "created": created, "error": error }));
-        if error.is_some() {
-            // No statics: nothing can be floated on it.
-            continue;
-        }
+    for &cid in &configs {
         for (r, implied) in &runs {
             let (rid, created) = s
                 .add_run(
@@ -550,7 +548,5 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
         }
     }
     app.worker.poke();
-    Ok(Reply::Json(
-        json!({ "study_id": study_id, "configs": cs, "runs": rs }),
-    ))
+    Ok(Reply::Json(json!({ "study_id": study_id, "runs": rs })))
 }

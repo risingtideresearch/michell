@@ -107,7 +107,13 @@ impl Worker {
                     .unwrap_or_else(|| "unknown".into());
                 Err(format!("the solver panicked: {what}"))
             });
-        *self.lock() = None;
+        // A cancel that came after the last progress report (the resistance
+        // integral and the meshes report none) still stands.
+        let cancelled = self.lock().take().is_some_and(|r| r.cancel);
+        let outcome = match outcome {
+            Ok(_) if cancelled => Err(CANCELLED.to_string()),
+            o => o,
+        };
         let secs = t0.elapsed().as_secs_f64();
         match outcome {
             Ok(result) => {

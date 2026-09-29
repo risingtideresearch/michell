@@ -33,7 +33,7 @@
     <div class="saved" id="saved"></div>
   </section>
   <section class="actions">
-    <a class="button primary" id="newcases">New runs</a>
+    <a class="button primary" id="newcases">New configuration</a>
     <a class="button" id="reimport" title="Cut the same file another way, as a new hull">Re-import</a>
     <a class="button" id="download">Download file</a>
   </section>
@@ -85,7 +85,7 @@ async function renderConfigs() {
   const configs = await api(`/api/configs?hull=${id}`);
   $("casecount").textContent = configs.length ? `· ${configs.length}` : "";
   if (!configs.length) {
-    $("cases").innerHTML = `<p class="hint">No configurations yet. <a href="/runs/new?hull=${id}">Ask for runs</a> to make one.</p>`;
+    $("cases").innerHTML = `<p class="hint">No configurations yet. <a href="/configs/new?hull=${id}">Make one</a>.</p>`;
     return;
   }
   $("cases").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Configuration</th><th class="num">GM<sub>T</sub> [m]</th><th class="num">Runs</th></tr></thead><tbody>
@@ -126,7 +126,7 @@ try {
   document.title = `${hull.name} · michell`;
   $("name").value = hull.name;
   $("notes").value = hull.notes;
-  $("newcases").href = `/runs/new?hull=${id}`;
+  $("newcases").href = `/configs/new?hull=${id}`;
   $("reimport").href = `/hulls/new?from=${id}`;
   $("download").href = `/api/hulls/${id}/file`;
   $("download").download = hull.file_name;

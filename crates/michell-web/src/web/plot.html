@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Results · michell</title>
+<title>Plot · michell</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -20,7 +20,7 @@
 <body>
 <div class="page"><div class="inner">
   <div class="head">
-    <h1>Results</h1>
+    <h1>Plot</h1>
     <span class="counts" id="counts"></span>
     <span class="grow"></span>
     <button id="csv">Download CSV</button>
@@ -48,7 +48,7 @@
 <script type="module">
 import { $, KN, api, configName, esc, fmt, headingText, lRef, nav, runLabel, status } from "/static/common.js";
 import { lineChart, slot } from "/static/chart.js";
-nav("results");
+nav("plot");
 
 // What can be plotted, per kind: each a label and how to read it off a run.
 const Y = {
@@ -154,7 +154,7 @@ function draw() {
   const q = new URLSearchParams();
   for (const k of ["hull", "config", "study", "kind", "heading", "y", "x"]) if ($(k).value) q.set(k, $(k).value);
   if (!$("stale").checked) q.set("stale", "0");
-  history.replaceState(null, "", `/results?${q}`);
+  history.replaceState(null, "", `/plot?${q}`);
 }
 
 function columns(kind) {
