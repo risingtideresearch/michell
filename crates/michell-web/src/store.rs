@@ -441,8 +441,27 @@ impl Store {
         Ok((id, created))
     }
 
-    /// Cases matching the filters (each optional), newest first, each with
-    /// its results' scalars.
+    /// The case already asked for on `hull_id` with these parameters, if
+    /// any: its id, status, and whether its results are stale.
+    pub fn find_case(
+        &self,
+        hull_id: i64,
+        params: &CaseParams,
+    ) -> Result<Option<(i64, String, bool)>, String> {
+        self.db()
+            .query_row(
+                "SELECT c.id, c.status, EXISTS (SELECT 1 FROM results r
+                         WHERE r.case_id = c.id AND r.solver_version != ?3)
+                 FROM cases c WHERE c.hull_id = ?1 AND c.params_hash = ?2",
+                params![hull_id, params.hash(), SOLVER_VERSION],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .map_err(err)
+    }
+
+    /// Cases matching the filters (each optional), newest first — or most
+    /// recently finished first — each with its results' scalars.
     pub fn cases(&self, f: &CaseFilter) -> Result<Vec<Value>, String> {
         let db = self.db();
         let mut q = db
@@ -450,13 +469,19 @@ impl Store {
                 "SELECT {CASE_COLS} FROM cases c
                  WHERE (?1 IS NULL OR c.hull_id = ?1)
                    AND (?2 IS NULL OR c.id IN (SELECT case_id FROM study_cases WHERE study_id = ?2))
-                   AND (?3 IS NULL OR c.status = ?3)
-                 ORDER BY c.id DESC LIMIT ?4"
+                   AND (?3 IS NULL OR instr(',' || ?3 || ',', ',' || c.status || ',') > 0)
+                 ORDER BY CASE WHEN ?5 THEN c.finished_at END DESC, c.id DESC LIMIT ?4"
             ))
             .map_err(err)?;
         let mut cases: Vec<Value> = q
             .query_map(
-                params![f.hull, f.study, f.status, f.limit.unwrap_or(10_000)],
+                params![
+                    f.hull,
+                    f.study,
+                    f.status,
+                    f.limit.unwrap_or(10_000),
+                    f.by_finish
+                ],
                 case_row,
             )
             .map_err(err)?
@@ -512,8 +537,14 @@ impl Store {
                  ORDER BY c.status = 'running' DESC, c.priority DESC, c.id"
             ))
             .map_err(err)?;
-        let rows = q.query_map([], case_row).map_err(err)?;
-        rows.collect::<Result<_, _>>().map_err(err)
+        let mut cases: Vec<Value> = q
+            .query_map([], case_row)
+            .map_err(err)?
+            .collect::<Result<_, _>>()
+            .map_err(err)?;
+        // A requeued case keeps its earlier results until it runs again.
+        attach_results(&db, &mut cases)?;
+        Ok(cases)
     }
 
     /// Counts of cases by status.
@@ -752,8 +783,11 @@ impl Store {
 pub struct CaseFilter {
     pub hull: Option<i64>,
     pub study: Option<i64>,
+    /// One status, or several separated by commas.
     pub status: Option<String>,
     pub limit: Option<i64>,
+    /// Most recently finished first, rather than newest.
+    pub by_finish: bool,
 }
 
 /// What the hull list shows of a cut: per hull, the principal dimensions and
@@ -807,7 +841,8 @@ fn hull_row(r: &Row) -> rusqlite::Result<Value> {
 }
 
 const CASE_COLS: &str = "c.id, c.hull_id, c.kind, c.params, c.status, c.priority, c.requested_by,
-    c.error, c.created_at, c.queued_at, c.started_at, c.finished_at";
+    c.error, c.created_at, c.queued_at, c.started_at, c.finished_at,
+    (SELECT name FROM hulls WHERE id = c.hull_id)";
 
 fn case_row(r: &Row) -> rusqlite::Result<Value> {
     Ok(json!({
@@ -823,6 +858,7 @@ fn case_row(r: &Row) -> rusqlite::Result<Value> {
         "queued_at": r.get::<_, Option<i64>>(9)?,
         "started_at": r.get::<_, Option<i64>>(10)?,
         "finished_at": r.get::<_, Option<i64>>(11)?,
+        "hull_name": r.get::<_, Option<String>>(12)?,
     }))
 }
 

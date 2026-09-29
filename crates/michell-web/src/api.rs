@@ -15,9 +15,11 @@
 //! GET  /api/studies                     every study, with case counts
 //! POST /api/cases                       {"hull", "cases": [CaseParams..],
 //!                                        "study"?: {"name", "notes"?} | "study_id"?,
-//!                                        "priority"?, "by"?}
-//!                                       → {"study_id", "cases": [{"id", "created"}..]}
-//! GET  /api/cases?hull=&study=&status=&limit=
+//!                                        "priority"?, "by"?, "dry_run"?}
+//!                                       → {"study_id", "cases": [{"id", "created"}..]};
+//!                                       a dry run queues nothing and answers
+//!                                       {"cases": [{"params", "kind", "existing"}..]}
+//! GET  /api/cases?hull=&study=&status=a,b&limit=&sort=finished
 //!                                       cases with their results' scalars
 //! GET  /api/cases/:id                   one case
 //! GET  /api/cases/:id/results/:idx      that result's whole answer (fields and all)
@@ -126,6 +128,7 @@ pub fn route(
                 study: opt_id("study")?,
                 status: get("status").map(String::from),
                 limit: opt_id("limit")?,
+                by_finish: get("sort") == Some("finished"),
             };
             s.cases(&f).map(|v| Reply::Json(json!(v))).map_err(internal)
         })(),
@@ -262,6 +265,46 @@ fn add_cases(app: &App, v: &Value) -> Result<Reply, Fail> {
                 .map_err(|e| bad(format!("case {}: {e}", i + 1)))
         })
         .collect::<Result<_, _>>()?;
+    // A catamaran doubles one hull, its demihulls clear of each other.
+    let summary = s.hull(hull).map_err(internal)?.unwrap_or_default()["summary"].clone();
+    let hulls_in_file = summary["hulls"].as_array().map_or(0, Vec::len);
+    let beam = summary["hulls"][0]["beam"].as_f64().unwrap_or(0.0);
+    for (i, c) in cases.iter().enumerate() {
+        let spans: Vec<f64> = c
+            .span
+            .into_iter()
+            .chain(c.spans.iter().flatten().copied())
+            .collect();
+        if spans.is_empty() {
+            continue;
+        }
+        if hulls_in_file != 1 {
+            return Err(bad(format!(
+                "case {}: a catamaran doubles a single hull; this file holds {hulls_in_file}",
+                i + 1
+            )));
+        }
+        if let Some(s) = spans.iter().find(|&&s| s <= beam) {
+            return Err(bad(format!(
+                "case {}: span {s} m: the demihulls overlap (beam {beam:.3} m)",
+                i + 1
+            )));
+        }
+    }
+    if v["dry_run"].as_bool() == Some(true) {
+        let mut out = Vec::new();
+        for c in &cases {
+            let existing = s.find_case(hull, c).map_err(internal)?;
+            out.push(json!({
+                "params": c,
+                "kind": c.kind(),
+                "existing": existing.map(|(id, status, stale)| json!({
+                    "id": id, "status": status, "stale": stale,
+                })),
+            }));
+        }
+        return Ok(Reply::Json(json!({ "cases": out })));
+    }
     let by = v["by"].as_str().unwrap_or("").trim();
     let priority = v["priority"].as_i64().unwrap_or(0);
     let study_id = match (&v["study"], v["study_id"].as_i64()) {

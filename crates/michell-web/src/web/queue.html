@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Queue · michell</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  section { margin-top: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .running .top { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .running .top b { font-size: 15px; }
+  .running .top .grow { flex: 1; }
+  .running .stage { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-top: 10px; }
+  .running .stage span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .running .track { height: 10px; }
+  .running .detail { font-family: var(--mono); font-size: 12px; color: var(--muted); min-height: 1.3em; }
+  td.what { white-space: normal; min-width: 260px; }
+  td.act { text-align: right; }
+  td.act button { padding: 2px 8px; font-size: 12px; }
+  tr.mine td { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+  #banner:empty { display: none; }
+  #banner { margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="page"><div class="inner">
+  <div class="head">
+    <h1>Queue</h1>
+    <span class="counts" id="counts"></span>
+    <span class="grow"></span>
+    <span class="muted mono" id="version"></span>
+    <button id="stale" hidden title="Put every case with a result from another solver version back on the queue"></button>
+  </div>
+  <div id="banner"></div>
+  <div id="status"></div>
+
+  <section>
+    <h2>Running</h2>
+    <div id="running"></div>
+  </section>
+
+  <section>
+    <h2>Waiting <span class="muted" id="eta" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="waiting"></div>
+  </section>
+
+  <section>
+    <h2>Recently finished</h2>
+    <div id="recent"></div>
+  </section>
+</div></div>
+
+<script type="module">
+import { $, api, caseLabel, esc, fmt, fmtDuration, fmtTime, lRef, nav, status } from "/static/common.js";
+nav("queue");
+
+const study = Number(new URLSearchParams(location.search).get("study")) || null;
+let lengths = new Map(), studyCases = new Set(), typical = null, lastRunning = null;
+
+// Each hull's reference length, for speeds in knots.
+async function loadHulls() {
+  const hs = await api("/api/hulls");
+  lengths = new Map(hs.map((h) => [h.id, lRef(h.summary)]));
+}
+const label = (c) => caseLabel(c.params, lengths.get(c.hull_id));
+const hullLink = (c) => `<a href="/hulls/${c.hull_id}">${esc(c.hull_name ?? `#${c.hull_id}`)}</a>`;
+const mine = (c) => studyCases.has(c.id) ? " mine" : "";
+
+function renderRunning(q) {
+  const r = q.running, c = r && q.cases.find((c) => c.id === r.case_id);
+  if (!r || !c) {
+    $("running").innerHTML = `<div class="card muted">${q.cases.length ? "Starting…" : "Nothing running."}</div>`;
+    return;
+  }
+  const p = r.progress || {};
+  const frac = p.fraction ?? 0;
+  $("running").innerHTML = `<div class="card running${mine(c)}">
+    <div class="top">
+      <b><a href="/cases/${c.id}">#${c.id}</a> · ${hullLink(c)}</b>
+      <span class="what">${esc(label(c))}</span>
+      <span class="grow"></span>
+      <button data-act="cancel" data-id="${c.id}" ${r.cancelling ? "disabled" : ""}>${r.cancelling ? "Stopping…" : "Cancel"}</button>
+    </div>
+    <div class="stage"><b>${p.step ? `${p.step}/${p.steps} · ${esc(p.stage)}` : "Starting"}</b><span>${(100 * frac).toFixed(0)}% · ${fmtDuration(r.seconds)}${typical && frac > 0.05 ? ` · ~${fmtDuration(Math.max(0, r.seconds / frac - r.seconds))} left` : ""}</span></div>
+    <div class="track"><div class="fill" style="width:${(100 * frac).toFixed(1)}%"></div></div>
+    <div class="detail">${esc(p.detail ?? "")}</div>
+    ${c.requested_by ? `<div class="hint">asked for by ${esc(c.requested_by)} ${fmtTime(c.created_at)}</div>` : ""}
+  </div>`;
+}
+
+function renderWaiting(q) {
+  const waiting = q.cases.filter((c) => c.status === "queued");
+  $("eta").textContent = waiting.length && typical ? `· ${waiting.length} case${waiting.length === 1 ? "" : "s"}, about ${fmtDuration(waiting.length * typical)} at ${fmtDuration(typical)} each` : waiting.length ? `· ${waiting.length}` : "";
+  if (!waiting.length) { $("waiting").innerHTML = `<div class="card muted">The queue is empty.</div>`; return; }
+  const top = Math.max(...waiting.map((c) => c.priority));
+  $("waiting").innerHTML = `<div class="tablewrap"><table><thead><tr>
+    <th class="num">Next</th><th class="num">#</th><th>Hull</th><th>Case</th><th>Asked for</th><th class="num">Priority</th><th></th>
+  </tr></thead><tbody>${waiting.map((c, i) => `<tr class="${mine(c)}">
+    <td class="num">${i + 1}</td>
+    <td class="num"><a href="/cases/${c.id}">${c.id}</a></td>
+    <td>${hullLink(c)}</td>
+    <td class="what">${esc(label(c))}${c.stale ? `<span class="sub">re-run: its result is from another solver version</span>` : ""}</td>
+    <td>${fmtTime(c.queued_at ?? c.created_at)}${c.requested_by ? `<span class="sub">${esc(c.requested_by)}</span>` : ""}</td>
+    <td class="num">${c.priority}</td>
+    <td class="act">${i > 0 ? `<button data-act="next" data-id="${c.id}" data-p="${top + 1}" title="Run this one next">Run next</button> ` : ""}<button data-act="cancel" data-id="${c.id}" title="Take it off the queue">Cancel</button></td>
+  </tr>`).join("")}</tbody></table></div>`;
+}
+
+function renderRecent(cases) {
+  // The typical run time, for estimates: the median of recent wall times.
+  const times = cases.filter((c) => c.status === "done" && c.started_at && c.finished_at).map((c) => c.finished_at - c.started_at).sort((a, b) => a - b);
+  typical = times.length ? Math.max(1, times[Math.floor(times.length / 2)]) : null;
+  if (!cases.length) { $("recent").innerHTML = `<div class="card muted">Nothing has run yet.</div>`; return; }
+  $("recent").innerHTML = `<div class="tablewrap"><table><thead><tr>
+    <th>Status</th><th class="num">#</th><th>Hull</th><th>Case</th><th class="num">R<sub>t</sub> [N]</th><th class="num">Took</th><th>Finished</th><th></th>
+  </tr></thead><tbody>${cases.map((c) => {
+    const rs = c.results || [];
+    const rt = rs.length === 1 ? fmt(rs[0].scalars.rt, 1) : rs.length ? `${rs.length} spans` : "";
+    const took = c.started_at && c.finished_at ? fmtDuration(c.finished_at - c.started_at) : "—";
+    const again = c.status !== "done" || c.stale;
+    return `<tr class="${mine(c)}">
+      <td><span class="pill ${c.status}${c.stale ? " stale" : ""}">${c.stale && c.status === "done" ? "stale" : c.status}</span></td>
+      <td class="num"><a href="/cases/${c.id}">${c.id}</a></td>
+      <td>${hullLink(c)}</td>
+      <td class="what">${esc(label(c))}${c.error ? `<span class="sub" style="color:var(--err)">${esc(c.error)}</span>` : ""}</td>
+      <td class="num">${rt}</td>
+      <td class="num">${took}</td>
+      <td>${fmtTime(c.finished_at)}</td>
+      <td class="act">${again ? `<button data-act="requeue" data-id="${c.id}">Run again</button>` : ""}</td>
+    </tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+
+function renderCounts(q) {
+  const k = q.counts;
+  $("counts").innerHTML = [["queued", "waiting"], ["done", "done"], ["failed", "failed"], ["cancelled", "cancelled"]]
+    .filter(([s]) => k[s]).map(([s, w]) => `<span class="pill ${s}">${k[s]} ${w}</span>`).join("");
+  $("version").textContent = `solver ${q.solver_version}`;
+  $("stale").hidden = !k.stale;
+  $("stale").textContent = `Re-run ${k.stale} stale case${k.stale === 1 ? "" : "s"}`;
+}
+
+async function loadRecent() {
+  renderRecent(await api("/api/cases?status=done,failed,cancelled&sort=finished&limit=25"));
+}
+
+async function poll() {
+  const q = await api("/api/queue");
+  // A case finished (or a new one started): the recent list has changed.
+  const now = q.running?.case_id ?? null;
+  if (now !== lastRunning) { lastRunning = now; await loadRecent(); }
+  if (q.cases.some((c) => !lengths.has(c.hull_id))) await loadHulls();
+  renderCounts(q);
+  renderRunning(q);
+  renderWaiting(q);
+  return q;
+}
+
+let timer = null;
+async function loop() {
+  clearTimeout(timer);
+  let busy = false;
+  try { busy = !!(await poll()).running; status(""); } catch (e) { status(e.message, true); }
+  timer = setTimeout(loop, document.hidden ? 10000 : busy ? 1000 : 3000);
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loop(); });
+
+document.body.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]");
+  if (!b) return;
+  const id = Number(b.dataset.id), act = b.dataset.act;
+  b.disabled = true;
+  try {
+    if (act === "cancel") await api(`/api/cases/${id}/cancel`, { method: "POST" });
+    else if (act === "next") await api(`/api/cases/${id}/priority?p=${b.dataset.p}`, { method: "POST" });
+    else if (act === "requeue") await api(`/api/cases/${id}/requeue`, { method: "POST" });
+    await loadRecent();
+    await loop();
+  } catch (err) { status(err.message, true); b.disabled = false; }
+});
+$("stale").onclick = async () => {
+  if (!confirm(`Put ${$("stale").textContent.replace(/^Re-run /, "")} back on the queue, to compute them with solver ${$("version").textContent.replace("solver ", "")}?`)) return;
+  try { await api("/api/requeue_stale", { method: "POST" }); await loop(); } catch (e) { status(e.message, true); }
+};
+
+try {
+  await loadHulls();
+  if (study) {
+    const [studies, cases] = await Promise.all([api("/api/studies"), api(`/api/cases?study=${study}`)]);
+    studyCases = new Set(cases.map((c) => c.id));
+    const s = studies.find((s) => s.id === study);
+    if (s) $("banner").innerHTML = `<div class="note">Study “${esc(s.name)}”: ${s.cases} case${s.cases === 1 ? "" : "s"}, ${s.done} done. Its cases are highlighted. <a href="/results?study=${s.id}">Its results</a></div>`;
+  }
+  await loadRecent();
+} catch (e) { status(e.message, true); }
+loop();
+</script>
+</body>
+</html>

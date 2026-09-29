@@ -11,6 +11,8 @@ const FILES: &[(&str, &str)] = &[
     ("hulls.html", include_str!("web/hulls.html")),
     ("hull-new.html", include_str!("web/hull-new.html")),
     ("hull.html", include_str!("web/hull.html")),
+    ("cases-new.html", include_str!("web/cases-new.html")),
+    ("queue.html", include_str!("web/queue.html")),
 ];
 
 /// The page a path shows, if any.
@@ -21,6 +23,8 @@ fn page(path: &str) -> Option<&'static str> {
         ["hulls"] => "hulls.html",
         ["hulls", "new"] => "hull-new.html",
         ["hulls", id] if is_id(id) => "hull.html",
+        ["cases", "new"] => "cases-new.html",
+        ["queue"] => "queue.html",
         _ => return None,
     })
 }
@@ -58,6 +62,8 @@ mod tests {
         assert_eq!(page("/hulls/new"), Some("hull-new.html"));
         assert_eq!(page("/hulls/12"), Some("hull.html"));
         assert_eq!(page("/hulls/x1"), None);
+        assert_eq!(page("/cases/new"), Some("cases-new.html"));
+        assert_eq!(page("/queue"), Some("queue.html"));
         assert!(file("/static/viewer.js").is_some());
         assert!(file("/static/../main.rs").is_none());
         assert!(file("/static/nope.js").is_none());
