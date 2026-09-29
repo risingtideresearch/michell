@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Configuration · michell</title>
+<title>Case · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <script type="importmap">
@@ -22,9 +22,9 @@
   .split > main.stack { display: grid; grid-template-rows: minmax(260px, 55%) auto; overflow-y: auto; background: var(--bg); }
   #view { position: relative; background: var(--canvas); min-height: 260px; }
   #gzpanel { padding: 14px 18px 24px; }
-  #runs table { font-size: 12px; }
-  #runs th, #runs td { padding: 5px 8px; }
-  #runs td.what { white-space: normal; }
+  #studies table { font-size: 12px; }
+  #studies th, #studies td { padding: 5px 8px; }
+  #studies td.what { white-space: normal; }
   .saved { color: var(--ok); font-size: 12px; }
   .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 12px 0 4px; }
   .fig { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
@@ -37,18 +37,18 @@
 <div class="split">
 <aside>
   <section>
-    <div class="crumbs"><a id="hulllink" href="/hulls">Hull</a> › configuration</div>
-    <input id="name" type="text" aria-label="Name" placeholder="Name this configuration">
+    <div class="crumbs"><a id="hulllink" href="/hulls">Hull</a> › case</div>
+    <input id="name" type="text" aria-label="Name" placeholder="Name this case">
     <textarea id="notes" rows="2" placeholder="Notes" style="margin-top:8px"></textarea>
     <div class="saved" id="saved"></div>
   </section>
   <section class="actions">
-    <a class="button primary" id="newruns">New runs</a>
+    <a class="button primary" id="newruns">New studies</a>
     <a class="button" id="results">Plot</a>
   </section>
   <div id="status"></div>
   <section>
-    <h2>Configuration</h2>
+    <h2>Case</h2>
     <dl id="params"></dl>
   </section>
   <section>
@@ -56,8 +56,8 @@
     <dl id="rest"></dl>
   </section>
   <section>
-    <h2>Runs <span class="muted" id="runcount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
-    <div id="runs"></div>
+    <h2>Studies <span class="muted" id="runcount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="studies"></div>
   </section>
 </aside>
 <main class="stack">
@@ -72,10 +72,10 @@
 </div>
 
 <script type="module">
-import { $, api, configLabel, configName, esc, fmt, lRef, nav, pathId, runLabel, status } from "/static/common.js";
+import { $, api, caseLabel, caseName, esc, fmt, lRef, nav, pathId, studyLabel, status } from "/static/common.js";
 import { createViewer } from "/static/viewer.js";
 import { lineChart } from "/static/chart.js";
-nav("configs");
+nav("cases");
 
 const id = pathId();
 const viewer = createViewer($("view"));
@@ -95,7 +95,7 @@ function renderParams() {
     <dt>k<sub>yy</sub> pitch</dt><dd>${p.kyy == null ? `<span class="muted">${fmt(s.roll?.k_yy, 3)} m (0.25 L)</span>` : `${fmt(p.kyy, 3)} L`}</dd>
     <dt>k<sub>zz</sub> yaw</dt><dd>${p.kzz == null ? `<span class="muted">${fmt(s.roll?.k_zz, 3)} m (default)</span>` : `${fmt(p.kzz, 3)} m`}</dd>
     <dt>Roll damping</dt><dd>${fmt(100 * (p.roll_damping || 0), 1)}% of critical</dd>
-    <dt>Configuration</dt><dd>#${cfg.id}${cfg.stale ? ` <span class="pill stale">stale</span>` : ""}</dd>`;
+    <dt>Case</dt><dd>#${cfg.id}${cfg.stale ? ` <span class="pill stale">stale</span>` : ""}</dd>`;
 }
 
 function renderRest(s) {
@@ -138,36 +138,36 @@ function renderStability(s) {
 }
 
 async function renderRuns() {
-  const runs = await api(`/api/runs?config=${id}`);
+  const studies = await api(`/api/studies?case=${id}`);
   const l = lRef(hull.summary);
-  $("runcount").textContent = runs.length ? `· ${runs.length}` : "";
-  if (!runs.length) {
-    $("runs").innerHTML = `<p class="hint">No runs yet. <a href="/runs/new?config=${id}">Ask for some</a>.</p>`;
+  $("runcount").textContent = studies.length ? `· ${studies.length}` : "";
+  if (!studies.length) {
+    $("studies").innerHTML = `<p class="hint">No studies yet. <a href="/studies/new?case=${id}">Ask for some</a>.</p>`;
     return;
   }
-  $("runs").innerHTML = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Run</th><th class="num">Result</th></tr></thead><tbody>
-    ${runs.map((r) => {
+  $("studies").innerHTML = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Study</th><th class="num">Result</th></tr></thead><tbody>
+    ${studies.map((r) => {
       const sc = r.result?.scalars;
       const res = !sc ? "" : r.kind === "calm" ? `R<sub>t</sub> ${fmt(sc.rt, 1)} N` : `heave ${fmt(sc.heave_peak, 2)}`;
       const st = r.stale && r.status === "done" ? "stale" : r.status;
       return `<tr class="link" data-id="${r.id}">
-        <td><a href="/runs/${r.id}">${r.id}</a></td>
-        <td class="what">${esc(runLabel(r.params, l))}<span class="sub"><span class="pill ${r.status}${r.stale ? " stale" : ""}">${st}</span>${r.error ? ` · ${esc(r.error)}` : ""}</span></td>
+        <td><a href="/studies/${r.id}">${r.id}</a></td>
+        <td class="what">${esc(studyLabel(r.params, l))}<span class="sub"><span class="pill ${r.status}${r.stale ? " stale" : ""}">${st}</span>${r.error ? ` · ${esc(r.error)}` : ""}</span></td>
         <td class="num">${res}</td></tr>`;
     }).join("")}</tbody></table></div>`;
 }
-$("runs").addEventListener("click", (e) => {
+$("studies").addEventListener("click", (e) => {
   if (e.target.closest("a")) return;
   const row = e.target.closest("tr.link");
-  if (row) location.href = `/runs/${row.dataset.id}`;
+  if (row) location.href = `/studies/${row.dataset.id}`;
 });
 
 async function saveText() {
   const name = $("name").value.trim(), notes = $("notes").value.trim();
   if (name === cfg.name && notes === cfg.notes) return;
   try {
-    cfg = await api(`/api/configs/${id}`, { json: { name, notes } });
-    document.title = `${configName(cfg)} · michell`;
+    cfg = await api(`/api/cases/${id}`, { json: { name, notes } });
+    document.title = `${caseName(cfg)} · michell`;
     $("saved").textContent = "saved";
     setTimeout(() => { $("saved").textContent = ""; }, 1500);
   } catch (e) { status(e.message, true); }
@@ -177,24 +177,24 @@ $("name").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.b
 $("notes").addEventListener("change", saveText);
 
 try {
-  if (id == null) throw new Error("no configuration id in the address");
-  cfg = await api(`/api/configs/${id}`);
+  if (id == null) throw new Error("no case id in the address");
+  cfg = await api(`/api/cases/${id}`);
   hull = await api(`/api/hulls/${cfg.hull_id}`);
-  document.title = `${configName(cfg)} · michell`;
+  document.title = `${caseName(cfg)} · michell`;
   $("hulllink").textContent = hull.name;
   $("hulllink").href = `/hulls/${hull.id}`;
   $("name").value = cfg.name;
-  $("name").placeholder = configLabel(cfg.params);
+  $("name").placeholder = caseLabel(cfg.params);
   $("notes").value = cfg.notes;
-  $("newruns").href = `/runs/new?config=${id}`;
-  $("results").href = `/plot?config=${id}`;
+  $("newruns").href = `/studies/new?case=${id}`;
+  $("results").href = `/plot?case=${id}`;
   renderParams();
   renderRuns().catch((e) => status(e.message, true));
   if (cfg.error) {
     status(`Its statics could not be computed: ${cfg.error}`, true);
     viewer.empty("No statics");
   } else {
-    const s = await api(`/api/configs/${id}/statics`);
+    const s = await api(`/api/cases/${id}/statics`);
     renderRest(s);
     renderStability(s);
     // The hull at rest, z up from the water.

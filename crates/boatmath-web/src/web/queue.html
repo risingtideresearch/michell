@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Queue · michell</title>
+<title>Queue · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -53,10 +53,10 @@
 </div></div>
 
 <script type="module">
-import { $, api, configName, esc, fmt, fmtDuration, fmtTime, lRef, nav, runLabel, status } from "/static/common.js";
+import { $, api, caseName, esc, fmt, fmtDuration, fmtTime, lRef, nav, studyLabel, status } from "/static/common.js";
 nav("queue");
 
-// `?highlight=ids`: the runs just asked for, marked out.
+// `?highlight=ids`: the studies just asked for, marked out.
 const highlight = new URLSearchParams(location.search).get("highlight") || "";
 let lengths = new Map(), asked = new Set(highlight.split(",").filter(Boolean).map(Number)), typical = null, lastRunning = null;
 
@@ -65,10 +65,10 @@ async function loadHulls() {
   const hs = await api("/api/hulls");
   lengths = new Map(hs.map((h) => [h.id, lRef(h.summary)]));
 }
-const label = (r) => runLabel(r.params, lengths.get(r.hull_id));
-const where = (r) => `<a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/configs/${r.config_id}">${esc(configName({ name: r.config_name, params: r.config }))}</a>`;
+const label = (r) => studyLabel(r.params, lengths.get(r.hull_id));
+const where = (r) => `<a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/cases/${r.case_id}">${esc(caseName({ name: r.case_name, params: r.case }))}</a>`;
 const mine = (r) => asked.has(r.id) ? " mine" : "";
-// What a finished run is summed up by: R_t in calm water, heave in waves.
+// What a finished study is summed up by: R_t in calm water, heave in waves.
 function outcome(r) {
   const s = r.result?.scalars;
   if (!s) return "";
@@ -76,22 +76,22 @@ function outcome(r) {
 }
 
 function renderRunning(q) {
-  const run = q.running, r = run && q.runs.find((r) => r.id === run.run_id);
-  if (!run || !r) {
-    $("running").innerHTML = `<div class="card muted">${q.runs.length ? "Starting…" : "Nothing running."}</div>`;
+  const study = q.running, r = study && q.studies.find((r) => r.id === study.study_id);
+  if (!study || !r) {
+    $("running").innerHTML = `<div class="card muted">${q.studies.length ? "Starting…" : "Nothing running."}</div>`;
     return;
   }
-  const p = run.progress || {};
+  const p = study.progress || {};
   const frac = p.fraction ?? 0;
   $("running").innerHTML = `<div class="card running${mine(r)}">
     <div class="top">
-      <b><a href="/runs/${r.id}">#${r.id}</a></b>
+      <b><a href="/studies/${r.id}">#${r.id}</a></b>
       <span class="what">${esc(label(r))}</span>
       <span class="grow"></span>
-      <button data-act="cancel" data-id="${r.id}" ${run.cancelling ? "disabled" : ""}>${run.cancelling ? "Stopping…" : "Cancel"}</button>
+      <button data-act="cancel" data-id="${r.id}" ${study.cancelling ? "disabled" : ""}>${study.cancelling ? "Stopping…" : "Cancel"}</button>
     </div>
     <div class="hint">${where(r)}</div>
-    <div class="stage"><b>${p.step ? `${p.step}/${p.steps} · ${esc(p.stage)}` : "Starting"}</b><span>${(100 * frac).toFixed(0)}% · ${fmtDuration(run.seconds)}${frac > 0.05 ? ` · ~${fmtDuration(Math.max(0, run.seconds / frac - run.seconds))} left` : ""}</span></div>
+    <div class="stage"><b>${p.step ? `${p.step}/${p.steps} · ${esc(p.stage)}` : "Starting"}</b><span>${(100 * frac).toFixed(0)}% · ${fmtDuration(study.seconds)}${frac > 0.05 ? ` · ~${fmtDuration(Math.max(0, study.seconds / frac - study.seconds))} left` : ""}</span></div>
     <div class="track"><div class="fill" style="width:${(100 * frac).toFixed(1)}%"></div></div>
     <div class="detail">${esc(p.detail ?? "")}</div>
     ${r.requested_by ? `<div class="hint">asked for by ${esc(r.requested_by)} ${fmtTime(r.created_at)}</div>` : ""}
@@ -99,35 +99,35 @@ function renderRunning(q) {
 }
 
 function renderWaiting(q) {
-  const waiting = q.runs.filter((r) => r.status === "queued");
-  $("eta").textContent = waiting.length && typical ? `· ${waiting.length} run${waiting.length === 1 ? "" : "s"}, about ${fmtDuration(waiting.length * typical)} at ${fmtDuration(typical)} each` : waiting.length ? `· ${waiting.length}` : "";
+  const waiting = q.studies.filter((r) => r.status === "queued");
+  $("eta").textContent = waiting.length && typical ? `· ${waiting.length} study${waiting.length === 1 ? "" : "s"}, about ${fmtDuration(waiting.length * typical)} at ${fmtDuration(typical)} each` : waiting.length ? `· ${waiting.length}` : "";
   if (!waiting.length) { $("waiting").innerHTML = `<div class="card muted">The queue is empty.</div>`; return; }
   const top = Math.max(...waiting.map((r) => r.priority));
   $("waiting").innerHTML = `<div class="tablewrap"><table><thead><tr>
-    <th class="num">Next</th><th class="num">#</th><th>Run</th><th>Asked for</th><th class="num">Priority</th><th></th>
+    <th class="num">Next</th><th class="num">#</th><th>Study</th><th>Asked for</th><th class="num">Priority</th><th></th>
   </tr></thead><tbody>${waiting.map((r, i) => `<tr class="${mine(r)}">
     <td class="num">${i + 1}</td>
-    <td class="num"><a href="/runs/${r.id}">${r.id}</a></td>
-    <td class="what">${esc(label(r))}<span class="sub">${where(r)}${r.kind === "waves" ? " · after its calm-water run" : ""}${r.stale ? " · re-run: its result is from another solver version" : ""}</span></td>
+    <td class="num"><a href="/studies/${r.id}">${r.id}</a></td>
+    <td class="what">${esc(label(r))}<span class="sub">${where(r)}${r.kind === "waves" ? " · after its calm-water study" : ""}${r.stale ? " · re-run: its result is from another solver version" : ""}</span></td>
     <td>${fmtTime(r.queued_at ?? r.created_at)}${r.requested_by ? `<span class="sub">${esc(r.requested_by)}</span>` : ""}</td>
     <td class="num">${r.priority}</td>
     <td class="act">${i > 0 ? `<button data-act="next" data-id="${r.id}" data-p="${top + 1}" title="Run this one next">Run next</button> ` : ""}<button data-act="cancel" data-id="${r.id}" title="Take it off the queue">Cancel</button></td>
   </tr>`).join("")}</tbody></table></div>`;
 }
 
-function renderRecent(runs) {
+function renderRecent(studies) {
   // The typical run time, for estimates: the median of recent wall times.
-  const times = runs.filter((r) => r.status === "done" && r.started_at && r.finished_at).map((r) => r.finished_at - r.started_at).sort((a, b) => a - b);
+  const times = studies.filter((r) => r.status === "done" && r.started_at && r.finished_at).map((r) => r.finished_at - r.started_at).sort((a, b) => a - b);
   typical = times.length ? Math.max(1, times[Math.floor(times.length / 2)]) : null;
-  if (!runs.length) { $("recent").innerHTML = `<div class="card muted">Nothing has run yet.</div>`; return; }
+  if (!studies.length) { $("recent").innerHTML = `<div class="card muted">Nothing has study yet.</div>`; return; }
   $("recent").innerHTML = `<div class="tablewrap"><table><thead><tr>
-    <th>Status</th><th class="num">#</th><th>Run</th><th class="num">Result</th><th class="num">Took</th><th>Finished</th><th></th>
-  </tr></thead><tbody>${runs.map((r) => {
+    <th>Status</th><th class="num">#</th><th>Study</th><th class="num">Result</th><th class="num">Took</th><th>Finished</th><th></th>
+  </tr></thead><tbody>${studies.map((r) => {
     const took = r.started_at && r.finished_at ? fmtDuration(r.finished_at - r.started_at) : "—";
     const again = r.status !== "done" || r.stale;
     return `<tr class="${mine(r)}">
       <td><span class="pill ${r.status}${r.stale ? " stale" : ""}">${r.stale && r.status === "done" ? "stale" : r.status}</span></td>
-      <td class="num"><a href="/runs/${r.id}">${r.id}</a></td>
+      <td class="num"><a href="/studies/${r.id}">${r.id}</a></td>
       <td class="what">${esc(label(r))}<span class="sub">${where(r)}</span>${r.error ? `<span class="sub" style="color:var(--err)">${esc(r.error)}</span>` : ""}</td>
       <td class="num">${outcome(r)}</td>
       <td class="num">${took}</td>
@@ -143,19 +143,19 @@ function renderCounts(q) {
     .filter(([s]) => k[s]).map(([s, w]) => `<span class="pill ${s}">${k[s]} ${w}</span>`).join("");
   $("version").textContent = `solver ${q.solver_version}`;
   $("stale").hidden = !k.stale;
-  $("stale").textContent = `Re-run ${k.stale} stale run${k.stale === 1 ? "" : "s"}`;
+  $("stale").textContent = `Re-run ${k.stale} stale study${k.stale === 1 ? "" : "s"}`;
 }
 
 async function loadRecent() {
-  renderRecent(await api("/api/runs?status=done,failed,cancelled&sort=finished&limit=25"));
+  renderRecent(await api("/api/studies?status=done,failed,cancelled&sort=finished&limit=25"));
 }
 
 async function poll() {
   const q = await api("/api/queue");
-  // A run finished (or a new one started): the recent list has changed.
-  const now = q.running?.run_id ?? null;
+  // A study finished (or a new one started): the recent list has changed.
+  const now = q.running?.study_id ?? null;
   if (now !== lastRunning) { lastRunning = now; await loadRecent(); }
-  if (q.runs.some((r) => !lengths.has(r.hull_id))) await loadHulls();
+  if (q.studies.some((r) => !lengths.has(r.hull_id))) await loadHulls();
   renderCounts(q);
   renderRunning(q);
   renderWaiting(q);
@@ -177,9 +177,9 @@ document.body.addEventListener("click", async (e) => {
   const id = Number(b.dataset.id), act = b.dataset.act;
   b.disabled = true;
   try {
-    if (act === "cancel") await api(`/api/runs/${id}/cancel`, { method: "POST" });
-    else if (act === "next") await api(`/api/runs/${id}/priority?p=${b.dataset.p}`, { method: "POST" });
-    else if (act === "requeue") await api(`/api/runs/${id}/requeue`, { method: "POST" });
+    if (act === "cancel") await api(`/api/studies/${id}/cancel`, { method: "POST" });
+    else if (act === "next") await api(`/api/studies/${id}/priority?p=${b.dataset.p}`, { method: "POST" });
+    else if (act === "requeue") await api(`/api/studies/${id}/requeue`, { method: "POST" });
     await loadRecent();
     await loop();
   } catch (err) { status(err.message, true); b.disabled = false; }
@@ -192,9 +192,9 @@ $("stale").onclick = async () => {
 try {
   await loadHulls();
   if (asked.size) {
-    const runs = await api(`/api/runs?ids=${[...asked].join(",")}`);
-    const done = runs.filter((r) => r.status === "done").length;
-    $("banner").innerHTML = `<div class="note">Asked for ${asked.size} run${asked.size === 1 ? "" : "s"} (${done} done already); they are highlighted. <a href="/runs?ids=${[...asked].join(",")}">List them</a></div>`;
+    const studies = await api(`/api/studies?ids=${[...asked].join(",")}`);
+    const done = studies.filter((r) => r.status === "done").length;
+    $("banner").innerHTML = `<div class="note">Asked for ${asked.size} study${asked.size === 1 ? "" : "s"} (${done} done already); they are highlighted. <a href="/studies?ids=${[...asked].join(",")}">List them</a></div>`;
   }
   await loadRecent();
 } catch (e) { status(e.message, true); }

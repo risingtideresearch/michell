@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Plot · michell</title>
+<title>Plot · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -27,7 +27,7 @@
   </div>
   <div class="filters">
     <label>Hull <select id="hull"><option value="">all hulls</option></select></label>
-    <label>Configuration <select id="config"><option value="">all</option></select></label>
+    <label>Case <select id="case"><option value="">all</option></select></label>
     <label>Water <select id="kind"><option value="calm">calm water</option><option value="waves">waves</option></select></label>
     <label id="headlabel">Heading <select id="heading"><option value="">all</option></select></label>
     <label class="check"><input type="checkbox" id="stale" checked> include stale results</label>
@@ -45,11 +45,11 @@
 </div></div>
 
 <script type="module">
-import { $, KN, api, configName, esc, fmt, headingText, lRef, nav, runLabel, status } from "/static/common.js";
+import { $, KN, api, caseName, esc, fmt, headingText, lRef, nav, studyLabel, status } from "/static/common.js";
 import { lineChart, slot } from "/static/chart.js";
 nav("plot");
 
-// What can be plotted, per kind: each a label and how to read it off a run.
+// What can be plotted, per kind: each a label and how to read it off a study.
 const Y = {
   calm: {
     rt: ["Total resistance R_t [N]", (r) => r.result.scalars.rt],
@@ -74,20 +74,20 @@ const Y = {
     sea_raw_gb: ["Added resistance in the sea [N] (GB)", (r) => r.result.scalars.sea_raw_gb],
   },
 };
-// The x-axes: `config` marks a property of the configuration (so the series
-// are then speeds, not configurations).
+// The x-axes: `case` marks a property of the case (so the series
+// are then speeds, not cases).
 const X = {
   knots: ["Speed [kn]", (r) => r.result.scalars.speed / KN],
   froude: ["Froude number", (r) => r.params.froude],
   speed: ["Speed [m/s]", (r) => r.result.scalars.speed],
-  mass: ["Mass [kg]", (r) => r.result.scalars.mass ?? r.config.mass, true],
-  span: ["Catamaran span [m]", (r) => r.config.span, true],
-  lcg: ["LCG [m]", (r) => r.result.scalars.lcg ?? r.config.lcg, true],
-  vcg: ["VCG above DWL [m]", (r) => r.config.vcg ?? 0, true],
+  mass: ["Mass [kg]", (r) => r.result.scalars.mass ?? r.case.mass, true],
+  span: ["Catamaran span [m]", (r) => r.case.span, true],
+  lcg: ["LCG [m]", (r) => r.result.scalars.lcg ?? r.case.lcg, true],
+  vcg: ["VCG above DWL [m]", (r) => r.case.vcg ?? 0, true],
   heading: ["Heading [°]", (r) => r.params.waves?.heading],
 };
 
-let runs = [], lengths = new Map(), configs = [];
+let studies = [], lengths = new Map(), cases = [];
 const qs = new URLSearchParams(location.search);
 
 function options(sel, entries, keep) {
@@ -103,22 +103,22 @@ function fillAxes() {
   $("headlabel").hidden = kind !== "waves";
 }
 
-// The runs shown: fetched for the server-side filters, then by heading and
+// The studies shown: fetched for the server-side filters, then by heading and
 // staleness here.
 function shown() {
   const h = $("heading").value;
-  return runs.filter((r) => r.result && r.kind === $("kind").value
+  return studies.filter((r) => r.result && r.kind === $("kind").value
     && ($("stale").checked || !r.result.stale)
     && (!h || String(r.params.waves?.heading) === h));
 }
 
 function seriesOf(r, xk) {
   const l = lengths.get(r.hull_id);
-  const byConfig = !X[xk][2];
+  const byCase = !X[xk][2];
   const heading = r.kind === "waves" && xk !== "heading" ? ` · ${headingText(r.params.waves.heading)}` : "";
-  if (byConfig) {
-    const key = `c${r.config_id}${heading}`;
-    return { key, entity: r.config_id * 1000 + (r.params.waves?.heading ?? 0), name: `${configName({ name: r.config_name, params: r.config })}${heading}` };
+  if (byCase) {
+    const key = `c${r.case_id}${heading}`;
+    return { key, entity: r.case_id * 1000 + (r.params.waves?.heading ?? 0), name: `${caseName({ name: r.case_name, params: r.case })}${heading}` };
   }
   const kn = l ? ` (${fmt(r.params.froude * Math.sqrt(9.81 * l) / KN, 1)} kn)` : "";
   return { key: `f${r.params.froude}${heading}`, entity: r.params.froude * 1e6 + (r.params.waves?.heading ?? 0), name: `Fn ${fmt(r.params.froude, 3)}${kn}${heading}` };
@@ -139,19 +139,19 @@ function draw() {
   }
   const all = [...groups.values()].sort((a, b) => a.entity - b.entity);
   const series = all.slice(0, 8).map((g, i) => ({ name: g.name, points: g.points, color: slot(i) }));
-  $("hidden").textContent = all.length > 8 ? `${all.length - 8} more series not drawn: filter by hull or configuration to see them.` : "";
+  $("hidden").textContent = all.length > 8 ? `${all.length - 8} more series not drawn: filter by hull or case to see them.` : "";
   lineChart($("plot"), {
     title: ylab, series,
     x: { label: xlab, fmt: (v) => (+v.toPrecision(4)).toString() },
     y: { label: ylab, fmt: (v) => (+v.toPrecision(3)).toString() },
-    onPick: (id) => { location.href = `/runs/${id}`; },
-    empty: "No finished runs match",
+    onPick: (id) => { location.href = `/studies/${id}`; },
+    empty: "No finished studies match",
     marks: "always",
     height: 320,
   });
   renderTable(rs);
   const q = new URLSearchParams();
-  for (const k of ["hull", "config", "kind", "heading", "y", "x"]) if ($(k).value) q.set(k, $(k).value);
+  for (const k of ["hull", "case", "kind", "heading", "y", "x"]) if ($(k).value) q.set(k, $(k).value);
   if (!$("stale").checked) q.set("stale", "0");
   history.replaceState(null, "", `/plot?${q}`);
 }
@@ -164,16 +164,16 @@ function columns(kind) {
 
 function renderTable(rs) {
   const kind = $("kind").value, cols = columns(kind);
-  $("counts").innerHTML = `<span class="pill done">${rs.length} run${rs.length === 1 ? "" : "s"}</span>${rs.some((r) => r.result.stale) ? `<span class="pill stale">${rs.filter((r) => r.result.stale).length} stale</span>` : ""}`;
+  $("counts").innerHTML = `<span class="pill done">${rs.length} study${rs.length === 1 ? "" : "s"}</span>${rs.some((r) => r.result.stale) ? `<span class="pill stale">${rs.filter((r) => r.result.stale).length} stale</span>` : ""}`;
   if (!rs.length) { $("table").innerHTML = ""; return; }
   $("table").innerHTML = `<div class="tablewrap"><table><thead><tr>
-    <th class="num">#</th><th>Hull › configuration</th><th>Run</th>${cols.map(([h]) => `<th class="num">${esc(h)}</th>`).join("")}
+    <th class="num">#</th><th>Hull › case</th><th>Study</th>${cols.map(([h]) => `<th class="num">${esc(h)}</th>`).join("")}
   </tr></thead><tbody>${rs.map((r) => {
     const s = r.result.scalars;
     return `<tr class="link" data-id="${r.id}">
-      <td class="num"><a href="/runs/${r.id}">${r.id}</a></td>
-      <td class="what"><a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/configs/${r.config_id}">${esc(configName({ name: r.config_name, params: r.config }))}</a></td>
-      <td class="what">${esc(runLabel(r.params, lengths.get(r.hull_id)))}${r.result.stale ? ` <span class="pill stale">stale</span>` : ""}</td>
+      <td class="num"><a href="/studies/${r.id}">${r.id}</a></td>
+      <td class="what"><a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/cases/${r.case_id}">${esc(caseName({ name: r.case_name, params: r.case }))}</a></td>
+      <td class="what">${esc(studyLabel(r.params, lengths.get(r.hull_id)))}${r.result.stale ? ` <span class="pill stale">stale</span>` : ""}</td>
       ${cols.map(([, f]) => `<td class="num">${f(s)}</td>`).join("")}
     </tr>`;
   }).join("")}</tbody></table></div>`;
@@ -181,43 +181,43 @@ function renderTable(rs) {
 $("table").addEventListener("click", (e) => {
   if (e.target.closest("a")) return;
   const row = e.target.closest("tr.link");
-  if (row) location.href = `/runs/${row.dataset.id}`;
+  if (row) location.href = `/studies/${row.dataset.id}`;
 });
 
-// Every scalar of the shown runs, with what they were run on.
+// Every scalar of the shown studies, with what they were run on.
 $("csv").onclick = () => {
   const rs = shown();
   const keys = [...new Set(rs.flatMap((r) => Object.keys(r.result.scalars)))].sort();
   const cfgKeys = ["span", "mass", "mass_by", "lcg", "vcg", "kxx", "kyy", "kzz", "roll_damping"];
-  const head = ["run", "hull", "configuration", "config_name", ...cfgKeys.map((k) => `config_${k}`), "froude", "dynamic", "heading", "stale", "solver_version", ...keys];
+  const head = ["study", "hull", "case", "case_name", ...cfgKeys.map((k) => `case_${k}`), "froude", "dynamic", "heading", "stale", "solver_version", ...keys];
   const cell = (v) => v == null ? "" : typeof v === "string" && /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : String(v);
-  const lines = [head.join(",")].concat(rs.map((r) => [r.id, r.hull_name, r.config_id, r.config_name, ...cfgKeys.map((k) => r.config[k]),
+  const lines = [head.join(",")].concat(rs.map((r) => [r.id, r.hull_name, r.case_id, r.case_name, ...cfgKeys.map((k) => r.case[k]),
     r.params.froude, r.params.dynamic, r.params.waves?.heading, r.result.stale, r.result.solver_version, ...keys.map((k) => r.result.scalars[k])].map(cell).join(",")));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([lines.join("\n") + "\n"], { type: "text/csv" }));
-  a.download = `michell-results-${$("kind").value}.csv`;
+  a.download = `boatmath-results-${$("kind").value}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 };
 
 async function fetchRuns() {
   const q = new URLSearchParams({ status: "done" });
-  for (const k of ["hull", "config", "kind"]) if ($(k).value) q.set(k, $(k).value);
-  runs = await api(`/api/runs?${q}`);
-  const heads = [...new Set(runs.filter((r) => r.kind === "waves").map((r) => r.params.waves.heading))].sort((a, b) => a - b);
+  for (const k of ["hull", "case", "kind"]) if ($(k).value) q.set(k, $(k).value);
+  studies = await api(`/api/studies?${q}`);
+  const heads = [...new Set(studies.filter((r) => r.kind === "waves").map((r) => r.params.waves.heading))].sort((a, b) => a - b);
   options($("heading"), [["", "all"], ...heads.map((h) => [String(h), headingText(h)])], qs.get("heading") ?? $("heading").value);
   draw();
 }
 
-function fillConfigs() {
+function fillCases() {
   const h = Number($("hull").value);
-  const cs = configs.filter((c) => !h || c.hull_id === h);
-  options($("config"), [["", "all"], ...cs.map((c) => [String(c.id), `${c.hull_name} › ${configName(c)}`])], qs.get("config") ?? $("config").value);
+  const cs = cases.filter((c) => !h || c.hull_id === h);
+  options($("case"), [["", "all"], ...cs.map((c) => [String(c.id), `${c.hull_name} › ${caseName(c)}`])], qs.get("case") ?? $("case").value);
 }
 
-for (const k of ["hull", "config", "kind"]) $(k).addEventListener("change", () => {
+for (const k of ["hull", "case", "kind"]) $(k).addEventListener("change", () => {
   qs.delete(k); qs.delete("y"); qs.delete("x");
-  if (k === "hull") { qs.delete("config"); fillConfigs(); }
+  if (k === "hull") { qs.delete("case"); fillCases(); }
   if (k === "kind") fillAxes();
   fetchRuns().catch((e) => status(e.message, true));
 });
@@ -225,16 +225,16 @@ for (const k of ["heading", "y", "x"]) $(k).addEventListener("change", () => { q
 $("stale").addEventListener("change", draw);
 
 try {
-  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/configs")]);
+  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/cases")]);
   lengths = new Map(hulls.map((h) => [h.id, lRef(h.summary)]));
-  configs = cs;
+  cases = cs;
   options($("hull"), [["", "all hulls"], ...hulls.map((h) => [String(h.id), h.name])], qs.get("hull"));
-  // A configuration given alone picks its hull.
-  if (qs.get("config") && !qs.get("hull")) {
-    const c = configs.find((c) => String(c.id) === qs.get("config"));
+  // A case given alone picks its hull.
+  if (qs.get("case") && !qs.get("hull")) {
+    const c = cases.find((c) => String(c.id) === qs.get("case"));
     if (c) $("hull").value = String(c.hull_id);
   }
-  fillConfigs();
+  fillCases();
   if (qs.get("kind")) $("kind").value = qs.get("kind");
   $("stale").checked = qs.get("stale") !== "0";
   fillAxes();

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>New configuration · michell</title>
+<title>New case · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -18,7 +18,7 @@
 <body>
 <div class="split">
 <aside>
-  <h1>New configuration</h1>
+  <h1>New case</h1>
   <section>
     <label>Hull
       <select id="hull"><option value="">Loading…</option></select>
@@ -69,29 +69,29 @@
   </section>
   <section>
     <label>Name
-      <input id="name" type="text" placeholder="for a single configuration">
+      <input id="name" type="text" placeholder="for a single case">
     </label>
-    <p class="hint">Each field takes a value, a list (<code>150, 200</code>) or a range (<code>150:250:25</code>); every combination is a configuration. Its float at rest, GM and GZ curve are computed as it is made, a few seconds each.</p>
-    <button class="primary" id="submit" disabled>Make configuration</button>
+    <p class="hint">Each field takes a value, a list (<code>150, 200</code>) or a range (<code>150:250:25</code>); every combination is a case. Its float at rest, GM and GZ curve are computed as it is made, a few seconds each.</p>
+    <button class="primary" id="submit" disabled>Make case</button>
   </section>
   <div id="status"></div>
 </aside>
 <main class="list">
-  <div class="head"><h1>Configurations to make</h1><span class="grow"></span><span class="counts" id="counts"></span></div>
+  <div class="head"><h1>Cases to make</h1><span class="grow"></span><span class="counts" id="counts"></span></div>
   <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull.</div></div></div>
   <div id="after"></div>
 </main>
 </div>
 
 <script type="module">
-import { $, api, configLabel, esc, fmt, hullDims, nav, status, values, whoami } from "/static/common.js";
-nav("configs");
+import { $, api, caseLabel, esc, fmt, hullDims, nav, status, values, whoami } from "/static/common.js";
+nav("cases");
 
 let hulls = [], hull = null, planned = [], found = [], seq = 0, busy = false;
 const INPUTS = ["span", "mass", "lcg", "massby", "vcg", "kxx", "kyy", "kzz", "damping", "name"];
 const num = (id) => { const t = $(id).value.trim(); return t ? Number(t) : null; };
 
-// Every combination the form asks for, as the server's ConfigParams.
+// Every combination the form asks for, as the server's CaseParams.
 function plan() {
   const spans = values($("span"), null), masses = values($("mass"), null), lcgs = values($("lcg"), null), vcgs = values($("vcg"), null);
   if (masses.some((m) => m != null && !(m > 0))) throw new Error("Masses must be positive");
@@ -108,7 +108,7 @@ function plan() {
     if (vcg != null) p.vcg = vcg;
     out.push(p);
   }
-  if (out.length > 40) throw new Error(`That is ${out.length} configurations; make at most 40 at a time`);
+  if (out.length > 40) throw new Error(`That is ${out.length} cases; make at most 40 at a time`);
   return out;
 }
 
@@ -127,7 +127,7 @@ async function refresh() {
   }
   try {
     found = await Promise.all(planned.map((params) =>
-      api("/api/configs", { json: { hull: hull.id, params, dry_run: true } }).then((r) => ({ ok: true, existing: r.existing }), (e) => ({ ok: false, error: e.message }))));
+      api("/api/cases", { json: { hull: hull.id, params, dry_run: true } }).then((r) => ({ ok: true, existing: r.existing }), (e) => ({ ok: false, error: e.message }))));
   } catch (e) { status(e.message, true); return; }
   if (my !== seq) return;
   render();
@@ -136,17 +136,17 @@ async function refresh() {
 function render(states = []) {
   const fresh = found.filter((f) => f.ok && f.existing == null).length;
   const bad = found.filter((f) => !f.ok).length, have = found.length - fresh - bad;
-  $("preview").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Configuration</th><th>On this hull</th></tr></thead><tbody>${planned.map((p, i) => {
+  $("preview").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Case</th><th>On this hull</th></tr></thead><tbody>${planned.map((p, i) => {
     const f = found[i], st = states[i];
     const tag = st ? st
       : !f.ok ? `<span class="tag err">${esc(f.error)}</span>`
-      : f.existing != null ? `<a class="tag" href="/configs/${f.existing}">#${f.existing}, made already</a>`
+      : f.existing != null ? `<a class="tag" href="/cases/${f.existing}">#${f.existing}, made already</a>`
       : `<span class="tag new">new</span>`;
-    return `<tr><td class="what">${esc(configLabel(p))}</td><td>${tag}</td></tr>`;
+    return `<tr><td class="what">${esc(caseLabel(p))}</td><td>${tag}</td></tr>`;
   }).join("")}</tbody></table></div>`;
   $("counts").innerHTML = [fresh && `<span class="pill queued">${fresh} new</span>`, have && `<span class="pill done">${have} made already</span>`, bad && `<span class="pill failed">${bad} not possible</span>`].filter(Boolean).join("");
   $("submit").disabled = busy || !fresh;
-  $("submit").textContent = fresh ? `Make ${fresh} configuration${fresh === 1 ? "" : "s"}` : "Nothing new to make";
+  $("submit").textContent = fresh ? `Make ${fresh} case${fresh === 1 ? "" : "s"}` : "Nothing new to make";
 }
 
 let timer = null;
@@ -159,7 +159,7 @@ function chooseHull(id) {
   const cat = hull && (hull.summary?.hulls || []).length === 1;
   $("span").disabled = !cat;
   $("span").placeholder = cat ? "blank: the hull on its own" : "this file holds several hulls";
-  history.replaceState(null, "", hull ? `/configs/new?hull=${hull.id}` : "/configs/new");
+  history.replaceState(null, "", hull ? `/cases/new?hull=${hull.id}` : "/cases/new");
   refresh();
 }
 $("hull").addEventListener("change", () => chooseHull(Number($("hull").value)));
@@ -176,12 +176,12 @@ $("submit").onclick = async () => {
     states[i] = `<span class="tag">computing its statics…</span>`;
     render(states);
     try {
-      const r = await api("/api/configs", { json: { hull: hull.id, params: planned[i], name, by: whoami() } });
-      const c = r.config, s = c.statics || {};
+      const r = await api("/api/cases", { json: { hull: hull.id, params: planned[i], name, by: whoami() } });
+      const c = r.case, s = c.statics || {};
       made.push(r.id);
       states[i] = c.error
-        ? `<a class="tag err" href="/configs/${r.id}">#${r.id}: ${esc(c.error)}</a>`
-        : `<a class="tag new" href="/configs/${r.id}">#${r.id} · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m · max GZ ${fmt(s.gz?.max_gz, 2)} m</a>`;
+        ? `<a class="tag err" href="/cases/${r.id}">#${r.id}: ${esc(c.error)}</a>`
+        : `<a class="tag new" href="/cases/${r.id}">#${r.id} · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m · max GZ ${fmt(s.gz?.max_gz, 2)} m</a>`;
     } catch (e) {
       states[i] = `<span class="tag err">${esc(e.message)}</span>`;
     }
@@ -190,8 +190,8 @@ $("submit").onclick = async () => {
   busy = false;
   $("submit").disabled = true;
   $("submit").textContent = "Made";
-  if (made.length === 1 && planned.length === 1) { location.href = `/configs/${made[0]}`; return; }
-  $("after").innerHTML = made.length ? `<p style="margin-top:14px"><a class="button primary" href="/runs/new?configs=${made.join(",")}">New runs on ${made.length === 1 ? "it" : `these ${made.length}`}</a> <a class="button" href="/configs?hull=${hull.id}">All of this hull's configurations</a></p>` : "";
+  if (made.length === 1 && planned.length === 1) { location.href = `/cases/${made[0]}`; return; }
+  $("after").innerHTML = made.length ? `<p style="margin-top:14px"><a class="button primary" href="/studies/new?cases=${made.join(",")}">New studies on ${made.length === 1 ? "it" : `these ${made.length}`}</a> <a class="button" href="/cases?hull=${hull.id}">All of this hull's cases</a></p>` : "";
 };
 
 try {

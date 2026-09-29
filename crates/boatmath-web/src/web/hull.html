@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hull · michell</title>
+<title>Hull · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <script type="importmap">
@@ -33,7 +33,7 @@
     <div class="saved" id="saved"></div>
   </section>
   <section class="actions">
-    <a class="button primary" id="newcases">New configuration</a>
+    <a class="button primary" id="newcases">New case</a>
     <a class="button" id="reimport" title="Cut the same file another way, as a new hull">Re-import</a>
     <a class="button" id="download">Download file</a>
   </section>
@@ -43,7 +43,7 @@
   </section>
   <div id="status"></div>
   <section>
-    <h2>Configurations <span class="muted" id="casecount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <h2>Cases <span class="muted" id="casecount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
     <div id="cases"></div>
   </section>
   <section>
@@ -55,7 +55,7 @@
 </div>
 
 <script type="module">
-import { $, api, configLabel, configName, esc, fmt, fmtTime, hullCards, nav, pathId, status } from "/static/common.js";
+import { $, api, caseLabel, caseName, esc, fmt, fmtTime, hullCards, nav, pathId, status } from "/static/common.js";
 import { createViewer } from "/static/viewer.js";
 nav("hulls");
 
@@ -79,29 +79,29 @@ function renderMeta() {
     <dt>Hull id</dt><dd>#${hull.id}</dd>`;
 }
 
-// This hull's configurations: what each carries, how stable it is at rest,
-// and how many runs it has.
-async function renderConfigs() {
-  const configs = await api(`/api/configs?hull=${id}`);
-  $("casecount").textContent = configs.length ? `· ${configs.length}` : "";
-  if (!configs.length) {
-    $("cases").innerHTML = `<p class="hint">No configurations yet. <a href="/configs/new?hull=${id}">Make one</a>.</p>`;
+// This hull's cases: what each carries, how stable it is at rest,
+// and how many studies it has.
+async function renderCases() {
+  const cases = await api(`/api/cases?hull=${id}`);
+  $("casecount").textContent = cases.length ? `· ${cases.length}` : "";
+  if (!cases.length) {
+    $("cases").innerHTML = `<p class="hint">No cases yet. <a href="/cases/new?hull=${id}">Make one</a>.</p>`;
     return;
   }
-  $("cases").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Configuration</th><th class="num">GM<sub>T</sub> [m]</th><th class="num">Runs</th></tr></thead><tbody>
-    ${configs.map((c) => {
+  $("cases").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Case</th><th class="num">GM<sub>T</sub> [m]</th><th class="num">Studies</th></tr></thead><tbody>
+    ${cases.map((c) => {
       const s = c.statics || {};
-      const runs = Object.values(c.runs || {}).reduce((a, b) => a + b, 0);
+      const studies = Object.values(c.studies || {}).reduce((a, b) => a + b, 0);
       return `<tr class="link" data-id="${c.id}">
-        <td class="what"><a href="/configs/${c.id}">${esc(configName(c))}</a>${c.name ? `<span class="sub">${esc(configLabel(c.params))}</span>` : ""}${c.error ? `<span class="sub" style="color:var(--err)">${esc(c.error)}</span>` : ""}</td>
+        <td class="what"><a href="/cases/${c.id}">${esc(caseName(c))}</a>${c.name ? `<span class="sub">${esc(caseLabel(c.params))}</span>` : ""}${c.error ? `<span class="sub" style="color:var(--err)">${esc(c.error)}</span>` : ""}</td>
         <td class="num">${fmt(s.roll?.gm_t, 3)}</td>
-        <td class="num">${runs}${c.runs?.done ? `<span class="sub">${c.runs.done} done</span>` : ""}</td></tr>`;
+        <td class="num">${studies}${c.studies?.done ? `<span class="sub">${c.studies.done} done</span>` : ""}</td></tr>`;
     }).join("")}</tbody></table></div>`;
 }
 $("cases").addEventListener("click", (e) => {
   if (e.target.closest("a")) return;
   const row = e.target.closest("tr.link");
-  if (row) location.href = `/configs/${row.dataset.id}`;
+  if (row) location.href = `/cases/${row.dataset.id}`;
 });
 
 // Name and notes save when they change.
@@ -126,12 +126,12 @@ try {
   document.title = `${hull.name} · michell`;
   $("name").value = hull.name;
   $("notes").value = hull.notes;
-  $("newcases").href = `/configs/new?hull=${id}`;
+  $("newcases").href = `/cases/new?hull=${id}`;
   $("reimport").href = `/hulls/new?from=${id}`;
   $("download").href = `/api/hulls/${id}/file`;
   $("download").download = hull.file_name;
   renderMeta();
-  renderConfigs().catch((e) => status(e.message, true));
+  renderCases().catch((e) => status(e.message, true));
   const [geometry, sections] = await Promise.all([
     api(`/api/hulls/${id}/geometry`), api(`/api/hulls/${id}/sections`),
   ]);

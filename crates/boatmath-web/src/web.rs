@@ -1,5 +1,5 @@
 //! The pages and their shared scripts, built into the binary. With
-//! `MICHELL_WEB_DIR` set (to `crates/michell-web/src/web`) they are read
+//! `BOATMATH_WEB_DIR` set (to `crates/boatmath-web/src/web`) they are read
 //! from there on every request instead, so a page can be edited without a
 //! rebuild.
 
@@ -12,12 +12,12 @@ const FILES: &[(&str, &str)] = &[
     ("hulls.html", include_str!("web/hulls.html")),
     ("hull-new.html", include_str!("web/hull-new.html")),
     ("hull.html", include_str!("web/hull.html")),
-    ("configs.html", include_str!("web/configs.html")),
-    ("config-new.html", include_str!("web/config-new.html")),
-    ("config.html", include_str!("web/config.html")),
-    ("runs.html", include_str!("web/runs.html")),
-    ("runs-new.html", include_str!("web/runs-new.html")),
-    ("run.html", include_str!("web/run.html")),
+    ("cases.html", include_str!("web/cases.html")),
+    ("case-new.html", include_str!("web/case-new.html")),
+    ("case.html", include_str!("web/case.html")),
+    ("studies.html", include_str!("web/studies.html")),
+    ("studies-new.html", include_str!("web/studies-new.html")),
+    ("study.html", include_str!("web/study.html")),
     ("queue.html", include_str!("web/queue.html")),
     ("plot.html", include_str!("web/plot.html")),
 ];
@@ -30,12 +30,12 @@ fn page(path: &str) -> Option<&'static str> {
         ["hulls"] => "hulls.html",
         ["hulls", "new"] => "hull-new.html",
         ["hulls", id] if is_id(id) => "hull.html",
-        ["configs"] => "configs.html",
-        ["configs", "new"] => "config-new.html",
-        ["configs", id] if is_id(id) => "config.html",
-        ["runs"] => "runs.html",
-        ["runs", "new"] => "runs-new.html",
-        ["runs", id] if is_id(id) => "run.html",
+        ["cases"] => "cases.html",
+        ["cases", "new"] => "case-new.html",
+        ["cases", id] if is_id(id) => "case.html",
+        ["studies"] => "studies.html",
+        ["studies", "new"] => "studies-new.html",
+        ["studies", id] if is_id(id) => "study.html",
         ["queue"] => "queue.html",
         // Results was the plot's first name.
         ["plot"] | ["results"] => "plot.html",
@@ -57,7 +57,7 @@ pub fn file(path: &str) -> Option<(String, &'static str)> {
         _ => return None,
     };
     let built = FILES.iter().find(|(n, _)| *n == name)?.1;
-    if let Ok(dir) = std::env::var("MICHELL_WEB_DIR") {
+    if let Ok(dir) = std::env::var("BOATMATH_WEB_DIR") {
         if let Ok(s) = std::fs::read_to_string(std::path::Path::new(&dir).join(name)) {
             return Some((s, kind));
         }
@@ -76,14 +76,14 @@ mod tests {
         assert_eq!(page("/hulls/new"), Some("hull-new.html"));
         assert_eq!(page("/hulls/12"), Some("hull.html"));
         assert_eq!(page("/hulls/x1"), None);
-        assert_eq!(page("/runs/new"), Some("runs-new.html"));
-        assert_eq!(page("/configs/4"), Some("config.html"));
-        assert_eq!(page("/runs/7"), Some("run.html"));
+        assert_eq!(page("/studies/new"), Some("studies-new.html"));
+        assert_eq!(page("/cases/4"), Some("case.html"));
+        assert_eq!(page("/studies/7"), Some("study.html"));
         assert_eq!(page("/results"), Some("plot.html"));
         assert_eq!(page("/plot"), Some("plot.html"));
-        assert_eq!(page("/configs"), Some("configs.html"));
-        assert_eq!(page("/configs/new"), Some("config-new.html"));
-        assert_eq!(page("/runs"), Some("runs.html"));
+        assert_eq!(page("/cases"), Some("cases.html"));
+        assert_eq!(page("/cases/new"), Some("case-new.html"));
+        assert_eq!(page("/studies"), Some("studies.html"));
         assert_eq!(page("/queue"), Some("queue.html"));
         assert!(file("/static/viewer.js").is_some());
         assert!(file("/static/../main.rs").is_none());

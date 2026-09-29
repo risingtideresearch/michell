@@ -32,10 +32,10 @@ export function b64(s) {
 
 // The name this browser's uploads and requests are labelled with.
 export function whoami() {
-  try { return localStorage.getItem("michell.by") || ""; } catch { return ""; }
+  try { return localStorage.getItem("boatmath.by") || ""; } catch { return ""; }
 }
 function setWhoami(v) {
-  try { localStorage.setItem("michell.by", v); } catch { /* private window */ }
+  try { localStorage.setItem("boatmath.by", v); } catch { /* private window */ }
 }
 
 // A JSON API call: the parsed answer, or an Error with the server's message.
@@ -74,8 +74,8 @@ export const lRef = (summary) => Math.max(0, ...(summary?.hulls || []).map((h) =
 // A Froude number on length `l` as knots.
 export const knots = (fn, l) => fn * Math.sqrt(G * l) / KN;
 
-// A configuration's parameters in words.
-export function configLabel(p) {
+// A case's parameters in words.
+export function caseLabel(p) {
   const how = { sinking: "", scale: " (hull scaled)", scale_yz: " (beam and draft scaled)" }[p.mass_by] ?? "";
   const parts = [
     p.span != null ? `catamaran, span ${fmt(p.span, 2)} m` : "monohull",
@@ -90,8 +90,8 @@ export function configLabel(p) {
   return parts.join(" · ");
 }
 
-// A configuration's name, or its parameters when it has none.
-export const configName = (c) => c.name || configLabel(c.params);
+// A case's name, or its parameters when it has none.
+export const caseName = (c) => c.name || caseLabel(c.params);
 
 // Headings in words: head, bow, beam, quartering, following seas.
 export function headingText(deg) {
@@ -100,9 +100,9 @@ export function headingText(deg) {
   return `${fmt(d, 0)}° ${what} seas`;
 }
 
-// A run's parameters in words; `l` (the reference length) adds the speed
+// A study's parameters in words; `l` (the reference length) adds the speed
 // in knots.
-export function runLabel(p, l) {
+export function studyLabel(p, l) {
   const speed = `Fn ${fmt(p.froude, 3)}${l ? ` (${fmt(knots(p.froude, l), 2)} kn)` : ""}`;
   const c = p.closure || {};
   const closure = c.type === "off" ? "no closure" : c.type === "fixed" ? `hollow ${fmt(c.length, 2)} m` : "";
@@ -113,8 +113,8 @@ export function runLabel(p, l) {
 
 const TABS = [
   ["hulls", "/hulls", "Hulls"],
-  ["configs", "/configs", "Configurations"],
-  ["runs", "/runs", "Runs"],
+  ["cases", "/cases", "Cases"],
+  ["studies", "/studies", "Studies"],
   ["queue", "/queue", "Queue"],
   ["plot", "/plot", "Plot"],
 ];
@@ -134,21 +134,21 @@ export function values(input, fallback) {
   return out;
 }
 
-// A run's outcome in brief: R_t in calm water, the heave peak in waves.
+// A study's outcome in brief: R_t in calm water, the heave peak in waves.
 export function outcome(r) {
   const s = r.result?.scalars;
   if (!s) return "";
   return r.kind === "calm" ? `R<sub>t</sub> ${fmt(s.rt, 1)} N` : `heave ${fmt(s.heave_peak, 2)} m/m`;
 }
 
-// A status pill; a done run with a stale result says so.
+// A status pill; a done study with a stale result says so.
 export const pill = (r) => `<span class="pill ${r.status}${r.stale ? " stale" : ""}">${r.stale && r.status === "done" ? "stale" : r.status}</span>`;
 
 // The top bar: the pages, the queue's length, and who is asking.
 export function nav(on) {
   const bar = document.createElement("nav");
   bar.className = "top";
-  bar.innerHTML = `<a class="brand" href="/hulls">michell</a>`
+  bar.innerHTML = `<a class="brand" href="/hulls">boatmath</a>`
     + TABS.map(([k, href, label]) => `<a class="tab${k === on ? " on" : ""}" href="${href}" data-tab="${k}">${label}${k === "queue" ? `<span class="badge" id="qbadge" hidden></span>` : ""}</a>`).join("")
     + `<label class="who">you <input id="whoami" placeholder="your name" autocomplete="name"></label>`;
   document.body.prepend(bar);
@@ -171,7 +171,7 @@ export function nav(on) {
   async function poll() {
     try {
       const q = await api("/api/queue");
-      const n = q.runs.length;
+      const n = q.studies.length;
       badge.hidden = !n;
       badge.textContent = n;
     } catch { /* offline: leave it */ }

@@ -24,7 +24,7 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
 | `michell-geometry` | IGES/STL import, hulls cut into sections (`SectionalHull`), hydrostatics, hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions` | — |
 | `michell` | thin-ship theory: Michell wave resistance, squat (dynamic sinkage/trim), near field, far-field spectrum, ITTC-57 friction | `michell-geometry` |
 | `michell-seakeeping` | linear strip-theory seakeeping: heave/pitch RAOs, added resistance, irregular seas (see [Seakeeping](#seakeeping)) | `michell-geometry` |
-| `michell-cli`, `michell-web` | front ends | all of the above |
+| `michell-cli`, `boatmath-web` | front ends | all of the above |
 
 The geometry crate knows no flow theory. `michell` hands the equilibrium
 solver its speed-dependent load through `float::DynamicModel`
@@ -764,40 +764,41 @@ in A₃₅, `(U²/ω²)b_A` in B₃₅) that the earlier heave–pitch table lac
 they change e12's heave by about 2% at Fn 0.4 and hulls without a transom
 not at all.
 
-## Web front end
+## Web front end: boatmath
 
-The `michell-web` crate is a browser front end with the physics server-side,
-so it has every core. It keeps a permanent record at three levels and works
-through a queue:
+The `boatmath-web` crate is **boatmath**, a browser front end with the michell
+physics server-side, so it has every core. It keeps a permanent record at three
+levels and works through a queue:
 
 - **Hulls** (`/hulls`): an uploaded IGES or STL file with how it is cut —
   its design waterline, stations and rays, units — shown in 3D with its
   sections and hydrostatics. The same file cut another way is another hull.
-- **Configurations** (`/configs/ID`): a platform on a hull and its load — the
-  hull on its own or doubled into a catamaran at a span, its mass (carried by
-  sinking, or by scaling the hull), LCG, VCG, radii of gyration and roll
-  damping. Its statics are computed when it is made: the float at rest, GM_T
-  and the roll period, and the **GZ curve** (whole sections clipped at each
-  heel, free trim; `michell_geometry::stability`) with its peak, angle of
-  vanishing stability and areas.
-- **Runs** (`/runs/ID`): a speed on a configuration, in **calm water** (the
+- **Cases** (`/cases`): a platform on a hull and its load — the hull on its
+  own or doubled into a catamaran at a span, its mass (carried by sinking, or
+  by scaling the hull), LCG, VCG, radii of gyration and roll damping. Its
+  statics are computed when it is made: the float at rest, GM_T and the roll
+  period, and the **GZ curve** (whole sections clipped at each heel, free
+  trim; `michell_geometry::stability`) with its peak, angle of vanishing
+  stability and areas.
+- **Studies** (`/studies`): a speed on a case, in **calm water** (the
   near-field pressure, the free surface, resistance, sinkage and trim at
   speed) or in **waves** from one heading (responses over a wavelength sweep,
-  added resistance, an optional irregular sea; an animated seaway). A run in
-  waves is taken about the attitude of the calm-water run at its speed, which
-  it waits for.
+  added resistance, an optional irregular sea; an animated seaway). A study in
+  waves is taken about the attitude of the calm-water study at its speed,
+  which it waits for.
 
-**New runs** (`/runs/new`) crosses configurations (values, lists or ranges of
-span, mass, LCG, VCG) with runs (speeds, headings, sea) and says which already
-exist; **Queue** (`/queue`) shows the running run's progress and what waits;
-**Results** (`/results`) filters finished runs, plots any result against any
-parameter and exports CSV. Every result records the solver version it was
-computed with (the last commit to touch the solver's code); one from another
-version is marked stale and can be run again.
+Each list has its **New** page: a new case takes values, lists or ranges of
+span, mass, LCG and VCG (every combination a case); new studies go on cases
+already made (speeds, headings, sea), saying which already exist. **Queue**
+(`/queue`) shows the running study's progress and what waits; **Plot**
+(`/plot`) filters finished studies, plots any result against any parameter
+and exports CSV. Every result records the solver version it was computed with
+(the last commit to touch the solver's code); one from another version is
+marked stale and can be run again.
 
 ```text
-cargo run --release -p michell-web -- --data michell-data   # http://127.0.0.1:8080/
-MICHELL_WEB_DIR=crates/michell-web/src/web michell-web      # pages read from disk, to edit them live
+cargo run --release -p boatmath-web -- --data boatmath-data   # http://127.0.0.1:8080/
+BOATMATH_WEB_DIR=crates/boatmath-web/src/web boatmath-web     # pages read from disk, to edit them live
 ```
 
 `deploy/README.md` has running it as a service behind `tailscale serve`.

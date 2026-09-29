@@ -1,12 +1,12 @@
 [package]
-name = "michell-web"
+name = "boatmath-web"
 version = "0.1.0"
 edition = "2021"
-description = "Web front end for michell: upload a hull file, view the loft"
+description = "boatmath: hulls, cases and a queue of studies, on the michell solvers"
 license = "MIT"
 
 [[bin]]
-name = "michell-web"
+name = "boatmath-web"
 path = "src/main.rs"
 
 [dependencies]

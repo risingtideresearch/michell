@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Run · michell</title>
+<title>Study · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <script type="importmap">
@@ -41,7 +41,7 @@
 <aside>
   <section>
     <div class="crumbs" id="crumbs"></div>
-    <h1 id="title">Run</h1>
+    <h1 id="title">Study</h1>
     <div class="hint" id="sub"></div>
   </section>
   <div id="status"></div>
@@ -57,21 +57,21 @@
 </div>
 
 <script type="module">
-import { $, KN, api, configLabel, configName, esc, fmt, fmtDuration, fmtTime, headingText, lRef, nav, pathId, runLabel, status } from "/static/common.js";
+import { $, KN, api, caseLabel, caseName, esc, fmt, fmtDuration, fmtTime, headingText, lRef, nav, pathId, studyLabel, status } from "/static/common.js";
 import { createViewer } from "/static/viewer.js";
 import { lineChart } from "/static/chart.js";
-nav("runs");
+nav("studies");
 
 const id = pathId();
 const viewer = createViewer($("view"));
 viewer.empty("Loading…");
-let run, hull, data;
+let study, hull, data;
 const cabs = (z) => Math.hypot(z[0], z[1]);
 const G = 9.81;
 
 // ---------------------------------------------------------------- state
 function renderState() {
-  const r = run, res = r.result;
+  const r = study, res = r.result;
   const again = r.status !== "queued" && r.status !== "running";
   $("state").innerHTML = `
     <div class="actions">
@@ -82,33 +82,33 @@ function renderState() {
     </div>
     ${r.error ? `<div class="error" style="margin-top:8px">${esc(r.error)}</div>` : ""}
     <div id="progress"></div>`;
-  $("cancel")?.addEventListener("click", async () => { await api(`/api/runs/${id}/cancel`, { method: "POST" }); load(); });
-  $("requeue")?.addEventListener("click", async () => { await api(`/api/runs/${id}/requeue`, { method: "POST" }); load(); });
+  $("cancel")?.addEventListener("click", async () => { await api(`/api/studies/${id}/cancel`, { method: "POST" }); load(); });
+  $("requeue")?.addEventListener("click", async () => { await api(`/api/studies/${id}/requeue`, { method: "POST" }); load(); });
   const bits = [
     `asked for ${fmtTime(r.created_at)}${r.requested_by ? ` by ${esc(r.requested_by)}` : ""}`,
     res && `computed in ${fmtDuration(res.seconds)} by solver <span class="mono">${esc(res.solver_version)}</span>`,
-    res?.warm_from && `started from run <a href="/runs/${res.warm_from}">#${res.warm_from}</a>'s attitude`,
-    res?.attitude_from && `about the attitude of calm-water run <a href="/runs/${res.attitude_from}">#${res.attitude_from}</a>`,
+    res?.warm_from && `started from study <a href="/studies/${res.warm_from}">#${res.warm_from}</a>'s attitude`,
+    res?.attitude_from && `about the attitude of calm-water study <a href="/studies/${res.attitude_from}">#${res.attitude_from}</a>`,
   ].filter(Boolean);
   $("about").innerHTML = `<p class="hint">${bits.join(" · ")}.</p>`;
 }
 
-// While it waits or runs: where it has got to, then the result.
+// While it waits or studies: where it has got to, then the result.
 let polling = null;
 async function watch() {
   clearTimeout(polling);
   const q = await api("/api/queue");
-  if (q.running?.run_id === id) {
+  if (q.running?.study_id === id) {
     const p = q.running.progress || {}, f = p.fraction ?? 0;
     $("progress").innerHTML = `<div class="card" style="margin-top:10px">
       <div class="stage"><b>${p.step ? `${p.step}/${p.steps} · ${esc(p.stage)}` : "Starting"}</b><span>${(100 * f).toFixed(0)}% · ${fmtDuration(q.running.seconds)}</span></div>
       <div class="track"><div class="fill" style="width:${(100 * f).toFixed(1)}%"></div></div>
       <div class="detail">${esc(p.detail ?? "")}</div></div>`;
   } else {
-    const ahead = q.runs.filter((r) => r.status === "queued").findIndex((r) => r.id === id);
-    const r = await api(`/api/runs/${id}`);
-    if (r.status !== run.status) return load();
-    $("progress").innerHTML = ahead >= 0 ? `<p class="hint">${ahead ? `${ahead} run${ahead === 1 ? "" : "s"} ahead of it` : "Next"}${run.kind === "waves" ? "; it waits for its calm-water run" : ""}. <a href="/queue">The queue</a></p>` : "";
+    const ahead = q.studies.filter((r) => r.status === "queued").findIndex((r) => r.id === id);
+    const r = await api(`/api/studies/${id}`);
+    if (r.status !== study.status) return load();
+    $("progress").innerHTML = ahead >= 0 ? `<p class="hint">${ahead ? `${ahead} study${ahead === 1 ? "" : "s"} ahead of it` : "Next"}${study.kind === "waves" ? "; it waits for its calm-water study" : ""}. <a href="/queue">The queue</a></p>` : "";
   }
   polling = setTimeout(watch, 1500);
 }
@@ -124,7 +124,7 @@ function renderCalm(d) {
       <dt>Wave resistance R<sub>w</sub></dt><dd>${fmt(f.rw, 2)} N</dd>
       <dt>Viscous R<sub>v</sub> (ITTC-57)</dt><dd>${fmt(f.rv, 2)} N</dd>
       <dt>C<sub>w</sub> · C<sub>t</sub></dt><dd>${fmt(1000 * f.cw, 3)} · ${fmt(1000 * f.ct, 3)} ×10⁻³</dd>
-      ${run.config.span != null ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
+      ${study.case.span != null ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
       <dt>Dynamic lift</dt><dd>${fmt(f.fz, 1)} N (${fmt(100 * f.lift_fraction, 2)}% of weight)</dd>
       <dt>Sinkage${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
       <dt>Trim${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
@@ -134,7 +134,7 @@ function renderCalm(d) {
     </dl>
     <p class="hint">${f.solved
       ? `At the dynamic equilibrium (${f.iterations} Newton iterations); resistance and flow are for the hull at that attitude.`
-      : f.held ? "Held at the configuration's attitude at rest: the dynamic lift shown is what the hull feels there, unbalanced."
+      : f.held ? "Held at the case's attitude at rest: the dynamic lift shown is what the hull feels there, unbalanced."
       : "At the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}
       Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around them, local field and waves together.</p>`;
 }
@@ -165,7 +165,7 @@ function renderWaves(d) {
     <div class="hero">${headingText(h.heading)}</div>
     <div class="hint">${fmt(d.speed / KN, 2)} kn · Fn ${fmt(d.froude, 3)} · about the attitude ${fmt(1000 * d.attitude.sinkage, 1)} mm, ${fmt(d.attitude.trim_deg, 3)}°</div>
     ${sea && !sea.error ? `<dl style="margin-top:10px">
-      <dt>Sea</dt><dd>${esc(run.params.waves.sea.type === "jonswap" ? "JONSWAP" : "Bretschneider")} H<sub>s</sub> ${fmt(run.params.waves.sea.hs, 2)} m, T<sub>p</sub> ${fmt(run.params.waves.sea.tp, 1)} s</dd>
+      <dt>Sea</dt><dd>${esc(study.params.waves.sea.type === "jonswap" ? "JONSWAP" : "Bretschneider")} H<sub>s</sub> ${fmt(study.params.waves.sea.hs, 2)} m, T<sub>p</sub> ${fmt(study.params.waves.sea.tp, 1)} s</dd>
       <dt>Heave, significant</dt><dd>${fmt(sea.heave, 3)} m</dd>
       <dt>Pitch, significant</dt><dd>${fmt(sea.pitch_deg, 2)}°</dd>
       <dt>Accel. at the bow</dt><dd>${fmt(sea.accel_bow, 2)} m/s² (${fmt(sea.accel_bow / G, 2)} g)</dd>
@@ -197,7 +197,7 @@ function renderWaves(d) {
     const height = $("wh").value.trim() && typed > 0 ? typed : lam / 30, amp = height / 2;
     const L = s.length, pad = Math.max(0.6 * L, 1.5 * lam);
     const xs = d.hulls.flatMap(() => [s.lcg - 0.6 * L, s.lcg + 0.6 * L]);
-    const half = (run.config.span ?? 0) / 2 + s.beam;
+    const half = (study.case.span ?? 0) / 2 + s.beam;
     viewer.seaway({ k: p.k, heading: h.heading * Math.PI / 180, omega_e: p.omega_e, amp,
       g: [s.lcg, 0, s.vcg ?? 0], eta: { sway: p.sway, heave: p.heave, roll: p.roll, pitch: p.pitch, yaw: p.yaw },
       extent: [Math.min(...xs) - pad, Math.max(...xs) + pad, -half - Math.max(0.5 * L, lam), half + Math.max(0.5 * L, lam)],
@@ -238,24 +238,24 @@ function renderWaves(d) {
 // ---------------------------------------------------------------- load
 async function load() {
   try {
-    if (id == null) throw new Error("no run id in the address");
-    run = await api(`/api/runs/${id}`);
-    hull = hull || await api(`/api/hulls/${run.hull_id}`);
+    if (id == null) throw new Error("no study id in the address");
+    study = await api(`/api/studies/${id}`);
+    hull = hull || await api(`/api/hulls/${study.hull_id}`);
     const l = lRef(hull.summary);
-    const cfg = { name: run.config_name, params: run.config };
-    document.title = `Run ${id} · michell`;
-    $("crumbs").innerHTML = `<a href="/hulls/${hull.id}">${esc(hull.name)}</a> › <a href="/configs/${run.config_id}">${esc(configName(cfg))}</a> › run #${id}`;
-    $("title").textContent = runLabel(run.params, l);
-    $("sub").textContent = run.config_name ? configLabel(run.config) : "";
+    const cfg = { name: study.case_name, params: study.case };
+    document.title = `Study ${id} · michell`;
+    $("crumbs").innerHTML = `<a href="/hulls/${hull.id}">${esc(hull.name)}</a> › <a href="/cases/${study.case_id}">${esc(caseName(cfg))}</a> › study #${id}`;
+    $("title").textContent = studyLabel(study.params, l);
+    $("sub").textContent = study.case_name ? caseLabel(study.case) : "";
     renderState();
-    if (run.status === "queued" || run.status === "running") {
-      viewer.empty(run.status === "running" ? "Running…" : "Waiting in the queue…");
+    if (study.status === "queued" || study.status === "running") {
+      viewer.empty(study.status === "running" ? "Running…" : "Waiting in the queue…");
       watch();
     }
-    if (run.result) {
-      data = await api(`/api/runs/${id}/result`);
-      if (run.kind === "calm") renderCalm(data); else renderWaves(data);
-    } else if (run.status !== "queued" && run.status !== "running") {
+    if (study.result) {
+      data = await api(`/api/studies/${id}/result`);
+      if (study.kind === "calm") renderCalm(data); else renderWaves(data);
+    } else if (study.status !== "queued" && study.status !== "running") {
       viewer.empty("No result");
     }
   } catch (e) {

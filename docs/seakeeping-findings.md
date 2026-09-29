@@ -44,7 +44,7 @@ important ones.
 | `michell-geometry` | IGES/STL import, `SectionalHull`, hydrostatics (now including transverse waterplane inertia and centre-of-buoyancy depth), hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions`, `Placement` | — |
 | `michell` | thin-ship theory; the sectional amplitude and near-field transforms as extension traits `SectionalWave` / `NearFieldTransforms` | geometry |
 | `michell-seakeeping` | strip-theory seakeeping | geometry |
-| `michell-cli`, `michell-web` | front ends | all |
+| `michell-cli`, `boatmath-web` | front ends | all |
 
 The thin-ship equilibrium solver reaches geometry through
 `float::DynamicModel`; seakeeping uses the sectional hull's own transforms

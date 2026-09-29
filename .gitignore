@@ -9,6 +9,6 @@
 /*.hull
 /*.csv
 /*.json
-# michell-web's default store of hulls, cases and results
-/michell-data/
+# boatmath-web's default store of hulls, cases and results
+/boatmath-data/
 .DS_Store

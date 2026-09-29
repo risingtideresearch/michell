@@ -1,5 +1,5 @@
-//! `michell-web [--port N] [--host ADDR] [--data DIR]` — serve the web
-//! front end, and work through its queue of runs.
+//! `boatmath-web [--port N] [--host ADDR] [--data DIR]` — serve the web
+//! front end, and work through its queue of studies.
 //!
 //! Binds `127.0.0.1:8080` by default. When `$PORT` is set (as on a hosting
 //! platform) it listens there on all interfaces instead. Bound to loopback
@@ -7,18 +7,18 @@
 //! from the `Tailscale-User-Login` and `Tailscale-User-Name` headers that
 //! sets (and on any other address ignores them: anyone could send them
 //! there). Hulls,
-//! configurations, runs and results are kept in `DIR` (default
-//! `$MICHELL_DATA`, else `./michell-data`); see `api.rs` for the endpoints
+//! cases, studies and results are kept in `DIR` (default
+//! `$BOATMATH_DATA`, else `./boatmath-data`); see `api.rs` for the endpoints
 //! and `web.rs` for the pages. Two stateless endpoints serve the upload
 //! page's preview:
 //!
 //!   POST /api/loft?name=F&...      body = the file's bytes; the cut, as
-//!                                  JSON (see `michell_web::loft`)
+//!                                  JSON (see `boatmath_web::loft`)
 //!   POST /api/geometry?name=F&units=U
 //!                                  body = the file's bytes; its display
-//!                                  geometry (see `michell_web::geometry`)
+//!                                  geometry (see `boatmath_web::geometry`)
 
-use michell_web::{geometry, loft, LoftRequest, MAX_UPLOAD};
+use boatmath_web::{geometry, loft, LoftRequest, MAX_UPLOAD};
 use std::io::Read;
 use std::sync::Arc;
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -42,27 +42,27 @@ fn main() {
         "127.0.0.1".into()
     });
     let data = flag("--data")
-        .or_else(|| std::env::var("MICHELL_DATA").ok())
-        .unwrap_or("michell-data".into());
-    let store = match michell_web::store::Store::open(std::path::Path::new(&data)) {
+        .or_else(|| std::env::var("BOATMATH_DATA").ok())
+        .unwrap_or("boatmath-data".into());
+    let store = match boatmath_web::store::Store::open(std::path::Path::new(&data)) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            eprintln!("michell-web: cannot open the store in {data}: {e}");
+            eprintln!("boatmath-web: cannot open the store in {data}: {e}");
             std::process::exit(1);
         }
     };
-    let worker = michell_web::worker::Worker::new(Arc::clone(&store));
+    let worker = boatmath_web::worker::Worker::new(Arc::clone(&store));
     worker.spawn();
     let app = Arc::new(api::App { store, worker });
     eprintln!(
-        "michell-web: data in {data}, solver {}",
-        michell_web::store::SOLVER_VERSION
+        "boatmath-web: data in {data}, solver {}",
+        boatmath_web::store::SOLVER_VERSION
     );
     let addr = format!("{host}:{port}");
     let server = match Server::http(&addr) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("michell-web: cannot listen on {addr}: {e}");
+            eprintln!("boatmath-web: cannot listen on {addr}: {e}");
             std::process::exit(1);
         }
     };
@@ -70,7 +70,7 @@ fn main() {
     // then are its identity headers believable.
     let trust = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
     eprintln!(
-        "michell-web: serving http://{addr}/{}",
+        "boatmath-web: serving http://{addr}/{}",
         if trust {
             " (identity from tailscale serve's headers)"
         } else {

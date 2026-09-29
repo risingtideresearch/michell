@@ -423,7 +423,7 @@ export function createViewer(host) {
   }
   for (const b of views.querySelectorAll("button")) b.onclick = () => pick(b.dataset.view);
 
-  // A run in waves: the whole hull at its attitude (z up from the water),
+  // A study in waves: the whole hull at its attitude (z up from the water),
   // over which `seaway` moves it.
   function hullsAt(meshes) {
     clear(layers.hull);
@@ -443,7 +443,7 @@ export function createViewer(host) {
   //   ζ = A cos(k((x − x_G) cos β + y sin β) − ω_e t)
   // in the frame moving with the boat, and each motion A·Re[η̂ e^{−iω_e t}]
   // about G — sway to port, heave up, roll port side up, pitch bow up, yaw
-  // bow to port — from the run's complex responses (per unit amplitude).
+  // bow to port — from the study's complex responses (per unit amplitude).
   // `spec`: { k, heading [rad], omega_e, amp [m], g: [x, y, z], eta:
   // { sway, heave, roll, pitch, yaw } as [re, im], extent: [x0, x1, y0, y1],
   // rate }, or null to stop. Scene axes are (x, z up, y): SWAP swaps them.
@@ -543,8 +543,8 @@ export function createViewer(host) {
 
   return {
     geometry, setWater, load, closure, flow, pick, hullsAt, seaway,
-    // "cut" (the hull and its sections), "flow" (a calm-water run) or "sea"
-    // (a run in waves).
+    // "cut" (the hull and its sections), "flow" (a calm-water study) or "sea"
+    // (a study in waves).
     mode: (m) => { show(m); setView(view, true); },
     // Say why there is nothing to show.
     empty: (msg) => { empty.textContent = msg; empty.style.display = ""; },

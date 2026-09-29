@@ -1,4 +1,4 @@
-//! `michell-web` — a browser front end for the `michell` tools.
+//! `boatmath-web` — a browser front end for the `michell` tools.
 //!
 //! Upload a hull and see it the way the physics sees it: cut into sections.
 //! IGES and STL hulls are cut straight from their patches or triangles —
@@ -15,12 +15,12 @@ use michell_geometry::iges::{HullPose, Platform, SectionalImport};
 use michell_geometry::SectionalHull;
 use serde_json::{json, Value};
 
-pub mod case;
+pub mod params;
 pub mod platform;
 pub mod store;
 pub mod worker;
 
-use case::{ConfigParams, RunParams};
+use params::{CaseParams, StudyParams};
 pub use platform::{statics, waves_with_progress};
 
 /// Largest upload accepted [bytes]. Big enough for a finely tessellated STL.
@@ -233,17 +233,17 @@ pub enum MassBy {
     ScaleYz,
 }
 
-/// A calm-water run on a configuration: the hull's cut, the configuration
-/// (layout and load), and the run's speed and model settings.
+/// A calm-water study on a case: the hull's cut, the case
+/// (layout and load), and the study's speed and model settings.
 pub struct FlowRequest {
     pub cut: LoftRequest,
-    pub config: ConfigParams,
-    pub run: RunParams,
+    pub case: CaseParams,
+    pub study: StudyParams,
     /// A previous solution `(sinkage [m], trim [rad])` to start the
     /// equilibrium from — a neighbouring speed's.
     pub warm: Option<(f64, f64)>,
     /// Hold the platform at this `(sinkage [m], trim [rad])` instead of
-    /// solving for it: a run at rest's attitude (see [`statics`]).
+    /// solving for it: a study at rest's attitude (see [`statics`]).
     pub hold: Option<(f64, f64)>,
 }
 
@@ -289,7 +289,7 @@ fn flow_stages(dynamic: bool) -> Vec<(&'static str, f64)> {
 }
 
 /// Reports progress through the caller's callback, and turns its refusal
-/// (the run was cancelled) into an error that stops the computation.
+/// (the study was cancelled) into an error that stops the computation.
 pub(crate) struct Tracker<'a> {
     pub(crate) stages: Vec<(&'static str, f64)>,
     pub(crate) report: &'a mut dyn FnMut(&Progress) -> bool,
@@ -324,7 +324,7 @@ pub fn flow(name: &str, bytes: Vec<u8>, req: &FlowRequest) -> Result<Value, Stri
     flow_with_progress(name, bytes, req, &mut |_| true)
 }
 
-/// A configuration set up on its hull's cut: the platform's hulls as
+/// A case set up on its hull's cut: the platform's hulls as
 /// `(hull index, pose)` — the file's hulls where they are, or its one hull
 /// doubled into a catamaran — cut at the design waterline (scaled, if the
 /// load is carried by scaling), and the load.
@@ -345,7 +345,7 @@ pub(crate) fn setup(
     name: &str,
     bytes: Vec<u8>,
     cut_req: &LoftRequest,
-    c: &ConfigParams,
+    c: &CaseParams,
 ) -> Result<Setup, String> {
     let cut = cut(name, bytes, cut_req)?;
     let rho = michell_geometry::Fluid::SEAWATER_15C.density;
@@ -535,14 +535,14 @@ pub fn flow_with_progress(
     use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
     use michell_geometry::float::{solve_equilibrium_sectional_dynamic, LoadCase};
     use michell_geometry::source::SourceHull;
-    let run = &req.run;
+    let study = &req.study;
     let t0 = std::time::Instant::now();
     let mut track = Tracker {
-        stages: flow_stages(run.dynamic),
+        stages: flow_stages(study.dynamic),
         report,
     };
     track.at(0, 0.0, name.to_string())?;
-    let s = setup(name, bytes, &req.cut, &req.config)?;
+    let s = setup(name, bytes, &req.cut, &req.case)?;
     track.at(
         0,
         1.0,
@@ -553,8 +553,8 @@ pub fn flow_with_progress(
         ),
     )?;
     let (mass, lcg, l_ref) = (s.mass, s.lcg, s.l_ref);
-    let closure = run.closure.transom();
-    let cond = Conditions::seawater(run.froude * (STANDARD_GRAVITY * l_ref).sqrt());
+    let closure = study.closure.transom();
+    let cond = Conditions::seawater(study.froude * (STANDARD_GRAVITY * l_ref).sqrt());
     let rho = cond.fluid.density;
     let wave = WaveOptions {
         transom: closure,
@@ -573,7 +573,7 @@ pub fn flow_with_progress(
         platform = s.platform(sinkage, trim);
         track.at(1, 0.5, "at the held attitude".into())?;
         s.situate(&platform)?
-    } else if run.dynamic {
+    } else if study.dynamic {
         let sources: Vec<SourceHull> = s
             .layout
             .iter()
@@ -630,7 +630,7 @@ pub fn flow_with_progress(
             } else {
                 ""
             };
-            format!("dynamic equilibrium at Fn {}: {e}{hint}", run.froude)
+            format!("dynamic equilibrium at Fn {}: {e}{hint}", study.froude)
         })?;
         platform = s.platform(eq.sinkage, eq.trim);
         solved = Some((
@@ -665,7 +665,7 @@ pub fn flow_with_progress(
     }
     let (x0, x1) = (xa - 1.5 * l_ref, xb + 0.4 * l_ref);
     let yh = (yh + 0.45 * l_ref).max(0.3 * (x1 - x0));
-    let nx = run.grid;
+    let nx = study.grid;
     // An odd row count, so y = 0 is a row and a symmetric fleet mirrors.
     let nh = ((nx as f64) * yh / (x1 - x0)).round().clamp(8.0, 600.0) as usize + 1;
     let ny = 2 * nh - 1;
@@ -687,7 +687,7 @@ pub fn flow_with_progress(
                     && (o.length() - h.length()).abs() < tol
             })
     });
-    let g = if let Some(span) = req.config.span {
+    let g = if let Some(span) = req.case.span {
         // A catamaran's field is its demihull's, twice, shifted by ±span/2
         // (exact in thin-ship theory): one hull's field on a y-grid whose
         // spacing divides span/2, summed at offset rows. Both demihulls are
@@ -784,7 +784,7 @@ pub fn flow_with_progress(
             json!({
                 "fz": d.force_up,
                 "moment": d.moment_bow_up,
-                // Of the weight, as the solved runs report it.
+                // Of the weight, as the solved studies report it.
                 "lift_fraction": d.force_up / (mass * cond.gravity),
                 "sinkage": sinkage,
                 "trim_deg": trim.to_degrees(),
@@ -857,7 +857,7 @@ pub fn flow_with_progress(
         forces[k] = json!(v);
     }
     Ok(json!({
-        "froude": run.froude,
+        "froude": study.froude,
         "speed": cond.speed,
         "transverse_wavelength": 2.0 * std::f64::consts::PI * cond.speed * cond.speed / cond.gravity,
         "seconds": t0.elapsed().as_secs_f64(),
@@ -1083,15 +1083,15 @@ mod tests {
             .into_bytes()
     }
 
-    /// A calm-water request from a run's and a configuration's JSON.
-    fn request(run: &str, config: &str) -> FlowRequest {
+    /// A calm-water request from a study's and a case's JSON.
+    fn request(study: &str, case: &str) -> FlowRequest {
         FlowRequest {
             cut: LoftRequest::default(),
-            config: serde_json::from_str::<ConfigParams>(config)
+            case: serde_json::from_str::<CaseParams>(case)
                 .unwrap()
                 .canonical()
                 .unwrap(),
-            run: serde_json::from_str::<RunParams>(run)
+            study: serde_json::from_str::<StudyParams>(study)
                 .unwrap()
                 .canonical()
                 .unwrap(),
@@ -1252,14 +1252,14 @@ mod tests {
         }
     }
 
-    /// A configuration's statics: at the design load it floats at its
+    /// A case's statics: at the design load it floats at its
     /// design waterline, and the GZ curve's slope at upright (whole
     /// sections, clipped) is the GM_T the waterplane gives. A Wigley form a
     /// metre deep, cut 0.375 m below its top (so it has freeboard to heel
     /// into); deep and narrow, it rolls over with G at the waterline, so G
     /// is put below it.
     #[test]
-    fn a_configuration_has_its_statics() {
+    fn a_case_has_its_statics() {
         let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 1.0).unwrap();
         let deep = michell_geometry::iges::write(&surfaces, "wigley")
             .unwrap()
@@ -1268,7 +1268,7 @@ mod tests {
             waterline: Some(-0.375),
             ..LoftRequest::default()
         };
-        let c = serde_json::from_str::<ConfigParams>(r#"{"vcg": -0.3}"#)
+        let c = serde_json::from_str::<CaseParams>(r#"{"vcg": -0.3}"#)
             .unwrap()
             .canonical()
             .unwrap();
@@ -1287,36 +1287,36 @@ mod tests {
         assert_eq!(gz["heel_deg"].as_array().unwrap().len(), 91);
     }
 
-    /// A run in waves carries its responses: in long head waves a Wigley
+    /// A study in waves carries its responses: in long head waves a Wigley
     /// heaves and pitches with the water, and the far field is reported
     /// only where it applies.
     #[test]
-    fn a_run_in_waves_carries_its_responses() {
-        let config = serde_json::from_str::<ConfigParams>(r#"{"vcg": -0.3}"#)
+    fn a_study_in_waves_carries_its_responses() {
+        let case = serde_json::from_str::<CaseParams>(r#"{"vcg": -0.3}"#)
             .unwrap()
             .canonical()
             .unwrap();
-        let run = |heading: f64| {
-            serde_json::from_str::<RunParams>(&format!(
+        let study = |heading: f64| {
+            serde_json::from_str::<StudyParams>(&format!(
                 r#"{{"froude": 0.2, "dynamic": false, "waves": {{"heading": {heading}, "lambdas": [6]}}}}"#
             ))
             .unwrap()
             .canonical()
             .unwrap()
         };
-        let go = |r: &RunParams| {
+        let go = |r: &StudyParams| {
             waves_with_progress(
                 "w.igs",
                 wigley(),
                 &LoftRequest::default(),
-                &config,
+                &case,
                 r,
                 (0.0, 0.0),
                 &mut |_| true,
             )
             .unwrap()
         };
-        let head = go(&run(180.0));
+        let head = go(&study(180.0));
         let sk = &head["seakeeping"];
         assert!(sk["gm_t"].as_f64().unwrap() > 0.0, "{}", sk);
         let p = &sk["headings"][0]["points"][0];
@@ -1333,7 +1333,7 @@ mod tests {
             abs(&p["pitch"]) / k
         );
         assert!(p["raw_far"].is_f64());
-        let bow = go(&run(120.0));
+        let bow = go(&study(120.0));
         assert!(bow["seakeeping"]["headings"][0]["points"][0]["raw_far"].is_null());
     }
 

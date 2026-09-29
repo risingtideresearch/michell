@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>New runs · michell</title>
+<title>New studies · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -18,7 +18,7 @@
   label.check { flex-direction: row; align-items: flex-start; gap: 6px; color: var(--ink); font-size: 13px; }
   label.check input { margin-top: 3px; }
   label.check .sub { display: block; color: var(--muted); font-size: 12px; }
-  #configs { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  #cases { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
   fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 10px; margin: 8px 0 0; }
   fieldset[disabled] { opacity: .5; }
   legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
@@ -27,15 +27,15 @@
 <body>
 <div class="split">
 <aside>
-  <h1>New runs</h1>
+  <h1>New studies</h1>
 
   <section>
     <label>Hull
       <select id="hull"><option value="">Loading…</option></select>
     </label>
-    <h2 style="margin-top:12px">On configurations</h2>
-    <div id="configs" class="hint">Choose a hull.</div>
-    <p class="hint"><a id="newconfig" href="/configs/new">New configuration</a></p>
+    <h2 style="margin-top:12px">On cases</h2>
+    <div id="cases" class="hint">Choose a hull.</div>
+    <p class="hint"><a id="newcase" href="/cases/new">New case</a></p>
   </section>
 
   <section>
@@ -90,7 +90,7 @@
           <input id="gamma" type="number" step="any" min="1" max="10" placeholder="3.3">
         </label>
       </div>
-      <p class="hint">Each heading is a run, taken about the attitude of the calm-water run at its speed (queued too, if it is not already). 180° is head seas, 90° beam, 0° following.</p>
+      <p class="hint">Each heading is a study, taken about the attitude of the calm-water study at its speed (queued too, if it is not already). 180° is head seas, 90° beam, 0° following.</p>
     </fieldset>
   </section>
 
@@ -119,32 +119,32 @@
       <label class="wide">Priority
         <select id="priority">
           <option value="0">normal</option>
-          <option value="10">high — ahead of normal runs</option>
+          <option value="10">high — ahead of normal studies</option>
           <option value="-10">low — after everything else</option>
         </select>
       </label>
     </div>
-    <p class="hint">Speeds and headings take a value, a list (<code>6, 8</code>) or a range (<code>4:8:0.5</code>); every run goes on every configuration ticked. Runs already asked for are not asked for again.</p>
-    <button class="primary" id="submit" disabled>Queue runs</button>
+    <p class="hint">Speeds and headings take a value, a list (<code>6, 8</code>) or a range (<code>4:8:0.5</code>); every study goes on every case ticked. Studies already asked for are not asked for again.</p>
+    <button class="primary" id="submit" disabled>Queue studies</button>
   </section>
   <div id="status"></div>
 </aside>
 <main class="list">
-  <div class="head"><h1>Runs to queue</h1><span class="grow"></span><span class="counts" id="prevcounts"></span></div>
-  <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull and a configuration, and give a speed.</div></div></div>
+  <div class="head"><h1>Studies to queue</h1><span class="grow"></span><span class="counts" id="prevcounts"></span></div>
+  <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull and a case, and give a speed.</div></div></div>
 </main>
 </div>
 
 <script type="module">
-import { $, G, KN, api, configLabel, configName, esc, fmt, lRef, nav, runLabel, status, values, whoami } from "/static/common.js";
-nav("runs");
+import { $, G, KN, api, caseLabel, caseName, esc, fmt, lRef, nav, studyLabel, status, values, whoami } from "/static/common.js";
+nav("studies");
 
-let hulls = [], configs = [], hull = null, plan = null, checked = null, seq = 0;
+let hulls = [], cases = [], hull = null, plan = null, checked = null, seq = 0;
 const INPUTS = ["speeds", "unit", "attitude", "calm", "waves", "headings", "lambdas", "sea", "hs", "tp", "gamma", "closure", "param", "grid"];
 const num = (id) => { const t = $(id).value.trim(); return t ? Number(t) : null; };
 const qs = new URLSearchParams(location.search);
-const ticked = () => [...document.querySelectorAll("#configs input:checked")].map((i) => Number(i.value));
-const byId = (id) => configs.find((c) => c.id === id);
+const ticked = () => [...document.querySelectorAll("#cases input:checked")].map((i) => Number(i.value));
+const byId = (id) => cases.find((c) => c.id === id);
 
 // A speed in the chosen unit as a Froude number on the longest hull.
 function toFroude(v, unit, l) {
@@ -152,7 +152,7 @@ function toFroude(v, unit, l) {
   return u == null ? v : u / Math.sqrt(G * l);
 }
 
-// The runs the form asks for, as the server's params.
+// The studies the form asks for, as the server's params.
 function planned() {
   if (!hull || !ticked().length) return null;
   const l = lRef(hull.summary);
@@ -180,13 +180,13 @@ function planned() {
     waves = heads.map((heading) => ({ heading, ...(lam ? { lambdas: lam } : {}), ...(sea ? { sea } : {}) }));
   }
   if (!$("calm").checked && !waves.length) throw new Error("Ask for calm water, waves, or both");
-  const runs = [];
+  const studies = [];
   for (const v of speeds) {
     const p = { ...base, froude: +toFroude(v, $("unit").value, l).toPrecision(12) };
-    if ($("calm").checked) runs.push(p);
-    for (const w of waves) runs.push({ ...p, waves: w });
+    if ($("calm").checked) studies.push(p);
+    for (const w of waves) studies.push({ ...p, waves: w });
   }
-  return { config_ids: ticked(), runs };
+  return { case_ids: ticked(), studies };
 }
 
 // Plan, then ask the server (a dry run) which it already has.
@@ -202,14 +202,14 @@ async function refresh() {
   }
   if (!plan) {
     checked = null;
-    $("preview").innerHTML = `<div class="tablewrap"><div class="empty-state">${!hull ? "Choose a hull." : !ticked().length ? "Tick a configuration to run on." : "Give a speed, a list of speeds or a range."}</div></div>`;
+    $("preview").innerHTML = `<div class="tablewrap"><div class="empty-state">${!hull ? "Choose a hull." : !ticked().length ? "Tick a case to run on." : "Give a speed, a list of speeds or a range."}</div></div>`;
     $("prevcounts").innerHTML = "";
     $("submit").disabled = true;
-    $("submit").textContent = "Queue runs";
+    $("submit").textContent = "Queue studies";
     return;
   }
   try {
-    const r = await api("/api/runs", { json: { ...plan, dry_run: true } });
+    const r = await api("/api/studies", { json: { ...plan, dry_run: true } });
     if (my !== seq) return;
     checked = r;
     render();
@@ -224,31 +224,31 @@ async function refresh() {
 function render() {
   const l = lRef(hull.summary);
   let fresh = 0, again = 0, have = 0;
-  $("preview").innerHTML = plan.config_ids.map((cid) => {
-    const rows = checked.runs.filter((r) => r.config_id === cid).map((r) => {
+  $("preview").innerHTML = plan.case_ids.map((cid) => {
+    const rows = checked.studies.filter((r) => r.case_id === cid).map((r) => {
       const e = r.existing;
       let tag;
       if (!e) { fresh++; tag = `<span class="tag new">new${r.implied ? " · for the waves" : ""}</span>`; }
       else if (e.status === "failed" || e.status === "cancelled") { again++; tag = `<span class="tag again">${e.status} before · runs again</span>`; }
-      else { have++; tag = `<a class="tag" href="/runs/${e.id}">#${e.id} ${e.status}${e.stale ? ", stale" : ""}</a>`; }
-      return `<tr><td class="what">${esc(runLabel(r.params, l))}</td><td>${tag}</td></tr>`;
+      else { have++; tag = `<a class="tag" href="/studies/${e.id}">#${e.id} ${e.status}${e.stale ? ", stale" : ""}</a>`; }
+      return `<tr><td class="what">${esc(studyLabel(r.params, l))}</td><td>${tag}</td></tr>`;
     }).join("");
     const c = byId(cid);
-    return `<div class="cfg"><h3><a href="/configs/${cid}">${esc(configName(c))}</a></h3>
-      <div class="tablewrap"><table><thead><tr><th>Run</th><th>On this configuration</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+    return `<div class="cfg"><h3><a href="/cases/${cid}">${esc(caseName(c))}</a></h3>
+      <div class="tablewrap"><table><thead><tr><th>Study</th><th>On this case</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }).join("");
   const n = fresh + again;
   $("prevcounts").innerHTML = [fresh && `<span class="pill queued">${fresh} new</span>`,
     again && `<span class="pill failed">${again} to run again</span>`,
     have && `<span class="pill done">${have} already asked for</span>`].filter(Boolean).join("");
   $("submit").disabled = !n;
-  $("submit").textContent = n ? `Queue ${n} run${n === 1 ? "" : "s"}` : "Nothing new to queue";
+  $("submit").textContent = n ? `Queue ${n} study${n === 1 ? "" : "s"}` : "Nothing new to queue";
 }
 
 let timer = null;
 const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
 for (const id of INPUTS) { $(id).addEventListener("input", later); $(id).addEventListener("change", later); }
-$("configs").addEventListener("change", () => { keepAddress(); refresh(); });
+$("cases").addEventListener("change", () => { keepAddress(); refresh(); });
 
 function updateParam() {
   const cl = $("closure").value;
@@ -258,31 +258,31 @@ function updateParam() {
 }
 $("closure").addEventListener("change", updateParam);
 
-// The hull's configurations to tick, with what each is.
-function listConfigs(want) {
-  const cs = configs.filter((c) => hull && c.hull_id === hull.id);
-  $("newconfig").href = hull ? `/configs/new?hull=${hull.id}` : "/configs/new";
-  if (!hull) { $("configs").innerHTML = "Choose a hull."; return; }
-  if (!cs.length) { $("configs").innerHTML = `<span>No configurations on ${esc(hull.name)} yet: <a href="/configs/new?hull=${hull.id}">make one</a>.</span>`; return; }
+// The hull's cases to tick, with what each is.
+function listCases(want) {
+  const cs = cases.filter((c) => hull && c.hull_id === hull.id);
+  $("newcase").href = hull ? `/cases/new?hull=${hull.id}` : "/cases/new";
+  if (!hull) { $("cases").innerHTML = "Choose a hull."; return; }
+  if (!cs.length) { $("cases").innerHTML = `<span>No cases on ${esc(hull.name)} yet: <a href="/cases/new?hull=${hull.id}">make one</a>.</span>`; return; }
   const one = cs.length === 1;
-  $("configs").innerHTML = cs.map((c) => {
+  $("cases").innerHTML = cs.map((c) => {
     const s = c.statics || {};
     const on = one || want.has(c.id);
     return `<label class="check"><input type="checkbox" value="${c.id}"${on ? " checked" : ""}${c.error ? " disabled" : ""}>
-      <span>${esc(configName(c))}<span class="sub">${c.name ? esc(configLabel(c.params)) + " · " : ""}${c.error ? `<span style="color:var(--err)">no statics: ${esc(c.error)}</span>` : `${fmt(s.mass, 0)} kg · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m`}</span></span></label>`;
+      <span>${esc(caseName(c))}<span class="sub">${c.name ? esc(caseLabel(c.params)) + " · " : ""}${c.error ? `<span style="color:var(--err)">no statics: ${esc(c.error)}</span>` : `${fmt(s.mass, 0)} kg · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m`}</span></span></label>`;
   }).join("");
 }
 
 function keepAddress() {
   const q = new URLSearchParams();
   if (hull) q.set("hull", hull.id);
-  if (ticked().length) q.set("configs", ticked().join(","));
-  history.replaceState(null, "", `/runs/new${q.size ? `?${q}` : ""}`);
+  if (ticked().length) q.set("cases", ticked().join(","));
+  history.replaceState(null, "", `/studies/new${q.size ? `?${q}` : ""}`);
 }
 
 function chooseHull(id, want = new Set()) {
   hull = hulls.find((h) => h.id === id) || null;
-  listConfigs(want);
+  listCases(want);
   keepAddress();
   refresh();
 }
@@ -293,10 +293,10 @@ $("submit").onclick = async () => {
   $("submit").disabled = true;
   status("Queueing…");
   try {
-    const r = await api("/api/runs", { json: {
+    const r = await api("/api/studies", { json: {
       ...plan, by: whoami(), priority: Number($("priority").value),
     } });
-    const asked = r.runs.filter((x) => !x.implied).map((x) => x.id);
+    const asked = r.studies.filter((x) => !x.implied).map((x) => x.id);
     location.href = `/queue?highlight=${asked.join(",")}`;
   } catch (e) {
     status(e.message, true);
@@ -305,7 +305,7 @@ $("submit").onclick = async () => {
 };
 
 // The form's fields can come in the address, to share or repeat a set of
-// runs: `?configs=4,5&speeds=4:8:1&unit=kn` (or `?hull=3`).
+// studies: `?cases=4,5&speeds=4:8:1&unit=kn` (or `?hull=3`).
 for (const id of [...INPUTS, "priority"]) {
   if (!qs.has(id)) continue;
   if ($(id).type === "checkbox") $(id).checked = qs.get(id) !== "0";
@@ -313,14 +313,14 @@ for (const id of [...INPUTS, "priority"]) {
 }
 
 try {
-  [hulls, configs] = await Promise.all([api("/api/hulls"), api("/api/configs")]);
+  [hulls, cases] = await Promise.all([api("/api/hulls"), api("/api/cases")]);
   $("hull").innerHTML = `<option value="">Choose a hull…</option>` + hulls.map((h) => `<option value="${h.id}">${esc(h.name)} (#${h.id})</option>`).join("");
-  const want = new Set((qs.get("configs") || qs.get("config") || "").split(",").filter(Boolean).map(Number));
+  const want = new Set((qs.get("cases") || qs.get("case") || "").split(",").filter(Boolean).map(Number));
   let h = Number(qs.get("hull"));
-  const first = configs.find((c) => want.has(c.id));
+  const first = cases.find((c) => want.has(c.id));
   if (first) h = first.hull_id;
   if (h && hulls.some((x) => x.id === h)) { $("hull").value = String(h); chooseHull(h, want); }
-  else if (!hulls.length) $("configs").innerHTML = `No hulls yet: <a href="/hulls/new">upload one</a> first.`;
+  else if (!hulls.length) $("cases").innerHTML = `No hulls yet: <a href="/hulls/new">upload one</a> first.`;
 } catch (e) { status(e.message, true); }
 updateParam();
 </script>

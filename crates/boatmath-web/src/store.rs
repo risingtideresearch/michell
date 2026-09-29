@@ -1,10 +1,10 @@
 //! The permanent record, in SQLite, with the bulky data — uploaded files, a
-//! hull's sections and display geometry, a configuration's statics, a
-//! run's fields — in a content-addressed directory of gzipped blobs beside
+//! hull's sections and display geometry, a case's statics, a
+//! study's fields — in a content-addressed directory of gzipped blobs beside
 //! it.
 //!
 //! ```text
-//! $DATA_DIR/michell.db
+//! $DATA_DIR/boatmath.db
 //! $DATA_DIR/blobs/ab/cdef….gz    SHA-256 of the uncompressed bytes
 //! ```
 //!
@@ -12,17 +12,17 @@
 //!
 //! - a **hull** is a file together with its import settings (the cut
 //!   depends on both);
-//! - a **configuration** is a hull and [`ConfigParams`] (unique on the
+//! - a **case** is a hull and [`CaseParams`] (unique on the
 //!   pair), with its statics, computed when it is made;
-//! - a **run** is a configuration and [`RunParams`] (unique on the pair),
-//!   queued, and its **result** once done. A run in waves waits for the
-//!   calm-water run it is taken about (the same `attitude_key`).
+//! - a **study** is a case and [`StudyParams`] (unique on the pair),
+//!   queued, and its **result** once done. A study in waves waits for the
+//!   calm-water study it is taken about (the same `attitude_key`).
 //!
-//! Studies are named groups of runs asked for together. Statics and
+//! Studies are named groups of studies asked for together. Statics and
 //! results record the solver version they were computed with; one from
 //! another version is stale, kept until it is computed again.
 
-use crate::case::{hex, ConfigParams, RunParams};
+use crate::params::{hex, CaseParams, StudyParams};
 use crate::LoftRequest;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
@@ -34,9 +34,12 @@ use std::sync::Mutex;
 /// The solver version results are stamped with: the last commit to touch
 /// the solver's code (the geometry, thin-ship, seakeeping and CLI crates,
 /// and the web crate's computations), `-dirty` if they have uncommitted
-/// changes. Set by `build.rs`; `MICHELL_SOLVER_VERSION` at build time
+/// changes. Set by `build.rs`; `BOATMATH_SOLVER_VERSION` at build time
 /// overrides it.
-pub const SOLVER_VERSION: &str = env!("MICHELL_SOLVER_VERSION");
+pub const SOLVER_VERSION: &str = env!("BOATMATH_SOLVER_VERSION");
+
+/// The layout below; bump it when the layout changes.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS hulls (
@@ -54,7 +57,7 @@ CREATE TABLE IF NOT EXISTS hulls (
     created_at    INTEGER NOT NULL,
     UNIQUE (file_blob, import)
 );
-CREATE TABLE IF NOT EXISTS configs (
+CREATE TABLE IF NOT EXISTS cases (
     id             INTEGER PRIMARY KEY,
     hull_id        INTEGER NOT NULL REFERENCES hulls(id),
     name           TEXT NOT NULL DEFAULT '',
@@ -69,9 +72,9 @@ CREATE TABLE IF NOT EXISTS configs (
     created_at     INTEGER NOT NULL,
     UNIQUE (hull_id, params_hash)
 );
-CREATE TABLE IF NOT EXISTS runs (
+CREATE TABLE IF NOT EXISTS studies (
     id           INTEGER PRIMARY KEY,
-    config_id    INTEGER NOT NULL REFERENCES configs(id),
+    case_id    INTEGER NOT NULL REFERENCES cases(id),
     kind         TEXT NOT NULL,
     params       TEXT NOT NULL,
     params_hash  TEXT NOT NULL,
@@ -84,23 +87,23 @@ CREATE TABLE IF NOT EXISTS runs (
     queued_at    INTEGER,
     started_at   INTEGER,
     finished_at  INTEGER,
-    UNIQUE (config_id, params_hash)
+    UNIQUE (case_id, params_hash)
 );
-CREATE INDEX IF NOT EXISTS runs_queue ON runs (status, priority, id);
-CREATE INDEX IF NOT EXISTS runs_attitude ON runs (config_id, attitude_key);
+CREATE INDEX IF NOT EXISTS studies_queue ON studies (status, priority, id);
+CREATE INDEX IF NOT EXISTS studies_attitude ON studies (case_id, attitude_key);
 CREATE TABLE IF NOT EXISTS results (
-    run_id         INTEGER PRIMARY KEY REFERENCES runs(id),
+    study_id         INTEGER PRIMARY KEY REFERENCES studies(id),
     scalars        TEXT NOT NULL,
     field_blob     TEXT NOT NULL,
     solver_version TEXT NOT NULL,
     seconds        REAL NOT NULL,
-    warm_from      INTEGER REFERENCES runs(id),
-    attitude_from  INTEGER REFERENCES runs(id),
+    warm_from      INTEGER REFERENCES studies(id),
+    attitude_from  INTEGER REFERENCES studies(id),
     created_at     INTEGER NOT NULL
 );
 ";
 
-/// A run's state in the queue.
+/// A study's state in the queue.
 pub mod status {
     pub const QUEUED: &str = "queued";
     pub const RUNNING: &str = "running";
@@ -136,21 +139,21 @@ pub struct HullSource {
     pub import: LoftRequest,
 }
 
-/// A run the worker has claimed, with what it needs to run it.
+/// A study the worker has claimed, with what it needs to run it.
 pub struct Claimed {
     pub id: i64,
-    pub config_id: i64,
-    pub params: RunParams,
-    pub config: ConfigParams,
+    pub case_id: i64,
+    pub params: StudyParams,
+    pub case: CaseParams,
     pub hull: HullSource,
-    /// The configuration's attitude at rest `(sinkage, trim)`, for a run
+    /// The case's attitude at rest `(sinkage, trim)`, for a study
     /// held there.
     pub at_rest: Option<(f64, f64)>,
-    /// A run in waves: its calm-water run and that run's attitude.
+    /// A study in waves: its calm-water study and that study's attitude.
     pub calm: Option<(i64, (f64, f64))>,
 }
 
-/// A computed run, ready to save.
+/// A computed study, ready to save.
 pub struct NewResult {
     pub scalars: Value,
     /// The full answer (fields and all), stored as a blob.
@@ -176,30 +179,36 @@ fn parse(s: Option<String>) -> Value {
 }
 
 impl Store {
-    /// Open (or create) the store in `dir`. Runs left running by a server
+    /// Open (or create) the store in `dir`. Studies left running by a server
     /// that stopped go back on the queue.
     pub fn open(dir: &Path) -> Result<Store, String> {
         let blobs = dir.join("blobs");
         std::fs::create_dir_all(&blobs).map_err(|e| format!("{}: {e}", blobs.display()))?;
-        let db = Connection::open(dir.join("michell.db")).map_err(err)?;
+        let db = Connection::open(dir.join("boatmath.db")).map_err(err)?;
         db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
             .map_err(err)?;
-        let old: bool = db
+        // A store is stamped with its schema's version; one that holds tables
+        // under another is from an earlier layout, and is not read.
+        let (version, tables): (i64, i64) = db
             .query_row(
-                "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cases')",
+                "SELECT (SELECT user_version FROM pragma_user_version),
+                        (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table')",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .map_err(err)?;
-        if old {
+        if tables > 0 && version != SCHEMA_VERSION {
             return Err(format!(
-                "{} holds cases from before configurations and runs; start a new store",
+                "{} holds a store of another layout (version {version}, this is \
+                 {SCHEMA_VERSION}); start a new store",
                 dir.display()
             ));
         }
         db.execute_batch(SCHEMA).map_err(err)?;
+        db.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+            .map_err(err)?;
         db.execute(
-            "UPDATE runs SET status = ?1, started_at = NULL WHERE status = ?2",
+            "UPDATE studies SET status = ?1, started_at = NULL WHERE status = ?2",
             params![status::QUEUED, status::RUNNING],
         )
         .map_err(err)?;
@@ -315,7 +324,7 @@ impl Store {
         Ok((db.last_insert_rowid(), true))
     }
 
-    /// Every hull, newest first, with its configuration count and its runs'
+    /// Every hull, newest first, with its case count and its studies'
     /// counts by status.
     pub fn hulls(&self) -> Result<Vec<Value>, String> {
         let db = self.db();
@@ -393,13 +402,13 @@ impl Store {
         Ok(n > 0)
     }
 
-    // --- configurations ------------------------------------------------
+    // --- cases ------------------------------------------------
 
-    /// The configuration already made on `hull_id` with these parameters.
-    pub fn find_config(&self, hull_id: i64, p: &ConfigParams) -> Result<Option<i64>, String> {
+    /// The case already made on `hull_id` with these parameters.
+    pub fn find_case(&self, hull_id: i64, p: &CaseParams) -> Result<Option<i64>, String> {
         self.db()
             .query_row(
-                "SELECT id FROM configs WHERE hull_id = ?1 AND params_hash = ?2",
+                "SELECT id FROM cases WHERE hull_id = ?1 AND params_hash = ?2",
                 params![hull_id, p.hash()],
                 |r| r.get(0),
             )
@@ -407,18 +416,18 @@ impl Store {
             .map_err(err)
     }
 
-    /// Save a configuration with its statics (or the error computing them);
-    /// the same parameters on the same hull are the configuration already
+    /// Save a case with its statics (or the error computing them);
+    /// the same parameters on the same hull are the case already
     /// saved, returned as `(id, false)`.
-    pub fn add_config(
+    pub fn add_case(
         &self,
         hull_id: i64,
-        p: &ConfigParams,
+        p: &CaseParams,
         name: &str,
         by: &str,
         statics: Result<&Value, &str>,
     ) -> Result<(i64, bool), String> {
-        if let Some(id) = self.find_config(hull_id, p)? {
+        if let Some(id) = self.find_case(hull_id, p)? {
             return Ok((id, false));
         }
         let (summary, blob, error) = match statics {
@@ -431,7 +440,7 @@ impl Store {
         };
         let db = self.db();
         db.execute(
-            "INSERT INTO configs (hull_id, name, params, params_hash, summary, statics_blob,
+            "INSERT INTO cases (hull_id, name, params, params_hash, summary, statics_blob,
                                   error, solver_version, created_by, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
@@ -458,7 +467,7 @@ impl Store {
         Ok((db.last_insert_rowid(), true))
     }
 
-    /// Replace a configuration's statics (computed again, by this solver).
+    /// Replace a case's statics (computed again, by this solver).
     pub fn set_statics(&self, id: i64, statics: Result<&Value, &str>) -> Result<(), String> {
         let (summary, blob, error) = match statics {
             Ok(v) => (
@@ -470,7 +479,7 @@ impl Store {
         };
         self.db()
             .execute(
-                "UPDATE configs SET summary = ?2, statics_blob = ?3, error = ?4,
+                "UPDATE cases SET summary = ?2, statics_blob = ?3, error = ?4,
                                     solver_version = ?5 WHERE id = ?1",
                 params![id, summary, blob, error, SOLVER_VERSION],
             )
@@ -478,40 +487,40 @@ impl Store {
             .map_err(err)
     }
 
-    /// Configurations (of one hull, or all), oldest first, each with its
-    /// statics' summary and its runs' counts by status.
-    pub fn configs(&self, hull: Option<i64>) -> Result<Vec<Value>, String> {
+    /// Cases (of one hull, or all), oldest first, each with its
+    /// statics' summary and its studies' counts by status.
+    pub fn cases(&self, hull: Option<i64>) -> Result<Vec<Value>, String> {
         let db = self.db();
         let mut q = db
             .prepare(&format!(
-                "SELECT {CONFIG_COLS} FROM configs g WHERE (?1 IS NULL OR g.hull_id = ?1)
+                "SELECT {CASE_COLS} FROM cases g WHERE (?1 IS NULL OR g.hull_id = ?1)
                  ORDER BY g.id"
             ))
             .map_err(err)?;
-        let rows = q.query_map([hull], config_row).map_err(err)?;
+        let rows = q.query_map([hull], case_row).map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)
     }
 
-    pub fn config(&self, id: i64) -> Result<Option<Value>, String> {
+    pub fn case(&self, id: i64) -> Result<Option<Value>, String> {
         self.db()
             .query_row(
-                &format!("SELECT {CONFIG_COLS} FROM configs g WHERE g.id = ?1"),
+                &format!("SELECT {CASE_COLS} FROM cases g WHERE g.id = ?1"),
                 [id],
-                config_row,
+                case_row,
             )
             .optional()
             .map_err(err)
     }
 
-    /// A configuration's hull, parameters and statics blob.
-    pub fn config_source(
+    /// A case's hull, parameters and statics blob.
+    pub fn case_source(
         &self,
         id: i64,
-    ) -> Result<Option<(i64, ConfigParams, Option<String>)>, String> {
+    ) -> Result<Option<(i64, CaseParams, Option<String>)>, String> {
         let row: Option<(i64, String, Option<String>)> = self
             .db()
             .query_row(
-                "SELECT hull_id, params, statics_blob FROM configs WHERE id = ?1",
+                "SELECT hull_id, params, statics_blob FROM cases WHERE id = ?1",
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -521,7 +530,7 @@ impl Store {
             .transpose()
     }
 
-    pub fn update_config(
+    pub fn update_case(
         &self,
         id: i64,
         name: Option<&str>,
@@ -530,7 +539,7 @@ impl Store {
         let n = self
             .db()
             .execute(
-                "UPDATE configs SET name = COALESCE(?2, name), notes = COALESCE(?3, notes)
+                "UPDATE cases SET name = COALESCE(?2, name), notes = COALESCE(?3, notes)
                  WHERE id = ?1",
                 params![id, name, notes],
             )
@@ -538,34 +547,34 @@ impl Store {
         Ok(n > 0)
     }
 
-    // --- runs ----------------------------------------------------------
+    // --- studies ----------------------------------------------------------
 
-    /// The run already asked for on `config_id` with these parameters, if
+    /// The study already asked for on `case_id` with these parameters, if
     /// any: its id, status, and whether its result is stale.
-    pub fn find_run(
+    pub fn find_study(
         &self,
-        config_id: i64,
-        p: &RunParams,
+        case_id: i64,
+        p: &StudyParams,
     ) -> Result<Option<(i64, String, bool)>, String> {
         self.db()
             .query_row(
                 "SELECT r.id, r.status, EXISTS (SELECT 1 FROM results x
-                         WHERE x.run_id = r.id AND x.solver_version != ?3)
-                 FROM runs r WHERE r.config_id = ?1 AND r.params_hash = ?2",
-                params![config_id, p.hash(), SOLVER_VERSION],
+                         WHERE x.study_id = r.id AND x.solver_version != ?3)
+                 FROM studies r WHERE r.case_id = ?1 AND r.params_hash = ?2",
+                params![case_id, p.hash(), SOLVER_VERSION],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(err)
     }
 
-    /// Ask for a run on a configuration, returning `(id, created)`. A run
+    /// Ask for a study on a case, returning `(id, created)`. A study
     /// already asked for is not duplicated: if it failed or was cancelled it
     /// goes back on the queue.
-    pub fn add_run(
+    pub fn add_study(
         &self,
-        config_id: i64,
-        p: &RunParams,
+        case_id: i64,
+        p: &StudyParams,
         priority: i64,
         by: &str,
     ) -> Result<(i64, bool), String> {
@@ -574,8 +583,8 @@ impl Store {
         let hash = p.hash();
         let existing: Option<(i64, String)> = tx
             .query_row(
-                "SELECT id, status FROM runs WHERE config_id = ?1 AND params_hash = ?2",
-                params![config_id, hash],
+                "SELECT id, status FROM studies WHERE case_id = ?1 AND params_hash = ?2",
+                params![case_id, hash],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -584,7 +593,7 @@ impl Store {
             Some((id, st)) => {
                 if st == status::FAILED || st == status::CANCELLED {
                     tx.execute(
-                        "UPDATE runs SET status = 'queued', error = NULL, queued_at = ?2,
+                        "UPDATE studies SET status = 'queued', error = NULL, queued_at = ?2,
                                          priority = MAX(priority, ?3)
                          WHERE id = ?1",
                         params![id, now(), priority],
@@ -592,7 +601,7 @@ impl Store {
                     .map_err(err)?;
                 } else if st == status::QUEUED {
                     tx.execute(
-                        "UPDATE runs SET priority = MAX(priority, ?2) WHERE id = ?1",
+                        "UPDATE studies SET priority = MAX(priority, ?2) WHERE id = ?1",
                         params![id, priority],
                     )
                     .map_err(err)?;
@@ -601,11 +610,11 @@ impl Store {
             }
             None => {
                 tx.execute(
-                    "INSERT INTO runs (config_id, kind, params, params_hash, attitude_key, status,
+                    "INSERT INTO studies (case_id, kind, params, params_hash, attitude_key, status,
                                        priority, requested_by, created_at, queued_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?7, ?8, ?8)",
                     params![
-                        config_id,
+                        case_id,
                         p.kind(),
                         p.to_json(),
                         hash,
@@ -619,7 +628,7 @@ impl Store {
                     rusqlite::Error::SqliteFailure(f, _)
                         if f.code == rusqlite::ErrorCode::ConstraintViolation =>
                     {
-                        format!("no configuration {config_id}")
+                        format!("no case {case_id}")
                     }
                     e => err(e),
                 })?;
@@ -630,17 +639,17 @@ impl Store {
         Ok((id, created))
     }
 
-    /// Runs matching the filters (each optional), newest first — or most
-    /// recently finished first — each with its configuration, hull and
+    /// Studies matching the filters (each optional), newest first — or most
+    /// recently finished first — each with its case, hull and
     /// result's scalars.
-    pub fn runs(&self, f: &RunFilter) -> Result<Vec<Value>, String> {
+    pub fn studies(&self, f: &StudyFilter) -> Result<Vec<Value>, String> {
         let db = self.db();
         let mut q = db
             .prepare(&format!(
-                "SELECT {RUN_COLS} FROM runs r JOIN configs g ON g.id = r.config_id
-                 JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.run_id = r.id
+                "SELECT {STUDY_COLS} FROM studies r JOIN cases g ON g.id = r.case_id
+                 JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.study_id = r.id
                  WHERE (?1 IS NULL OR g.hull_id = ?1)
-                   AND (?2 IS NULL OR r.config_id = ?2)
+                   AND (?2 IS NULL OR r.case_id = ?2)
                    AND (?3 IS NULL OR instr(',' || ?3 || ',', ',' || r.status || ',') > 0)
                    AND (?4 IS NULL OR r.kind = ?4)
                    AND (?7 IS NULL OR instr(',' || ?7 || ',', ',' || r.id || ',') > 0)
@@ -651,67 +660,67 @@ impl Store {
             .query_map(
                 params![
                     f.hull,
-                    f.config,
+                    f.case,
                     f.status,
                     f.kind,
                     f.limit.unwrap_or(10_000),
                     f.by_finish,
                     f.ids
                 ],
-                run_row,
+                study_row,
             )
             .map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)
     }
 
-    pub fn run(&self, id: i64) -> Result<Option<Value>, String> {
+    pub fn study(&self, id: i64) -> Result<Option<Value>, String> {
         let db = self.db();
         db.query_row(
-                &format!(
-                    "SELECT {RUN_COLS} FROM runs r JOIN configs g ON g.id = r.config_id
-                     JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.run_id = r.id
+            &format!(
+                "SELECT {STUDY_COLS} FROM studies r JOIN cases g ON g.id = r.case_id
+                     JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.study_id = r.id
                      WHERE r.id = ?1"
-                ),
-                [id],
-                run_row,
-            )
-            .optional()
-            .map_err(err)
+            ),
+            [id],
+            study_row,
+        )
+        .optional()
+        .map_err(err)
     }
 
-    /// The field blob of a run's result.
-    pub fn result_blob(&self, run_id: i64) -> Result<Option<String>, String> {
+    /// The field blob of a study's result.
+    pub fn result_blob(&self, study_id: i64) -> Result<Option<String>, String> {
         self.db()
             .query_row(
-                "SELECT field_blob FROM results WHERE run_id = ?1",
-                [run_id],
+                "SELECT field_blob FROM results WHERE study_id = ?1",
+                [study_id],
                 |r| r.get(0),
             )
             .optional()
             .map_err(err)
     }
 
-    /// The queue: running then queued runs, in the order they will be
-    /// taken (a run in waves waits, besides, for its calm-water run).
+    /// The queue: running then queued studies, in the order they will be
+    /// taken (a study in waves waits, besides, for its calm-water study).
     pub fn queue(&self) -> Result<Vec<Value>, String> {
         let db = self.db();
         let mut q = db
             .prepare(&format!(
-                "SELECT {RUN_COLS} FROM runs r JOIN configs g ON g.id = r.config_id
-                 JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.run_id = r.id
+                "SELECT {STUDY_COLS} FROM studies r JOIN cases g ON g.id = r.case_id
+                 JOIN hulls h ON h.id = g.hull_id LEFT JOIN results x ON x.study_id = r.id
                  WHERE r.status IN ('running', 'queued')
                  ORDER BY r.status = 'running' DESC, r.priority DESC, r.id"
             ))
             .map_err(err)?;
-        let rows = q.query_map([], run_row).map_err(err)?;
+        let rows = q.query_map([], study_row).map_err(err)?;
         rows.collect::<Result<_, _>>().map_err(err)
     }
 
-    /// Counts of runs by status, and of stale results and statics.
+    /// Counts of studies by status, and of stale results and statics.
     pub fn counts(&self) -> Result<Value, String> {
         let db = self.db();
         let mut q = db
-            .prepare("SELECT status, COUNT(*) FROM runs GROUP BY status")
+            .prepare("SELECT status, COUNT(*) FROM studies GROUP BY status")
             .map_err(err)?;
         let mut out = json!({});
         for r in q
@@ -723,7 +732,7 @@ impl Store {
         }
         let stale: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM results x JOIN runs r ON r.id = x.run_id
+                "SELECT COUNT(*) FROM results x JOIN studies r ON r.id = x.study_id
                  WHERE x.solver_version != ?1 AND r.status = 'done'",
                 [SOLVER_VERSION],
                 |r| r.get(0),
@@ -733,36 +742,36 @@ impl Store {
         Ok(out)
     }
 
-    /// The calm-water run a run in waves is taken about: the done one if
+    /// The calm-water study a study in waves is taken about: the done one if
     /// there is one, else the one asked for (queued, running, failed …).
     fn calm_for(
         db: &Connection,
-        config_id: i64,
+        case_id: i64,
         attitude_key: &str,
     ) -> rusqlite::Result<Option<(i64, String, Option<String>)>> {
         db.query_row(
-            "SELECT r.id, r.status, x.scalars FROM runs r LEFT JOIN results x ON x.run_id = r.id
-             WHERE r.config_id = ?1 AND r.attitude_key = ?2 AND r.kind = 'calm'
+            "SELECT r.id, r.status, x.scalars FROM studies r LEFT JOIN results x ON x.study_id = r.id
+             WHERE r.case_id = ?1 AND r.attitude_key = ?2 AND r.kind = 'calm'
              ORDER BY r.status = 'done' DESC, r.status IN ('queued', 'running') DESC, r.id
              LIMIT 1",
-            params![config_id, attitude_key],
+            params![case_id, attitude_key],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()
     }
 
-    /// Take the next run that can go (highest priority, then oldest; a run
-    /// in waves once its calm-water run is done) and mark it running. A run
-    /// in waves whose calm-water run failed, or was cancelled, fails too.
+    /// Take the next study that can go (highest priority, then oldest; a study
+    /// in waves once its calm-water study is done) and mark it running. A study
+    /// in waves whose calm-water study failed, or was cancelled, fails too.
     pub fn claim(&self) -> Result<Option<Claimed>, String> {
         let mut db = self.db();
         let tx = db.transaction().map_err(err)?;
         let candidates: Vec<Candidate> = {
             let mut q = tx
                 .prepare(
-                    "SELECT r.id, r.config_id, r.kind, r.params, r.attitude_key, g.hull_id,
+                    "SELECT r.id, r.case_id, r.kind, r.params, r.attitude_key, g.hull_id,
                             g.params, g.statics_blob
-                     FROM runs r JOIN configs g ON g.id = r.config_id
+                     FROM studies r JOIN cases g ON g.id = r.case_id
                      WHERE r.status = 'queued' ORDER BY r.priority DESC, r.id LIMIT 200",
                 )
                 .map_err(err)?;
@@ -783,49 +792,41 @@ impl Store {
             rows.collect::<Result<_, _>>().map_err(err)?
         };
         let mut chosen = None;
-        for (id, config_id, kind, params_json, key, hull_id, config_json, statics) in candidates {
+        for (id, case_id, kind, params_json, key, hull_id, case_json, statics) in candidates {
             let calm = if kind == "waves" {
-                match Self::calm_for(&tx, config_id, &key).map_err(err)? {
+                match Self::calm_for(&tx, case_id, &key).map_err(err)? {
                     Some((cid, st, Some(scalars))) if st == status::DONE => {
                         let s: Value = serde_json::from_str(&scalars).unwrap_or_default();
                         match (s["sinkage"].as_f64(), s["trim_rad"].as_f64()) {
                             (Some(z), Some(t)) => Some((cid, (z, t))),
                             _ => {
-                                fail(&tx, id, &format!("calm-water run #{cid} has no attitude"))?;
+                                fail(&tx, id, &format!("calm-water study #{cid} has no attitude"))?;
                                 continue;
                             }
                         }
                     }
                     Some((_, st, _)) if st == status::QUEUED || st == status::RUNNING => continue,
                     Some((cid, st, _)) => {
-                        fail(&tx, id, &format!("its calm-water run #{cid} is {st}"))?;
+                        fail(&tx, id, &format!("its calm-water study #{cid} is {st}"))?;
                         continue;
                     }
                     None => {
-                        fail(&tx, id, "it has no calm-water run to be taken about")?;
+                        fail(&tx, id, "it has no calm-water study to be taken about")?;
                         continue;
                     }
                 }
             } else {
                 None
             };
-            chosen = Some((
-                id,
-                config_id,
-                params_json,
-                hull_id,
-                config_json,
-                statics,
-                calm,
-            ));
+            chosen = Some((id, case_id, params_json, hull_id, case_json, statics, calm));
             break;
         }
-        let Some((id, config_id, params_json, hull_id, config_json, statics, calm)) = chosen else {
+        let Some((id, case_id, params_json, hull_id, case_json, statics, calm)) = chosen else {
             tx.commit().map_err(err)?;
             return Ok(None);
         };
         tx.execute(
-            "UPDATE runs SET status = 'running', started_at = ?2, error = NULL WHERE id = ?1",
+            "UPDATE studies SET status = 'running', started_at = ?2, error = NULL WHERE id = ?1",
             params![id, now()],
         )
         .map_err(err)?;
@@ -854,9 +855,9 @@ impl Store {
         };
         Ok(Some(Claimed {
             id,
-            config_id,
+            case_id,
             params: serde_json::from_str(&params_json).map_err(err)?,
-            config: serde_json::from_str(&config_json).map_err(err)?,
+            case: serde_json::from_str(&case_json).map_err(err)?,
             hull: HullSource {
                 file_name: hull.0,
                 file_blob: hull.1,
@@ -867,14 +868,14 @@ impl Store {
         }))
     }
 
-    /// A running run finished: its result replaces any it had.
+    /// A running study finished: its result replaces any it had.
     pub fn finish(&self, id: i64, r: &NewResult) -> Result<(), String> {
         let blob = self.put_json(&r.field)?;
         let mut db = self.db();
         let tx = db.transaction().map_err(err)?;
         let t = now();
         tx.execute(
-            "INSERT OR REPLACE INTO results (run_id, scalars, field_blob, solver_version, seconds,
+            "INSERT OR REPLACE INTO results (study_id, scalars, field_blob, solver_version, seconds,
                                              warm_from, attitude_from, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -890,36 +891,38 @@ impl Store {
         )
         .map_err(err)?;
         tx.execute(
-            "UPDATE runs SET status = 'done', finished_at = ?2, error = NULL WHERE id = ?1",
+            "UPDATE studies SET status = 'done', finished_at = ?2, error = NULL WHERE id = ?1",
             params![id, t],
         )
         .map_err(err)?;
         tx.commit().map_err(err)
     }
 
-    /// A running run stopped without a result (`failed` or `cancelled`).
-    /// A result from an earlier run is kept.
+    /// A running study stopped without a result (`failed` or `cancelled`).
+    /// A result from an earlier study is kept.
     pub fn stop(&self, id: i64, st: &str, error: Option<&str>) -> Result<(), String> {
         self.db()
             .execute(
-                "UPDATE runs SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
+                "UPDATE studies SET status = ?2, finished_at = ?3, error = ?4 WHERE id = ?1",
                 params![id, st, now(), error],
             )
             .map(|_| ())
             .map_err(err)
     }
 
-    /// Cancel a queued run, returning its status before (the worker stops a
+    /// Cancel a queued study, returning its status before (the worker stops a
     /// running one itself).
     pub fn cancel_queued(&self, id: i64) -> Result<Option<String>, String> {
         let db = self.db();
         let st: Option<String> = db
-            .query_row("SELECT status FROM runs WHERE id = ?1", [id], |r| r.get(0))
+            .query_row("SELECT status FROM studies WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(err)?;
         if st.as_deref() == Some(status::QUEUED) {
             db.execute(
-                "UPDATE runs SET status = 'cancelled', finished_at = ?2 WHERE id = ?1",
+                "UPDATE studies SET status = 'cancelled', finished_at = ?2 WHERE id = ?1",
                 params![id, now()],
             )
             .map_err(err)?;
@@ -927,8 +930,8 @@ impl Store {
         Ok(st)
     }
 
-    /// Put finished runs back on the queue — the given ones (with, for a run
-    /// in waves, its calm-water run if that failed or was cancelled), or
+    /// Put finished studies back on the queue — the given ones (with, for a study
+    /// in waves, its calm-water study if that failed or was cancelled), or
     /// every one with a stale result (optionally on one hull). Returns how
     /// many.
     pub fn requeue(
@@ -944,17 +947,17 @@ impl Store {
                 for id in ids {
                     n += db
                         .execute(
-                            "UPDATE runs SET status = 'queued', error = NULL, queued_at = ?2
+                            "UPDATE studies SET status = 'queued', error = NULL, queued_at = ?2
                              WHERE id = ?1 AND status IN ('done', 'failed', 'cancelled')",
                             params![id, t],
                         )
                         .map_err(err)?;
                     n += db
                         .execute(
-                            "UPDATE runs SET status = 'queued', error = NULL, queued_at = ?2
+                            "UPDATE studies SET status = 'queued', error = NULL, queued_at = ?2
                              WHERE status IN ('failed', 'cancelled') AND kind = 'calm'
-                               AND (config_id, attitude_key) IN
-                                   (SELECT config_id, attitude_key FROM runs
+                               AND (case_id, attitude_key) IN
+                                   (SELECT case_id, attitude_key FROM studies
                                      WHERE id = ?1 AND kind = 'waves')",
                             params![id, t],
                         )
@@ -964,10 +967,10 @@ impl Store {
             }
             None => db
                 .execute(
-                    "UPDATE runs SET status = 'queued', error = NULL, queued_at = ?1
+                    "UPDATE studies SET status = 'queued', error = NULL, queued_at = ?1
                      WHERE status = 'done'
-                       AND (?2 IS NULL OR config_id IN (SELECT id FROM configs WHERE hull_id = ?2))
-                       AND id IN (SELECT run_id FROM results WHERE solver_version != ?3)",
+                       AND (?2 IS NULL OR case_id IN (SELECT id FROM cases WHERE hull_id = ?2))
+                       AND id IN (SELECT study_id FROM results WHERE solver_version != ?3)",
                     params![t, stale_on_hull, SOLVER_VERSION],
                 )
                 .map_err(err),
@@ -978,30 +981,30 @@ impl Store {
         let n = self
             .db()
             .execute(
-                "UPDATE runs SET priority = ?2 WHERE id = ?1",
+                "UPDATE studies SET priority = ?2 WHERE id = ?1",
                 params![id, priority],
             )
             .map_err(err)?;
         Ok(n > 0)
     }
 
-    /// For a warm start: the done calm-water runs on `config_id` that differ
-    /// from `p` only in speed (and grid), as `(run id, froude, sinkage,
+    /// For a warm start: the done calm-water studies on `case_id` that differ
+    /// from `p` only in speed (and grid), as `(study id, froude, sinkage,
     /// trim)` from their solved equilibria.
     pub fn solved_neighbours(
         &self,
-        config_id: i64,
-        p: &RunParams,
+        case_id: i64,
+        p: &StudyParams,
     ) -> Result<Vec<(i64, f64, f64, f64)>, String> {
         let db = self.db();
         let mut q = db
             .prepare(
-                "SELECT r.id, r.params, x.scalars FROM runs r JOIN results x ON x.run_id = r.id
-                 WHERE r.config_id = ?1 AND r.kind = 'calm' AND r.status = 'done'",
+                "SELECT r.id, r.params, x.scalars FROM studies r JOIN results x ON x.study_id = r.id
+                 WHERE r.case_id = ?1 AND r.kind = 'calm' AND r.status = 'done'",
             )
             .map_err(err)?;
         let rows = q
-            .query_map([config_id], |r| {
+            .query_map([case_id], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
@@ -1013,7 +1016,7 @@ impl Store {
         for row in rows {
             let (id, q, s) = row.map_err(err)?;
             let (Ok(q), Ok(s)) = (
-                serde_json::from_str::<RunParams>(&q),
+                serde_json::from_str::<StudyParams>(&q),
                 serde_json::from_str::<Value>(&s),
             ) else {
                 continue;
@@ -1029,8 +1032,8 @@ impl Store {
     }
 }
 
-/// A queued run the worker might take: its id, configuration, kind, params
-/// and attitude key, and its configuration's hull, params and statics blob.
+/// A queued study the worker might take: its id, case, kind, params
+/// and attitude key, and its case's hull, params and statics blob.
 type Candidate = (
     i64,
     i64,
@@ -1044,19 +1047,19 @@ type Candidate = (
 
 fn fail(tx: &rusqlite::Transaction, id: i64, why: &str) -> Result<(), String> {
     tx.execute(
-        "UPDATE runs SET status = 'failed', error = ?2, finished_at = ?3 WHERE id = ?1",
+        "UPDATE studies SET status = 'failed', error = ?2, finished_at = ?3 WHERE id = ?1",
         params![id, why, now()],
     )
     .map(|_| ())
     .map_err(err)
 }
 
-/// Filters for [`Store::runs`].
+/// Filters for [`Store::studies`].
 #[derive(Default)]
-pub struct RunFilter {
+pub struct StudyFilter {
     pub hull: Option<i64>,
-    pub config: Option<i64>,
-    /// These runs only: ids separated by commas.
+    pub case: Option<i64>,
+    /// These studies only: ids separated by commas.
     pub ids: Option<String>,
     /// One status, or several separated by commas.
     pub status: Option<String>,
@@ -1096,7 +1099,7 @@ fn hull_summary(sections: &Value) -> Value {
     json!({ "hulls": hulls, "notes": sections["notes"] })
 }
 
-/// What lists show of a configuration's statics: everything but the meshes
+/// What lists show of a case's statics: everything but the meshes
 /// and the GZ curve's points.
 fn statics_summary(v: &Value) -> Value {
     let mut s = v.clone();
@@ -1113,9 +1116,9 @@ fn statics_summary(v: &Value) -> Value {
 
 const HULL_COLS: &str = "h.id, h.name, h.notes, h.uploaded_by, h.file_name, h.import, h.parent_id,
     h.summary, h.created_at,
-    (SELECT COUNT(*) FROM configs WHERE hull_id = h.id),
+    (SELECT COUNT(*) FROM cases WHERE hull_id = h.id),
     (SELECT json_group_object(status, n) FROM
-        (SELECT r.status, COUNT(*) AS n FROM runs r JOIN configs g ON g.id = r.config_id
+        (SELECT r.status, COUNT(*) AS n FROM studies r JOIN cases g ON g.id = r.case_id
           WHERE g.hull_id = h.id GROUP BY r.status))";
 
 fn hull_row(r: &Row) -> rusqlite::Result<Value> {
@@ -1129,18 +1132,18 @@ fn hull_row(r: &Row) -> rusqlite::Result<Value> {
         "parent_id": r.get::<_, Option<i64>>(6)?,
         "summary": parse(r.get(7)?),
         "created_at": r.get::<_, i64>(8)?,
-        "configs": r.get::<_, i64>(9)?,
-        "runs": parse(r.get(10)?),
+        "cases": r.get::<_, i64>(9)?,
+        "studies": parse(r.get(10)?),
     }))
 }
 
-const CONFIG_COLS: &str = "g.id, g.hull_id, g.name, g.notes, g.params, g.summary, g.error,
+const CASE_COLS: &str = "g.id, g.hull_id, g.name, g.notes, g.params, g.summary, g.error,
     g.solver_version, g.created_by, g.created_at,
     (SELECT name FROM hulls WHERE id = g.hull_id),
     (SELECT json_group_object(status, n) FROM
-        (SELECT status, COUNT(*) AS n FROM runs WHERE config_id = g.id GROUP BY status))";
+        (SELECT status, COUNT(*) AS n FROM studies WHERE case_id = g.id GROUP BY status))";
 
-fn config_row(r: &Row) -> rusqlite::Result<Value> {
+fn case_row(r: &Row) -> rusqlite::Result<Value> {
     let version: String = r.get(7)?;
     Ok(json!({
         "id": r.get::<_, i64>(0)?,
@@ -1155,16 +1158,16 @@ fn config_row(r: &Row) -> rusqlite::Result<Value> {
         "created_by": r.get::<_, String>(8)?,
         "created_at": r.get::<_, i64>(9)?,
         "hull_name": r.get::<_, Option<String>>(10)?,
-        "runs": parse(r.get(11)?),
+        "studies": parse(r.get(11)?),
     }))
 }
 
-const RUN_COLS: &str = "r.id, r.config_id, r.kind, r.params, r.status, r.priority, r.requested_by,
+const STUDY_COLS: &str = "r.id, r.case_id, r.kind, r.params, r.status, r.priority, r.requested_by,
     r.error, r.created_at, r.queued_at, r.started_at, r.finished_at,
     g.hull_id, h.name, g.name, g.params,
     x.scalars, x.solver_version, x.seconds, x.warm_from, x.attitude_from, x.created_at";
 
-fn run_row(r: &Row) -> rusqlite::Result<Value> {
+fn study_row(r: &Row) -> rusqlite::Result<Value> {
     let version: Option<String> = r.get(17)?;
     let result = match version {
         None => Value::Null,
@@ -1180,7 +1183,7 @@ fn run_row(r: &Row) -> rusqlite::Result<Value> {
     };
     Ok(json!({
         "id": r.get::<_, i64>(0)?,
-        "config_id": r.get::<_, i64>(1)?,
+        "case_id": r.get::<_, i64>(1)?,
         "kind": r.get::<_, String>(2)?,
         "params": parse(r.get(3)?),
         "status": r.get::<_, String>(4)?,
@@ -1193,8 +1196,8 @@ fn run_row(r: &Row) -> rusqlite::Result<Value> {
         "finished_at": r.get::<_, Option<i64>>(11)?,
         "hull_id": r.get::<_, i64>(12)?,
         "hull_name": r.get::<_, String>(13)?,
-        "config_name": r.get::<_, String>(14)?,
-        "config": parse(r.get(15)?),
+        "case_name": r.get::<_, String>(14)?,
+        "case": parse(r.get(15)?),
         "stale": result["stale"] == true,
         "result": result,
     }))

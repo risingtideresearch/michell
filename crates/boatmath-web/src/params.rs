@@ -1,14 +1,14 @@
 //! What the store keeps below a hull, in canonical form, so that asking for
 //! the same thing twice finds the first:
 //!
-//! - a **configuration** ([`ConfigParams`]): the platform the hull makes —
+//! - a **case** ([`CaseParams`]): the platform the hull makes —
 //!   on its own or doubled into a catamaran — and its load (mass, centre of
 //!   gravity, radii of gyration, roll damping). Its statics (the float at
 //!   rest, GM, the GZ curve) are computed when it is made.
-//! - a **run** ([`RunParams`]) on a configuration: a speed and the model's
-//!   settings, in calm water or in waves from one heading. A run in waves
-//!   is taken about the attitude of the calm-water run at its speed
-//!   ([`RunParams::calm`]), which it waits for.
+//! - a **study** ([`StudyParams`]) on a case: a speed and the model's
+//!   settings, in calm water or in waves from one heading. A study in waves
+//!   is taken about the attitude of the calm-water study at its speed
+//!   ([`StudyParams::calm`]), which it waits for.
 //!
 //! The hull's import settings (waterline, stations, units, ...) belong to
 //! the hull. `canonical` fills in every default and checks every range, so
@@ -41,12 +41,12 @@ fn positive(name: &str, v: Option<f64>) -> Result<(), String> {
     }
 }
 
-// ---------------------------------------------------------------- configuration
+// ---------------------------------------------------------------- case
 
 /// A platform on a hull and its load.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigParams {
+pub struct CaseParams {
     /// Double the (single) hull into a catamaran with this centre span, the
     /// distance between the demihulls' centreplanes [m].
     #[serde(default)]
@@ -77,9 +77,9 @@ pub struct ConfigParams {
     pub roll_damping: f64,
 }
 
-impl Default for ConfigParams {
+impl Default for CaseParams {
     fn default() -> Self {
-        ConfigParams {
+        CaseParams {
             span: None,
             mass: None,
             mass_by: MassBy::Sinking,
@@ -93,8 +93,8 @@ impl Default for ConfigParams {
     }
 }
 
-impl ConfigParams {
-    pub fn canonical(mut self) -> Result<ConfigParams, String> {
+impl CaseParams {
+    pub fn canonical(mut self) -> Result<CaseParams, String> {
         positive("span", self.span)?;
         positive("mass", self.mass)?;
         finite("lcg", self.lcg)?;
@@ -116,14 +116,14 @@ impl ConfigParams {
         serde_json::to_string(self).expect("params serialize")
     }
 
-    /// Hex SHA-256 of the canonical JSON: the configuration's identity on
+    /// Hex SHA-256 of the canonical JSON: the case's identity on
     /// its hull.
     pub fn hash(&self) -> String {
         sha(&self.to_json())
     }
 }
 
-// ---------------------------------------------------------------- run
+// ---------------------------------------------------------------- study
 
 /// The transom closure, as stored.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -250,10 +250,10 @@ pub fn default_lambdas() -> Vec<f64> {
     (0..=20).map(|i| 0.5 + 0.125 * i as f64).collect()
 }
 
-/// A speed on a configuration, in calm water or in waves.
+/// A speed on a case, in calm water or in waves.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RunParams {
+pub struct StudyParams {
     /// Length Froude number on the longest hull.
     pub froude: f64,
     /// Float at the dynamic equilibrium at speed; else hold the attitude at
@@ -262,7 +262,7 @@ pub struct RunParams {
     pub dynamic: bool,
     #[serde(default)]
     pub closure: Closure,
-    /// Free-surface grid columns (a calm-water run's field; display only).
+    /// Free-surface grid columns (a calm-water study's field; display only).
     #[serde(default = "default_grid")]
     pub grid: usize,
     /// In waves; `None` in calm water.
@@ -278,7 +278,7 @@ fn default_dynamic() -> bool {
     true
 }
 
-impl RunParams {
+impl StudyParams {
     /// `"calm"` or `"waves"`.
     pub fn kind(&self) -> &'static str {
         if self.waves.is_some() {
@@ -289,8 +289,8 @@ impl RunParams {
     }
 
     /// Checked, with every default filled in (so equal computations compare
-    /// equal). A run in waves has no field of its own, so no grid.
-    pub fn canonical(mut self) -> Result<RunParams, String> {
+    /// equal). A study in waves has no field of its own, so no grid.
+    pub fn canonical(mut self) -> Result<StudyParams, String> {
         if !(self.froude > 0.0 && self.froude < 5.0) {
             return Err(format!("froude {}: expected 0 < Fn < 5", self.froude));
         }
@@ -318,31 +318,31 @@ impl RunParams {
         serde_json::to_string(self).expect("params serialize")
     }
 
-    /// Hex SHA-256 of the canonical JSON: the run's identity on its
-    /// configuration.
+    /// Hex SHA-256 of the canonical JSON: the study's identity on its
+    /// case.
     pub fn hash(&self) -> String {
         sha(&self.to_json())
     }
 
-    /// The calm-water run a run in waves is taken about: the same speed,
+    /// The calm-water study a study in waves is taken about: the same speed,
     /// attitude and closure (and the grid asked for with it).
-    pub fn calm(&self, grid: usize) -> RunParams {
-        RunParams {
+    pub fn calm(&self, grid: usize) -> StudyParams {
+        StudyParams {
             waves: None,
             grid,
             ..self.clone()
         }
     }
 
-    /// What a run's attitude depends on — the calm-water runs that share it
-    /// (any grid) and the runs in waves taken about it: its speed, attitude
+    /// What a study's attitude depends on — the calm-water studies that share it
+    /// (any grid) and the studies in waves taken about it: its speed, attitude
     /// and closure.
     pub fn attitude_key(&self) -> String {
         sha(&serde_json::to_string(&(self.froude, self.dynamic, self.closure)).expect("serialize"))
     }
 
-    /// The same run at another speed: what a warm start may borrow from.
-    pub fn same_but_speed(&self, other: &RunParams) -> bool {
+    /// The same study at another speed: what a warm start may borrow from.
+    pub fn same_but_speed(&self, other: &StudyParams) -> bool {
         self.dynamic == other.dynamic && self.closure == other.closure
     }
 }
@@ -351,15 +351,15 @@ impl RunParams {
 mod tests {
     use super::*;
 
-    fn run(s: &str) -> RunParams {
-        serde_json::from_str::<RunParams>(s)
+    fn study(s: &str) -> StudyParams {
+        serde_json::from_str::<StudyParams>(s)
             .unwrap()
             .canonical()
             .unwrap()
     }
 
-    fn config(s: &str) -> ConfigParams {
-        serde_json::from_str::<ConfigParams>(s)
+    fn case(s: &str) -> CaseParams {
+        serde_json::from_str::<CaseParams>(s)
             .unwrap()
             .canonical()
             .unwrap()
@@ -368,15 +368,15 @@ mod tests {
     /// Defaults spelt out and left out are the same thing.
     #[test]
     fn equal_requests_hash_alike() {
-        let a = run(r#"{"froude": 0.3}"#);
-        let b = run(
+        let a = study(r#"{"froude": 0.3}"#);
+        let b = study(
             r#"{"froude": 0.3, "grid": 640, "dynamic": true, "closure": {"type": "ballistic"}}"#,
         );
         assert_eq!(a.hash(), b.hash());
-        assert_ne!(a.hash(), run(r#"{"froude": 0.31}"#).hash());
-        let w = run(r#"{"froude": 0.3, "grid": 200, "waves": {"heading": -180}}"#);
+        assert_ne!(a.hash(), study(r#"{"froude": 0.31}"#).hash());
+        let w = study(r#"{"froude": 0.3, "grid": 200, "waves": {"heading": -180}}"#);
         assert_eq!(w.kind(), "waves");
-        assert_eq!(w.grid, 640, "a run in waves has no grid of its own");
+        assert_eq!(w.grid, 640, "a study in waves has no grid of its own");
         assert_eq!(w.waves.as_ref().unwrap().heading, 180.0);
         assert_eq!(
             w.waves.as_ref().unwrap().lambdas.as_ref().unwrap().len(),
@@ -385,9 +385,9 @@ mod tests {
         assert_eq!(w.attitude_key(), a.attitude_key());
         assert_eq!(w.calm(640).hash(), a.hash());
 
-        let c = config(r#"{"mass_by": "scale"}"#);
-        assert_eq!(c.hash(), config("{}").hash(), "no mass, nothing to scale");
-        assert_ne!(config(r#"{"span": 3}"#).hash(), config("{}").hash());
+        let c = case(r#"{"mass_by": "scale"}"#);
+        assert_eq!(c.hash(), case("{}").hash(), "no mass, nothing to scale");
+        assert_ne!(case(r#"{"span": 3}"#).hash(), case("{}").hash());
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
             r#"{"froude": 0.3, "waves": {"heading": 180, "lambdas": []}}"#,
             r#"{"froude": 0.3, "waves": {"heading": 180, "sea": {"type": "jonswap", "hs": 0, "tp": 5}}}"#,
         ] {
-            let p: RunParams = serde_json::from_str(s).unwrap();
+            let p: StudyParams = serde_json::from_str(s).unwrap();
             assert!(p.canonical().is_err(), "{s}");
         }
         for s in [
@@ -405,9 +405,9 @@ mod tests {
             r#"{"span": 0}"#,
             r#"{"roll_damping": 2}"#,
         ] {
-            let p: ConfigParams = serde_json::from_str(s).unwrap();
+            let p: CaseParams = serde_json::from_str(s).unwrap();
             assert!(p.canonical().is_err(), "{s}");
         }
-        assert!(serde_json::from_str::<RunParams>(r#"{"froude": 0.3, "speed": 2}"#).is_err());
+        assert!(serde_json::from_str::<StudyParams>(r#"{"froude": 0.3, "speed": 2}"#).is_err());
     }
 }

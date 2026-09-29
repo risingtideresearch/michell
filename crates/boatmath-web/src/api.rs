@@ -1,4 +1,4 @@
-//! The JSON API: hulls, their configurations, runs on those,
+//! The JSON API: hulls, their cases, studies on those,
 //! results, and the queue. Bodies and answers are JSON unless noted.
 //!
 //! ```text
@@ -6,7 +6,7 @@
 //! GET  /api/whoami                      {"login", "name"} from the tailnet, or null
 //!
 //! Behind `tailscale serve` (the server bound to loopback), uploads and
-//! runs are labelled with the tailnet's name for the asker, and a `by`
+//! studies are labelled with the tailnet's name for the asker, and a `by`
 //! given in the request is ignored.
 //!
 //! GET  /api/hulls                       every hull, newest first
@@ -19,37 +19,37 @@
 //! GET  /api/hulls/:id/geometry          the display geometry (as /api/geometry)
 //! GET  /api/hulls/:id/file              the uploaded file
 //!
-//! GET  /api/configs?hull=               configurations, with their statics' summary
-//! POST /api/configs                     {"hull", "params": ConfigParams, "name"?, "by"?,
+//! GET  /api/cases?hull=               cases, with their statics' summary
+//! POST /api/cases                     {"hull", "params": CaseParams, "name"?, "by"?,
 //!                                        "dry_run"?}
-//!                                       → {"id", "created", "config"}; the statics
-//!                                       are computed before it is saved. A dry run
+//!                                       → {"id", "created", "case"}; the statics
+//!                                       are computed before it is saved. A dry study
 //!                                       checks it and answers {"params", "existing"}
-//! GET  /api/configs/:id                 one (its statics computed again if stale)
-//! POST /api/configs/:id                 {"name"?, "notes"?}
-//! GET  /api/configs/:id/statics         the whole statics (GZ curve, meshes at rest)
+//! GET  /api/cases/:id                 one (its statics computed again if stale)
+//! POST /api/cases/:id                 {"name"?, "notes"?}
+//! GET  /api/cases/:id/statics         the whole statics (GZ curve, meshes at rest)
 //!
-//! POST /api/runs                        {"config_ids": [..], "runs": [RunParams..],
+//! POST /api/studies                        {"case_ids": [..], "studies": [StudyParams..],
 //!                                        "priority"?, "by"?, "dry_run"?}
-//!                                       every run on every configuration (a run in
-//!                                       waves brings its calm-water run) →
-//!                                       {"runs": [..]}; a dry run
+//!                                       every study on every case (a study in
+//!                                       waves brings its calm-water study) →
+//!                                       {"studies": [..]}; a dry run
 //!                                       queues nothing and says which exist
-//! GET  /api/runs?hull=&config=&ids=a,b&status=a,b&kind=&limit=&sort=finished
-//!                                       runs with their configuration and result
-//! GET  /api/runs/:id                    one run
-//! GET  /api/runs/:id/result             its whole answer (fields and all)
-//! POST /api/runs/:id/cancel             stop it (queued, or running)
-//! POST /api/runs/:id/requeue            run it again
-//! POST /api/runs/:id/priority?p=N       higher runs sooner
-//! POST /api/requeue_stale?hull=         requeue every run with a stale result
-//! GET  /api/queue                       {"running", "runs", "counts"}
+//! GET  /api/studies?hull=&case=&ids=a,b&status=a,b&kind=&limit=&sort=finished
+//!                                       studies with their case and result
+//! GET  /api/studies/:id                    one study
+//! GET  /api/studies/:id/result             its whole answer (fields and all)
+//! POST /api/studies/:id/cancel             stop it (queued, or running)
+//! POST /api/studies/:id/requeue            run it again
+//! POST /api/studies/:id/priority?p=N       higher runs sooner
+//! POST /api/requeue_stale?hull=         requeue every study with a stale result
+//! GET  /api/queue                       {"running", "studies", "counts"}
 //! ```
 
-use michell_web::case::{ConfigParams, RunParams};
-use michell_web::store::{NewHull, RunFilter, Store, SOLVER_VERSION};
-use michell_web::worker::Worker;
-use michell_web::{geometry, loft, statics, LoftRequest};
+use boatmath_web::params::{CaseParams, StudyParams};
+use boatmath_web::store::{NewHull, Store, StudyFilter, SOLVER_VERSION};
+use boatmath_web::worker::Worker;
+use boatmath_web::{geometry, loft, statics, LoftRequest};
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tiny_http::Method;
@@ -81,7 +81,7 @@ fn internal(e: String) -> Fail {
 }
 
 /// Who is asking, as `tailscale serve` says (its `Tailscale-User-*`
-/// headers): what uploads and runs are labelled with, in place of the name
+/// headers): what uploads and studies are labelled with, in place of the name
 /// the page sends.
 pub struct Who {
     pub login: String,
@@ -161,54 +161,48 @@ pub fn route(
             Ok(Reply::Gz(s.blob_gz(&blob).map_err(internal)?, kind))
         }),
 
-        (Get, ["configs"]) => opt_id("hull").and_then(|h| list(s.configs(h))),
-        (Post, ["configs"]) => json_body(body).and_then(|v| {
+        (Get, ["cases"]) => opt_id("hull").and_then(|h| list(s.cases(h))),
+        (Post, ["cases"]) => json_body(body).and_then(|v| {
             let hull = v["hull"].as_i64().ok_or(bad("hull (an id) is required"))?;
-            let p = config_params(&v["params"])?;
+            let p = case_params(&v["params"])?;
             if v["dry_run"].as_bool() == Some(true) {
                 // Checked, and found if it exists; nothing made.
-                check_config(app, hull, &p)?;
+                check_case(app, hull, &p)?;
                 return Ok(Reply::Json(json!({
                     "params": p,
-                    "existing": s.find_config(hull, &p).map_err(internal)?,
+                    "existing": s.find_case(hull, &p).map_err(internal)?,
                 })));
             }
             let by = by(who, v["by"].as_str().unwrap_or(""));
-            let (id, created, _) = make_config(app, hull, &p, v["name"].as_str(), by)?;
+            let (id, created, _) = make_case(app, hull, &p, v["name"].as_str(), by)?;
             Ok(Reply::Json(json!({
                 "id": id,
                 "created": created,
-                "config": s.config(id).map_err(internal)?,
+                "case": s.case(id).map_err(internal)?,
             })))
         }),
-        (Get, ["configs", c]) => id(c).and_then(|c| {
-            let cfg = s
-                .config(c)
-                .map_err(internal)?
-                .ok_or(missing("configuration"))?;
+        (Get, ["cases", c]) => id(c).and_then(|c| {
+            let cfg = s.case(c).map_err(internal)?.ok_or(missing("case"))?;
             if cfg["stale"] == true {
                 // Statics are cheap: computed again when looked at.
                 recompute(app, c)?;
-                return one(s.config(c), "configuration");
+                return one(s.case(c), "case");
             }
             Ok(Reply::Json(cfg))
         }),
-        (Post, ["configs", c]) => id(c).and_then(|c| {
+        (Post, ["cases", c]) => id(c).and_then(|c| {
             let v = json_body(body)?;
             let text = |k| v[k].as_str().map(str::trim);
-            if s.update_config(c, text("name"), text("notes"))
+            if s.update_case(c, text("name"), text("notes"))
                 .map_err(internal)?
             {
-                one(s.config(c), "configuration")
+                one(s.case(c), "case")
             } else {
-                Err(missing("configuration"))
+                Err(missing("case"))
             }
         }),
-        (Get, ["configs", c, "statics"]) => id(c).and_then(|c| {
-            let (_, _, blob) = s
-                .config_source(c)
-                .map_err(internal)?
-                .ok_or(missing("configuration"))?;
+        (Get, ["cases", c, "statics"]) => id(c).and_then(|c| {
+            let (_, _, blob) = s.case_source(c).map_err(internal)?.ok_or(missing("case"))?;
             let blob = blob.ok_or((409, "its statics could not be computed".to_string()))?;
             Ok(Reply::Gz(
                 s.blob_gz(&blob).map_err(internal)?,
@@ -216,21 +210,21 @@ pub fn route(
             ))
         }),
 
-        (Post, ["runs"]) => json_body(body).and_then(|v| add_runs(app, &v, who)),
-        (Get, ["runs"]) => (|| {
-            let f = RunFilter {
+        (Post, ["studies"]) => json_body(body).and_then(|v| add_studies(app, &v, who)),
+        (Get, ["studies"]) => (|| {
+            let f = StudyFilter {
                 hull: opt_id("hull")?,
-                config: opt_id("config")?,
+                case: opt_id("case")?,
                 ids: get("ids").map(String::from),
                 status: get("status").map(String::from),
                 kind: get("kind").map(String::from),
                 limit: opt_id("limit")?,
                 by_finish: get("sort") == Some("finished"),
             };
-            list(s.runs(&f))
+            list(s.studies(&f))
         })(),
-        (Get, ["runs", r]) => id(r).and_then(|r| one(s.run(r), "run")),
-        (Get, ["runs", r, "result"]) => id(r).and_then(|r| {
+        (Get, ["studies", r]) => id(r).and_then(|r| one(s.study(r), "study")),
+        (Get, ["studies", r, "result"]) => id(r).and_then(|r| {
             let blob = s
                 .result_blob(r)
                 .map_err(internal)?
@@ -240,20 +234,20 @@ pub fn route(
                 "application/json",
             ))
         }),
-        (Post, ["runs", r, "cancel"]) => id(r).and_then(|r| {
+        (Post, ["studies", r, "cancel"]) => id(r).and_then(|r| {
             let before = s
                 .cancel_queued(r)
                 .map_err(internal)?
-                .ok_or(missing("run"))?;
+                .ok_or(missing("study"))?;
             let stopping = before == "running" && app.worker.cancel(r);
             Ok(Reply::Json(json!({ "was": before, "stopping": stopping })))
         }),
-        (Post, ["runs", r, "requeue"]) => id(r).and_then(|r| {
+        (Post, ["studies", r, "requeue"]) => id(r).and_then(|r| {
             let n = s.requeue(Some(&[r]), None).map_err(internal)?;
             app.worker.poke();
             Ok(Reply::Json(json!({ "requeued": n })))
         }),
-        (Post, ["runs", r, "priority"]) => id(r).and_then(|r| {
+        (Post, ["studies", r, "priority"]) => id(r).and_then(|r| {
             let p = get("p").ok_or(bad("p is required"))?;
             let p = p
                 .parse::<i64>()
@@ -261,7 +255,7 @@ pub fn route(
             if s.set_priority(r, p).map_err(internal)? {
                 Ok(Reply::Json(json!({ "id": r, "priority": p })))
             } else {
-                Err(missing("run"))
+                Err(missing("study"))
             }
         }),
         (Post, ["requeue_stale"]) => opt_id("hull").and_then(|h| {
@@ -272,7 +266,7 @@ pub fn route(
         (Get, ["queue"]) => (|| {
             Ok(Reply::Json(json!({
                 "running": app.worker.status(),
-                "runs": s.queue().map_err(internal)?,
+                "studies": s.queue().map_err(internal)?,
                 "counts": s.counts().map_err(internal)?,
                 "solver_version": SOLVER_VERSION,
             })))
@@ -338,17 +332,17 @@ fn upload(
     })))
 }
 
-fn config_params(v: &Value) -> Result<ConfigParams, Fail> {
+fn case_params(v: &Value) -> Result<CaseParams, Fail> {
     let v = if v.is_null() { json!({}) } else { v.clone() };
-    serde_json::from_value::<ConfigParams>(v)
+    serde_json::from_value::<CaseParams>(v)
         .map_err(|e| e.to_string())
-        .and_then(ConfigParams::canonical)
+        .and_then(CaseParams::canonical)
         .map_err(bad)
 }
 
-/// The checks a configuration must pass before its statics are tried: a
+/// The checks a case must pass before its statics are tried: a
 /// catamaran doubles one hull, its demihulls clear of each other.
-fn check_config(app: &App, hull: i64, p: &ConfigParams) -> Result<(), Fail> {
+fn check_case(app: &App, hull: i64, p: &CaseParams) -> Result<(), Fail> {
     let h = app
         .store
         .hull(hull)
@@ -371,8 +365,8 @@ fn check_config(app: &App, hull: i64, p: &ConfigParams) -> Result<(), Fail> {
     Ok(())
 }
 
-/// A configuration's statics, from its hull's file.
-fn compute_statics(app: &App, hull: i64, p: &ConfigParams) -> Result<Result<Value, String>, Fail> {
+/// A case's statics, from its hull's file.
+fn compute_statics(app: &App, hull: i64, p: &CaseParams) -> Result<Result<Value, String>, Fail> {
     let src = app
         .store
         .hull_source(hull)
@@ -389,29 +383,29 @@ fn compute_statics(app: &App, hull: i64, p: &ConfigParams) -> Result<Result<Valu
     Ok(r)
 }
 
-/// The configuration on `hull` with these parameters: found, or made (its
+/// The case on `hull` with these parameters: found, or made (its
 /// statics computed first). `(id, created, statics error)`.
-fn make_config(
+fn make_case(
     app: &App,
     hull: i64,
-    p: &ConfigParams,
+    p: &CaseParams,
     name: Option<&str>,
     by: &str,
 ) -> Result<(i64, bool, Option<String>), Fail> {
-    if let Some(id) = app.store.find_config(hull, p).map_err(internal)? {
+    if let Some(id) = app.store.find_case(hull, p).map_err(internal)? {
         let error = app
             .store
-            .config(id)
+            .case(id)
             .map_err(internal)?
             .and_then(|c| c["error"].as_str().map(String::from));
         return Ok((id, false, error));
     }
-    check_config(app, hull, p)?;
+    check_case(app, hull, p)?;
     let st = compute_statics(app, hull, p)?;
     let name = name.map(str::trim).unwrap_or("");
     let (id, created) = app
         .store
-        .add_config(hull, p, name, by, st.as_ref().map_err(String::as_str))
+        .add_case(hull, p, name, by, st.as_ref().map_err(String::as_str))
         .map_err(internal)?;
     Ok((id, created, st.err()))
 }
@@ -419,56 +413,53 @@ fn make_config(
 fn recompute(app: &App, id: i64) -> Result<(), Fail> {
     let (hull, p, _) = app
         .store
-        .config_source(id)
+        .case_source(id)
         .map_err(internal)?
-        .ok_or(missing("configuration"))?;
+        .ok_or(missing("case"))?;
     let st = compute_statics(app, hull, &p)?;
     app.store
         .set_statics(id, st.as_ref().map_err(String::as_str))
         .map_err(internal)
 }
 
-/// `POST /api/runs`: every run on every configuration named (each made
+/// `POST /api/studies`: every study on every case named (each made
 /// already, its statics computed), all checked before anything is queued; a
-/// run in waves brings the calm-water run it is taken about (with the grid
-/// of a calm run asked for alongside, if any).
-fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
+/// study in waves brings the calm-water study it is taken about (with the grid
+/// of a calm study asked for alongside, if any).
+fn add_studies(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
     let s = &app.store;
-    let configs: Vec<i64> = v["config_ids"]
+    let cases: Vec<i64> = v["case_ids"]
         .as_array()
         .filter(|a| !a.is_empty())
-        .ok_or(bad("config_ids: expected a list of configuration ids"))?
+        .ok_or(bad("case_ids: expected a list of case ids"))?
         .iter()
         .map(|c| {
-            let id = c.as_i64().ok_or(bad(format!("config_ids: bad id {c}")))?;
-            let cfg = s
-                .config(id)
-                .map_err(internal)?
-                .ok_or(missing("configuration"))?;
+            let id = c.as_i64().ok_or(bad(format!("case_ids: bad id {c}")))?;
+            let cfg = s.case(id).map_err(internal)?.ok_or(missing("case"))?;
             if let Some(e) = cfg["error"].as_str() {
                 return Err(bad(format!(
-                    "configuration #{id} has no statics, so nothing can float on it: {e}"
+                    "case #{id} has no statics, so nothing can float on it: {e}"
                 )));
             }
             Ok(id)
         })
         .collect::<Result<_, Fail>>()?;
-    let asked: Vec<RunParams> = v["runs"]
+    let asked: Vec<StudyParams> = v["studies"]
         .as_array()
         .filter(|a| !a.is_empty())
-        .ok_or(bad("runs: expected a list of runs"))?
+        .ok_or(bad("studies: expected a list of studies"))?
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            serde_json::from_value::<RunParams>(r.clone())
+            serde_json::from_value::<StudyParams>(r.clone())
                 .map_err(|e| e.to_string())
-                .and_then(RunParams::canonical)
-                .map_err(|e| bad(format!("run {}: {e}", i + 1)))
+                .and_then(StudyParams::canonical)
+                .map_err(|e| bad(format!("study {}: {e}", i + 1)))
         })
         .collect::<Result<_, _>>()?;
-    // The runs to make on each configuration: those asked for, each run in
-    // waves after the calm-water run it needs (`implied` when not asked).
-    let mut runs: Vec<(RunParams, bool)> = Vec::new();
+    // The studies to make on each case: those asked for, each study in
+    // waves after the calm-water study it needs (`implied` when not asked).
+    let mut studies: Vec<(StudyParams, bool)> = Vec::new();
     for r in &asked {
         if r.waves.is_some() {
             let grid = asked
@@ -476,31 +467,31 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
                 .find(|o| o.waves.is_none() && o.attitude_key() == r.attitude_key())
                 .map_or(640, |o| o.grid);
             let calm = r.calm(grid);
-            if !runs
+            if !studies
                 .iter()
                 .any(|(o, _)| o.waves.is_none() && o.attitude_key() == calm.attitude_key())
             {
-                runs.push((calm, !asked.contains(&r.calm(grid))));
+                studies.push((calm, !asked.contains(&r.calm(grid))));
             }
         }
-        if !runs.iter().any(|(o, _)| o == r) {
-            runs.push((r.clone(), false));
+        if !studies.iter().any(|(o, _)| o == r) {
+            studies.push((r.clone(), false));
         }
     }
-    let total = configs.len() * runs.len();
+    let total = cases.len() * studies.len();
     if total > 400 {
         return Err(bad(format!(
-            "that is {total} runs; ask for at most 400 at a time"
+            "that is {total} studies; ask for at most 400 at a time"
         )));
     }
 
     if v["dry_run"].as_bool() == Some(true) {
         let mut rs = Vec::new();
-        for &c in &configs {
-            for (r, implied) in &runs {
-                let found = s.find_run(c, r).map_err(internal)?;
+        for &c in &cases {
+            for (r, implied) in &studies {
+                let found = s.find_study(c, r).map_err(internal)?;
                 rs.push(json!({
-                    "config_id": c,
+                    "case_id": c,
                     "params": r,
                     "kind": r.kind(),
                     "implied": implied,
@@ -510,20 +501,18 @@ fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
                 }));
             }
         }
-        return Ok(Reply::Json(json!({ "runs": rs })));
+        return Ok(Reply::Json(json!({ "studies": rs })));
     }
 
     let by = by(who, v["by"].as_str().unwrap_or(""));
     let priority = v["priority"].as_i64().unwrap_or(0);
     let mut rs = Vec::new();
-    for &cid in &configs {
-        for (r, implied) in &runs {
-            let (rid, created) = s
-                .add_run(cid, r, priority, by)
-                .map_err(internal)?;
-            rs.push(json!({ "id": rid, "created": created, "config_id": cid, "implied": implied }));
+    for &cid in &cases {
+        for (r, implied) in &studies {
+            let (rid, created) = s.add_study(cid, r, priority, by).map_err(internal)?;
+            rs.push(json!({ "id": rid, "created": created, "case_id": cid, "implied": implied }));
         }
     }
     app.worker.poke();
-    Ok(Reply::Json(json!({ "runs": rs })))
+    Ok(Reply::Json(json!({ "studies": rs })))
 }

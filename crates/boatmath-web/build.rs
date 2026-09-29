@@ -1,4 +1,4 @@
-//! Stamps `MICHELL_SOLVER_VERSION`: the last commit to touch the solver's
+//! Stamps `BOATMATH_SOLVER_VERSION`: the last commit to touch the solver's
 //! code, `-dirty` if that code has uncommitted changes. Only the solver's
 //! code counts, so a change to the pages does not make saved results stale.
 //! A build without git (a container) passes the version in the environment.
@@ -22,9 +22,9 @@ fn git(args: &[&str]) -> Option<(bool, String)> {
 }
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=MICHELL_SOLVER_VERSION");
-    if let Ok(v) = std::env::var("MICHELL_SOLVER_VERSION") {
-        println!("cargo:rustc-env=MICHELL_SOLVER_VERSION={v}");
+    println!("cargo:rerun-if-env-changed=BOATMATH_SOLVER_VERSION");
+    if let Ok(v) = std::env::var("BOATMATH_SOLVER_VERSION") {
+        println!("cargo:rustc-env=BOATMATH_SOLVER_VERSION={v}");
         return;
     }
     for p in SOLVER {
@@ -54,5 +54,5 @@ fn main() {
         }
         _ => "unknown".to_string(),
     };
-    println!("cargo:rustc-env=MICHELL_SOLVER_VERSION={version}");
+    println!("cargo:rustc-env=BOATMATH_SOLVER_VERSION={version}");
 }

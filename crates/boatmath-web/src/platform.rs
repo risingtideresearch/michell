@@ -1,12 +1,12 @@
-//! A configuration's statics — its float at rest, its roll stability and
-//! its GZ curve — and a run in waves: the platform's responses from one
-//! heading, about the attitude its calm-water run floated it at.
+//! A case's statics — its float at rest, its roll stability and
+//! its GZ curve — and a study in waves: the platform's responses from one
+//! heading, about the attitude its calm-water study floated it at.
 //!
-//! Heights: a configuration's VCG is above the hull's **design** waterline
+//! Heights: a case's VCG is above the hull's **design** waterline
 //! (a point on the hull); at an attitude that sinks the hull by `s`, the
 //! centre of gravity is `vcg − s` above the water.
 
-use crate::case::{default_lambdas, ConfigParams, RunParams};
+use crate::params::{default_lambdas, CaseParams, StudyParams};
 use crate::{setup, LoftRequest, Progress, Setup, Tracker, CANCELLED};
 use michell_geometry::iges::Platform;
 use michell_geometry::stability::{gz_curve, FullSection, GzOptions, StabilityHull, StabilityLoad};
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 /// The platform's mass properties at an attitude sinking it by `sinkage`.
 fn loading(
     s: &Setup,
-    c: &ConfigParams,
+    c: &CaseParams,
     members: &[(&SectionalHull, Placement)],
     sinkage: f64,
 ) -> michell_seakeeping::strip::MassProperties {
@@ -37,7 +37,7 @@ fn loading(
     )
 }
 
-fn strip_options(c: &ConfigParams) -> StripOptions {
+fn strip_options(c: &CaseParams) -> StripOptions {
     let fluid = michell_geometry::Fluid::SEAWATER_15C;
     StripOptions {
         density: fluid.density,
@@ -87,13 +87,13 @@ fn whole_sections(s: &Setup) -> Result<Vec<StabilityHull>, String> {
     Ok(out)
 }
 
-/// A configuration's statics: its float at rest, its hydrostatics there,
+/// A case's statics: its float at rest, its hydrostatics there,
 /// its roll stability (GM_T, the natural roll period) and its GZ curve.
 pub fn statics(
     name: &str,
     bytes: Vec<u8>,
     cut: &LoftRequest,
-    c: &ConfigParams,
+    c: &CaseParams,
 ) -> Result<Value, String> {
     use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
     use michell_geometry::source::SourceHull;
@@ -200,20 +200,20 @@ pub fn statics(
     }))
 }
 
-/// A run in waves: the platform held at `hold` (its calm-water run's
-/// attitude) and its responses from the run's heading over its
+/// A study in waves: the platform held at `hold` (its calm-water study's
+/// attitude) and its responses from the study's heading over its
 /// wavelengths, with the irregular sea's statistics when it has one.
 pub fn waves_with_progress(
     name: &str,
     bytes: Vec<u8>,
     cut: &LoftRequest,
-    c: &ConfigParams,
-    run: &RunParams,
+    c: &CaseParams,
+    study: &StudyParams,
     hold: (f64, f64),
     report: &mut dyn FnMut(&Progress) -> bool,
 ) -> Result<Value, String> {
     use michell_seakeeping::sea::sea_response_fleet;
-    let w = run.waves.as_ref().ok_or("not a run in waves")?;
+    let w = study.waves.as_ref().ok_or("not a study in waves")?;
     let lambdas = w.lambdas.clone().unwrap_or_else(default_lambdas);
     let t0 = std::time::Instant::now();
     let n = lambdas.len();
@@ -232,7 +232,7 @@ pub fn waves_with_progress(
     let platform = s.platform(sinkage, trim);
     let owned = s.situate(&platform)?;
     let members: Vec<(&SectionalHull, Placement)> = owned.iter().map(|(h, p)| (h, *p)).collect();
-    let speed = run.froude * (STANDARD_GRAVITY * s.l_ref).sqrt();
+    let speed = study.froude * (STANDARD_GRAVITY * s.l_ref).sqrt();
     let cond = Conditions::seawater(speed);
     let opts = strip_options(c);
     let props = loading(&s, c, &members, sinkage);
@@ -320,7 +320,7 @@ pub fn waves_with_progress(
     track.at(3, 1.0, "done".into())?;
     let meshes = s.meshes(&platform)?;
     Ok(json!({
-        "froude": run.froude,
+        "froude": study.froude,
         "speed": cond.speed,
         "seconds": t0.elapsed().as_secs_f64(),
         "attitude": { "sinkage": sinkage, "trim_rad": trim, "trim_deg": trim.to_degrees() },

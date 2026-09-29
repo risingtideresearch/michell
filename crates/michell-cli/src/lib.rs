@@ -73,7 +73,7 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         Some("wake") => cmd_wake(&args[1..]),
         Some("field") => cmd_field(&args[1..]),
         Some("render") => cmd_render(&args[1..]),
-        Some("view") => Err("`michell view` was removed; use the web viewer (michell-web)".into()),
+        Some("view") => Err("`michell view` was removed; use the web front end (boatmath-web)".into()),
         Some("loft") => Err("`michell loft` was removed: every command cuts hulls into \
                              sections straight from the IGES or STL file"
             .into()),

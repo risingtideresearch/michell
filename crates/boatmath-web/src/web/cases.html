@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Configurations · michell</title>
+<title>Cases · boatmath</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/common.css">
 <style>
@@ -14,24 +14,24 @@
 <body>
 <div class="page"><div class="inner">
   <div class="head">
-    <h1>Configurations</h1>
+    <h1>Cases</h1>
     <select id="hull" aria-label="Hull"><option value="">all hulls</option></select>
     <input class="filter" id="filter" type="search" placeholder="Filter by name, notes, who">
     <span class="grow"></span>
-    <a class="button primary" id="new" href="/configs/new">New configuration</a>
+    <a class="button primary" id="new" href="/cases/new">New case</a>
   </div>
   <div id="status"></div>
   <div id="list"></div>
 </div></div>
 
 <script type="module">
-import { $, api, configLabel, configName, esc, fmt, fmtTime, nav, status } from "/static/common.js";
-nav("configs");
+import { $, api, caseLabel, caseName, esc, fmt, fmtTime, nav, status } from "/static/common.js";
+nav("cases");
 
-let configs = [];
+let cases = [];
 const qs = new URLSearchParams(location.search);
 
-function runCounts(c) {
+function studyCounts(c) {
   const parts = [];
   for (const k of ["done", "running", "queued", "failed"]) if (c?.[k]) parts.push(`<span class="pill ${k}">${c[k]} ${k}</span>`);
   return parts.join(" ") || `<span class="muted">none</span>`;
@@ -39,29 +39,29 @@ function runCounts(c) {
 
 function render() {
   const h = $("hull").value, f = $("filter").value.trim().toLowerCase();
-  const shown = configs.filter((c) => (!h || String(c.hull_id) === h)
-    && (!f || [c.name, c.notes, c.created_by, configLabel(c.params)].some((s) => s.toLowerCase().includes(f))));
-  $("new").href = h ? `/configs/new?hull=${h}` : "/configs/new";
+  const shown = cases.filter((c) => (!h || String(c.hull_id) === h)
+    && (!f || [c.name, c.notes, c.created_by, caseLabel(c.params)].some((s) => s.toLowerCase().includes(f))));
+  $("new").href = h ? `/cases/new?hull=${h}` : "/cases/new";
   if (!shown.length) {
-    $("list").innerHTML = `<div class="tablewrap"><div class="empty-state">${configs.length ? "No configuration matches." : `No configurations yet. <a href="/configs/new">Make one</a> on a hull.`}</div></div>`;
+    $("list").innerHTML = `<div class="tablewrap"><div class="empty-state">${cases.length ? "No case matches." : `No cases yet. <a href="/cases/new">Make one</a> on a hull.`}</div></div>`;
     return;
   }
   $("list").innerHTML = `<div class="tablewrap"><table>
     <thead><tr>
-      <th>Configuration</th><th>Hull</th><th class="num">Mass [kg]</th><th class="num">GM<sub>T</sub> [m]</th>
-      <th class="num">Max GZ [m]</th><th class="num">AVS [°]</th><th>Runs</th><th>Made</th>
+      <th>Case</th><th>Hull</th><th class="num">Mass [kg]</th><th class="num">GM<sub>T</sub> [m]</th>
+      <th class="num">Max GZ [m]</th><th class="num">AVS [°]</th><th>Studies</th><th>Made</th>
     </tr></thead>
     <tbody>${shown.map((c) => {
       const s = c.statics || {}, gz = s.gz || {};
       return `<tr class="link" data-id="${c.id}">
-        <td class="what"><a href="/configs/${c.id}">${esc(configName(c))}</a>${c.stale ? ` <span class="pill stale">stale</span>` : ""}
-          <span class="sub">${c.name ? esc(configLabel(c.params)) : ""}${c.error ? `<span style="color:var(--err)">${esc(c.error)}</span>` : ""}</span></td>
+        <td class="what"><a href="/cases/${c.id}">${esc(caseName(c))}</a>${c.stale ? ` <span class="pill stale">stale</span>` : ""}
+          <span class="sub">${c.name ? esc(caseLabel(c.params)) : ""}${c.error ? `<span style="color:var(--err)">${esc(c.error)}</span>` : ""}</span></td>
         <td><a href="/hulls/${c.hull_id}">${esc(c.hull_name)}</a></td>
         <td class="num">${fmt(s.mass, 1)}</td>
         <td class="num">${fmt(s.roll?.gm_t, 3)}</td>
         <td class="num">${gz.error ? "—" : fmt(gz.max_gz, 3)}${gz.heel_at_max_deg != null ? `<span class="sub">at ${fmt(gz.heel_at_max_deg, 0)}°</span>` : ""}</td>
         <td class="num">${gz.error ? "—" : gz.vanishing_deg == null ? "> 180" : fmt(gz.vanishing_deg, 1)}</td>
-        <td>${runCounts(c.runs)}</td>
+        <td>${studyCounts(c.studies)}</td>
         <td>${fmtTime(c.created_at)}${c.created_by ? `<span class="sub">${esc(c.created_by)}</span>` : ""}</td>
       </tr>`;
     }).join("")}</tbody></table></div>`;
@@ -70,19 +70,19 @@ function render() {
 $("list").addEventListener("click", (e) => {
   if (e.target.closest("a")) return;
   const row = e.target.closest("tr.link");
-  if (row) location.href = `/configs/${row.dataset.id}`;
+  if (row) location.href = `/cases/${row.dataset.id}`;
 });
 $("filter").addEventListener("input", render);
 $("hull").addEventListener("change", () => {
   const q = new URLSearchParams();
   if ($("hull").value) q.set("hull", $("hull").value);
-  history.replaceState(null, "", `/configs${q.size ? `?${q}` : ""}`);
+  history.replaceState(null, "", `/cases${q.size ? `?${q}` : ""}`);
   render();
 });
 
 try {
-  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/configs")]);
-  configs = cs.reverse();
+  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/cases")]);
+  cases = cs.reverse();
   $("hull").innerHTML += hulls.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join("");
   if (qs.get("hull")) $("hull").value = qs.get("hull");
   render();
