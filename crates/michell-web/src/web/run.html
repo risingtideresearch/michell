@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run · michell</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  .crumbs { font-size: 12px; color: var(--muted); }
+  h1 { font-size: 16px; margin: 4px 0 0; }
+  .split > main.stack { display: grid; grid-template-rows: minmax(300px, 1fr); overflow-y: auto; background: var(--bg); }
+  .split > main.stack.waves { grid-template-rows: minmax(300px, 58%) auto; }
+  #view { position: relative; background: var(--canvas); min-height: 300px; }
+  #below { padding: 14px 18px 24px; }
+  #below:empty { display: none; }
+  .hero { font-size: 34px; font-weight: 700; line-height: 1.1; }
+  .hero small { font-size: 16px; font-weight: 500; color: var(--muted); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stage { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+  .stage span { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .detail { font-family: var(--mono); font-size: 12px; color: var(--muted); min-height: 1.3em; }
+  .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+  .row label { min-width: 90px; }
+  #anim.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  #animread { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .qsel { display: flex; gap: 2px; flex-wrap: wrap; margin-bottom: 8px; }
+  .qsel button { font-size: 12px; padding: 3px 9px; }
+  .qsel button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <section>
+    <div class="crumbs" id="crumbs"></div>
+    <h1 id="title">Run</h1>
+    <div class="hint" id="sub"></div>
+  </section>
+  <div id="status"></div>
+  <section id="state"></section>
+  <section id="summary"></section>
+  <section id="controls"></section>
+  <section id="about"></section>
+</aside>
+<main class="stack" id="main">
+  <div id="view"></div>
+  <div id="below"></div>
+</main>
+</div>
+
+<script type="module">
+import { $, KN, api, configLabel, configName, esc, fmt, fmtDuration, fmtTime, headingText, lRef, nav, pathId, runLabel, status } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+import { lineChart } from "/static/chart.js";
+nav("results");
+
+const id = pathId();
+const viewer = createViewer($("view"));
+viewer.empty("Loading…");
+let run, hull, data;
+const cabs = (z) => Math.hypot(z[0], z[1]);
+const G = 9.81;
+
+// ---------------------------------------------------------------- state
+function renderState() {
+  const r = run, res = r.result;
+  const again = r.status !== "queued" && r.status !== "running";
+  $("state").innerHTML = `
+    <div class="actions">
+      <span class="pill ${r.status}${r.stale ? " stale" : ""}">${r.stale && r.status === "done" ? "stale result" : r.status}</span>
+      <span class="grow" style="flex:1"></span>
+      ${r.status === "queued" || r.status === "running" ? `<button id="cancel">Cancel</button>` : ""}
+      ${again && (r.status !== "done" || r.stale) ? `<button id="requeue">Run again</button>` : ""}
+    </div>
+    ${r.error ? `<div class="error" style="margin-top:8px">${esc(r.error)}</div>` : ""}
+    <div id="progress"></div>`;
+  $("cancel")?.addEventListener("click", async () => { await api(`/api/runs/${id}/cancel`, { method: "POST" }); load(); });
+  $("requeue")?.addEventListener("click", async () => { await api(`/api/runs/${id}/requeue`, { method: "POST" }); load(); });
+  const bits = [
+    `asked for ${fmtTime(r.created_at)}${r.requested_by ? ` by ${esc(r.requested_by)}` : ""}`,
+    res && `computed in ${fmtDuration(res.seconds)} by solver <span class="mono">${esc(res.solver_version)}</span>`,
+    res?.warm_from && `started from run <a href="/runs/${res.warm_from}">#${res.warm_from}</a>'s attitude`,
+    res?.attitude_from && `about the attitude of calm-water run <a href="/runs/${res.attitude_from}">#${res.attitude_from}</a>`,
+  ].filter(Boolean);
+  $("about").innerHTML = `<p class="hint">${bits.join(" · ")}.</p>`;
+}
+
+// While it waits or runs: where it has got to, then the result.
+let polling = null;
+async function watch() {
+  clearTimeout(polling);
+  const q = await api("/api/queue");
+  if (q.running?.run_id === id) {
+    const p = q.running.progress || {}, f = p.fraction ?? 0;
+    $("progress").innerHTML = `<div class="card" style="margin-top:10px">
+      <div class="stage"><b>${p.step ? `${p.step}/${p.steps} · ${esc(p.stage)}` : "Starting"}</b><span>${(100 * f).toFixed(0)}% · ${fmtDuration(q.running.seconds)}</span></div>
+      <div class="track"><div class="fill" style="width:${(100 * f).toFixed(1)}%"></div></div>
+      <div class="detail">${esc(p.detail ?? "")}</div></div>`;
+  } else {
+    const ahead = q.runs.filter((r) => r.status === "queued").findIndex((r) => r.id === id);
+    const r = await api(`/api/runs/${id}`);
+    if (r.status !== run.status) return load();
+    $("progress").innerHTML = ahead >= 0 ? `<p class="hint">${ahead ? `${ahead} run${ahead === 1 ? "" : "s"} ahead of it` : "Next"}${run.kind === "waves" ? "; it waits for its calm-water run" : ""}. <a href="/queue">The queue</a></p>` : "";
+  }
+  polling = setTimeout(watch, 1500);
+}
+
+// ---------------------------------------------------------------- calm water
+function renderCalm(d) {
+  const f = d.forces, l = lRef(hull.summary);
+  viewer.flow(d);
+  $("summary").innerHTML = `
+    <div class="hero">R<sub>t</sub> ${fmt(f.rt, 1)} <small>N</small></div>
+    <div class="hint">${fmt(d.speed / KN, 2)} kn · ${fmt(d.speed, 2)} m/s · Fn ${fmt(d.froude, 3)} · P<sub>E</sub> ${fmt(f.pe / 1000, 2)} kW</div>
+    <dl style="margin-top:10px">
+      <dt>Wave resistance R<sub>w</sub></dt><dd>${fmt(f.rw, 2)} N</dd>
+      <dt>Viscous R<sub>v</sub> (ITTC-57)</dt><dd>${fmt(f.rv, 2)} N</dd>
+      <dt>C<sub>w</sub> · C<sub>t</sub></dt><dd>${fmt(1000 * f.cw, 3)} · ${fmt(1000 * f.ct, 3)} ×10⁻³</dd>
+      ${run.config.span != null ? `<dt>Interference</dt><dd>${fmt(f.interference, 3)}</dd>` : ""}
+      <dt>Dynamic lift</dt><dd>${fmt(f.fz, 1)} N (${fmt(100 * f.lift_fraction, 2)}% of weight)</dd>
+      <dt>Sinkage${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(1000 * f.sinkage, 1)} mm</dd>
+      <dt>Trim${f.solved ? "" : f.held ? " (held)" : " (1st order)"}</dt><dd>${fmt(f.trim_deg, 3)}° bow up</dd>
+      <dt>Load</dt><dd>${fmt(f.mass, 1)} kg at x ${fmt(f.lcg, 3)} m</dd>
+      <dt>Displaced at speed</dt><dd>${fmt(f.displaced_volume, 4)} m³ · L ${fmt(f.length, 3)} m</dd>
+      <dt>Transverse wave</dt><dd>${fmt(d.transverse_wavelength, 2)} m</dd>
+    </dl>
+    <p class="hint">${f.solved
+      ? `At the dynamic equilibrium (${f.iterations} Newton iterations); resistance and flow are for the hull at that attitude.`
+      : f.held ? "Held at the configuration's attitude at rest: the dynamic lift shown is what the hull feels there, unbalanced."
+      : "At the design attitude; the sinkage and trim are the first-order response to the dynamic force, not applied."}
+      Thin-ship linear flow: the pressure on each hull (C<sub>p</sub> = p / ½ρU²) and the free surface around them, local field and waves together.</p>`;
+}
+
+// ---------------------------------------------------------------- waves
+const Q = {
+  heave: { y: (p) => cabs(p.heave), label: "Heave |η₃|/ζ",
+    note: "Heave: within about 10–15% of Journée's Wigley experiments, resonance included — the most trustworthy comparison." },
+  pitch: { y: (p) => cabs(p.pitch) / p.k, label: "Pitch |η₅|/kζ",
+    note: "Pitch: a rough guide. At speed strip theory's pitch inertia is ~30% low and its damping grows with U² where the tank's does not (Wigley hulls, Fn 0.2–0.4): compare large differences only." },
+  roll: { y: (p) => cabs(p.roll) / p.k, label: "Roll |η₄|/kζ",
+    note: "Roll: section coefficients within ~1–12% of Vugts' experiments, but only potential-flow damping (plus the roll damping set) — a monohull's resonance is overstated. A multihull's roll is mostly its demihulls' heave, and sounder." },
+  sway: { y: (p) => cabs(p.sway), label: "Sway |η₂|/ζ",
+    note: "Sway: checked by long-wave limits, reciprocity and symmetry; the 3-D lateral response has no experimental validation yet." },
+  yaw: { y: (p) => cabs(p.yaw) / p.k, label: "Yaw |η₆|/kζ",
+    note: "Yaw: checked by long-wave limits, reciprocity and symmetry; the 3-D lateral response has no experimental validation yet." },
+  raw: { y: (p) => p.raw_gb, y2: (p) => p.raw_far, label: "Added resistance R_aw/ζ² [N/m²]",
+    note: "Added resistance: Gerritsma–Beukelman (radiated energy), and dashed the Maruo far field (head and following seas only). On Journée's Wigley hulls GB is near the tank at Fn 0.2 and 2–6× high at Fn 0.3–0.4; the far field is within 2× there and about half at Fn 0.2. Treat the pair as the uncertainty — neither ranks hulls reliably." },
+};
+let quantity = "heave";
+
+function renderWaves(d) {
+  const s = d.seakeeping, h = s.headings[0], pts = h.points.filter((p) => !p.error);
+  const bad = h.points.length - pts.length;
+  viewer.hullsAt(d.hulls.map((x) => x.mesh));
+  const sea = h.sea;
+  $("summary").innerHTML = `
+    <div class="hero">${headingText(h.heading)}</div>
+    <div class="hint">${fmt(d.speed / KN, 2)} kn · Fn ${fmt(d.froude, 3)} · about the attitude ${fmt(1000 * d.attitude.sinkage, 1)} mm, ${fmt(d.attitude.trim_deg, 3)}°</div>
+    ${sea && !sea.error ? `<dl style="margin-top:10px">
+      <dt>Sea</dt><dd>${esc(run.params.waves.sea.type === "jonswap" ? "JONSWAP" : "Bretschneider")} H<sub>s</sub> ${fmt(run.params.waves.sea.hs, 2)} m, T<sub>p</sub> ${fmt(run.params.waves.sea.tp, 1)} s</dd>
+      <dt>Heave, significant</dt><dd>${fmt(sea.heave, 3)} m</dd>
+      <dt>Pitch, significant</dt><dd>${fmt(sea.pitch_deg, 2)}°</dd>
+      <dt>Accel. at the bow</dt><dd>${fmt(sea.accel_bow, 2)} m/s² (${fmt(sea.accel_bow / G, 2)} g)</dd>
+      <dt>Accel. at the LCG</dt><dd>${fmt(sea.accel_lcg, 2)} m/s²</dd>
+      <dt>Added resistance</dt><dd>${fmt(sea.raw_gb, 1)} N (GB)${sea.raw_far != null ? ` · ${fmt(sea.raw_far, 1)} N (far field)` : ""}</dd>
+    </dl>` : sea?.error ? `<div class="error" style="margin-top:8px">Irregular sea: ${esc(sea.error)}</div>` : ""}
+    <dl style="margin-top:10px">
+      <dt>GM<sub>T</sub> at this attitude</dt><dd>${fmt(s.gm_t, 3)} m</dd>
+      <dt>Roll period</dt><dd>${s.roll_period == null ? "—" : `${fmt(s.roll_period, 2)} s`}</dd>
+      <dt>k<sub>xx</sub> · k<sub>yy</sub> · k<sub>zz</sub></dt><dd>${fmt(s.k_xx, 2)} · ${fmt(s.k_yy, 2)} · ${fmt(s.k_zz, 2)} m</dd>
+      <dt>G above the water</dt><dd>${fmt(s.vcg, 3)} m</dd>
+      <dt>Wavelengths</dt><dd>${pts.length}${bad ? ` <span class="stale">(${bad} failed)</span>` : ""}</dd>
+    </dl>`;
+  // The animation: a wavelength, a wave height, a rate.
+  const best = pts.reduce((b, p) => (cabs(p.heave) * (1 + 0.2 * p.lambda) > cabs(b.heave) * (1 + 0.2 * b.lambda) ? p : b), pts[0]);
+  $("controls").innerHTML = pts.length ? `<h2>Animate</h2>
+    <div class="row">
+      <label>λ/L <select id="lam">${pts.map((p) => `<option value="${p.lambda}"${p === best ? " selected" : ""}>${fmt(p.lambda, 3)}</option>`).join("")}</select></label>
+      <label>Wave height [m] <input id="wh" type="number" step="any" min="0" placeholder="λ/30" style="width:90px"></label>
+      <label>Speed <select id="rate"><option value="1">real time</option><option value="0.5">½</option><option value="0.25">¼</option></select></label>
+      <button id="anim">▶ Animate</button>
+    </div>
+    <div id="animread"></div>` : "";
+  let on = false;
+  const start = () => {
+    const p = pts.find((q) => String(q.lambda) === $("lam").value);
+    if (!p) return;
+    const lam = 2 * Math.PI / p.k, typed = Number($("wh").value);
+    const height = $("wh").value.trim() && typed > 0 ? typed : lam / 30, amp = height / 2;
+    const L = s.length, pad = Math.max(0.6 * L, 1.5 * lam);
+    const xs = d.hulls.flatMap(() => [s.lcg - 0.6 * L, s.lcg + 0.6 * L]);
+    const half = (run.config.span ?? 0) / 2 + s.beam;
+    viewer.seaway({ k: p.k, heading: h.heading * Math.PI / 180, omega_e: p.omega_e, amp,
+      g: [s.lcg, 0, s.vcg ?? 0], eta: { sway: p.sway, heave: p.heave, roll: p.roll, pitch: p.pitch, yaw: p.yaw },
+      extent: [Math.min(...xs) - pad, Math.max(...xs) + pad, -half - Math.max(0.5 * L, lam), half + Math.max(0.5 * L, lam)],
+      rate: Number($("rate").value) });
+    on = true;
+    $("anim").textContent = "■ Stop"; $("anim").classList.add("on");
+    const deg = (z) => fmt(amp * cabs(z) * 180 / Math.PI, 2);
+    const lateral = Math.abs(Math.sin(h.heading * Math.PI / 180)) > 1e-6
+      ? ` · sway ±${fmt(amp * cabs(p.sway), 3)} m · roll ±${deg(p.roll)}° · yaw ±${deg(p.yaw)}°` : "";
+    $("animread").textContent = `λ ${fmt(lam, 2)} m · wave height ${fmt(height, 3)} m · encounter period ${fmt(2 * Math.PI / Math.abs(p.omega_e), 2)} s · heave ±${fmt(amp * cabs(p.heave), 3)} m · pitch ±${deg(p.pitch)}°${lateral}`;
+  };
+  const stop = () => { viewer.seaway(null); on = false; $("anim").textContent = "▶ Animate"; $("anim").classList.remove("on"); $("animread").textContent = ""; };
+  $("anim")?.addEventListener("click", () => (on ? stop() : start()));
+  for (const k of ["lam", "rate"]) $(k)?.addEventListener("change", () => { if (on) start(); });
+  $("wh")?.addEventListener("change", () => { if (on) start(); });
+
+  // The responses against wavelength, one quantity at a time.
+  $("main").classList.add("waves");
+  $("below").innerHTML = `<div class="qsel" id="qsel">${Object.entries(Q).map(([k, q]) => `<button data-q="${k}"${k === quantity ? ' class="on"' : ""}>${q.label.split(" ")[0]}${k === "raw" ? " resistance" : ""}</button>`).join("")}</div>
+    <div id="rao"></div><p class="hint" id="raonote"></p>`;
+  const draw = () => {
+    const q = Q[quantity];
+    const series = [{ name: q.y2 ? "Gerritsma–Beukelman" : q.label, points: pts.map((p) => [p.lambda, q.y(p)]) }];
+    if (q.y2 && pts.some((p) => p.raw_far != null)) series.push({ name: "far field (Maruo)", dashed: true, points: pts.filter((p) => p.raw_far != null).map((p) => [p.lambda, q.y2(p)]) });
+    lineChart($("rao"), {
+      title: q.label, series,
+      x: { label: "Wavelength λ/L", fmt: (v) => (+v.toPrecision(3)).toString() },
+      y: { label: q.label, fmt: (v) => (+v.toPrecision(3)).toString() },
+      onPick: null,
+    });
+    $("raonote").textContent = q.note + (q.y2 && !pts.some((p) => p.raw_far != null) ? " The far field is not computed at this heading." : "");
+    $("qsel").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.q === quantity));
+  };
+  $("qsel").addEventListener("click", (e) => { const b = e.target.closest("button[data-q]"); if (b) { quantity = b.dataset.q; draw(); } });
+  draw();
+}
+
+// ---------------------------------------------------------------- load
+async function load() {
+  try {
+    if (id == null) throw new Error("no run id in the address");
+    run = await api(`/api/runs/${id}`);
+    hull = hull || await api(`/api/hulls/${run.hull_id}`);
+    const l = lRef(hull.summary);
+    const cfg = { name: run.config_name, params: run.config };
+    document.title = `Run ${id} · michell`;
+    $("crumbs").innerHTML = `<a href="/hulls/${hull.id}">${esc(hull.name)}</a> › <a href="/configs/${run.config_id}">${esc(configName(cfg))}</a> › run #${id}`;
+    $("title").textContent = runLabel(run.params, l);
+    $("sub").textContent = run.config_name ? configLabel(run.config) : "";
+    renderState();
+    if (run.status === "queued" || run.status === "running") {
+      viewer.empty(run.status === "running" ? "Running…" : "Waiting in the queue…");
+      watch();
+    }
+    if (run.result) {
+      data = await api(`/api/runs/${id}/result`);
+      if (run.kind === "calm") renderCalm(data); else renderWaves(data);
+    } else if (run.status !== "queued" && run.status !== "running") {
+      viewer.empty("No result");
+    }
+  } catch (e) {
+    status(e.message, true);
+    viewer.empty(e.message);
+  }
+}
+load();
+</script>
+</body>
+</html>

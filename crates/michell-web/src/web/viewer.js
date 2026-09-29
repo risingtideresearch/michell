@@ -71,7 +71,7 @@ export function createViewer(host) {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves", "seaway"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   // What is shown: the sections (a hull), or the flow (a case). The
@@ -79,7 +79,7 @@ export function createViewer(host) {
   // waterline, the cut below it — the cut's layers, relative to the
   // waterline they were cut at, raised by it. The flow view is relative to
   // the solved waterline.
-  const SHOWN = { cut: ["surface", "stations", "closure", "geom", "water"], flow: ["hull", "pressure", "waves"] };
+  const SHOWN = { cut: ["surface", "stations", "closure", "geom", "water"], flow: ["hull", "pressure", "waves"], sea: ["hull", "seaway"] };
   const CUT_FRAME = ["surface", "stations", "keel", "rays", "closure"];
   let mode = "cut", wlCut = 0, geomBounds = null;
   function show(which) {
@@ -423,9 +423,128 @@ export function createViewer(host) {
   }
   for (const b of views.querySelectorAll("button")) b.onclick = () => pick(b.dataset.view);
 
+  // A run in waves: the whole hull at its attitude (z up from the water),
+  // over which `seaway` moves it.
+  function hullsAt(meshes) {
+    clear(layers.hull);
+    const hb = new THREE.Box3();
+    for (const m of meshes) {
+      const geo = meshGeometry(m);
+      hb.union(geo.boundingBox);
+      layers.hull.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xe9e5db, roughness: 0.7, side: THREE.DoubleSide })));
+    }
+    bounds = hullBounds = hb;
+    show("sea");
+    empty.style.display = "none";
+    setView(view);
+  }
+
+  // A regular wave and the hull moving in it: the incident elevation
+  //   ζ = A cos(k((x − x_G) cos β + y sin β) − ω_e t)
+  // in the frame moving with the boat, and each motion A·Re[η̂ e^{−iω_e t}]
+  // about G — sway to port, heave up, roll port side up, pitch bow up, yaw
+  // bow to port — from the run's complex responses (per unit amplitude).
+  // `spec`: { k, heading [rad], omega_e, amp [m], g: [x, y, z], eta:
+  // { sway, heave, roll, pitch, yaw } as [re, im], extent: [x0, x1, y0, y1],
+  // rate }, or null to stop. Scene axes are (x, z up, y): SWAP swaps them.
+  const SWAP = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+  let sea = null;
+  function seaway(spec) {
+    if (sea) { cancelAnimationFrame(sea.raf); sea = null; }
+    clear(layers.seaway);
+    layers.hull.matrixAutoUpdate = true;
+    layers.hull.position.set(0, 0, 0); layers.hull.rotation.set(0, 0, 0); layers.hull.updateMatrix();
+    if (!spec) { render(); return; }
+    const [x0, x1, y0, y1] = spec.extent;
+    // About 16 points a wavelength, within a budget.
+    const lam = 2 * Math.PI / spec.k, step = Math.max(lam / 16, Math.sqrt((x1 - x0) * (y1 - y0) / 60000));
+    const nx = Math.max(2, Math.ceil((x1 - x0) / step) + 1), ny = Math.max(2, Math.ceil((y1 - y0) / step) + 1);
+    const pos = new Float32Array(nx * ny * 3), phase = new Float32Array(nx * ny);
+    const cb = Math.cos(spec.heading), sb = Math.sin(spec.heading);
+    for (let iy = 0; iy < ny; iy++) for (let ix = 0; ix < nx; ix++) {
+      const n = iy * nx + ix, x = x0 + (x1 - x0) * ix / (nx - 1), y = y0 + (y1 - y0) * iy / (ny - 1);
+      pos.set([x, 0, y], 3 * n);
+      phase[n] = spec.k * ((x - spec.g[0]) * cb + y * sb);
+    }
+    const index = new Uint32Array(6 * (nx - 1) * (ny - 1));
+    let m = 0;
+    for (let iy = 0; iy + 1 < ny; iy++) for (let ix = 0; ix + 1 < nx; ix++) {
+      const a = iy * nx + ix, b = a + 1, c = a + nx + 1, e = a + nx;
+      index.set([a, c, b, a, e, c], m); m += 6;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    // Shaded by elevation, troughs dark and crests light: at a real wave's
+    // steepness the lighting alone barely shows it.
+    const col = new Float32Array(nx * ny * 3);
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    geo.setIndex(new THREE.BufferAttribute(index, 1));
+    const water = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.4, metalness: 0.05,
+      transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false }));
+    water.renderOrder = 1;
+    layers.seaway.add(water);
+    // Walls down the patch's edges, so side-on views show the wave's
+    // profile: each edge point of the grid, and below it one at the walls'
+    // depth.
+    const edge = [];
+    for (let ix = 0; ix < nx; ix++) edge.push(ix);
+    for (let iy = 1; iy < ny; iy++) edge.push(iy * nx + nx - 1);
+    for (let ix = nx - 2; ix >= 0; ix--) edge.push((ny - 1) * nx + ix);
+    for (let iy = ny - 2; iy >= 0; iy--) edge.push(iy * nx);
+    const depth = Math.min(0.35 * lam, 0.3 * (x1 - x0));
+    const wpos = new Float32Array(edge.length * 6), widx = [];
+    edge.forEach((n, i) => {
+      wpos.set([pos[3 * n], 0, pos[3 * n + 2], pos[3 * n], -depth, pos[3 * n + 2]], 6 * i);
+      if (i + 1 < edge.length) { const a = 2 * i; widx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    });
+    const wgeo = new THREE.BufferGeometry();
+    wgeo.setAttribute("position", new THREE.BufferAttribute(wpos, 3));
+    wgeo.setIndex(widx);
+    const walls = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x2f74c0, transparent: true, opacity: 0.28,
+      side: THREE.DoubleSide, depthWrite: false }));
+    walls.renderOrder = 1;
+    layers.seaway.add(walls);
+    sea = { spec, t: 0, last: null, raf: 0 };
+    const DARK = [0.09, 0.3, 0.55], LIGHT = [0.62, 0.8, 0.95];
+    const re = (z, c, s) => z[0] * c + z[1] * s; // Re[(a + ib) e^{−iωt}]
+    const R = new THREE.Matrix4(), T = new THREE.Matrix4(), tmp = new THREE.Matrix4();
+    const tick = (now) => {
+      if (!sea || sea.spec !== spec) return;
+      if (sea.last != null) sea.t += Math.min(0.1, (now - sea.last) / 1000) * spec.rate;
+      sea.last = now;
+      const wt = spec.omega_e * sea.t, c = Math.cos(wt), s = Math.sin(wt), A = spec.amp;
+      const attr = geo.attributes.position, ca = geo.attributes.color.array;
+      for (let n = 0; n < phase.length; n++) {
+        const c1 = Math.cos(phase[n] - wt), u = 0.5 + 0.5 * c1;
+        attr.array[3 * n + 1] = A * c1;
+        for (let j = 0; j < 3; j++) ca[3 * n + j] = DARK[j] + u * (LIGHT[j] - DARK[j]);
+      }
+      attr.needsUpdate = true;
+      geo.attributes.color.needsUpdate = true;
+      geo.computeVertexNormals();
+      const wa = wgeo.attributes.position;
+      edge.forEach((n, i) => { wa.array[6 * i + 1] = attr.array[3 * n + 1]; });
+      wa.needsUpdate = true;
+      const e = spec.eta, [gx, gy, gz] = spec.g;
+      const d = { sway: A * re(e.sway, c, s), heave: A * re(e.heave, c, s), roll: A * re(e.roll, c, s),
+        pitch: A * re(e.pitch, c, s), yaw: A * re(e.yaw, c, s) };
+      // Hull frame (x fwd, y port, z up): about G, then into the scene.
+      R.makeRotationZ(d.yaw).multiply(tmp.makeRotationY(-d.pitch)).multiply(tmp.makeRotationX(d.roll));
+      T.makeTranslation(gx, gy + d.sway, gz + d.heave).multiply(R).multiply(tmp.makeTranslation(-gx, -gy, -gz));
+      layers.hull.matrixAutoUpdate = false;
+      layers.hull.matrix.copy(SWAP).multiply(T).multiply(SWAP);
+      layers.hull.matrixWorldNeedsUpdate = true;
+      controls.update();
+      renderer.render(scene, camera);
+      sea.raf = requestAnimationFrame(tick);
+    };
+    sea.raf = requestAnimationFrame(tick);
+  }
+
   return {
-    geometry, setWater, load, closure, flow, pick,
-    // "cut" (the hull and its sections) or "flow" (a case).
+    geometry, setWater, load, closure, flow, pick, hullsAt, seaway,
+    // "cut" (the hull and its sections), "flow" (a calm-water run) or "sea"
+    // (a run in waves).
     mode: (m) => { show(m); setView(view, true); },
     // Say why there is nothing to show.
     empty: (msg) => { empty.textContent = msg; empty.style.display = ""; },
