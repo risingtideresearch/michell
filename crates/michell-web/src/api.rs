@@ -3,6 +3,11 @@
 //!
 //! ```text
 //! GET  /api/version                     {"solver_version": ..}
+//! GET  /api/whoami                      {"login", "name"} from the tailnet, or null
+//!
+//! Behind `tailscale serve` (the server bound to loopback), uploads and
+//! runs are labelled with the tailnet's name for the asker, and a `by`
+//! given in the request is ignored.
 //!
 //! GET  /api/hulls                       every hull, newest first
 //! POST /api/hulls?file=F&name=&notes=&by=&parent=&waterline=&centerplane=&stations=&rays=&units=
@@ -76,12 +81,31 @@ fn internal(e: String) -> Fail {
     (500, e)
 }
 
+/// Who is asking, as `tailscale serve` says (its `Tailscale-User-*`
+/// headers): what uploads and runs are labelled with, in place of the name
+/// the page sends.
+pub struct Who {
+    pub login: String,
+    pub name: String,
+}
+
+/// The label for work asked for: the tailnet's name for the asker when
+/// there is one, else what the request gave.
+fn by<'a>(who: Option<&'a Who>, given: &'a str) -> &'a str {
+    match who {
+        Some(w) if !w.name.is_empty() => &w.name,
+        Some(w) => &w.login,
+        None => given.trim(),
+    }
+}
+
 /// Route an `/api/…` request; `None` if no route matches.
 pub fn route(
     app: &App,
     method: &Method,
     path: &str,
     q: &[(String, String)],
+    who: Option<&Who>,
     body: &mut dyn FnMut() -> Result<Vec<u8>, String>,
 ) -> Option<Result<Reply, Fail>> {
     let seg: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -106,9 +130,13 @@ pub fn route(
     use Method::{Get, Post};
     let r = match (method, &seg[1..]) {
         (Get, ["version"]) => Ok(Reply::Json(json!({ "solver_version": SOLVER_VERSION }))),
+        (Get, ["whoami"]) => Ok(Reply::Json(match who {
+            Some(w) => json!({ "login": w.login, "name": w.name }),
+            None => Value::Null,
+        })),
 
         (Get, ["hulls"]) => list(s.hulls()),
-        (Post, ["hulls"]) => upload(app, q, body),
+        (Post, ["hulls"]) => upload(app, q, who, body),
         (Get, ["hulls", h]) => id(h).and_then(|h| one(s.hull(h), "hull")),
         (Post, ["hulls", h]) => id(h).and_then(|h| {
             let v = json_body(body)?;
@@ -138,7 +166,7 @@ pub fn route(
         (Post, ["configs"]) => json_body(body).and_then(|v| {
             let hull = v["hull"].as_i64().ok_or(bad("hull (an id) is required"))?;
             let p = config_params(&v["params"])?;
-            let by = v["by"].as_str().unwrap_or("").trim();
+            let by = by(who, v["by"].as_str().unwrap_or(""));
             let (id, created, _) = make_config(app, hull, &p, v["name"].as_str(), by)?;
             Ok(Reply::Json(json!({
                 "id": id,
@@ -182,7 +210,7 @@ pub fn route(
         }),
 
         (Get, ["studies"]) => list(s.studies()),
-        (Post, ["runs"]) => json_body(body).and_then(|v| add_runs(app, &v)),
+        (Post, ["runs"]) => json_body(body).and_then(|v| add_runs(app, &v, who)),
         (Get, ["runs"]) => (|| {
             let f = RunFilter {
                 hull: opt_id("hull")?,
@@ -253,6 +281,7 @@ pub fn route(
 fn upload(
     app: &App,
     q: &[(String, String)],
+    who: Option<&Who>,
     body: &mut dyn FnMut() -> Result<Vec<u8>, String>,
 ) -> Result<Reply, Fail> {
     let get = |k: &str| q.iter().find(|(n, _)| n == k).map_or("", |(_, v)| v.trim());
@@ -282,7 +311,7 @@ fn upload(
         .add_hull(&NewHull {
             name,
             notes: get("notes"),
-            uploaded_by: get("by"),
+            uploaded_by: by(who, get("by")),
             file_name: file,
             bytes: &bytes,
             import,
@@ -396,7 +425,7 @@ fn recompute(app: &App, id: i64) -> Result<(), Fail> {
 /// `POST /api/runs`: every run on every configuration, each checked before
 /// anything is made; a run in waves brings the calm-water run it is taken
 /// about (with the grid of a calm run asked for alongside, if any).
-fn add_runs(app: &App, v: &Value) -> Result<Reply, Fail> {
+fn add_runs(app: &App, v: &Value, who: Option<&Who>) -> Result<Reply, Fail> {
     let s = &app.store;
     let hull = v["hull"].as_i64().ok_or(bad("hull (an id) is required"))?;
     if s.hull(hull).map_err(internal)?.is_none() {
@@ -482,7 +511,7 @@ fn add_runs(app: &App, v: &Value) -> Result<Reply, Fail> {
         return Ok(Reply::Json(json!({ "configs": cs, "runs": rs })));
     }
 
-    let by = v["by"].as_str().unwrap_or("").trim();
+    let by = by(who, v["by"].as_str().unwrap_or(""));
     let priority = v["priority"].as_i64().unwrap_or(0);
     let study_id = match (&v["study"], v["study_id"].as_i64()) {
         (Value::Object(st), None) => {

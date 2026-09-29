@@ -2,7 +2,11 @@
 //! front end, and work through its queue of runs.
 //!
 //! Binds `127.0.0.1:8080` by default. When `$PORT` is set (as on a hosting
-//! platform) it listens there on all interfaces instead. Hulls,
+//! platform) it listens there on all interfaces instead. Bound to loopback
+//! it is meant to sit behind `tailscale serve`, and takes who is asking
+//! from the `Tailscale-User-Login` and `Tailscale-User-Name` headers that
+//! sets (and on any other address ignores them: anyone could send them
+//! there). Hulls,
 //! configurations, runs and results are kept in `DIR` (default
 //! `$MICHELL_DATA`, else `./michell-data`); see `api.rs` for the endpoints
 //! and `web.rs` for the pages. Two stateless endpoints serve the upload
@@ -62,22 +66,51 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("michell-web: serving http://{addr}/");
+    // Only a proxy on this machine can reach a loopback listener, so only
+    // then are its identity headers believable.
+    let trust = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    eprintln!(
+        "michell-web: serving http://{addr}/{}",
+        if trust {
+            " (identity from tailscale serve's headers)"
+        } else {
+            ""
+        }
+    );
     for req in server.incoming_requests() {
         // Cuts and statics are CPU-bound and fan out across cores
         // themselves; a thread per request keeps a slow IGES import from
         // blocking the pages.
         let app = Arc::clone(&app);
-        std::thread::spawn(move || handle(req, &app));
+        std::thread::spawn(move || handle(req, &app, trust));
     }
 }
 
-fn handle(mut req: Request, app: &api::App) {
+/// Who `tailscale serve` says is asking, if it says.
+fn tailnet_user(req: &Request) -> Option<api::Who> {
+    let get = |k: &str| {
+        req.headers()
+            .iter()
+            .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case(k))
+            .map(|h| h.value.as_str().trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    let login = get("Tailscale-User-Login")?;
+    Some(api::Who {
+        name: get("Tailscale-User-Name").unwrap_or_default(),
+        login,
+    })
+}
+
+fn handle(mut req: Request, app: &api::App, trust: bool) {
     let url = req.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let pairs = parse_query(query);
     let method = req.method().clone();
-    let routed = api::route(app, &method, path, &pairs, &mut || read_body(&mut req));
+    let who = if trust { tailnet_user(&req) } else { None };
+    let routed = api::route(app, &method, path, &pairs, who.as_ref(), &mut || {
+        read_body(&mut req)
+    });
     if let Some(r) = routed {
         let resp = match r {
             Ok(api::Reply::Json(v)) => json_response(200, v.to_string()),

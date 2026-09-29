@@ -129,12 +129,23 @@ export function nav(on) {
   const who = bar.querySelector("#whoami");
   who.value = whoami();
   who.addEventListener("change", () => setWhoami(who.value.trim()));
+  // Behind tailscale serve the server knows who is asking, and labels work
+  // with that: show it, in place of a name to type.
+  api("/api/whoami").then((w) => {
+    if (!w) return;
+    const name = w.name || w.login;
+    setWhoami(name);
+    const label = bar.querySelector(".who");
+    label.textContent = "";
+    label.title = w.login;
+    label.append("you ", Object.assign(document.createElement("b"), { textContent: name }));
+  }).catch(() => {});
   // The queue's length, kept up to date while the page is open.
   const badge = bar.querySelector("#qbadge");
   async function poll() {
     try {
       const q = await api("/api/queue");
-      const n = q.cases.length;
+      const n = q.runs.length;
       badge.hidden = !n;
       badge.textContent = n;
     } catch { /* offline: leave it */ }

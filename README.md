@@ -766,44 +766,41 @@ not at all.
 
 ## Web front end
 
-The `michell-web` crate is a browser UI over the same loaders, with the
-physics server-side so it has every core. It is at an early stage: for now it
-is a **loft viewer**. You drop in any file the CLI reads (`.hull`, offsets,
-`*.grid.json`, IGES, STL) and it shows the lofted wetted surface in 3D (profile /
-plan / body views, a beam-and-draft stretch for slender hulls), the control
-net at its Greville abscissae, and the samples the loft was fitted to,
-coloured by the loft's residual, with a fairing weight to try against it. Hydrostatics and the same import diagnostics
-`michell info` prints appear beside the view.
+The `michell-web` crate is a browser front end with the physics server-side,
+so it has every core. It keeps a permanent record at three levels and works
+through a queue:
 
-For hulls that come from samples it also lofts two **experimental**
-representations of the same grid, to compare with the current one (flip with
-1–3, or stack all three with 4): a loft **trimmed** at a piecewise-linear keel
-line fitted to the samples (the (x, z) spline, fitted and integrated only
-above the keel), and a **keel-following** loft in `s = z/d(x)`, pinned to zero
-at the keel. Neither feeds the physics yet; they are there to judge which is
-worth building the kernel for.
+- **Hulls** (`/hulls`): an uploaded IGES or STL file with how it is cut —
+  its design waterline, stations and rays, units — shown in 3D with its
+  sections and hydrostatics. The same file cut another way is another hull.
+- **Configurations** (`/configs/ID`): a platform on a hull and its load — the
+  hull on its own or doubled into a catamaran at a span, its mass (carried by
+  sinking, or by scaling the hull), LCG, VCG, radii of gyration and roll
+  damping. Its statics are computed when it is made: the float at rest, GM_T
+  and the roll period, and the **GZ curve** (whole sections clipped at each
+  heel, free trim; `michell_geometry::stability`) with its peak, angle of
+  vanishing stability and areas.
+- **Runs** (`/runs/ID`): a speed on a configuration, in **calm water** (the
+  near-field pressure, the free surface, resistance, sinkage and trim at
+  speed) or in **waves** from one heading (responses over a wavelength sweep,
+  added resistance, an optional irregular sea; an animated seaway). A run in
+  waves is taken about the attitude of the calm-water run at its speed, which
+  it waits for.
 
-**Seakeeping** is an option on each flow case ("Also compute seakeeping in
-waves"): at the case's load and attitude, its motions in regular waves at the
-listed headings and wavelengths, and, given `H_s` and `T_p`, its statistics in
-that sea — the `michell seakeeping` computation (`michell_seakeeping::platform`),
-sent back with the flow as a `seakeeping` block (`/api/flow?…&sk=1&sk_heading=…`;
-see `SeakeepingRequest`). The case shows GM_T, the roll period and the sea
-table; its **response plot** draws heave, pitch, roll, sway, yaw or added
-resistance against λ/L, λ or ω_e, overlaid across the finished cases, each
-with how far the validation (`docs/seakeeping-findings.md`) says to trust it.
-Added resistance is drawn as the band between the Gerritsma–Beukelman and
-far-field estimates; the far field is left out away from head and following
-seas. **Animate** runs the viewed case in the 3-D view: the regular wave at the
-plot's heading and a chosen wavelength (or a clicked point) and height, and
-the hull moving in it — all five modes about G, at the encounter frequency
-(slowed if asked), with see-through walls on the wave patch so the profile and
-body views show the wave against the hull.
+**New runs** (`/runs/new`) crosses configurations (values, lists or ranges of
+span, mass, LCG, VCG) with runs (speeds, headings, sea) and says which already
+exist; **Queue** (`/queue`) shows the running run's progress and what waits;
+**Results** (`/results`) filters finished runs, plots any result against any
+parameter and exports CSV. Every result records the solver version it was
+computed with (the last commit to touch the solver's code); one from another
+version is marked stale and can be run again.
 
 ```text
-cargo run --release -p michell-web          # http://127.0.0.1:8080/
-michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)
+cargo run --release -p michell-web -- --data michell-data   # http://127.0.0.1:8080/
+MICHELL_WEB_DIR=crates/michell-web/src/web michell-web      # pages read from disk, to edit them live
 ```
+
+`deploy/README.md` has running it as a service behind `tailscale serve`.
 
 ## API sketch
 
