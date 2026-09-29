@@ -1351,8 +1351,21 @@ fn cluster_frame_with(
     let two_sided = !probe_counts.is_empty()
         && probe_counts[probe_counts.len() / 2] >= 2
         && !probe_mids.is_empty();
+    // The median midpoint, not the mean: a few probes can cut the shell
+    // lopsidedly (near a transom or a stem at some trims, one side's hit
+    // missed or a fitting's taken), and on e12 trimmed 1° bow up six such of
+    // 47 pulled the mean 12 mm off the true centreplane — enough for the
+    // stations' rays to miss a thin stem, and a nearby pose's cut (which
+    // keeps this centreplane) to stop its bow short, in a cliff.
     let y_c = centerplane.unwrap_or(if two_sided {
-        probe_mids.iter().sum::<f64>() / probe_mids.len() as f64
+        let mut mids = probe_mids.clone();
+        mids.sort_by(f64::total_cmp);
+        let n = mids.len();
+        if n % 2 == 1 {
+            mids[n / 2]
+        } else {
+            0.5 * (mids[n / 2 - 1] + mids[n / 2])
+        }
     } else {
         0.0
     });
@@ -3145,6 +3158,56 @@ fn iges_datetime() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A symmetric hull's centreplane is found on its plane of symmetry at
+    /// any trim, and a cut warm-started from another trim's is the cut made
+    /// cold: e12 trimmed 1.1° bow up once put its centreplane 12 mm off
+    /// (a mean of probe midpoints, six of them lopsided), and the nearby
+    /// pose's warm cut, keeping it, stopped its bow short in a cliff that
+    /// sent the wave resistance to 10¹³ N.
+    #[test]
+    fn a_symmetric_hull_keeps_its_centreplane_at_trim() {
+        let Some(text) = crate::cad_fixture("e12.igs") else {
+            return;
+        };
+        let wl = -0.95;
+        let src = source_fleet(&text, wl).unwrap();
+        let opts = SectionalOptions::default();
+        let at = |s: f64, deg: f64| Platform {
+            sinkage: s,
+            trim: deg.to_radians(),
+            pivot_x: 4.317,
+        };
+        let pose = HullPose::default();
+        let (a, b) = (at(0.0215, 1.1027), at(0.0086, 0.084));
+        let bow_up = src
+            .situate_sectional(0, wl, &pose, &a, &opts)
+            .unwrap()
+            .unwrap();
+        assert!(
+            bow_up.report.centerplane.abs() < 1e-6,
+            "centreplane {}",
+            bow_up.report.centerplane
+        );
+        let cold = src
+            .situate_sectional(0, wl, &pose, &b, &opts)
+            .unwrap()
+            .unwrap();
+        let mut state = SectionalState::default();
+        src.situate_sectional_warm(0, wl, &pose, &a, &opts, &mut state)
+            .unwrap();
+        let warm = src
+            .situate_sectional_warm(0, wl, &pose, &b, &opts, &mut state)
+            .unwrap()
+            .unwrap();
+        let (c, w) = (cold.report.x_range, warm.report.x_range);
+        assert!(
+            (c.1 - w.1).abs() < 1e-6 && (c.0 - w.0).abs() < 1e-6,
+            "{c:?} vs {w:?}"
+        );
+        let (vc, vw) = (cold.hull.displaced_volume(), warm.hull.displaced_volume());
+        assert!((vc - vw).abs() < 1e-9 * vc, "{vc} vs {vw}");
+    }
 
     /// Nonlinearly parametrised test surface:
     /// x = L(0.7u + 0.3u³), z = T·v, y = (1 + u)(2 - v)/4.
