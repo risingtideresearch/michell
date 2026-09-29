@@ -133,6 +133,45 @@ td .sub { display: block; color: var(--muted); font-size: 12px; white-space: nor
 .track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 5px 0 4px; }
 .fill { height: 100%; width: 0; border-radius: 4px; background: var(--accent); transition: width .3s; }
 
+/* ---- charts (see chart.js): the reference categorical palette, in its
+   fixed order, stepped for each surface; recessive chrome */
+:root {
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+  --chart-grid: #e1e0d9; --chart-axis: #c3c2b7; --chart-muted: #898781;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    --chart-grid: #2c2c2a; --chart-axis: #383835;
+  }
+}
+.chart { position: relative; }
+.chart .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.chart .bar .title { font-weight: 600; font-size: 13px; }
+.chart .bar .grow { flex: 1; }
+.chart .bar button { font-size: 12px; padding: 2px 8px; }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.chart svg text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--chart-muted); font-variant-numeric: tabular-nums; }
+.chart svg text.direct { fill: var(--muted); font-size: 11px; }
+.chart svg .grid { stroke: var(--chart-grid); stroke-width: 1; }
+.chart svg .axis { stroke: var(--chart-axis); stroke-width: 1; }
+.chart svg .cross { stroke: var(--chart-muted); stroke-width: 1; stroke-dasharray: 2 3; }
+.chart svg .dot { stroke: var(--panel); stroke-width: 2; }
+.chart .legend-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 4px; }
+.chart .legend-row span { display: inline-flex; align-items: center; gap: 6px; }
+.chart .legend-row i { display: inline-block; width: 14px; height: 0; border-top: 2px solid; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.12); display: none; z-index: 3; min-width: 120px; }
+.chart .tip .x { color: var(--muted); margin-bottom: 3px; }
+.chart .tip .row { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chart .tip .row b { font-variant-numeric: tabular-nums; }
+.chart .tip .row i { display: inline-block; width: 10px; height: 0; border-top: 2px solid; }
+.chart .tip .row span { color: var(--muted); }
+.chart table { font-size: 12px; }
+.chart .empty { padding: 30px; text-align: center; color: var(--muted); font-size: 13px; }
+
 /* ---- the 3D viewer's overlays (see viewer.js) */
 .viewer canvas { display: block; }
 .viewer .toolbar { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 8px; pointer-events: none; }

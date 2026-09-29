@@ -74,23 +74,46 @@ export const lRef = (summary) => Math.max(0, ...(summary?.hulls || []).map((h) =
 // A Froude number on length `l` as knots.
 export const knots = (fn, l) => fn * Math.sqrt(G * l) / KN;
 
-// A case's parameters in words; `l` (the hull's reference length) adds the
-// speed in knots.
-export function caseLabel(p, l) {
+// A configuration's parameters in words.
+export function configLabel(p) {
+  const how = { sinking: "", scale: " (hull scaled)", scale_yz: " (beam and draft scaled)" }[p.mass_by] ?? "";
+  const parts = [
+    p.span != null ? `catamaran, span ${fmt(p.span, 2)} m` : "monohull",
+    p.mass == null ? "design mass" : `${fmt(p.mass, 1)} kg${how}`,
+  ];
+  if (p.lcg != null) parts.push(`LCG ${fmt(p.lcg, 3)}`);
+  if (p.vcg != null) parts.push(`VCG ${fmt(p.vcg, 3)}`);
+  if (p.kxx != null) parts.push(`kxx ${fmt(p.kxx, 2)} m`);
+  if (p.kyy != null) parts.push(`kyy ${fmt(p.kyy, 2)} L`);
+  if (p.kzz != null) parts.push(`kzz ${fmt(p.kzz, 2)} m`);
+  if (p.roll_damping) parts.push(`roll damping ${fmt(100 * p.roll_damping, 0)}%`);
+  return parts.join(" · ");
+}
+
+// A configuration's name, or its parameters when it has none.
+export const configName = (c) => c.name || configLabel(c.params);
+
+// Headings in words: head, bow, beam, quartering, following seas.
+export function headingText(deg) {
+  const d = ((deg % 360) + 360) % 360, a = d > 180 ? 360 - d : d;
+  const what = a >= 165 ? "head" : a > 105 ? "bow" : a >= 75 ? "beam" : a > 15 ? "quartering" : "following";
+  return `${fmt(d, 0)}° ${what} seas`;
+}
+
+// A run's parameters in words; `l` (the reference length) adds the speed
+// in knots.
+export function runLabel(p, l) {
   const speed = `Fn ${fmt(p.froude, 3)}${l ? ` (${fmt(knots(p.froude, l), 2)} kn)` : ""}`;
-  const how = { sinking: "", scale: " scaled xyz", scale_yz: " scaled yz" }[p.mass_by] ?? "";
-  const load = p.mass == null && p.lcg == null ? "design load"
-    : `${p.mass == null ? "design mass" : `${fmt(p.mass, 1)} kg${how}`}${p.lcg == null ? "" : ` at x ${fmt(p.lcg, 3)}`}`;
-  const layout = p.spans ? `cat spans ${p.spans.map((s) => fmt(s, 2)).join(", ")} m (held)`
-    : p.span != null ? `cat span ${fmt(p.span, 2)} m` : "";
   const c = p.closure || {};
   const closure = c.type === "off" ? "no closure" : c.type === "fixed" ? `hollow ${fmt(c.length, 2)} m` : "";
-  return [speed, layout, load, p.dynamic === false ? "design attitude" : "", closure].filter(Boolean).join(" · ");
+  const w = p.waves;
+  const sea = !w ? "calm water" : [headingText(w.heading), w.sea ? `${w.sea.type === "jonswap" ? "JONSWAP" : "Bretschneider"} Hs ${fmt(w.sea.hs, 2)} m Tp ${fmt(w.sea.tp, 1)} s` : ""].filter(Boolean).join(", ");
+  return [speed, sea, p.dynamic === false ? "held at rest's attitude" : "", closure].filter(Boolean).join(" · ");
 }
 
 const TABS = [
   ["hulls", "/hulls", "Hulls"],
-  ["new-cases", "/cases/new", "New cases"],
+  ["new-runs", "/runs/new", "New runs"],
   ["queue", "/queue", "Queue"],
   ["results", "/results", "Results"],
 ];

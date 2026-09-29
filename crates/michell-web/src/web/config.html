@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Configuration · michell</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  #name { font-size: 18px; font-weight: 700; border-color: transparent; background: transparent; padding: 2px 4px; margin: -2px -4px; width: 100%; }
+  #name:hover, #name:focus { border-color: var(--line); background: var(--bg); }
+  #notes { width: 100%; }
+  .crumbs { font-size: 12px; color: var(--muted); }
+  .actions { display: flex; gap: 8px; }
+  .actions > * { flex: 1; text-align: center; }
+  .split > main.stack { display: grid; grid-template-rows: minmax(260px, 55%) auto; overflow-y: auto; background: var(--bg); }
+  #view { position: relative; background: var(--canvas); min-height: 260px; }
+  #gzpanel { padding: 14px 18px 24px; }
+  #runs table { font-size: 12px; }
+  #runs th, #runs td { padding: 5px 8px; }
+  #runs td.what { white-space: normal; }
+  .saved { color: var(--ok); font-size: 12px; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 12px 0 4px; }
+  .fig { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .fig .v { font-size: 20px; font-weight: 600; }
+  .fig .v small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .fig .k { font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <section>
+    <div class="crumbs"><a id="hulllink" href="/hulls">Hull</a> › configuration</div>
+    <input id="name" type="text" aria-label="Name" placeholder="Name this configuration">
+    <textarea id="notes" rows="2" placeholder="Notes" style="margin-top:8px"></textarea>
+    <div class="saved" id="saved"></div>
+  </section>
+  <section class="actions">
+    <a class="button primary" id="newruns">New runs</a>
+    <a class="button" id="results">Results</a>
+  </section>
+  <div id="status"></div>
+  <section>
+    <h2>Configuration</h2>
+    <dl id="params"></dl>
+  </section>
+  <section>
+    <h2>At rest</h2>
+    <dl id="rest"></dl>
+  </section>
+  <section>
+    <h2>Runs <span class="muted" id="runcount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="runs"></div>
+  </section>
+</aside>
+<main class="stack">
+  <div id="view"></div>
+  <div id="gzpanel">
+    <h2>Transverse stability</h2>
+    <div class="figs" id="figs"></div>
+    <div id="gz"></div>
+    <p class="hint" id="gznote"></p>
+  </div>
+</main>
+</div>
+
+<script type="module">
+import { $, api, configLabel, configName, esc, fmt, lRef, nav, pathId, runLabel, status } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+import { lineChart } from "/static/chart.js";
+nav("hulls");
+
+const id = pathId();
+const viewer = createViewer($("view"));
+viewer.empty("Loading…");
+let cfg, hull;
+
+function renderParams() {
+  const p = cfg.params, s = cfg.statics || {};
+  const given = (v, unit, dflt) => v == null ? `<span class="muted">${dflt}</span>` : `${fmt(v, 3)}${unit}`;
+  $("params").innerHTML = `
+    <dt>Layout</dt><dd>${p.span == null ? "monohull" : `catamaran, span ${fmt(p.span, 3)} m`}</dd>
+    <dt>Mass</dt><dd>${p.mass == null ? `<span class="muted">design, ${fmt(s.mass, 1)} kg</span>` : `${fmt(p.mass, 1)} kg`}</dd>
+    ${p.mass != null ? `<dt>Carried by</dt><dd>${{ sinking: "sinking", scale: "scaling the hull", scale_yz: "scaling beam and draft" }[p.mass_by]}</dd>` : ""}
+    <dt>LCG</dt><dd>${p.lcg == null ? `<span class="muted">at LCB, x ${fmt(s.lcg, 3)} m</span>` : `x ${fmt(p.lcg, 3)} m`}</dd>
+    <dt>VCG above DWL</dt><dd>${given(p.vcg, " m", "0 (not given)")}</dd>
+    <dt>k<sub>xx</sub> roll</dt><dd>${p.kxx == null ? `<span class="muted">${fmt(s.roll?.k_xx, 3)} m (default)</span>` : `${fmt(p.kxx, 3)} m`}</dd>
+    <dt>k<sub>yy</sub> pitch</dt><dd>${p.kyy == null ? `<span class="muted">${fmt(s.roll?.k_yy, 3)} m (0.25 L)</span>` : `${fmt(p.kyy, 3)} L`}</dd>
+    <dt>k<sub>zz</sub> yaw</dt><dd>${p.kzz == null ? `<span class="muted">${fmt(s.roll?.k_zz, 3)} m (default)</span>` : `${fmt(p.kzz, 3)} m`}</dd>
+    <dt>Roll damping</dt><dd>${fmt(100 * (p.roll_damping || 0), 1)}% of critical</dd>
+    <dt>Configuration</dt><dd>#${cfg.id}${cfg.stale ? ` <span class="pill stale">stale</span>` : ""}</dd>`;
+}
+
+function renderRest(s) {
+  const a = s.at_rest, hy = s.hydrostatics;
+  $("rest").innerHTML = `
+    <dt>Sinkage</dt><dd>${fmt(1000 * a.sinkage, 1)} mm below the DWL</dd>
+    <dt>Trim</dt><dd>${fmt(a.trim_deg, 3)}° bow up</dd>
+    <dt>Displacement</dt><dd>${fmt(hy.displacement, 1)} kg · ${fmt(hy.volume, 4)} m³</dd>
+    <dt>Draft</dt><dd>${fmt(hy.draft, 3)} m</dd>
+    <dt>LCB</dt><dd>x ${fmt(hy.lcb, 3)} m</dd>
+    <dt>Waterplane</dt><dd>${fmt(hy.waterplane_area, 3)} m²</dd>
+    <dt>Wetted surface</dt><dd>${fmt(hy.wetted_surface, 3)} m²</dd>
+    <dt>Computed in</dt><dd>${fmt(s.seconds, 2)} s</dd>`;
+}
+
+function renderStability(s) {
+  const r = s.roll, g = s.gz;
+  const fig = (v, unit, k) => `<div class="fig"><div class="v">${v}<small> ${unit}</small></div><div class="k">${k}</div></div>`;
+  $("figs").innerHTML = [
+    fig(fmt(r.gm_t, 3), "m", "GM<sub>T</sub> (waterplane)"),
+    fig(r.period == null ? "—" : fmt(r.period, 2), "s", "roll period, with added inertia"),
+    g.error ? "" : fig(fmt(g.max_gz, 3), "m", `max GZ, at ${fmt(g.heel_at_max_deg, 0)}°`),
+    g.error ? "" : fig(g.vanishing_deg == null ? "> 180" : fmt(g.vanishing_deg, 1), "°", "angle of vanishing stability"),
+    g.error ? "" : fig(fmt(g.area_30, 4), "m·rad", "GZ area to 30°"),
+    g.error ? "" : fig(fmt(g.area_40, 4), "m·rad", "GZ area to 40°"),
+  ].join("");
+  if (g.error) {
+    $("gz").innerHTML = `<div class="error">GZ: ${esc(g.error)}</div>`;
+    return;
+  }
+  const pts = g.heel_deg.map((h, i) => [h, g.gz[i]]);
+  lineChart($("gz"), {
+    title: "Righting arm GZ",
+    x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
+    y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString() },
+    series: [{ name: "GZ", points: pts }],
+    marks: "never",
+  });
+  $("gznote").innerHTML = `Free trim at each heel; whole sections keel to sheer, closed flush across the sheer (no deck openings or downflooding). The slope at upright is ${fmt(g.gm, 3)} m, against GM<sub>T</sub> ${fmt(r.gm_t, 3)} m from the waterplane.${s.vcg_given ? "" : " <b>No VCG was given: G is taken at the design waterline</b>, which flatters the curve for most boats."}`;
+}
+
+async function renderRuns() {
+  const runs = await api(`/api/runs?config=${id}`);
+  const l = lRef(hull.summary);
+  $("runcount").textContent = runs.length ? `· ${runs.length}` : "";
+  if (!runs.length) {
+    $("runs").innerHTML = `<p class="hint">No runs yet. <a href="/runs/new?config=${id}">Ask for some</a>.</p>`;
+    return;
+  }
+  $("runs").innerHTML = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Run</th><th class="num">Result</th></tr></thead><tbody>
+    ${runs.map((r) => {
+      const sc = r.result?.scalars;
+      const res = !sc ? "" : r.kind === "calm" ? `R<sub>t</sub> ${fmt(sc.rt, 1)} N` : `heave ${fmt(sc.heave_peak, 2)}`;
+      const st = r.stale && r.status === "done" ? "stale" : r.status;
+      return `<tr class="link" data-id="${r.id}">
+        <td><a href="/runs/${r.id}">${r.id}</a></td>
+        <td class="what">${esc(runLabel(r.params, l))}<span class="sub"><span class="pill ${r.status}${r.stale ? " stale" : ""}">${st}</span>${r.error ? ` · ${esc(r.error)}` : ""}</span></td>
+        <td class="num">${res}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+$("runs").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/runs/${row.dataset.id}`;
+});
+
+async function saveText() {
+  const name = $("name").value.trim(), notes = $("notes").value.trim();
+  if (name === cfg.name && notes === cfg.notes) return;
+  try {
+    cfg = await api(`/api/configs/${id}`, { json: { name, notes } });
+    document.title = `${configName(cfg)} · michell`;
+    $("saved").textContent = "saved";
+    setTimeout(() => { $("saved").textContent = ""; }, 1500);
+  } catch (e) { status(e.message, true); }
+}
+$("name").addEventListener("change", saveText);
+$("name").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+$("notes").addEventListener("change", saveText);
+
+try {
+  if (id == null) throw new Error("no configuration id in the address");
+  cfg = await api(`/api/configs/${id}`);
+  hull = await api(`/api/hulls/${cfg.hull_id}`);
+  document.title = `${configName(cfg)} · michell`;
+  $("hulllink").textContent = hull.name;
+  $("hulllink").href = `/hulls/${hull.id}`;
+  $("name").value = cfg.name;
+  $("name").placeholder = configLabel(cfg.params);
+  $("notes").value = cfg.notes;
+  $("newruns").href = `/runs/new?config=${id}`;
+  $("results").href = `/results?config=${id}`;
+  renderParams();
+  renderRuns().catch((e) => status(e.message, true));
+  if (cfg.error) {
+    status(`Its statics could not be computed: ${cfg.error}`, true);
+    viewer.empty("No statics");
+  } else {
+    const s = await api(`/api/configs/${id}/statics`);
+    renderRest(s);
+    renderStability(s);
+    // The hull at rest, z up from the water.
+    viewer.geometry(s.meshes, 0);
+  }
+} catch (e) {
+  status(e.message, true);
+  viewer.empty(e.message);
+}
+</script>
+</body>
+</html>

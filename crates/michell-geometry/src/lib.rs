@@ -50,6 +50,7 @@ pub mod parallel;
 pub mod quadrature;
 pub mod sectional;
 pub mod source;
+pub mod stability;
 pub mod stl;
 
 pub use conditions::{Conditions, Fluid, STANDARD_GRAVITY};

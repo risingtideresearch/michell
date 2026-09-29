@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New runs · michell</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .split > main.list { background: var(--bg); overflow-y: auto; padding: 16px 20px 40px; }
+  #hullinfo { margin-top: 6px; }
+  #preview td.what { white-space: normal; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.new { color: var(--accent); border-color: var(--accent); }
+  .tag.again { color: var(--warn); border-color: var(--warn); }
+  #submit { width: 100%; margin-top: 10px; }
+  .cfg { margin-bottom: 18px; }
+  .cfg h3 { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; margin: 0 0 6px; }
+  .cfg h3 .muted { font-weight: 400; }
+  label.check { flex-direction: row; align-items: center; gap: 6px; color: var(--ink); font-size: 13px; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 10px; margin: 8px 0 0; }
+  fieldset[disabled] { opacity: .5; }
+  legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <h1>New runs</h1>
+
+  <section>
+    <label>Hull
+      <select id="hull"><option value="">Loading…</option></select>
+    </label>
+    <div class="hint" id="hullinfo"></div>
+  </section>
+
+  <section>
+    <h2>Configuration</h2>
+    <div class="fields">
+      <label class="wide">Catamaran centre span(s) [m]
+        <input id="span" type="text" placeholder="blank: the hull on its own">
+      </label>
+      <label>Mass(es) [kg]
+        <input id="mass" type="text" placeholder="design">
+      </label>
+      <label>LCG x [m]
+        <input id="lcg" type="text" placeholder="at LCB">
+      </label>
+      <label class="wide">A given mass is carried by
+        <select id="massby">
+          <option value="sinking">the hull sinking to it (the waterline moves)</option>
+          <option value="scale">scaling the hull in x, y, z (the waterline stays)</option>
+          <option value="scale_yz">scaling beam and draft only (the waterline stays)</option>
+        </select>
+      </label>
+      <label>VCG above DWL [m]
+        <input id="vcg" type="text" placeholder="0 (at the DWL)">
+      </label>
+      <label>Roll damping [% crit.]
+        <input id="damping" type="number" min="0" max="99" step="any" placeholder="0">
+      </label>
+      <label>k<sub>xx</sub> roll [m]
+        <input id="kxx" type="number" step="any" min="0" placeholder="default">
+      </label>
+      <label>k<sub>yy</sub> pitch [× L]
+        <input id="kyy" type="number" step="any" min="0" placeholder="0.25">
+      </label>
+      <label>k<sub>zz</sub> yaw [m]
+        <input id="kzz" type="number" step="any" min="0" placeholder="default">
+      </label>
+      <label>Name
+        <input id="cname" type="text" placeholder="for a single configuration">
+      </label>
+    </div>
+    <p class="hint">Every combination of spans, masses, LCGs and VCGs is a configuration; its float at rest, GM and GZ curve are computed when it is made (a second or so each).</p>
+  </section>
+
+  <section>
+    <h2>Runs</h2>
+    <div class="fields">
+      <label>Speed(s)
+        <input id="speeds" type="text" placeholder="e.g. 6, or 4:8:0.5">
+      </label>
+      <label>Unit
+        <select id="unit">
+          <option value="kn">knots</option>
+          <option value="fn">Froude number</option>
+          <option value="ms">m/s</option>
+        </select>
+      </label>
+      <label class="wide">Attitude
+        <select id="attitude">
+          <option value="dynamic">floated at speed (sinkage and trim solved)</option>
+          <option value="design">held at rest's attitude</option>
+        </select>
+      </label>
+    </div>
+    <label class="check" style="margin-top:10px"><input type="checkbox" id="calm" checked> Calm water: resistance, pressure and wave pattern</label>
+    <label class="check" style="margin-top:6px"><input type="checkbox" id="waves"> Waves: motions and added resistance</label>
+    <fieldset id="wavefields" disabled>
+      <legend>Waves</legend>
+      <div class="fields">
+        <label>Heading(s) [°]
+          <input id="headings" type="text" value="180" placeholder="180 head, 90 beam">
+        </label>
+        <label>Wavelengths λ/L
+          <input id="lambdas" type="text" placeholder="0.5:3:0.125">
+        </label>
+        <label>Irregular sea
+          <select id="sea">
+            <option value="">none</option>
+            <option value="bretschneider">Bretschneider</option>
+            <option value="jonswap">JONSWAP</option>
+          </select>
+        </label>
+        <label>H<sub>s</sub> [m]
+          <input id="hs" type="number" step="any" min="0" placeholder="1">
+        </label>
+        <label>T<sub>p</sub> [s]
+          <input id="tp" type="number" step="any" min="0" placeholder="5">
+        </label>
+        <label>γ (JONSWAP)
+          <input id="gamma" type="number" step="any" min="1" max="10" placeholder="3.3">
+        </label>
+      </div>
+      <p class="hint">Each heading is a run, taken about the attitude of the calm-water run at its speed (queued too, if it is not already). 180° is head seas, 90° beam, 0° following.</p>
+    </fieldset>
+  </section>
+
+  <details>
+    <summary>Transom closure and resolution</summary>
+    <div class="fields" style="margin-top:8px">
+      <label>Transom closure
+        <select id="closure">
+          <option value="ballistic">ballistic hollow</option>
+          <option value="fixed">fixed hollow length</option>
+          <option value="off">none</option>
+        </select>
+      </label>
+      <label id="paramlabel">Coefficient
+        <input id="param" type="number" step="any" placeholder="√2">
+      </label>
+      <label class="wide">Free-surface grid columns
+        <input id="grid" type="number" min="40" max="1200" placeholder="640">
+      </label>
+    </div>
+    <p class="hint">The ballistic hollow is L<sub>v</sub> = c·U·√(d<sub>T</sub>/g), c = √2 by default. The grid sets the calm-water wave pattern's resolution only; resistance and attitude do not depend on it.</p>
+  </details>
+
+  <section>
+    <h2>Study</h2>
+    <div class="fields">
+      <label class="wide">Name
+        <input id="study" type="text">
+      </label>
+      <label class="wide">Notes
+        <textarea id="studynotes" rows="2" placeholder="what this set of runs is for"></textarea>
+      </label>
+      <label class="wide">Priority
+        <select id="priority">
+          <option value="0">normal</option>
+          <option value="10">high — ahead of normal runs</option>
+          <option value="-10">low — after everything else</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">Each field takes a value, a list (<code>0.3, 0.4</code>) or a range (<code>0.3:0.6:0.05</code>). Configurations and runs already made are not made again.</p>
+    <button class="primary" id="submit" disabled>Queue runs</button>
+  </section>
+  <div id="status"></div>
+</aside>
+<main class="list">
+  <div class="head"><h1>Runs to queue</h1><span class="grow"></span><span class="counts" id="prevcounts"></span></div>
+  <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull and give a speed.</div></div></div>
+</main>
+</div>
+
+<script type="module">
+import { $, G, KN, api, configLabel, esc, hullDims, lRef, nav, runLabel, status, whoami } from "/static/common.js";
+nav("new-runs");
+
+let hulls = [], hull = null, plan = null, checked = null, seq = 0;
+const INPUTS = ["span", "mass", "lcg", "massby", "vcg", "damping", "kxx", "kyy", "kzz", "cname",
+  "speeds", "unit", "attitude", "calm", "waves", "headings", "lambdas", "sea", "hs", "tp", "gamma",
+  "closure", "param", "grid"];
+
+// A field's values: blank (the fallback), `a`, `a, b, …`, or `a:b:step`.
+function values(id, fallback) {
+  const t = $(id).value.trim();
+  if (!t) return [fallback];
+  const out = [];
+  for (const part of t.split(/[,\s]+/).filter(Boolean)) {
+    const r = part.split(":").map(Number);
+    if (r.length === 3 && r.every(Number.isFinite) && r[2] > 0 && r[1] >= r[0]) {
+      for (let k = 0; r[0] + k * r[2] <= r[1] + 1e-9 * Math.abs(r[2]); k++) out.push(+(r[0] + k * r[2]).toPrecision(12));
+    } else if (r.length === 1 && Number.isFinite(r[0])) out.push(r[0]);
+    else throw new Error(`${$(id).closest("label").firstChild.textContent.trim()}: cannot read “${part}”`);
+  }
+  return out;
+}
+const num = (id) => { const t = $(id).value.trim(); return t ? Number(t) : null; };
+
+// A speed in the chosen unit as a Froude number on the longest hull.
+function toFroude(v, unit, l) {
+  const u = unit === "kn" ? v * KN : unit === "ms" ? v : null;
+  return u == null ? v : u / Math.sqrt(G * l);
+}
+
+// The configurations and runs the form asks for, as the server's params.
+function planned() {
+  if (!hull) return null;
+  const l = lRef(hull.summary);
+  const speeds = values("speeds", null);
+  if (speeds.includes(null)) return null;
+  if (speeds.some((v) => !(v > 0))) throw new Error("Speeds must be positive");
+  const spans = values("span", null), masses = values("mass", null), lcgs = values("lcg", null), vcgs = values("vcg", null);
+  if (masses.some((m) => m != null && !(m > 0))) throw new Error("Masses must be positive");
+  if (spans.some((s) => s != null && !(s > 0))) throw new Error("Spans must be positive");
+  const extra = {};
+  for (const k of ["kxx", "kyy", "kzz"]) if (num(k) != null) extra[k] = num(k);
+  if (num("damping")) extra.roll_damping = num("damping") / 100;
+  const configs = [];
+  for (const span of spans) for (const mass of masses) for (const lcg of lcgs) for (const vcg of vcgs) {
+    const p = { ...extra };
+    if (span != null) p.span = span;
+    if (mass != null) { p.mass = mass; p.mass_by = $("massby").value; }
+    if (lcg != null) p.lcg = lcg;
+    if (vcg != null) p.vcg = vcg;
+    configs.push({ params: p });
+  }
+  if (configs.length === 1 && $("cname").value.trim()) configs[0].name = $("cname").value.trim();
+  if (configs.length > 40) throw new Error(`That is ${configs.length} configurations; make at most 40 at a time`);
+
+  const base = { dynamic: $("attitude").value === "dynamic" };
+  const cl = $("closure").value, param = $("param").value.trim();
+  if (cl === "fixed") base.closure = { type: "fixed", length: param ? Number(param) : 0.3 };
+  else if (cl === "off") base.closure = { type: "off" };
+  else if (param) base.closure = { type: "ballistic", coeff: Number(param) };
+  const grid = $("grid").value.trim();
+  if (grid) base.grid = Number(grid);
+  let waves = [];
+  if ($("waves").checked) {
+    const heads = values("headings", 180);
+    const lam = $("lambdas").value.trim() ? values("lambdas", null) : null;
+    let sea = null;
+    if ($("sea").value) {
+      const hs = num("hs"), tp = num("tp");
+      if (!(hs > 0) || !(tp > 0)) throw new Error("An irregular sea needs Hs and Tp");
+      sea = { type: $("sea").value, hs, tp };
+      if (sea.type === "jonswap" && num("gamma") != null) sea.gamma = num("gamma");
+    }
+    waves = heads.map((heading) => ({ heading, ...(lam ? { lambdas: lam } : {}), ...(sea ? { sea } : {}) }));
+  }
+  if (!$("calm").checked && !waves.length) throw new Error("Ask for calm water, waves, or both");
+  const runs = [];
+  for (const v of speeds) {
+    const p = { ...base, froude: +toFroude(v, $("unit").value, l).toPrecision(12) };
+    if ($("calm").checked) runs.push(p);
+    for (const w of waves) runs.push({ ...p, waves: w });
+  }
+  return { configs, runs };
+}
+
+// The study's name when none is given: the hull, the speeds, the sea.
+function autoName() {
+  if (!hull) return "";
+  const s = $("speeds").value.trim(), u = { kn: "kn", fn: "Fn", ms: "m/s" }[$("unit").value];
+  const extra = [
+    $("mass").value.trim() && `${$("mass").value.trim()} kg`,
+    $("span").value.trim() && `span ${$("span").value.trim()} m`,
+    $("waves").checked && `waves ${$("headings").value.trim() || "180"}°`,
+  ].filter(Boolean);
+  return [hull.name, s && (u === "Fn" ? `Fn ${s}` : `${s} ${u}`), ...extra].filter(Boolean).join(" · ");
+}
+
+// Plan, then ask the server (a dry run) which it already has.
+async function refresh() {
+  const my = ++seq;
+  $("study").placeholder = autoName();
+  $("wavefields").disabled = !$("waves").checked;
+  try { plan = planned(); } catch (e) {
+    plan = checked = null;
+    $("preview").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $("prevcounts").innerHTML = "";
+    $("submit").disabled = true;
+    return;
+  }
+  if (!plan) {
+    checked = null;
+    $("preview").innerHTML = `<div class="tablewrap"><div class="empty-state">${hull ? "Give a speed, a list of speeds or a range." : "Choose a hull."}</div></div>`;
+    $("prevcounts").innerHTML = "";
+    $("submit").disabled = true;
+    $("submit").textContent = "Queue runs";
+    return;
+  }
+  try {
+    const r = await api("/api/runs", { json: { hull: hull.id, ...plan, dry_run: true } });
+    if (my !== seq) return;
+    checked = r;
+    render();
+  } catch (e) {
+    if (my !== seq) return;
+    checked = null;
+    $("preview").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $("submit").disabled = true;
+  }
+}
+
+function render() {
+  const l = lRef(hull.summary);
+  let fresh = 0, again = 0, have = 0, newConfigs = 0;
+  const out = checked.configs.map((c, i) => {
+    if (c.existing == null) newConfigs++;
+    const rows = checked.runs.filter((r) => r.config === i).map((r) => {
+      const e = r.existing;
+      let tag;
+      if (!e) { fresh++; tag = `<span class="tag new">new${r.implied ? " · for the waves" : ""}</span>`; }
+      else if (e.status === "failed" || e.status === "cancelled") { again++; tag = `<span class="tag again">${e.status} before · runs again</span>`; }
+      else { have++; tag = `<a class="tag" href="/runs/${e.id}">#${e.id} ${e.status}${e.stale ? ", stale" : ""}</a>`; }
+      return `<tr><td class="what">${esc(runLabel(r.params, l))}</td><td>${tag}</td></tr>`;
+    }).join("");
+    const head = c.existing == null
+      ? `<span class="tag new">new configuration</span>`
+      : `<a class="tag" href="/configs/${c.existing}">configuration #${c.existing}</a>`;
+    return `<div class="cfg"><h3>${esc(c.name || configLabel(c.params))} ${head}</h3>
+      <div class="tablewrap"><table><thead><tr><th>Run</th><th>On this configuration</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  });
+  $("preview").innerHTML = out.join("");
+  const n = fresh + again;
+  $("prevcounts").innerHTML = [newConfigs && `<span class="pill queued">${newConfigs} new configuration${newConfigs === 1 ? "" : "s"}</span>`,
+    fresh && `<span class="pill queued">${fresh} new run${fresh === 1 ? "" : "s"}</span>`,
+    again && `<span class="pill failed">${again} to run again</span>`,
+    have && `<span class="pill done">${have} already asked for</span>`].filter(Boolean).join("");
+  $("submit").disabled = !n;
+  $("submit").textContent = n ? `Queue ${n} run${n === 1 ? "" : "s"}` : "Nothing new to queue";
+}
+
+let timer = null;
+const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+for (const id of INPUTS) { $(id).addEventListener("input", later); $(id).addEventListener("change", later); }
+
+function updateParam() {
+  const cl = $("closure").value;
+  $("paramlabel").hidden = cl === "off";
+  $("paramlabel").firstChild.textContent = cl === "fixed" ? "Hollow length [m]" : "Coefficient";
+  $("param").placeholder = cl === "fixed" ? "0.3" : "√2";
+}
+$("closure").addEventListener("change", updateParam);
+
+function chooseHull(id) {
+  hull = hulls.find((h) => h.id === id) || null;
+  $("hullinfo").innerHTML = hull ? `${esc(hullDims(hull.summary))} · <a href="/hulls/${hull.id}">view</a>` : "";
+  const cat = hull && (hull.summary?.hulls || []).length === 1;
+  $("span").disabled = !cat;
+  $("span").placeholder = cat ? "blank: the hull on its own" : "this file holds several hulls";
+  const qs = new URLSearchParams(location.search);
+  if (hull) qs.set("hull", hull.id); else qs.delete("hull");
+  qs.delete("config");
+  history.replaceState(null, "", `/runs/new${qs.size ? `?${qs}` : ""}`);
+  refresh();
+}
+$("hull").addEventListener("change", () => chooseHull(Number($("hull").value)));
+
+$("submit").onclick = async () => {
+  if (!hull || !plan) return;
+  $("submit").disabled = true;
+  status(`Making ${plan.configs.length > 1 ? "the configurations" : "the configuration"} and queueing…`);
+  try {
+    const r = await api("/api/runs", { json: {
+      hull: hull.id, ...plan, by: whoami(), priority: Number($("priority").value),
+      study: { name: $("study").value.trim() || autoName(), notes: $("studynotes").value.trim() },
+    } });
+    const failed = r.configs.filter((c) => c.error);
+    if (failed.length) {
+      status(`${failed.length} configuration${failed.length === 1 ? "" : "s"} could not float, so no runs were queued on ${failed.length === 1 ? "it" : "them"}: ${failed.map((c) => c.error).join("; ")}`, true);
+      setTimeout(() => { location.href = `/queue?study=${r.study_id}`; }, 4000);
+      return;
+    }
+    location.href = `/queue?study=${r.study_id}`;
+  } catch (e) {
+    status(e.message, true);
+    $("submit").disabled = false;
+  }
+};
+
+// The form's fields can come in the address (`?hull=3&speeds=4:8:1&unit=kn`),
+// to share or repeat a set of runs; `?config=ID` starts from a configuration.
+const qs = new URLSearchParams(location.search);
+for (const id of [...INPUTS, "study", "studynotes", "priority"]) {
+  if (!qs.has(id)) continue;
+  if ($(id).type === "checkbox") $(id).checked = qs.get(id) !== "0";
+  else $(id).value = qs.get(id);
+}
+
+try {
+  hulls = await api("/api/hulls");
+  $("hull").innerHTML = `<option value="">Choose a hull…</option>` + hulls.map((h) => `<option value="${h.id}">${esc(h.name)} (#${h.id})</option>`).join("");
+  let want = Number(qs.get("hull"));
+  const from = Number(qs.get("config"));
+  if (from) {
+    const c = await api(`/api/configs/${from}`);
+    want = c.hull_id;
+    const p = c.params;
+    const set = (id, v) => { if (v != null) $(id).value = v; };
+    set("span", p.span); set("mass", p.mass); set("lcg", p.lcg); set("vcg", p.vcg);
+    set("kxx", p.kxx); set("kyy", p.kyy); set("kzz", p.kzz);
+    if (p.roll_damping) $("damping").value = 100 * p.roll_damping;
+    if (p.mass != null) $("massby").value = p.mass_by;
+    set("cname", c.name || null);
+  }
+  if (want && hulls.some((h) => h.id === want)) { $("hull").value = String(want); chooseHull(want); }
+  else if (!hulls.length) $("hullinfo").innerHTML = `No hulls yet: <a href="/hulls/new">upload one</a> first.`;
+} catch (e) { status(e.message, true); }
+updateParam();
+</script>
+</body>
+</html>

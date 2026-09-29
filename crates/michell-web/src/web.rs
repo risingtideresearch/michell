@@ -8,10 +8,12 @@ const FILES: &[(&str, &str)] = &[
     ("common.css", include_str!("web/common.css")),
     ("common.js", include_str!("web/common.js")),
     ("viewer.js", include_str!("web/viewer.js")),
+    ("chart.js", include_str!("web/chart.js")),
     ("hulls.html", include_str!("web/hulls.html")),
     ("hull-new.html", include_str!("web/hull-new.html")),
     ("hull.html", include_str!("web/hull.html")),
-    ("cases-new.html", include_str!("web/cases-new.html")),
+    ("config.html", include_str!("web/config.html")),
+    ("runs-new.html", include_str!("web/runs-new.html")),
     ("queue.html", include_str!("web/queue.html")),
 ];
 
@@ -23,7 +25,8 @@ fn page(path: &str) -> Option<&'static str> {
         ["hulls"] => "hulls.html",
         ["hulls", "new"] => "hull-new.html",
         ["hulls", id] if is_id(id) => "hull.html",
-        ["cases", "new"] => "cases-new.html",
+        ["configs", id] if is_id(id) => "config.html",
+        ["runs", "new"] => "runs-new.html",
         ["queue"] => "queue.html",
         _ => return None,
     })
@@ -62,7 +65,8 @@ mod tests {
         assert_eq!(page("/hulls/new"), Some("hull-new.html"));
         assert_eq!(page("/hulls/12"), Some("hull.html"));
         assert_eq!(page("/hulls/x1"), None);
-        assert_eq!(page("/cases/new"), Some("cases-new.html"));
+        assert_eq!(page("/runs/new"), Some("runs-new.html"));
+        assert_eq!(page("/configs/4"), Some("config.html"));
         assert_eq!(page("/queue"), Some("queue.html"));
         assert!(file("/static/viewer.js").is_some());
         assert!(file("/static/../main.rs").is_none());

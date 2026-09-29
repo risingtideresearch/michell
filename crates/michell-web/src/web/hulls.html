@@ -51,7 +51,7 @@ function render() {
   $("list").innerHTML = `<div class="tablewrap"><table>
     <thead><tr>
       <th>Name</th><th class="num">L [m]</th><th class="num">B [m]</th><th class="num">T [m]</th>
-      <th class="num">Δ [kg]</th><th class="num">LCB [m]</th><th>Waterline</th><th>Cases</th><th>Uploaded</th>
+      <th class="num">Δ [kg]</th><th class="num">LCB [m]</th><th>Waterline</th><th class="num">Configs</th><th>Runs</th><th>Uploaded</th>
     </tr></thead>
     <tbody>${shown.map((h) => {
       const hs = h.summary?.hulls || [], h0 = hs[0] || {};
@@ -66,7 +66,7 @@ function render() {
         <td class="num">${fmt(RHO * vol, 1)}</td>
         <td class="num">${fmt(h0.lcb_x, 3)}</td>
         <td class="mono">${wl == null ? "z 0" : `z ${fmt(wl, 4)}`}</td>
-        <td>${counts(h.cases)}</td>
+        <td class="num">${h.configs}</td><td>${counts(h.runs)}</td>
         <td>${fmtTime(h.created_at)}${h.uploaded_by ? `<span class="sub">${esc(h.uploaded_by)}</span>` : ""}</td>
       </tr>`;
     }).join("")}</tbody></table></div>`;
