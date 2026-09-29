@@ -31,6 +31,10 @@
   .fig .v { font-size: 20px; font-weight: 600; }
   .fig .v small { font-size: 12px; font-weight: 400; color: var(--muted); }
   .fig .k { font-size: 11px; color: var(--muted); }
+  .heelbar { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; flex-wrap: wrap; }
+  .heelbar input { flex: 1; min-width: 160px; }
+  .heelbar .mono { font-size: 12px; min-width: 300px; }
+  .heelbar button { width: 34px; }
 </style>
 </head>
 <body>
@@ -65,6 +69,11 @@
   <div id="gzpanel">
     <h2>Transverse stability</h2>
     <div class="figs" id="figs"></div>
+    <div class="heelbar" id="heelbar" hidden>
+      <button id="play" title="Sweep through the heels">▶</button>
+      <input type="range" id="heel" min="0" step="1" aria-label="Heel">
+      <span class="mono" id="heelread"></span>
+    </div>
     <div id="gz"></div>
     <p class="hint" id="gznote"></p>
   </div>
@@ -118,7 +127,8 @@ function renderStability(s) {
     fig(fmt(r.gm_t, 3), "m", "GM<sub>T</sub> (waterplane)"),
     fig(r.period == null ? "—" : fmt(r.period, 2), "s", "roll period, with added inertia"),
     g.error ? "" : fig(fmt(g.max_gz, 3), "m", `max GZ, at ${fmt(g.heel_at_max_deg, 0)}°`),
-    g.error ? "" : fig(g.vanishing_deg == null ? "> 180" : fmt(g.vanishing_deg, 1), "°", "angle of vanishing stability"),
+    g.error ? "" : g.vanishing_deg === 0 ? fig("none", "", "range of stability: unstable upright (GM ≤ 0)")
+      : fig(g.vanishing_deg == null ? "> 180" : fmt(g.vanishing_deg, 1), "°", "angle of vanishing stability"),
     g.error ? "" : fig(fmt(g.area_30, 4), "m·rad", "GZ area to 30°"),
     g.error ? "" : fig(fmt(g.area_40, 4), "m·rad", "GZ area to 40°"),
   ].join("");
@@ -127,7 +137,7 @@ function renderStability(s) {
     return;
   }
   const pts = g.heel_deg.map((h, i) => [h, g.gz[i]]);
-  lineChart($("gz"), {
+  gzChart = lineChart($("gz"), {
     title: "Righting arm GZ",
     x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
     y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString() },
@@ -136,6 +146,36 @@ function renderStability(s) {
   });
   $("gznote").innerHTML = `Free trim at each heel; whole sections keel to sheer, closed flush across the sheer (no deck openings or downflooding). The slope at upright is ${fmt(g.gm, 3)} m, against GM<sub>T</sub> ${fmt(r.gm_t, 3)} m from the waterplane.${s.vcg_given ? "" : " <b>No VCG was given: G is taken at the design waterline</b>, which flatters the curve for most boats."}`;
 }
+
+// The platform heeled in 3D at one of the curve's heels, as the GZ solve
+// balanced it: G, B, the lever between them, and M where B's vertical
+// crosses the centreplane (at small heels, GM above G).
+let gzChart = null, heelData = null, playing = null;
+function setHeel(i) {
+  const g = heelData;
+  if (!g) return;
+  i = Math.max(0, Math.min(g.heel_deg.length - 1, i));
+  $("heel").value = i;
+  const deg = g.heel_deg[i], phi = deg * Math.PI / 180;
+  const at = viewer.heelAt({ heel: phi, trim: g.trim_rad[i], sinkage: g.sinkage[i], g: g.g, b: g.cb[i] });
+  gzChart?.mark(deg);
+  const small = deg > 0 && deg <= 10;
+  const bits = [`φ ${fmt(deg, 0)}°`, `GZ ${fmt(g.gz[i], 3)} m`, `trim ${fmt(g.trim_deg[i], 2)}°`];
+  if (deg > 0 && deg < 90) bits.push(`GZ/sin φ ${fmt(g.gz[i] / Math.sin(phi), 3)} m`);
+  if (at?.mz != null && small) bits.push(`M ${fmt(at.mz - at.G[2], 3)} m above G`);
+  $("heelread").textContent = bits.join(" · ");
+}
+$("heel").addEventListener("input", () => setHeel(Number($("heel").value)));
+$("play").addEventListener("click", () => {
+  if (playing) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
+  $("play").textContent = "■";
+  let i = Number($("heel").value);
+  if (i >= heelData.heel_deg.length - 1) i = 0;
+  playing = setInterval(() => {
+    setHeel(i++);
+    if (i >= heelData.heel_deg.length) { clearInterval(playing); playing = null; $("play").textContent = "▶"; }
+  }, 120);
+});
 
 async function renderRuns() {
   const studies = await api(`/api/studies?case=${id}`);
@@ -198,7 +238,20 @@ try {
     renderRest(s);
     renderStability(s);
     // The hull at rest, z up from the water.
-    viewer.geometry(s.meshes, 0);
+    if (s.body_meshes && s.gz?.cb) {
+      // The hull heeled along its GZ curve, upright to start.
+      heelData = s.gz;
+      viewer.heelShow(s.body_meshes);
+      $("heel").max = s.gz.heel_deg.length - 1;
+      $("heelbar").hidden = false;
+      // `?heel=deg` starts at the nearest heel on the curve.
+      const want = Number(new URLSearchParams(location.search).get("heel") || 0);
+      const near = s.gz.heel_deg.reduce((b, h, i) => (Math.abs(h - want) < Math.abs(s.gz.heel_deg[b] - want) ? i : b), 0);
+      setHeel(near);
+    } else {
+      // Statics from before the heel view: the hull at rest.
+      viewer.geometry(s.meshes, 0);
+    }
   }
 } catch (e) {
   status(e.message, true);

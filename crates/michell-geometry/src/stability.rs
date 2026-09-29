@@ -119,7 +119,10 @@ pub struct GzCurve {
     pub heel_at_max: f64,
     /// The first heel past upright where the arm turns negative (the angle
     /// of vanishing stability) [rad], interpolated; `None` if it stays
-    /// positive over the heels asked for.
+    /// positive over the heels asked for. Zero when the platform does not
+    /// right itself at all from upright (GM ≤ 0: it lolls, or capsizes) —
+    /// any later crossing is past an angle of loll, not a range of
+    /// stability.
     pub vanishing: Option<f64>,
     /// `∫ GZ dφ` from upright to 30°, to 40° and to the vanishing angle
     /// (or the last heel) [m·rad], over the heels asked for.
@@ -434,7 +437,13 @@ fn summarise(
         }
     }
     let mut vanishing = None;
-    for w in points.windows(2) {
+    // Unstable upright: no range of positive stability to vanish at.
+    let upright_unstable = !(gm > 0.0)
+        || points
+            .iter()
+            .find(|q| q.heel > 0.0)
+            .is_some_and(|q| q.gz <= 0.0);
+    for w in points.windows(2).filter(|_| !upright_unstable) {
         if w[0].heel > 0.0 && w[0].gz > 0.0 && w[1].gz <= 0.0 {
             let f = w[0].gz / (w[0].gz - w[1].gz);
             vanishing = Some(w[0].heel + f * (w[1].heel - w[0].heel));
@@ -465,7 +474,11 @@ fn summarise(
         gm,
         max_gz: if max_gz.is_finite() { max_gz } else { 0.0 },
         heel_at_max,
-        vanishing,
+        vanishing: if upright_unstable {
+            Some(0.0)
+        } else {
+            vanishing
+        },
     }
 }
 
@@ -529,6 +542,28 @@ mod tests {
         assert!((c.gm - gm).abs() < 1e-4, "{} vs {gm}", c.gm);
         // Deck edge in at atan(2(d−t)/b) = 45°; the arm keeps rising a while.
         assert!(c.max_gz > 0.0);
+    }
+
+    /// A box with G above its metacentre does not right itself: its range
+    /// of stability is nothing, however its curve runs later.
+    #[test]
+    fn an_unstable_box_has_no_range_of_stability() {
+        let (l, b, d, t) = (10.0, 2.0, 1.5, 0.5);
+        let rho = GzOptions::default().density;
+        // KM = T/2 + B²/12T = 0.917 m; G at 0.5 + 0.6 = 1.1 m above the keel.
+        let load = StabilityLoad {
+            mass: rho * l * b * t,
+            lcg: 0.5 * l,
+            vcg: 0.6,
+        };
+        let c = gz_curve(
+            &[boxy(l, b, d, t, 0.0, 11)],
+            &load,
+            &opts(&[0.0, 2.0, 10.0, 30.0, 60.0]),
+        )
+        .unwrap();
+        assert!(c.gm < 0.0, "{}", c.gm);
+        assert_eq!(c.vanishing, Some(0.0));
     }
 
     /// Heeling the other way mirrors the curve.

@@ -71,7 +71,7 @@ export function createViewer(host) {
 
   const model = new THREE.Group();
   scene.add(model);
-  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves", "seaway"];
+  const NAMES = ["surface", "stations", "keel", "rays", "closure", "water", "geom", "hull", "pressure", "waves", "seaway", "heel"];
   const layers = Object.fromEntries(NAMES.map((n) => [n, new THREE.Group()]));
   for (const g of Object.values(layers)) model.add(g);
   // What is shown: the sections (a hull), or the flow (a case). The
@@ -79,7 +79,7 @@ export function createViewer(host) {
   // waterline, the cut below it — the cut's layers, relative to the
   // waterline they were cut at, raised by it. The flow view is relative to
   // the solved waterline.
-  const SHOWN = { cut: ["surface", "stations", "closure", "geom", "water"], flow: ["hull", "pressure", "waves"], sea: ["hull", "seaway"] };
+  const SHOWN = { cut: ["surface", "stations", "closure", "geom", "water"], flow: ["hull", "pressure", "waves"], sea: ["hull", "seaway"], heel: ["hull", "heel"] };
   const CUT_FRAME = ["surface", "stations", "keel", "rays", "closure"];
   let mode = "cut", wlCut = 0, geomBounds = null;
   function show(which) {
@@ -383,7 +383,7 @@ export function createViewer(host) {
   function render() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => { pending = false; if (controls.update()) render(); renderer.render(scene, camera); });
+    requestAnimationFrame(() => { pending = false; if (controls.update()) render(); renderer.render(scene, camera); placeLabels(); });
   }
 
   const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
@@ -541,8 +541,139 @@ export function createViewer(host) {
     sea.raf = requestAnimationFrame(tick);
   }
 
+  // Labels pinned to points in the scene, as HTML over the canvas.
+  let labels = [];
+  function placeLabels() {
+    const w = host.clientWidth, h = host.clientHeight, v = new THREE.Vector3();
+    for (const l of labels) {
+      v.copy(l.at).project(camera);
+      l.el.style.left = `${((v.x + 1) / 2) * w + 8}px`;
+      l.el.style.top = `${((1 - v.y) / 2) * h - 8}px`;
+      l.el.style.display = layers.heel.visible ? "" : "none";
+    }
+  }
+  function label(text, color) {
+    const el = document.createElement("div");
+    Object.assign(el.style, { position: "absolute", font: "600 12px system-ui, sans-serif", color,
+      pointerEvents: "none", textShadow: "0 0 3px var(--panel), 0 0 3px var(--panel)" });
+    el.textContent = text;
+    host.appendChild(el);
+    const l = { el, at: new THREE.Vector3() };
+    labels.push(l);
+    return l;
+  }
+
+  // A case at a heel on its GZ curve: the hull in its own axes (x fore,
+  // y port, z up from the design waterline), placed as the GZ solve placed
+  // it — heel φ about x (lifting +y), trim θ bow up about x = 0, down by the
+  // sinkage s:
+  //   X = x cosθ − sinθ (y sinφ + z cosφ),  Y = y cosφ − z sinφ,
+  //   Z = x sinθ + cosθ (y sinφ + z cosφ) − s
+  // — with G and B, the verticals through them and the lever GZ between,
+  // and M where B's vertical crosses the heeled centreplane.
+  let heel = null;
+  function heelShow(meshes) {
+    clear(layers.hull); clear(layers.heel);
+    for (const l of labels) l.el.remove();
+    labels = [];
+    const hb = new THREE.Box3();
+    for (const m of meshes) {
+      const geo = meshGeometry(m);
+      hb.union(geo.boundingBox);
+      layers.hull.add(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: 0xe9e5db, roughness: 0.7, side: THREE.DoubleSide,
+        transparent: true, opacity: 0.55, depthWrite: false })));
+    }
+    const size = hb.getSize(new THREE.Vector3()), mid = hb.getCenter(new THREE.Vector3());
+    const span = Math.max(size.x, size.z) * 1.4;
+    const wgeo = new THREE.PlaneGeometry(span, span);
+    wgeo.rotateX(-Math.PI / 2);
+    const water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }));
+    water.position.set(mid.x, 0, mid.z);
+    layers.heel.add(water);
+    // The waterline, across and along: what the plane is edge-on in the
+    // body and profile views.
+    layers.heel.add(seg([mid.x, 0, mid.z - span / 2, mid.x, 0, mid.z + span / 2,
+      mid.x - span / 2, 0, mid.z, mid.x + span / 2, 0, mid.z], 0x1f6feb, 0.9));
+    const dot = (color) => {
+      const m = new THREE.Mesh(new THREE.SphereGeometry(0.012 * size.x, 16, 12), new THREE.MeshBasicMaterial({ color, depthTest: false }));
+      m.renderOrder = 3;
+      layers.heel.add(m);
+      return m;
+    };
+    const line = (color, dashed = false) => {
+      const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+      const mat = dashed ? new THREE.LineDashedMaterial({ color, dashSize: 0.02 * size.x, gapSize: 0.015 * size.x, depthTest: false })
+        : new THREE.LineBasicMaterial({ color, depthTest: false });
+      const l = new THREE.Line(g, mat);
+      l.renderOrder = 3;
+      layers.heel.add(l);
+      return l;
+    };
+    heel = {
+      reach: Math.max(size.y, size.z) * 1.1,
+      g: dot(0xd6336c), b: dot(0x1f6feb), m: dot(0x2f9e44),
+      gv: line(0xd6336c, true), bv: line(0x1f6feb, true), gz: line(0x111111),
+      lg: label("G", "#d6336c"), lb: label("B", "#1f6feb"), lm: label("M", "#2f9e44"), lz: label("GZ", "var(--ink)"),
+    };
+    // Framed on the upright hull, with room to heel.
+    bounds = hullBounds = new THREE.Box3().setFromCenterAndSize(mid, new THREE.Vector3(size.x, 2.2 * Math.max(size.y, size.z), 2.2 * Math.max(size.y, size.z)));
+    show("heel");
+    empty.style.display = "none";
+    // Heel is best seen along the hull: the body view.
+    pick("body");
+  }
+  function heelAt(st) {
+    if (!heel) return;
+    const { heel: phi, trim: th, sinkage: s } = st;
+    const cp = Math.cos(phi), sp = Math.sin(phi), ct = Math.cos(th), sn = Math.sin(th);
+    // Hull axes → water's hull axes → scene (x, z up, y).
+    const toWater = ([x, y, z]) => {
+      const zr = y * sp + z * cp;
+      return [x * ct - sn * zr, y * cp - z * sp, x * sn + ct * zr - s];
+    };
+    const scene = ([x, y, z]) => new THREE.Vector3(x, z, y);
+    // The same map as a matrix on the hull's meshes (in scene axes).
+    const M = new THREE.Matrix4().set(
+      ct, -sn * sp, -sn * cp, 0,
+      0, cp, -sp, 0,
+      sn, ct * sp, ct * cp, -s,
+      0, 0, 0, 1);
+    const SWAP = new THREE.Matrix4().set(1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1);
+    layers.hull.matrixAutoUpdate = false;
+    layers.hull.matrix.copy(SWAP).multiply(M).multiply(SWAP);
+    layers.hull.matrixWorldNeedsUpdate = true;
+    const G = toWater(st.g), B = toWater(st.b);
+    const set = (line, a, b) => { line.geometry.setFromPoints([a, b]); line.computeLineDistances?.(); };
+    const r = heel.reach;
+    heel.g.position.copy(scene(G)); heel.b.position.copy(scene(B));
+    set(heel.gv, scene([G[0], G[1], G[2] - r]), scene([G[0], G[1], G[2] + r]));
+    set(heel.bv, scene([B[0], B[1], B[2] - r]), scene([B[0], B[1], B[2] + r]));
+    // GZ: from G across to B's vertical, at G's height.
+    const Z = [G[0], B[1], G[2]];
+    set(heel.gz, scene(G), scene(Z));
+    heel.lg.at.copy(scene(G)); heel.lb.at.copy(scene(B));
+    heel.lz.at.copy(scene([G[0], 0.5 * (G[1] + B[1]), G[2]]));
+    // M: B's vertical meets the heeled centreplane (the hull's y = 0 plane,
+    // through the water's image of the origin, normal the image of +y).
+    const n = [-sn * sp, cp, ct * sp], o = toWater([0, 0, 0]);
+    const denom = n[2];
+    let mz = null;
+    if (Math.abs(phi) > 0.3 * Math.PI / 180 && Math.abs(denom) > 1e-6) {
+      mz = (n[0] * (o[0] - B[0]) + n[1] * (o[1] - B[1]) + n[2] * o[2]) / denom;
+    }
+    // M is the metacentre only near upright; past 30° it would mislead.
+    heel.m.visible = mz != null && Math.abs(phi) <= 30 * Math.PI / 180 && Math.abs(mz - G[2]) < 4 * r;
+    heel.lm.el.hidden = !heel.m.visible;
+    if (heel.m.visible) {
+      heel.m.position.copy(scene([B[0], B[1], mz]));
+      heel.lm.at.copy(heel.m.position);
+    }
+    render();
+    return { G, B, mz, gz: G[1] - B[1] };
+  }
+
   return {
-    geometry, setWater, load, closure, flow, pick, hullsAt, seaway,
+    geometry, setWater, load, closure, flow, pick, hullsAt, seaway, heelShow, heelAt,
     // "cut" (the hull and its sections), "flow" (a calm-water study) or "sea"
     // (a study in waves).
     mode: (m) => { show(m); setView(view, true); },

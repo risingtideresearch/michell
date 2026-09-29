@@ -60,7 +60,7 @@ function render() {
         <td class="num">${fmt(s.mass, 1)}</td>
         <td class="num">${fmt(s.roll?.gm_t, 3)}</td>
         <td class="num">${gz.error ? "—" : fmt(gz.max_gz, 3)}${gz.heel_at_max_deg != null ? `<span class="sub">at ${fmt(gz.heel_at_max_deg, 0)}°</span>` : ""}</td>
-        <td class="num">${gz.error ? "—" : gz.vanishing_deg == null ? "> 180" : fmt(gz.vanishing_deg, 1)}</td>
+        <td class="num">${gz.error ? "—" : gz.vanishing_deg === 0 ? "unstable" : gz.vanishing_deg == null ? "> 180" : fmt(gz.vanishing_deg, 1)}</td>
         <td>${studyCounts(c.studies)}</td>
         <td>${fmtTime(c.created_at)}${c.created_by ? `<span class="sub">${esc(c.created_by)}</span>` : ""}</td>
       </tr>`;

@@ -168,6 +168,15 @@ pub fn statics(
             "area_40": g.area_40,
             "area_total": g.area_total,
             "free_trim": true,
+            // For drawing the platform at each heel: the centre of buoyancy
+            // there and of gravity, in the hull's own axes (x fore, y port,
+            // z up from the design waterline). The attitude maps them to
+            // the water's: heel φ about x (lifting +y), trim θ bow up about
+            // x = 0, then down by the sinkage —
+            //   Z = x sinθ + cosθ (y sinφ + z cosφ) − s.
+            "cb": g.points.iter().map(|p| p.cb).collect::<Vec<_>>(),
+            "trim_rad": g.points.iter().map(|p| p.trim).collect::<Vec<_>>(),
+            "g": [s.lcg, 0.0, vcg],
         }),
         Err(e) => json!({ "error": e }),
     };
@@ -196,6 +205,8 @@ pub fn statics(
         },
         "gz": gz,
         "meshes": s.meshes(&at_rest)?,
+        // The hull at its design pose, in its own axes (the GZ curve's).
+        "body_meshes": s.meshes(&Platform::default())?,
         "seconds": t0.elapsed().as_secs_f64(),
     }))
 }

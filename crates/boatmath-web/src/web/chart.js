@@ -10,6 +10,9 @@
 //     marks: "auto" | "always" | "never",
 //   })
 //
+// `.mark(x)` draws a vertical rule at `x` (the current heel, say); null
+// takes it away.
+//
 // Series names and labels are set with textContent, never as HTML.
 
 const SVGNS = "http://www.w3.org/2000/svg";
@@ -60,6 +63,7 @@ export function lineChart(host, spec) {
   const legend = h("div", "legend-row", host);
   const tip = h("div", "tip", host);
   let showTable = false;
+  let markAt = null, markRule = null, markX = null;
   toggle.onclick = () => { showTable = !showTable; toggle.textContent = showTable ? "Chart" : "Table"; draw(); };
 
   function table() {
@@ -136,6 +140,9 @@ export function lineChart(host, spec) {
     }
 
     // The crosshair: the nearest x, every series' value there.
+    markX = X;
+    markRule = el("line", { y1: T, y2: H - B, stroke: "var(--ink)", "stroke-width": 1, opacity: 0.55, visibility: "hidden" }, svg);
+    placeMark();
     const cross = el("line", { class: "cross", y1: T, y2: H - B, visibility: "hidden" }, svg);
     const xs = [...new Set(all.map((p) => p[0]))].sort((a, b) => a - b);
     const overlay = el("rect", { x: L, y: T, width: W - L - R, height: H - T - B, fill: "transparent" }, svg);
@@ -175,5 +182,12 @@ export function lineChart(host, spec) {
     clearTimeout(pending);
     pending = setTimeout(() => { if (!showTable) draw(); }, 80);
   }).observe(host);
-  return { redraw: draw };
+  function placeMark() {
+    if (!markRule) return;
+    if (markAt == null || !Number.isFinite(markAt)) { markRule.setAttribute("visibility", "hidden"); return; }
+    const x = markX(markAt);
+    markRule.setAttribute("x1", x); markRule.setAttribute("x2", x);
+    markRule.setAttribute("visibility", "visible");
+  }
+  return { redraw: draw, mark: (x) => { markAt = x; placeMark(); } };
 }
