@@ -297,6 +297,11 @@ pub fn wave_gz(
             // Pushed back past upright: it rests at a negative heel, and
             // heeling that way is the mirrored crest heeling this way.
             "rests_negative": pts[0].gz > 1e-4,
+            // To draw it at each heel: its attitude and centre of buoyancy
+            // (the hull's axes; see the statics' `gz` for the map).
+            "sinkage": pts.iter().map(|q| q.sinkage).collect::<Vec<_>>(),
+            "trim_rad": pts.iter().map(|q| q.trim).collect::<Vec<_>>(),
+            "cb": pts.iter().map(|q| q.cb).collect::<Vec<_>>(),
             "energy_to_peak": weight * area,
         })
     };

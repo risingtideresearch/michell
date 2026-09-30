@@ -28,6 +28,10 @@
   #wavetable table { font-size: 12px; }
   #wavetable td.what { white-space: normal; }
   #wavetable tr.calm td { font-weight: 600; }
+  #wavetable tr[data-key] { cursor: pointer; }
+  #wavetable tr[data-key]:hover td { background: var(--bg); }
+  #wavetable tr.on td { box-shadow: inset 0 -2px 0 var(--accent); }
+  .heelbar select { max-width: 280px; }
   #breaking { margin-top: 12px; }
   #breaking .row label { width: 200px; }
   #studies table { font-size: 12px; }
@@ -77,12 +81,6 @@
   <div id="gzpanel">
     <h2>Transverse stability</h2>
     <div class="figs" id="figs"></div>
-    <div class="heelbar" id="heelbar" hidden>
-      <button id="play" title="Sweep through the heels">▶</button>
-      <input type="range" id="heel" min="0" step="1" aria-label="Heel">
-      <span class="mono" id="heelread"></span>
-    </div>
-    <div id="gz"></div>
     <p class="hint" id="gznote"></p>
   </div>
   <div id="wavepanel" hidden>
@@ -92,6 +90,12 @@
       <label>Height H [m] <input id="whgt" type="number" step="any" min="0"></label>
       <button id="wgo">Compute</button>
       <span class="hint" id="wstatus"></span>
+    </div>
+    <div class="heelbar" id="heelbar" hidden>
+      <select id="curve" aria-label="Curve shown in 3D"></select>
+      <button id="play" title="Sweep through the heels">▶</button>
+      <input type="range" id="heel" min="0" step="1" aria-label="Heel">
+      <span class="mono" id="heelread"></span>
     </div>
     <div id="wavegz"></div>
     <div id="wavetable"></div>
@@ -163,36 +167,31 @@ function renderStability(s) {
     g.error ? "" : fig(fmt(g.area_40, 4), "m·rad", "GZ area to 40°"),
   ].join("");
   if (g.error) {
-    $("gz").innerHTML = `<div class="error">GZ: ${esc(g.error)}</div>`;
+    $("gznote").innerHTML = `<div class="error">GZ: ${esc(g.error)}</div>`;
     return;
   }
-  const pts = g.heel_deg.map((h, i) => [h, g.gz[i]]);
-  gzChart = lineChart($("gz"), {
-    title: "Righting arm GZ",
-    x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
-    y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString() },
-    series: [{ name: "GZ", points: pts }],
-    marks: "never",
-  });
   $("gznote").innerHTML = `Free trim at each heel; whole sections keel to sheer, closed flush across the sheer (no deck openings or downflooding). The slope at upright is ${fmt(g.gm, 3)} m, against GM<sub>T</sub> ${fmt(r.gm_t, 3)} m from the waterplane.${s.vcg_given ? "" : " <b>No VCG was given: G is taken at the design waterline</b>, which flatters the curve for most boats."}`;
 }
 
-// The platform heeled in 3D at one of the curve's heels, as the GZ solve
-// balanced it: G, B, the lever between them, and M where B's vertical
-// crosses the centreplane (at small heels, GM above G).
-let gzChart = null, heelData = null, playing = null;
+// The platform heeled in 3D at one of a curve's heels, on its wave (or in
+// calm water), as the GZ solve balanced it: G, B, the lever between them,
+// and M where B's vertical crosses the centreplane (at small heels, GM
+// above G). `sel`: the curve shown — its heels, arms, attitudes and centres
+// of buoyancy, and its wave.
+let waveChart = null, sel = null, G0 = null, playing = null, curves = new Map();
 function setHeel(i) {
-  const g = heelData;
-  if (!g) return;
-  i = Math.max(0, Math.min(g.heel_deg.length - 1, i));
+  if (!sel) return;
+  const c = sel.curve;
+  i = Math.max(0, Math.min(sel.heels.length - 1, i));
+  $("heel").max = sel.heels.length - 1;
   $("heel").value = i;
-  const deg = g.heel_deg[i], phi = deg * Math.PI / 180;
-  const at = viewer.heelAt({ heel: phi, trim: g.trim_rad[i], sinkage: g.sinkage[i], g: g.g, b: g.cb[i] });
-  gzChart?.mark(deg);
+  const deg = sel.heels[i], phi = deg * Math.PI / 180;
+  const at = viewer.heelAt({ heel: phi, trim: c.trim_rad[i], sinkage: c.sinkage[i], g: G0, b: c.cb[i], m: !sel.wave });
+  waveChart?.mark(deg);
   const small = deg > 0 && deg <= 10;
-  const bits = [`φ ${fmt(deg, 0)}°`, `GZ ${fmt(g.gz[i], 3)} m`, `trim ${fmt(g.trim_deg[i], 2)}°`];
-  if (deg > 0 && deg < 90) bits.push(`GZ/sin φ ${fmt(g.gz[i] / Math.sin(phi), 3)} m`);
-  if (at?.mz != null && small) bits.push(`M ${fmt(at.mz - at.G[2], 3)} m above G`);
+  const bits = [`φ ${fmt(deg, 0)}°`, `GZ ${fmt(c.gz[i], 3)} m`, `trim ${fmt(c.trim_rad[i] * 180 / Math.PI, 2)}°`];
+  if (!sel.wave && deg > 0 && deg < 90) bits.push(`GZ/sin φ ${fmt(c.gz[i] / Math.sin(phi), 3)} m`);
+  if (!sel.wave && at?.mz != null && small) bits.push(`M ${fmt(at.mz - at.G[2], 3)} m above G`);
   $("heelread").textContent = bits.join(" · ");
 }
 $("heel").addEventListener("input", () => setHeel(Number($("heel").value)));
@@ -200,12 +199,29 @@ $("play").addEventListener("click", () => {
   if (playing) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
   $("play").textContent = "■";
   let i = Number($("heel").value);
-  if (i >= heelData.heel_deg.length - 1) i = 0;
+  if (i >= sel.heels.length - 1) i = 0;
   playing = setInterval(() => {
     setHeel(i++);
-    if (i >= heelData.heel_deg.length) { clearInterval(playing); playing = null; $("play").textContent = "▶"; }
-  }, 120);
+    if (i >= sel.heels.length) { clearInterval(playing); playing = null; $("play").textContent = "▶"; }
+  }, 150);
 });
+
+// Show another curve: its wave in 3D, at the heel nearest the one shown.
+function selectCurve(key) {
+  const next = curves.get(key);
+  if (!next) return;
+  const was = sel ? sel.heels[Number($("heel").value)] : 0;
+  sel = next;
+  $("curve").value = key;
+  viewer.heelSea(sel.wave);
+  for (const tr of document.querySelectorAll("#wavetable tr[data-key]")) tr.classList.toggle("on", tr.dataset.key === key);
+  setHeel(nearestHeel(sel.heels, was));
+}
+const nearestHeel = (heels, want) => heels.reduce((b, h, i) => (Math.abs(h - want) < Math.abs(heels[b] - want) ? i : b), 0);
+function listCurves() {
+  $("curve").innerHTML = [...curves.entries()].map(([k, c]) => `<option value="${esc(k)}">${esc(c.name)}</option>`).join("");
+}
+$("curve").addEventListener("change", () => selectCurve($("curve").value));
 
 // ---------------------------------------------------------------- in waves
 let waveData = null;
@@ -234,23 +250,27 @@ function renderWaves() {
   for (const h of d.headings) {
     if (h.worst) series.push({ name: `${h.name} (worst)`, points: heels.map((x, i) => [x, h.worst.gz[i]]) });
   }
-  lineChart($("wavegz"), {
+  waveChart = lineChart($("wavegz"), {
     title: `GZ in a wave λ ${fmt(d.wave.length, 2)} m, H ${fmt(d.wave.height, 2)} m`,
     x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
     y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString(), zero: true },
     series, marks: "never", direct: false,
   });
-  const rows = [{ what: "calm water", c: d.calm, calm: true }];
+  const wave = (h, c) => ({ length: d.wave.length, height: d.wave.height, heading: h.heading_deg * Math.PI / 180, phase: c.phase });
+  const rows = [{ key: "calm", what: "calm water", c: d.calm, calm: true }];
   for (const h of d.headings) {
-    if (h.worst) rows.push({ what: `${h.name}, worst: ${h.worst.label}`, c: h.worst });
+    if (h.worst) rows.push({ key: `${h.name}|${h.worst.label}`, what: `${h.name}, worst: ${h.worst.label}`, c: h.worst, wave: wave(h, h.worst) });
     if (h.name === "beam") {
-      for (const c of h.curves) if (/hull|amidships/.test(c.label) && c !== h.worst && c.label !== h.worst?.label) rows.push({ what: `beam, ${c.label}`, c, mirror: c.rests_negative });
+      for (const c of h.curves) if (/hull|amidships/.test(c.label) && c.label !== h.worst?.label) rows.push({ key: `beam|${c.label}`, what: `beam, ${c.label}`, c, mirror: c.rests_negative, wave: wave(h, c) });
     }
   }
   waveRows = rows;
+  // Every row is a curve the 3D view can follow.
+  curves = new Map(rows.map((r) => [r.key, { key: r.key, name: r.what, heels, curve: r.c, wave: r.wave || null }]));
+  listCurves();
   $("wavetable").innerHTML = `<div class="tablewrap"><table><thead><tr>
     <th>Wave</th><th class="num">Rests at</th><th class="num">Max GZ [m]</th><th class="num">at</th><th class="num">Energy to peak [kJ]</th><th class="num">Breaking H [m]</th>
-  </tr></thead><tbody>${rows.map((r) => `<tr class="${r.calm ? "calm" : ""}">
+  </tr></thead><tbody>${rows.map((r) => `<tr class="${r.calm ? "calm" : ""}" data-key="${esc(r.key)}" title="Show in 3D">
     <td class="what">${esc(r.what)}${r.mirror ? `<span class="sub">pushed back past upright: see its mirror</span>` : ""}</td>
     <td class="num">${r.mirror ? "&lt; 0°" : `${fmt(r.c.rest_heel_deg, 1)}°`}</td>
     <td class="num">${fmt(r.c.max_gz, 3)}</td>
@@ -259,8 +279,20 @@ function renderWaves() {
     <td class="num" data-e="${r.mirror ? "" : r.c.energy_to_peak}"></td>
   </tr>`).join("")}</tbody></table></div>`;
   renderBreaking();
+  // Keep showing what was shown (its heel too), or the calm water — or,
+  // the first time, the curve the address asks for (`?curve=beam|crest
+  // under the lee hull`, say).
+  const asked = new URLSearchParams(location.search).get("curve");
+  const key = !wavesShown && asked && curves.has(asked) ? asked : curves.has(sel?.key) ? sel.key : "calm";
+  wavesShown = true;
+  selectCurve(key);
 }
+let wavesShown = false;
 let waveRows = [];
+$("wavetable").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-key]");
+  if (tr) selectCurve(tr.dataset.key);
+});
 
 // H = [8π² E / (49 η ρ g L)]^⅓: the breaking crest whose energy, a fraction
 // η of it going into roll, heels the platform from rest to its peak arm.
@@ -356,14 +388,14 @@ try {
     // The hull at rest, z up from the water.
     if (s.body_meshes && s.gz?.cb) {
       // The hull heeled along its GZ curve, upright to start.
-      heelData = s.gz;
+      G0 = s.gz.g;
       viewer.heelShow(s.body_meshes);
-      $("heel").max = s.gz.heel_deg.length - 1;
+      curves = new Map([["calm", { key: "calm", name: "calm water", heels: s.gz.heel_deg, curve: s.gz, wave: null }]]);
+      listCurves();
       $("heelbar").hidden = false;
       // `?heel=deg` starts at the nearest heel on the curve.
-      const want = Number(new URLSearchParams(location.search).get("heel") || 0);
-      const near = s.gz.heel_deg.reduce((b, h, i) => (Math.abs(h - want) < Math.abs(s.gz.heel_deg[b] - want) ? i : b), 0);
-      setHeel(near);
+      selectCurve("calm");
+      setHeel(nearestHeel(s.gz.heel_deg, Number(new URLSearchParams(location.search).get("heel") || 0)));
     } else {
       // Statics from before the heel view: the hull at rest.
       viewer.geometry(s.meshes, 0);

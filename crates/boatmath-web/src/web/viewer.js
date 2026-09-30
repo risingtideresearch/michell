@@ -584,16 +584,8 @@ export function createViewer(host) {
         transparent: true, opacity: 0.55, depthWrite: false })));
     }
     const size = hb.getSize(new THREE.Vector3()), mid = hb.getCenter(new THREE.Vector3());
-    const span = Math.max(size.x, size.z) * 1.4;
-    const wgeo = new THREE.PlaneGeometry(span, span);
-    wgeo.rotateX(-Math.PI / 2);
-    const water = new THREE.Mesh(wgeo, new THREE.MeshBasicMaterial({ color: 0x3d8bd9, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }));
-    water.position.set(mid.x, 0, mid.z);
-    layers.heel.add(water);
-    // The waterline, across and along: what the plane is edge-on in the
-    // body and profile views.
-    layers.heel.add(seg([mid.x, 0, mid.z - span / 2, mid.x, 0, mid.z + span / 2,
-      mid.x - span / 2, 0, mid.z, mid.x + span / 2, 0, mid.z], 0x1f6feb, 0.9));
+    const sea = new THREE.Group();
+    layers.heel.add(sea);
     const dot = (color) => {
       const m = new THREE.Mesh(new THREE.SphereGeometry(0.012 * size.x, 16, 12), new THREE.MeshBasicMaterial({ color, depthTest: false }));
       m.renderOrder = 3;
@@ -610,11 +602,13 @@ export function createViewer(host) {
       return l;
     };
     heel = {
+      sea, mid, span: Math.max(size.x, size.z) * 1.4,
       reach: Math.max(size.y, size.z) * 1.1,
       g: dot(0xd6336c), b: dot(0x1f6feb), m: dot(0x2f9e44),
       gv: line(0xd6336c, true), bv: line(0x1f6feb, true), gz: line(0x111111),
       lg: label("G", "#d6336c"), lb: label("B", "#1f6feb"), lm: label("M", "#2f9e44"), lz: label("GZ", "var(--ink)"),
     };
+    heelSea(null);
     // Framed on the upright hull, with room to heel.
     bounds = hullBounds = new THREE.Box3().setFromCenterAndSize(mid, new THREE.Vector3(size.x, 2.2 * Math.max(size.y, size.z), 2.2 * Math.max(size.y, size.z)));
     show("heel");
@@ -622,6 +616,49 @@ export function createViewer(host) {
     // Heel is best seen along the hull: the body view.
     pick("body");
   }
+  // The water the heeled platform floats on: calm, or a wave held still —
+  // { length, height, heading [rad], phase [rad] }, its elevation
+  //   ζ(X, Y) = ½H cos(k (X cos μ + Y sin μ) − ψ)
+  // in the water's axes — drawn as a surface over the platform, shaded
+  // troughs dark and crests light, with its profile across and along the
+  // hull, which is what the body and profile views see of it edge-on.
+  function heelSea(wave) {
+    if (!heel) return;
+    clear(heel.sea);
+    const { mid, span } = heel;
+    const zeta = (x, y) => wave ? 0.5 * wave.height * Math.cos(2 * Math.PI / wave.length * (x * Math.cos(wave.heading) + y * Math.sin(wave.heading)) - wave.phase) : 0;
+    const n = wave ? 96 : 2;
+    const pos = new Float32Array(n * n * 3), col = new Float32Array(n * n * 3);
+    const DARK = [0.09, 0.3, 0.55], LIGHT = [0.62, 0.8, 0.95];
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+      const x = mid.x - span / 2 + span * i / (n - 1), y = mid.z - span / 2 + span * j / (n - 1), z = zeta(x, y);
+      pos.set([x, z, y], 3 * (i * n + j));
+      const u = wave ? 0.5 + z / wave.height : 0.6;
+      for (let k = 0; k < 3; k++) col[3 * (i * n + j) + k] = DARK[k] + u * (LIGHT[k] - DARK[k]);
+    }
+    const index = [];
+    for (let i = 0; i + 1 < n; i++) for (let j = 0; j + 1 < n; j++) {
+      const a = i * n + j, b = a + n;
+      index.push(a, b, b + 1, a, b + 1, a + 1);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    geo.setIndex(index);
+    const water = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: wave ? 0.45 : 0.25, side: THREE.DoubleSide, depthWrite: false }));
+    heel.sea.add(water);
+    // The profile across (at the hull's middle station) and along (on the
+    // centreline).
+    const m = 160, across = [], along = [];
+    for (let i = 0; i < m; i++) {
+      const t0 = -span / 2 + span * i / m, t1 = -span / 2 + span * (i + 1) / m;
+      across.push(mid.x, zeta(mid.x, mid.z + t0), mid.z + t0, mid.x, zeta(mid.x, mid.z + t1), mid.z + t1);
+      along.push(mid.x + t0, zeta(mid.x + t0, mid.z), mid.z, mid.x + t1, zeta(mid.x + t1, mid.z), mid.z);
+    }
+    heel.sea.add(seg(across, 0x1f6feb, 0.9), seg(along, 0x1f6feb, 0.9));
+    render();
+  }
+
   function heelAt(st) {
     if (!heel) return;
     const { heel: phi, trim: th, sinkage: s } = st;
@@ -662,7 +699,8 @@ export function createViewer(host) {
       mz = (n[0] * (o[0] - B[0]) + n[1] * (o[1] - B[1]) + n[2] * o[2]) / denom;
     }
     // M is the metacentre only near upright; past 30° it would mislead.
-    heel.m.visible = mz != null && Math.abs(phi) <= 30 * Math.PI / 180 && Math.abs(mz - G[2]) < 4 * r;
+    // (`m: false` hides it: on a wave it is not the metacentre.)
+    heel.m.visible = st.m !== false && mz != null && Math.abs(phi) <= 30 * Math.PI / 180 && Math.abs(mz - G[2]) < 4 * r;
     heel.lm.el.hidden = !heel.m.visible;
     if (heel.m.visible) {
       heel.m.position.copy(scene([B[0], B[1], mz]));
@@ -673,7 +711,7 @@ export function createViewer(host) {
   }
 
   return {
-    geometry, setWater, load, closure, flow, pick, hullsAt, seaway, heelShow, heelAt,
+    geometry, setWater, load, closure, flow, pick, hullsAt, seaway, heelShow, heelAt, heelSea,
     // "cut" (the hull and its sections), "flow" (a calm-water study) or "sea"
     // (a study in waves).
     mode: (m) => { show(m); setView(view, true); },
