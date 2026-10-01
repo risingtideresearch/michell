@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hulls · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .filter { width: 260px; }
+  td.name a { font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page"><div class="inner">
+  <div class="head">
+    <h1>Hulls</h1>
+    <input class="filter" id="filter" type="search" placeholder="Filter by name, file, notes, who">
+    <span class="grow"></span>
+    <a class="button primary" href="/hulls/new">Upload a hull</a>
+  </div>
+  <div id="status"></div>
+  <div id="list"></div>
+</div></div>
+
+<script type="module">
+import { $, api, esc, fmt, fmtTime, nav, status, RHO } from "/static/common.js";
+nav("hulls");
+
+let hulls = [];
+
+function counts(c) {
+  const parts = [];
+  for (const [k, label] of [["done", "done"], ["running", "running"], ["queued", "queued"], ["failed", "failed"]]) {
+    if (c?.[k]) parts.push(`<span class="pill ${k}">${c[k]} ${label}</span>`);
+  }
+  return parts.join(" ") || `<span class="muted">none</span>`;
+}
+
+function render() {
+  const f = $("filter").value.trim().toLowerCase();
+  const shown = hulls.filter((h) => !f || [h.name, h.file_name, h.notes, h.uploaded_by].some((s) => s.toLowerCase().includes(f)));
+  if (!hulls.length) {
+    $("list").innerHTML = `<div class="tablewrap"><div class="empty-state">No hulls yet. <a href="/hulls/new">Upload one</a> to start.</div></div>`;
+    return;
+  }
+  if (!shown.length) {
+    $("list").innerHTML = `<div class="tablewrap"><div class="empty-state">No hull matches “${esc(f)}”.</div></div>`;
+    return;
+  }
+  $("list").innerHTML = `<div class="tablewrap"><table>
+    <thead><tr>
+      <th>Name</th><th class="num">L [m]</th><th class="num">B [m]</th><th class="num">T [m]</th>
+      <th class="num">Δ [kg]</th><th class="num">LCB [m]</th><th>Waterline</th><th class="num">Cases</th><th>Studies</th><th>Uploaded</th>
+    </tr></thead>
+    <tbody>${shown.map((h) => {
+      const hs = h.summary?.hulls || [], h0 = hs[0] || {};
+      const vol = hs.reduce((s, x) => s + (x.displaced_volume || 0), 0);
+      const wl = h.import?.waterline;
+      return `<tr class="link" data-id="${h.id}">
+        <td class="name"><a href="/hulls/${h.id}">${esc(h.name)}</a>${hs.length > 1 ? ` <span class="muted">· ${hs.length} hulls</span>` : ""}
+          <span class="sub">${esc(h.file_name)}${h.parent_id ? ` · re-import of <a href="/hulls/${h.parent_id}">#${h.parent_id}</a>` : ""}${h.notes ? ` · ${esc(h.notes)}` : ""}</span></td>
+        <td class="num">${fmt(h0.length, 3)}</td>
+        <td class="num">${fmt(h0.beam, 3)}</td>
+        <td class="num">${fmt(h0.draft, 3)}</td>
+        <td class="num">${fmt(RHO * vol, 1)}</td>
+        <td class="num">${fmt(h0.lcb_x, 3)}</td>
+        <td class="mono">${wl == null ? "z 0" : `z ${fmt(wl, 4)}`}</td>
+        <td class="num">${h.cases}</td><td>${counts(h.studies)}</td>
+        <td>${fmtTime(h.created_at)}${h.uploaded_by ? `<span class="sub">${esc(h.uploaded_by)}</span>` : ""}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+
+$("list").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/hulls/${row.dataset.id}`;
+});
+$("filter").addEventListener("input", render);
+
+try {
+  hulls = await api("/api/hulls");
+  render();
+} catch (e) { status(e.message, true); }
+</script>
+</body>
+</html>

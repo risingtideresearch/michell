@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Studies · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px; }
+  .filters label { min-width: 150px; }
+  td.what { white-space: normal; min-width: 240px; }
+</style>
+</head>
+<body>
+<div class="page"><div class="inner">
+  <div class="head">
+    <h1>Studies</h1>
+    <span class="counts" id="counts"></span>
+    <span class="grow"></span>
+    <a class="button primary" id="new" href="/studies/new">New studies</a>
+  </div>
+  <div class="filters">
+    <label>Hull <select id="hull"><option value="">all hulls</option></select></label>
+    <label>Case <select id="case"><option value="">all</option></select></label>
+    <label>Water <select id="kind"><option value="">calm and waves</option><option value="calm">calm water</option><option value="waves">waves</option></select></label>
+    <label>Status <select id="status_f">
+      <option value="">any</option><option value="done">done</option><option value="queued,running">queued or running</option>
+      <option value="failed,cancelled">failed or cancelled</option></select></label>
+  </div>
+  <div id="status"></div>
+  <div id="list"></div>
+</div></div>
+
+<script type="module">
+import { $, api, caseName, esc, fmtDuration, fmtTime, lRef, nav, outcome, pill, studyLabel, status } from "/static/common.js";
+nav("studies");
+
+const qs = new URLSearchParams(location.search);
+const KEYS = { hull: "hull", case: "case", kind: "kind", status_f: "status" };
+let lengths = new Map(), cases = [];
+
+function fillCases() {
+  const h = $("hull").value, keep = $("case").value || qs.get("case");
+  const cs = cases.filter((c) => !h || String(c.hull_id) === h);
+  $("case").innerHTML = `<option value="">all</option>` + cs.map((c) => `<option value="${c.id}">${esc(h ? caseName(c) : `${c.hull_name} › ${caseName(c)}`)}</option>`).join("");
+  if (keep && cs.some((c) => String(c.id) === keep)) $("case").value = keep;
+}
+
+async function load() {
+  const q = new URLSearchParams(), page = new URLSearchParams();
+  for (const [id, k] of Object.entries(KEYS)) if ($(id).value) { q.set(k, $(id).value); page.set(k, $(id).value); }
+  // `?ids=`: just these studies (the queue's link to studies just asked for).
+  if (qs.get("ids")) { q.set("ids", qs.get("ids")); page.set("ids", qs.get("ids")); }
+  history.replaceState(null, "", `/studies${page.size ? `?${page}` : ""}`);
+  $("new").href = $("case").value ? `/studies/new?cases=${$("case").value}` : $("hull").value ? `/studies/new?hull=${$("hull").value}` : "/studies/new";
+  q.set("limit", "500");
+  const studies = await api(`/api/studies?${q}`);
+  const n = (s) => studies.filter((r) => s.includes(r.status)).length;
+  $("counts").innerHTML = [["done", "done"], ["queued", "waiting"], ["running", "running"], ["failed", "failed"]]
+    .filter(([s]) => n([s])).map(([s, w]) => `<span class="pill ${s}">${n([s])} ${w}</span>`).join("");
+  if (!studies.length) {
+    $("list").innerHTML = `<div class="tablewrap"><div class="empty-state">No studies match. <a href="${$("new").href}">Ask for some</a>.</div></div>`;
+    return;
+  }
+  $("list").innerHTML = `<div class="tablewrap"><table><thead><tr>
+    <th class="num">#</th><th>Status</th><th>Study</th><th>Hull › case</th><th class="num">Result</th><th class="num">Took</th><th>Asked for</th>
+  </tr></thead><tbody>${studies.map((r) => `<tr class="link" data-id="${r.id}">
+    <td class="num"><a href="/studies/${r.id}">${r.id}</a></td>
+    <td>${pill(r)}</td>
+    <td class="what">${esc(studyLabel(r.params, lengths.get(r.hull_id)))}${r.error ? `<span class="sub" style="color:var(--err)">${esc(r.error)}</span>` : ""}</td>
+    <td class="what"><a href="/hulls/${r.hull_id}">${esc(r.hull_name)}</a> › <a href="/cases/${r.case_id}">${esc(caseName({ name: r.case_name, params: r.case }))}</a></td>
+    <td class="num">${outcome(r)}</td>
+    <td class="num">${r.started_at && r.finished_at ? fmtDuration(r.finished_at - r.started_at) : ""}</td>
+    <td>${fmtTime(r.created_at)}${r.requested_by ? `<span class="sub">${esc(r.requested_by)}</span>` : ""}</td>
+  </tr>`).join("")}</tbody></table></div>`;
+}
+
+$("list").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/studies/${row.dataset.id}`;
+});
+const reload = () => load().catch((e) => status(e.message, true));
+$("hull").addEventListener("change", () => { $("case").value = ""; fillCases(); reload(); });
+for (const id of ["case", "kind", "status_f"]) $(id).addEventListener("change", reload);
+
+try {
+  const [hulls, cs] = await Promise.all([api("/api/hulls"), api("/api/cases")]);
+  lengths = new Map(hulls.map((h) => [h.id, lRef(h.summary)]));
+  cases = cs;
+  $("hull").innerHTML += hulls.map((h) => `<option value="${h.id}">${esc(h.name)}</option>`).join("");
+  for (const [id, k] of Object.entries(KEYS)) if (qs.get(k)) $(id).value = qs.get(k);
+  // A case given alone picks its hull.
+  const c = cases.find((c) => String(c.id) === qs.get("case"));
+  if (c && !qs.get("hull")) $("hull").value = String(c.hull_id);
+  fillCases();
+  await load();
+} catch (e) { status(e.message, true); }
+</script>
+</body>
+</html>

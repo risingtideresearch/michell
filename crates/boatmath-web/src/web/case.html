@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Case · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  #name { font-size: 18px; font-weight: 700; border-color: transparent; background: transparent; padding: 2px 4px; margin: -2px -4px; width: 100%; }
+  #name:hover, #name:focus { border-color: var(--line); background: var(--bg); }
+  #notes { width: 100%; }
+  .crumbs { font-size: 12px; color: var(--muted); }
+  .actions { display: flex; gap: 8px; }
+  .actions > * { flex: 1; text-align: center; }
+  .split > main.stack { display: grid; grid-template-rows: minmax(260px, 55%) auto; overflow-y: auto; background: var(--bg); }
+  #view { position: relative; background: var(--canvas); min-height: 260px; }
+  #gzpanel { padding: 14px 18px 24px; }
+  #wavepanel { padding: 4px 18px 28px; }
+  #wavepanel .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 10px; }
+  #wavepanel .row label { width: 130px; }
+  #wavetable table { font-size: 12px; }
+  #wavetable td.what { white-space: normal; }
+  #wavetable tr.calm td { font-weight: 600; }
+  #wavetable tr[data-key] { cursor: pointer; }
+  #wavetable tr[data-key]:hover td { background: var(--bg); }
+  #wavetable tr.on td { box-shadow: inset 0 -2px 0 var(--accent); }
+  .heelbar select { max-width: 280px; }
+  #breaking { margin-top: 12px; }
+  #breaking .row label { width: 200px; }
+  #studies table { font-size: 12px; }
+  #studies th, #studies td { padding: 5px 8px; }
+  #studies td.what { white-space: normal; }
+  .saved { color: var(--ok); font-size: 12px; }
+  .figs { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 12px 0 4px; }
+  .fig { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .fig .v { font-size: 20px; font-weight: 600; }
+  .fig .v small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .fig .k { font-size: 11px; color: var(--muted); }
+  .heelbar { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; flex-wrap: wrap; }
+  .heelbar input { flex: 1; min-width: 160px; }
+  .heelbar .mono { font-size: 12px; min-width: 300px; }
+  .heelbar button { width: 34px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <section>
+    <div class="crumbs"><a id="hulllink" href="/hulls">Hull</a> › case</div>
+    <input id="name" type="text" aria-label="Name" placeholder="Name this case">
+    <textarea id="notes" rows="2" placeholder="Notes" style="margin-top:8px"></textarea>
+    <div class="saved" id="saved"></div>
+  </section>
+  <section class="actions">
+    <a class="button primary" id="newruns">New studies</a>
+    <a class="button" id="results">Plot</a>
+  </section>
+  <div id="status"></div>
+  <section>
+    <h2>Case</h2>
+    <dl id="params"></dl>
+  </section>
+  <section>
+    <h2>At rest</h2>
+    <dl id="rest"></dl>
+  </section>
+  <section>
+    <h2>Studies <span class="muted" id="runcount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="studies"></div>
+  </section>
+</aside>
+<main class="stack">
+  <div id="view"></div>
+  <div id="gzpanel">
+    <h2>Transverse stability</h2>
+    <div class="figs" id="figs"></div>
+    <p class="hint" id="gznote"></p>
+  </div>
+  <div id="wavepanel" hidden>
+    <h2>In waves</h2>
+    <div class="row">
+      <label>Wavelength λ [m] <input id="wlen" type="number" step="any" min="0"></label>
+      <label>Height H [m] <input id="whgt" type="number" step="any" min="0"></label>
+      <button id="wgo">Compute</button>
+      <span class="hint" id="wstatus"></span>
+    </div>
+    <div class="heelbar" id="heelbar" hidden>
+      <select id="curve" aria-label="Curve shown in 3D"></select>
+      <button id="play" title="Sweep through the heels">▶</button>
+      <input type="range" id="heel" min="0" step="1" aria-label="Heel">
+      <span class="mono" id="heelread"></span>
+    </div>
+    <div id="wavegz"></div>
+    <div id="wavetable"></div>
+    <div id="breaking">
+      <h2>Breaking wave to reach the peak</h2>
+      <div class="row">
+        <label>Energy transfer η <input id="eta" type="number" step="any" min="0" max="1" value="0.1"></label>
+      </div>
+      <div id="breakout"></div>
+    </div>
+    <p class="hint">Quasi-static: the wave is frozen and the platform floats on its surface as on still water so shaped — balanced at each heel in sinkage and free trim — without the wave's orbital pressures or any dynamics. Beam seas run the crests along the platform, quartering seas at 45° to it; for each, the crest is set at eight places along a wavelength and under each hull, and the worst is the crest needing least energy to heel from where the platform rests on it to its peak arm (a crest that pushes it back past upright is its mirror heeling the other way, and is left out). Energy to peak is the weight times the area under the curve from the resting heel to the peak.</p>
+    <p class="hint">The breaking-wave height is a rough estimate, not a criterion: a crest breaking at H/λ ≈ 1/7 strikes at the wave's celerity c = √(gλ/2π), its water above the mean over the hull's length carrying ½ρ(Hλ/2π)·L·c²; if a fraction η of that goes into roll, the height whose crest supplies the energy to peak is H = [8π²E / (49 η ρ g L)]<sup>⅓</sup>. There is no calibrated η: it goes as η<sup>−⅓</sup>, so a factor of ten in η is 2.2× in H. Calibrate it against a capsize you know of.</p>
+  </div>
+  <div hidden>
+  </div>
+</main>
+</div>
+
+<script type="module">
+import { $, api, caseLabel, caseName, esc, fmt, lRef, nav, pathId, studyLabel, status } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+import { lineChart } from "/static/chart.js";
+nav("cases");
+
+const id = pathId();
+const viewer = createViewer($("view"));
+viewer.empty("Loading…");
+let cfg, hull;
+
+function renderParams() {
+  const p = cfg.params, s = cfg.statics || {};
+  const given = (v, unit, dflt) => v == null ? `<span class="muted">${dflt}</span>` : `${fmt(v, 3)}${unit}`;
+  $("params").innerHTML = `
+    <dt>Layout</dt><dd>${p.span == null ? "monohull" : `catamaran, span ${fmt(p.span, 3)} m`}</dd>
+    <dt>Mass</dt><dd>${p.mass == null ? `<span class="muted">design, ${fmt(s.mass, 1)} kg</span>` : `${fmt(p.mass, 1)} kg`}</dd>
+    ${p.mass != null ? `<dt>Carried by</dt><dd>${{ sinking: "sinking", scale: "scaling the hull", scale_yz: "scaling beam and draft" }[p.mass_by]}</dd>` : ""}
+    <dt>LCG</dt><dd>${p.lcg == null ? `<span class="muted">at LCB, x ${fmt(s.lcg, 3)} m</span>` : `x ${fmt(p.lcg, 3)} m`}</dd>
+    <dt>VCG above DWL</dt><dd>${given(p.vcg, " m", "0 (not given)")}</dd>
+    <dt>k<sub>xx</sub> roll</dt><dd>${p.kxx == null ? `<span class="muted">${fmt(s.roll?.k_xx, 3)} m (default)</span>` : `${fmt(p.kxx, 3)} m`}</dd>
+    <dt>k<sub>yy</sub> pitch</dt><dd>${p.kyy == null ? `<span class="muted">${fmt(s.roll?.k_yy, 3)} m (0.25 L)</span>` : `${fmt(p.kyy, 3)} L`}</dd>
+    <dt>k<sub>zz</sub> yaw</dt><dd>${p.kzz == null ? `<span class="muted">${fmt(s.roll?.k_zz, 3)} m (default)</span>` : `${fmt(p.kzz, 3)} m`}</dd>
+    <dt>Roll damping</dt><dd>${fmt(100 * (p.roll_damping || 0), 1)}% of critical</dd>
+    <dt>Case</dt><dd>#${cfg.id}${cfg.stale ? ` <span class="pill stale">stale</span>` : ""}</dd>`;
+}
+
+function renderRest(s) {
+  const a = s.at_rest, hy = s.hydrostatics;
+  $("rest").innerHTML = `
+    <dt>Sinkage</dt><dd>${fmt(1000 * a.sinkage, 1)} mm below the DWL</dd>
+    <dt>Trim</dt><dd>${fmt(a.trim_deg, 3)}° bow up</dd>
+    <dt>Displacement</dt><dd>${fmt(hy.displacement, 1)} kg · ${fmt(hy.volume, 4)} m³</dd>
+    <dt>Draft</dt><dd>${fmt(hy.draft, 3)} m</dd>
+    <dt>LCB</dt><dd>x ${fmt(hy.lcb, 3)} m</dd>
+    <dt>Waterplane</dt><dd>${fmt(hy.waterplane_area, 3)} m²</dd>
+    <dt>Wetted surface</dt><dd>${fmt(hy.wetted_surface, 3)} m²</dd>
+    <dt>Computed in</dt><dd>${fmt(s.seconds, 2)} s</dd>`;
+}
+
+function renderStability(s) {
+  const r = s.roll, g = s.gz;
+  const fig = (v, unit, k) => `<div class="fig"><div class="v">${v}<small> ${unit}</small></div><div class="k">${k}</div></div>`;
+  $("figs").innerHTML = [
+    fig(fmt(r.gm_t, 3), "m", "GM<sub>T</sub> (waterplane)"),
+    fig(r.period == null ? "—" : fmt(r.period, 2), "s", "roll period, with added inertia"),
+    g.error ? "" : fig(fmt(g.max_gz, 3), "m", `max GZ, at ${fmt(g.heel_at_max_deg, 0)}°`),
+    g.error ? "" : g.vanishing_deg === 0 ? fig("none", "", "range of stability: unstable upright (GM ≤ 0)")
+      : fig(g.vanishing_deg == null ? "> 180" : fmt(g.vanishing_deg, 1), "°", "angle of vanishing stability"),
+    g.error ? "" : fig(fmt(g.area_30, 4), "m·rad", "GZ area to 30°"),
+    g.error ? "" : fig(fmt(g.area_40, 4), "m·rad", "GZ area to 40°"),
+  ].join("");
+  if (g.error) {
+    $("gznote").innerHTML = `<div class="error">GZ: ${esc(g.error)}</div>`;
+    return;
+  }
+  $("gznote").innerHTML = `Free trim at each heel; whole sections keel to sheer, closed flush across the sheer (no deck openings or downflooding). The slope at upright is ${fmt(g.gm, 3)} m, against GM<sub>T</sub> ${fmt(r.gm_t, 3)} m from the waterplane.${s.vcg_given ? "" : " <b>No VCG was given: G is taken at the design waterline</b>, which flatters the curve for most boats."}`;
+}
+
+// The platform heeled in 3D at one of a curve's heels, on its wave (or in
+// calm water), as the GZ solve balanced it: G, B, the lever between them,
+// and M where B's vertical crosses the centreplane (at small heels, GM
+// above G). `sel`: the curve shown — its heels, arms, attitudes and centres
+// of buoyancy, and its wave.
+let waveChart = null, sel = null, G0 = null, playing = null, curves = new Map();
+function setHeel(i) {
+  if (!sel) return;
+  const c = sel.curve;
+  i = Math.max(0, Math.min(sel.heels.length - 1, i));
+  $("heel").max = sel.heels.length - 1;
+  $("heel").value = i;
+  const deg = sel.heels[i], phi = deg * Math.PI / 180;
+  const at = viewer.heelAt({ heel: phi, trim: c.trim_rad[i], sinkage: c.sinkage[i], g: G0, b: c.cb[i], m: !sel.wave });
+  waveChart?.mark(deg);
+  const small = deg > 0 && deg <= 10;
+  const bits = [`φ ${fmt(deg, 0)}°`, `GZ ${fmt(c.gz[i], 3)} m`, `trim ${fmt(c.trim_rad[i] * 180 / Math.PI, 2)}°`];
+  if (!sel.wave && deg > 0 && deg < 90) bits.push(`GZ/sin φ ${fmt(c.gz[i] / Math.sin(phi), 3)} m`);
+  if (!sel.wave && at?.mz != null && small) bits.push(`M ${fmt(at.mz - at.G[2], 3)} m above G`);
+  $("heelread").textContent = bits.join(" · ");
+}
+$("heel").addEventListener("input", () => setHeel(Number($("heel").value)));
+$("play").addEventListener("click", () => {
+  if (playing) { clearInterval(playing); playing = null; $("play").textContent = "▶"; return; }
+  $("play").textContent = "■";
+  let i = Number($("heel").value);
+  if (i >= sel.heels.length - 1) i = 0;
+  playing = setInterval(() => {
+    setHeel(i++);
+    if (i >= sel.heels.length) { clearInterval(playing); playing = null; $("play").textContent = "▶"; }
+  }, 150);
+});
+
+// Show another curve: its wave in 3D, at the heel nearest the one shown.
+function selectCurve(key) {
+  const next = curves.get(key);
+  if (!next) return;
+  const was = sel ? sel.heels[Number($("heel").value)] : 0;
+  sel = next;
+  $("curve").value = key;
+  viewer.heelSea(sel.wave);
+  for (const tr of document.querySelectorAll("#wavetable tr[data-key]")) tr.classList.toggle("on", tr.dataset.key === key);
+  setHeel(nearestHeel(sel.heels, was));
+}
+const nearestHeel = (heels, want) => heels.reduce((b, h, i) => (Math.abs(h - want) < Math.abs(heels[b] - want) ? i : b), 0);
+function listCurves() {
+  $("curve").innerHTML = [...curves.entries()].map(([k, c]) => `<option value="${esc(k)}">${esc(c.name)}</option>`).join("");
+}
+$("curve").addEventListener("change", () => selectCurve($("curve").value));
+
+// ---------------------------------------------------------------- in waves
+let waveData = null;
+async function computeWaves() {
+  const L = Number($("wlen").value), H = Number($("whgt").value);
+  if (!(L > 0 && H > 0)) { $("wstatus").textContent = "give a wavelength and a height"; return; }
+  $("wgo").disabled = true;
+  $("wstatus").textContent = "computing the curves in waves…";
+  try {
+    waveData = await api(`/api/cases/${id}/gz_waves?length=${L}&height=${H}`);
+    $("wstatus").textContent = `${waveData.headings.reduce((n, h) => n + h.curves.length, 0) + 1} curves in ${fmt(waveData.seconds, 1)} s`;
+    renderWaves();
+  } catch (e) {
+    $("wstatus").textContent = e.message;
+  } finally {
+    $("wgo").disabled = false;
+  }
+}
+$("wgo").addEventListener("click", computeWaves);
+for (const k of ["wlen", "whgt"]) $(k).addEventListener("keydown", (e) => { if (e.key === "Enter") computeWaves(); });
+$("eta").addEventListener("input", () => { if (waveData) renderBreaking(); });
+
+function renderWaves() {
+  const d = waveData, heels = d.heel_deg;
+  const series = [{ name: "calm water", points: heels.map((h, i) => [h, d.calm.gz[i]]) }];
+  for (const h of d.headings) {
+    if (h.worst) series.push({ name: `${h.name} (worst)`, points: heels.map((x, i) => [x, h.worst.gz[i]]) });
+  }
+  waveChart = lineChart($("wavegz"), {
+    title: `GZ in a wave λ ${fmt(d.wave.length, 2)} m, H ${fmt(d.wave.height, 2)} m`,
+    x: { label: "Heel [°]", fmt: (v) => `${+v.toFixed(0)}` },
+    y: { label: "GZ [m]", fmt: (v) => (+v.toPrecision(3)).toString(), zero: true },
+    series, marks: "never", direct: false,
+  });
+  const wave = (h, c) => ({ length: d.wave.length, height: d.wave.height, heading: h.heading_deg * Math.PI / 180, phase: c.phase });
+  const rows = [{ key: "calm", what: "calm water", c: d.calm, calm: true }];
+  for (const h of d.headings) {
+    if (h.worst) rows.push({ key: `${h.name}|${h.worst.label}`, what: `${h.name}, worst: ${h.worst.label}`, c: h.worst, wave: wave(h, h.worst) });
+    if (h.name === "beam") {
+      for (const c of h.curves) if (/hull|amidships/.test(c.label) && c.label !== h.worst?.label) rows.push({ key: `beam|${c.label}`, what: `beam, ${c.label}`, c, mirror: c.rests_negative, wave: wave(h, c) });
+    }
+  }
+  waveRows = rows;
+  // Every row is a curve the 3D view can follow.
+  curves = new Map(rows.map((r) => [r.key, { key: r.key, name: r.what, heels, curve: r.c, wave: r.wave || null }]));
+  listCurves();
+  $("wavetable").innerHTML = `<div class="tablewrap"><table><thead><tr>
+    <th>Wave</th><th class="num">Rests at</th><th class="num">Max GZ [m]</th><th class="num">at</th><th class="num">Energy to peak [kJ]</th><th class="num">Breaking H [m]</th>
+  </tr></thead><tbody>${rows.map((r) => `<tr class="${r.calm ? "calm" : ""}" data-key="${esc(r.key)}" title="Show in 3D">
+    <td class="what">${esc(r.what)}${r.mirror ? `<span class="sub">pushed back past upright: see its mirror</span>` : ""}</td>
+    <td class="num">${r.mirror ? "&lt; 0°" : `${fmt(r.c.rest_heel_deg, 1)}°`}</td>
+    <td class="num">${fmt(r.c.max_gz, 3)}</td>
+    <td class="num">${fmt(r.c.heel_at_max_deg, 0)}°</td>
+    <td class="num">${r.mirror ? "—" : fmt(r.c.energy_to_peak / 1000, 2)}</td>
+    <td class="num" data-e="${r.mirror ? "" : r.c.energy_to_peak}"></td>
+  </tr>`).join("")}</tbody></table></div>`;
+  renderBreaking();
+  // Keep showing what was shown (its heel too), or the calm water — or,
+  // the first time, the curve the address asks for (`?curve=beam|crest
+  // under the lee hull`, say).
+  const asked = new URLSearchParams(location.search).get("curve");
+  const key = !wavesShown && asked && curves.has(asked) ? asked : curves.has(sel?.key) ? sel.key : "calm";
+  wavesShown = true;
+  selectCurve(key);
+}
+let wavesShown = false;
+let waveRows = [];
+$("wavetable").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr[data-key]");
+  if (tr) selectCurve(tr.dataset.key);
+});
+
+// H = [8π² E / (49 η ρ g L)]^⅓: the breaking crest whose energy, a fraction
+// η of it going into roll, heels the platform from rest to its peak arm.
+function breakingHeight(e, eta) {
+  if (!(e > 0) || !(eta > 0)) return null;
+  return Math.cbrt(8 * Math.PI ** 2 * e / (49 * eta * 1025.9 * 9.81 * waveData.struck_length));
+}
+function renderBreaking() {
+  const eta = Number($("eta").value);
+  for (const td of document.querySelectorAll("#wavetable td[data-e]")) {
+    const h = breakingHeight(Number(td.dataset.e), eta);
+    td.textContent = td.dataset.e === "" ? "—" : h == null ? "—" : fmt(h, 2);
+  }
+  const worst = waveRows.filter((r) => !r.calm && !r.mirror).reduce((a, r) => (a && a.c.energy_to_peak <= r.c.energy_to_peak ? a : r), null);
+  const calmE = waveData.calm.energy_to_peak, worstE = worst?.c.energy_to_peak;
+  const sens = [0.3, 0.1, 0.03, 0.01].map((x) => `η ${x}: ${fmt(breakingHeight(worstE ?? calmE, x), 2)} m`).join(" · ");
+  $("breakout").innerHTML = `<div class="figs">
+    <div class="fig"><div class="v">${fmt(breakingHeight(calmE, eta), 2)}<small> m</small></div><div class="k">breaking wave, calm-water curve (${fmt(calmE / 1000, 2)} kJ to peak)</div></div>
+    ${worst ? `<div class="fig"><div class="v">${fmt(breakingHeight(worstE, eta), 2)}<small> m</small></div><div class="k">breaking wave, worst in waves: ${esc(worst.what)} (${fmt(worstE / 1000, 2)} kJ)</div></div>` : ""}
+  </div>
+  <p class="hint">Across η, for the ${worst ? "worst wave" : "calm-water curve"}: ${sens}.${waveData.vcg_given ? "" : " <b>No VCG was given</b>: G is at the design waterline, which flatters every curve and energy here."}</p>`;
+}
+
+async function renderRuns() {
+  const studies = await api(`/api/studies?case=${id}`);
+  const l = lRef(hull.summary);
+  $("runcount").textContent = studies.length ? `· ${studies.length}` : "";
+  if (!studies.length) {
+    $("studies").innerHTML = `<p class="hint">No studies yet. <a href="/studies/new?case=${id}">Ask for some</a>.</p>`;
+    return;
+  }
+  $("studies").innerHTML = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Study</th><th class="num">Result</th></tr></thead><tbody>
+    ${studies.map((r) => {
+      const sc = r.result?.scalars;
+      const res = !sc ? "" : r.kind === "calm" ? `R<sub>t</sub> ${fmt(sc.rt, 1)} N` : `heave ${fmt(sc.heave_peak, 2)}`;
+      const st = r.stale && r.status === "done" ? "stale" : r.status;
+      return `<tr class="link" data-id="${r.id}">
+        <td><a href="/studies/${r.id}">${r.id}</a></td>
+        <td class="what">${esc(studyLabel(r.params, l))}<span class="sub"><span class="pill ${r.status}${r.stale ? " stale" : ""}">${st}</span>${r.error ? ` · ${esc(r.error)}` : ""}</span></td>
+        <td class="num">${res}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+$("studies").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/studies/${row.dataset.id}`;
+});
+
+async function saveText() {
+  const name = $("name").value.trim(), notes = $("notes").value.trim();
+  if (name === cfg.name && notes === cfg.notes) return;
+  try {
+    cfg = await api(`/api/cases/${id}`, { json: { name, notes } });
+    document.title = `${caseName(cfg)} · michell`;
+    $("saved").textContent = "saved";
+    setTimeout(() => { $("saved").textContent = ""; }, 1500);
+  } catch (e) { status(e.message, true); }
+}
+$("name").addEventListener("change", saveText);
+$("name").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+$("notes").addEventListener("change", saveText);
+
+try {
+  if (id == null) throw new Error("no case id in the address");
+  cfg = await api(`/api/cases/${id}`);
+  hull = await api(`/api/hulls/${cfg.hull_id}`);
+  document.title = `${caseName(cfg)} · michell`;
+  $("hulllink").textContent = hull.name;
+  $("hulllink").href = `/hulls/${hull.id}`;
+  $("name").value = cfg.name;
+  $("name").placeholder = caseLabel(cfg.params);
+  $("notes").value = cfg.notes;
+  $("newruns").href = `/studies/new?case=${id}`;
+  $("results").href = `/plot?case=${id}`;
+  renderParams();
+  renderRuns().catch((e) => status(e.message, true));
+  if (cfg.error) {
+    status(`Its statics could not be computed: ${cfg.error}`, true);
+    viewer.empty("No statics");
+  } else {
+    const s = await api(`/api/cases/${id}/statics`);
+    renderRest(s);
+    renderStability(s);
+    if (!s.gz?.error) {
+      // The wave, by default twice the overall beam long and a tenth as
+      // high as it is long.
+      const boa = (cfg.params.span ?? 0) + (s.hydrostatics.beam || 0);
+      $("wlen").value = +(2 * boa).toPrecision(3);
+      $("whgt").value = +(0.2 * boa).toPrecision(3);
+      $("wavepanel").hidden = false;
+      computeWaves();
+    }
+    // The hull at rest, z up from the water.
+    if (s.body_meshes && s.gz?.cb) {
+      // The hull heeled along its GZ curve, upright to start.
+      G0 = s.gz.g;
+      viewer.heelShow(s.body_meshes);
+      curves = new Map([["calm", { key: "calm", name: "calm water", heels: s.gz.heel_deg, curve: s.gz, wave: null }]]);
+      listCurves();
+      $("heelbar").hidden = false;
+      // `?heel=deg` starts at the nearest heel on the curve.
+      selectCurve("calm");
+      setHeel(nearestHeel(s.gz.heel_deg, Number(new URLSearchParams(location.search).get("heel") || 0)));
+    } else {
+      // Statics from before the heel view: the hull at rest.
+      viewer.geometry(s.meshes, 0);
+    }
+  }
+} catch (e) {
+  status(e.message, true);
+  viewer.empty(e.message);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload a hull · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div class="split">
+<aside>
+  <h1 id="title">Upload a hull</h1>
+
+  <section>
+    <div id="drop">
+      <strong>Drop a hull file</strong>
+      or click to choose — IGES or STL
+      <div class="fname" id="fname"></div>
+    </div>
+    <input type="file" id="file" hidden accept=".igs,.iges,.stl">
+  </section>
+
+  <section>
+    <h2>Sections</h2>
+    <div class="fields">
+      <label class="wide">Design waterline z [m] — drag to re-cut
+        <span style="display:flex;gap:8px;align-items:center">
+          <input id="wlslider" type="range" step="any" style="flex:1" disabled>
+          <input id="waterline" type="number" step="any" placeholder="0" style="width:96px">
+        </span>
+      </label>
+      <label>Centreplane y [m]
+        <input id="centerplane" type="number" step="any" placeholder="auto">
+      </label>
+      <label>Stations
+        <input id="stations" type="number" min="8" placeholder="121">
+      </label>
+      <label>Rays per section
+        <input id="rays" type="number" min="5" placeholder="33">
+      </label>
+      <label>STL units
+        <input id="units" type="text" placeholder="mm, m, in…">
+      </label>
+    </div>
+    <p class="hint">The waterline is the design waterline's height in the file's frame, in metres; the hull floats there at its design displacement, and cases sink, trim or scale it from there. STL carries no units, so give its scale.</p>
+  </section>
+
+  <section>
+    <h2>Save</h2>
+    <div class="fields">
+      <label class="wide">Name
+        <input id="name" type="text" placeholder="the file's name">
+      </label>
+      <label class="wide">Notes
+        <textarea id="notes" rows="2" placeholder="what it is, which revision…"></textarea>
+      </label>
+    </div>
+    <button class="primary" id="save" disabled style="width:100%;margin-top:10px">Save hull</button>
+    <p class="hint" id="savehint">A hull is saved with the settings above: the same file cut another way is another hull.</p>
+  </section>
+
+  <div id="status"></div>
+  <section id="results"></section>
+</aside>
+<main id="view"></main>
+</div>
+
+<script type="module">
+import { $, api, esc, fmtBytes, hullCards, nav, status, whoami } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+nav("hulls");
+
+const viewer = createViewer($("view"));
+viewer.empty("Drop a hull file to see it cut into sections");
+const FIELDS = ["waterline", "centerplane", "stations", "rays", "units"];
+let file = null, geomRange = null, parent = null, cutOk = false;
+
+// ---------------------------------------------------------------- the file
+const drop = $("drop"), picker = $("file");
+drop.onclick = () => picker.click();
+picker.onchange = () => picker.files[0] && choose(picker.files[0]);
+drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); };
+document.body.ondragover = (e) => e.preventDefault();
+document.body.ondrop = (e) => { e.preventDefault(); if (e.dataTransfer.files[0]) choose(e.dataTransfer.files[0]); };
+
+async function choose(f, keepWaterline = false) {
+  file = f;
+  geomRange = null;
+  cutOk = false;
+  $("save").disabled = true;
+  $("fname").textContent = `${f.name} · ${fmtBytes(f.size)}`;
+  if (!keepWaterline && !parent) $("waterline").value = "";
+  if (await loadGeometry()) await cut();
+}
+
+// The whole hull, topsides and all, for setting the waterline against: its
+// z range bounds the slider, which starts at the file's 0 if that lies
+// within the hull, else a fifth of the way up from the keel.
+async function loadGeometry() {
+  const q = settings();
+  q.set("name", file.name);
+  status(`Reading ${file.name}…`);
+  try {
+    const data = await api(`/api/geometry?${q}`, { body: file });
+    const [lo, hi] = data.z_range;
+    geomRange = [lo, hi];
+    const sl = $("wlslider");
+    Object.assign(sl, { min: lo, max: hi, step: (hi - lo) / 2000, disabled: false });
+    const typed = Number($("waterline").value);
+    const wl = $("waterline").value.trim() && typed > lo && typed < hi ? typed
+      : lo < 0 && 0 < hi ? 0 : lo + 0.2 * (hi - lo);
+    sl.value = wl;
+    $("waterline").value = +wl.toFixed(4);
+    viewer.geometry(data.meshes, wl);
+    return true;
+  } catch (e) {
+    status(e.message, true);
+    return false;
+  }
+}
+
+function settings() {
+  const q = new URLSearchParams();
+  for (const id of FIELDS) { const v = $(id).value.trim(); if (v) q.set(id, v); }
+  // A scaled hull re-imported stays scaled.
+  for (const k of ["scale", "scale_yz"]) if (parent?.import?.[k] != null) q.set(k, parent.import[k]);
+  return q;
+}
+
+// Cut at the current settings and show it. A cut takes a few hundredths of
+// a second, so the sections follow the slider live — one cut in flight,
+// catching up to the latest value.
+let cutting = false, cutAgain = false;
+async function cut() {
+  if (!file) return;
+  if (cutting) { cutAgain = true; return; }
+  cutting = true;
+  try {
+    do {
+      cutAgain = false;
+      const q = settings();
+      q.set("name", file.name);
+      // The waterline this cut is made at: the slider may have moved on by
+      // the time it comes back, and the cut belongs where it was cut.
+      const wlCut = Number($("waterline").value.trim() || "0");
+      try {
+        const data = await api(`/api/loft?${q}`, { body: file });
+        status(`${data.hulls.length} hull${data.hulls.length === 1 ? "" : "s"} · sectioned in ${data.seconds.toFixed(2)} s`);
+        $("results").innerHTML = hullCards(data.hulls, data.notes || []);
+        viewer.load(data.hulls, wlCut);
+        cutOk = true;
+      } catch (e) {
+        status(e.message, true);
+        $("results").innerHTML = "";
+        cutOk = false;
+      }
+      $("save").disabled = !cutOk;
+    } while (cutAgain);
+  } finally { cutting = false; }
+}
+
+$("wlslider").addEventListener("input", (e) => {
+  const wl = Number(e.target.value);
+  $("waterline").value = +wl.toFixed(4);
+  viewer.setWater(wl);
+  cut();
+});
+$("waterline").addEventListener("change", () => {
+  const wl = Number($("waterline").value);
+  if (!Number.isFinite(wl)) return;
+  $("wlslider").value = wl;
+  viewer.setWater(wl);
+  cut();
+});
+for (const id of ["centerplane", "stations", "rays"]) $(id).addEventListener("change", cut);
+// Units change the geometry itself, and so the waterline's range.
+$("units").addEventListener("change", async () => { if (file && await loadGeometry()) cut(); });
+
+// ---------------------------------------------------------------- save
+$("save").onclick = async () => {
+  if (!file || !cutOk) return;
+  const q = settings();
+  q.set("file", file.name);
+  const name = $("name").value.trim(), notes = $("notes").value.trim(), by = whoami();
+  if (name) q.set("name", name);
+  if (notes) q.set("notes", notes);
+  if (by) q.set("by", by);
+  if (parent) q.set("parent", String(parent.id));
+  $("save").disabled = true;
+  status(`Saving ${file.name}…`);
+  try {
+    const r = await api(`/api/hulls?${q}`, { body: file });
+    if (r.created) { location.href = `/hulls/${r.id}`; return; }
+    status("");
+    $("results").insertAdjacentHTML("afterbegin", `<div class="note">This file, cut with these settings, is already saved as <a href="/hulls/${r.id}">${esc(r.hull.name)} (#${r.id})</a>.</div>`);
+  } catch (e) {
+    status(e.message, true);
+  } finally {
+    $("save").disabled = !cutOk;
+  }
+};
+
+// ---------------------------------------------------------------- re-import
+// `?from=ID`: start from a saved hull's file and settings, to save it cut
+// another way.
+const from = Number(new URLSearchParams(location.search).get("from"));
+if (from) {
+  try {
+    parent = await api(`/api/hulls/${from}`);
+    $("title").textContent = `Re-import ${parent.name}`;
+    $("savehint").innerHTML = `Saved as a new hull, marked as a re-import of <a href="/hulls/${parent.id}">${esc(parent.name)} (#${parent.id})</a>; that hull and its cases stay as they are.`;
+    for (const id of FIELDS) {
+      const v = parent.import?.[id];
+      if (v != null) $(id).value = v;
+    }
+    $("name").value = parent.name;
+    $("notes").value = parent.notes;
+    status(`Fetching ${parent.file_name}…`);
+    const r = await fetch(`/api/hulls/${from}/file`);
+    if (!r.ok) throw new Error(`the file: ${r.statusText}`);
+    await choose(new File([await r.blob()], parent.file_name), true);
+  } catch (e) { status(e.message, true); }
+}
+</script>
+</body>
+</html>

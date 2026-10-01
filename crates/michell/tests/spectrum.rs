@@ -1,7 +1,7 @@
 //! Physics checks for the free-wave spectrum and wake reconstruction.
 
-use michell::iges::{self, HullPose, Platform, SectionalOptions};
 use michell::{sectional, Conditions, FreeWaveSpectrum, Placement, SectionalHull, TransomClosure};
+use michell_geometry::iges::{self, HullPose, Platform, SectionalOptions};
 
 /// The Wigley hull cut into sections from its exact CAD surfaces.
 fn wigley(length: f64, beam: f64, draft: f64) -> SectionalHull {

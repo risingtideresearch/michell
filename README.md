@@ -17,6 +17,21 @@ println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
          r.wave.resistance, r.viscous.resistance, r.cw);
 ```
 
+## Workspace layout
+
+| crate | what it holds | depends on |
+|---|---|---|
+| `michell-geometry` | IGES/STL import, hulls cut into sections (`SectionalHull`), hydrostatics, hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions` | — |
+| `michell` | thin-ship theory: Michell wave resistance, squat (dynamic sinkage/trim), near field, far-field spectrum, ITTC-57 friction | `michell-geometry` |
+| `michell-seakeeping` | linear strip-theory seakeeping: heave/pitch RAOs, added resistance, irregular seas (see [Seakeeping](#seakeeping)) | `michell-geometry` |
+| `michell-cli`, `boatmath-web` | front ends | all of the above |
+
+The geometry crate knows no flow theory. `michell` hands the equilibrium
+solver its speed-dependent load through `float::DynamicModel`
+(`michell::sectional::dynamic_load_closure`); the seakeeping crate builds
+on the sectional hull's transforms (`SectionalHull::x_transform`) without
+going through `michell` at all.
+
 ## Geometry contract
 
 The hull is port/starboard symmetric, given by its half-beam
@@ -99,7 +114,7 @@ tolerance runs in ~20 ms (release build). The outer quadrature and the
 near-field (sinkage/trim) integrals fan their independent nodes out across
 the machine's cores with `std::thread::scope` (still no dependencies); the
 reduction order is the serial one, so the answer is bit-for-bit independent
-of the thread count. The worker budget is per thread (`michell::parallel`),
+of the thread count. The worker budget is per thread (`michell_geometry::parallel`),
 so a caller that already runs jobs in parallel can hand each job a share of
 the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
 environment disables threading altogether.
@@ -662,29 +677,131 @@ from DWL, starting 0), then `station <x> <half-beams...>` lines.
 `dfdx`/`dfdz` (JSON `null` = unknown at that sample), optional `weights`,
 optional `centerplane`.
 
-## Web front end
+## Seakeeping
 
-The `michell-web` crate is a browser UI over the same loaders, with the
-physics server-side so it has every core. It is at an early stage: for now it
-is a **loft viewer**. You drop in any file the CLI reads (`.hull`, offsets,
-`*.grid.json`, IGES, STL) and it shows the lofted wetted surface in 3D (profile /
-plan / body views, a beam-and-draft stretch for slender hulls), the control
-net at its Greville abscissae, and the samples the loft was fitted to,
-coloured by the loft's residual, with a fairing weight to try against it. Hydrostatics and the same import diagnostics
-`michell info` prints appear beside the view.
-
-For hulls that come from samples it also lofts two **experimental**
-representations of the same grid, to compare with the current one (flip with
-1–3, or stack all three with 4): a loft **trimmed** at a piecewise-linear keel
-line fitted to the samples (the (x, z) spline, fitted and integrated only
-above the keel), and a **keel-following** loft in `s = z/d(x)`, pinned to zero
-at the keel. Neither feeds the physics yet; they are there to judge which is
-worth building the kernel for.
+`michell-seakeeping` computes heave and pitch in waves by **strip theory**
+(Salvesen, Tuck & Faltinsen 1970) on the same sectional hulls. Each
+station's section curve is solved in two dimensions by Frank's close-fit
+source method — added mass, damping, radiated waves, and the diffraction
+force through the Haskind relation — at the encounter frequency; the
+hull's coefficients are their integrals along the length with the
+forward-speed and transom terms. The Froude–Krylov force comes in closed
+form from the hull's depth integrals. Mean added resistance uses
+Gerritsma & Beukelman's radiated energy; irregular-sea statistics use
+Bretschneider or JONSWAP spectra. Multihulls move as one rigid platform
+(no hull-to-hull wave interaction).
 
 ```text
-cargo run --release -p michell-web          # http://127.0.0.1:8080/
-michell-web --port 9000 --host 0.0.0.0      # or set $PORT (binds 0.0.0.0)
+michell seakeeping e12.igs --waterline -0.95 --froude 0.4 --lambda 0.6:2.4:0.3 --sea hs=0.5,tp=4
+michell seakeeping e12.igs@y=1.4 e12.igs@y=-1.4 --waterline -0.95 --froude 0.4 --heading 150 --dynamic
 ```
+
+`--dynamic` floats the platform at its thin-ship dynamic sinkage and trim
+(above) before taking the motions about that attitude — the one place the
+two theories meet. Mass defaults to the displacement at the loaded
+waterline (LCG over the LCB), the pitch radius of gyration to 0.25 L;
+`--csv` gives a machine-readable table.
+
+What has been checked: the 2-D source against quadrature of its
+principal-value integral; section damping against the energy its far field
+carries; the Haskind diffraction force against the solved diffraction
+problem; the exact infinite-frequency added mass of a semicircle; long-wave
+limits of the full response (heave → 1, pitch → wave slope); far-apart twin
+hulls moving exactly like one.
+
+Against experiment — Journée's four Wigley hulls in head waves (Delft
+report 0909, 1992; the data are freely distributed by the author, see the
+`journee_wigley` example): heave added mass and damping agree to ~10–15%
+over the mid frequencies, the wave force and moment on the restrained hull
+to ~5–15%, and heave in head waves closely, resonance peaks included;
+zero-speed pitch is 10–20% low. At speed, strip theory's pitch added inertia
+is ~30% low and its pitch damping grows with U² where the tank shows none,
+so the computed pitch resonance falls at shorter waves than measured, and
+added resistance — which goes with the square of the motions — peaks early
+and about twice too high at Fn 0.3–0.4 (Wigley III, Fn 0.3: ≈ 49 at
+λ/L = 1.05 computed, ≈ 20 at 1.25 measured). Journée found the same
+discrepancies with his own strip codes. Trust heave; treat pitch at speed
+and added resistance near resonance as indicative. There is no short-wave
+added-resistance correction.
+
+Added resistance is reported two ways. Gerritsma–Beukelman sums each
+strip's radiated energy; Maruo's far-field method takes the momentum of the
+whole wave pattern, built as a Kochin function from the stations' sources,
+so the sections' waves interfere and the forward-scattered wave counts for
+nothing. On the Wigley hulls the far field is within a factor of two of the
+measured peaks at Fn 0.3–0.4 (where GB is two to six times high: Wigley I,
+Fn 0.4, ≈ 26 against ≈ 15 measured and 92 by GB), but about half the
+measurements at Fn 0.2 and on the beamy L/B 5 hulls, where GB is closer.
+Neither ranks the four hulls reliably; read them as a bracket.
+
+The section solver closes each section's interior waterplane with a rigid
+lid of sources (Ohmatsu), which removes the irregular frequencies of the
+plain source method — their spurious interior modes would otherwise leak
+into the Kochin function.
+
+**Sway, roll and yaw** come from the same strip solve: each section also
+solves its antisymmetric (sway and roll) problems, and the platform's five
+modes are assembled from each station's kinematics — hull offset and the
+centre of gravity's height included — so a catamaran's roll comes out of
+its demihulls' heave, and an asymmetric platform (a proa) couples roll to
+heave and pitch by itself. `--vcg`, `--kxx`, `--kzz` set the centre of
+gravity's height above the waterline and the roll and yaw radii of
+gyration; GM_T and the natural roll period are printed. Potential flow
+leaves a monohull's roll nearly undamped — a demihull of e12 in beam seas
+reaches a roll RAO of about 19 at resonance, about 7 with `--roll-damping
+0.05` (5% of critical) standing in for the viscous damping that really
+sets it; off resonance the two agree. The lateral modes are checked by
+long-wave limits, reciprocity and mirror symmetry, and section by section
+against Vugts' (1970) horizontal cylinders in beam waves (a circle and
+rectangles of B/d 2, 4 and 8, as plotted in Journée's SEAWAY validation
+report; `python/tools/vugts/` digitises its figures): the sway, heave and
+roll coefficients and wave loads match SEAWAY's curves to about 1–6% and
+the experiments to about 1–12%, roll's small added mass and damping (where
+viscosity matters) to 15–40%; phases match SEAWAY to a few degrees under
+the report's conventions. The three-dimensional lateral response has no
+experimental check yet. The same assembly carries two transom end terms (`(U²/ω²)a_A`
+in A₃₅, `(U²/ω²)b_A` in B₃₅) that the earlier heave–pitch table lacked;
+they change e12's heave by about 2% at Fn 0.4 and hulls without a transom
+not at all.
+
+## Web front end: boatmath
+
+The `boatmath-web` crate is **boatmath**, a browser front end with the michell
+physics server-side, so it has every core. It keeps a permanent record at three
+levels and works through a queue:
+
+- **Hulls** (`/hulls`): an uploaded IGES or STL file with how it is cut —
+  its design waterline, stations and rays, units — shown in 3D with its
+  sections and hydrostatics. The same file cut another way is another hull.
+- **Cases** (`/cases`): a platform on a hull and its load — the hull on its
+  own or doubled into a catamaran at a span, its mass (carried by sinking, or
+  by scaling the hull), LCG, VCG, radii of gyration and roll damping. Its
+  statics are computed when it is made: the float at rest, GM_T and the roll
+  period, and the **GZ curve** (whole sections clipped at each heel, free
+  trim; `michell_geometry::stability`) with its peak, angle of vanishing
+  stability and areas.
+- **Studies** (`/studies`): a speed on a case, in **calm water** (the
+  near-field pressure, the free surface, resistance, sinkage and trim at
+  speed) or in **waves** from one heading (responses over a wavelength sweep,
+  added resistance, an optional irregular sea; an animated seaway). A study in
+  waves is taken about the attitude of the calm-water study at its speed,
+  which it waits for.
+
+Each list has its **New** page: a new case takes values, lists or ranges of
+span, mass, LCG and VCG (every combination a case); new studies go on cases
+already made (speeds, headings, sea), saying which already exist. **Queue**
+(`/queue`) shows the running study's progress and what waits; **Plot**
+(`/plot`) filters finished studies, plots any result against any parameter
+and exports CSV. Every result records the solver version it was computed with
+(the last commit to touch the solver's code); one from another version is
+marked stale and can be run again.
+
+```text
+cargo run --release -p boatmath-web -- --data boatmath-data   # http://127.0.0.1:8080/
+BOATMATH_WEB_DIR=crates/boatmath-web/src/web boatmath-web     # pages read from disk, to edit them live
+```
+
+`deploy/README.md` has running it as a service behind `tailscale serve`.
 
 ## API sketch
 

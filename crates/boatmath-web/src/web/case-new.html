@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New case · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .split > main.list { background: var(--bg); overflow-y: auto; padding: 16px 20px 40px; }
+  #preview td.what { white-space: normal; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.new { color: var(--accent); border-color: var(--accent); }
+  .tag.err { color: var(--err); border-color: var(--err); }
+  #submit { width: 100%; margin-top: 10px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <h1>New case</h1>
+  <section>
+    <label>Hull
+      <select id="hull"><option value="">Loading…</option></select>
+    </label>
+    <div class="hint" id="hullinfo"></div>
+  </section>
+  <section>
+    <h2>Layout and load</h2>
+    <div class="fields">
+      <label class="wide">Catamaran centre span(s) [m]
+        <input id="span" type="text" placeholder="blank: the hull on its own">
+      </label>
+      <label>Mass(es) [kg]
+        <input id="mass" type="text" placeholder="design">
+      </label>
+      <label>LCG x [m]
+        <input id="lcg" type="text" placeholder="at LCB">
+      </label>
+      <label class="wide">A given mass is carried by
+        <select id="massby">
+          <option value="sinking">the hull sinking to it (the waterline moves)</option>
+          <option value="scale">scaling the hull in x, y, z (the waterline stays)</option>
+          <option value="scale_yz">scaling beam and draft only (the waterline stays)</option>
+        </select>
+      </label>
+      <label class="wide">VCG above the design waterline [m]
+        <input id="vcg" type="text" placeholder="0 (at the DWL) — give it for a true GZ curve">
+      </label>
+    </div>
+  </section>
+  <section>
+    <h2>Inertia and damping</h2>
+    <div class="fields">
+      <label><span>k<sub>xx</sub> roll [m]</span>
+        <input id="kxx" type="number" step="any" min="0" placeholder="default">
+      </label>
+      <label><span>k<sub>yy</sub> pitch [× L]</span>
+        <input id="kyy" type="number" step="any" min="0" placeholder="0.25">
+      </label>
+      <label><span>k<sub>zz</sub> yaw [m]</span>
+        <input id="kzz" type="number" step="any" min="0" placeholder="default">
+      </label>
+      <label>Roll damping [% crit.]
+        <input id="damping" type="number" min="0" max="99" step="any" placeholder="0">
+      </label>
+    </div>
+    <p class="hint">These matter only in waves. Defaults: k<sub>yy</sub> 0.25 L; k<sub>xx</sub> each hull's mass at its centreplane plus 0.35 of its beam; k<sub>zz</sub> the hulls' spread plus k<sub>yy</sub>.</p>
+  </section>
+  <section>
+    <label>Name
+      <input id="name" type="text" placeholder="for a single case">
+    </label>
+    <p class="hint">Each field takes a value, a list (<code>150, 200</code>) or a range (<code>150:250:25</code>); every combination is a case. Its float at rest, GM and GZ curve are computed as it is made, a few seconds each.</p>
+    <button class="primary" id="submit" disabled>Make case</button>
+  </section>
+  <div id="status"></div>
+</aside>
+<main class="list">
+  <div class="head"><h1>Cases to make</h1><span class="grow"></span><span class="counts" id="counts"></span></div>
+  <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull.</div></div></div>
+  <div id="after"></div>
+</main>
+</div>
+
+<script type="module">
+import { $, api, caseLabel, esc, fmt, hullDims, nav, status, values, whoami } from "/static/common.js";
+nav("cases");
+
+let hulls = [], hull = null, planned = [], found = [], seq = 0, busy = false;
+const INPUTS = ["span", "mass", "lcg", "massby", "vcg", "kxx", "kyy", "kzz", "damping", "name"];
+const num = (id) => { const t = $(id).value.trim(); return t ? Number(t) : null; };
+
+// Every combination the form asks for, as the server's CaseParams.
+function plan() {
+  const spans = values($("span"), null), masses = values($("mass"), null), lcgs = values($("lcg"), null), vcgs = values($("vcg"), null);
+  if (masses.some((m) => m != null && !(m > 0))) throw new Error("Masses must be positive");
+  if (spans.some((s) => s != null && !(s > 0))) throw new Error("Spans must be positive");
+  const extra = {};
+  for (const k of ["kxx", "kyy", "kzz"]) if (num(k) != null) extra[k] = num(k);
+  if (num("damping")) extra.roll_damping = num("damping") / 100;
+  const out = [];
+  for (const span of spans) for (const mass of masses) for (const lcg of lcgs) for (const vcg of vcgs) {
+    const p = { ...extra };
+    if (span != null) p.span = span;
+    if (mass != null) { p.mass = mass; p.mass_by = $("massby").value; }
+    if (lcg != null) p.lcg = lcg;
+    if (vcg != null) p.vcg = vcg;
+    out.push(p);
+  }
+  if (out.length > 40) throw new Error(`That is ${out.length} cases; make at most 40 at a time`);
+  return out;
+}
+
+// Which of them exist (a dry run each).
+async function refresh() {
+  if (busy) return;
+  const my = ++seq;
+  $("after").innerHTML = "";
+  if (!hull) { $("submit").disabled = true; return; }
+  try { planned = plan(); } catch (e) {
+    planned = [];
+    $("preview").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $("submit").disabled = true;
+    $("counts").innerHTML = "";
+    return;
+  }
+  try {
+    found = await Promise.all(planned.map((params) =>
+      api("/api/cases", { json: { hull: hull.id, params, dry_run: true } }).then((r) => ({ ok: true, existing: r.existing }), (e) => ({ ok: false, error: e.message }))));
+  } catch (e) { status(e.message, true); return; }
+  if (my !== seq) return;
+  render();
+}
+
+function render(states = []) {
+  const fresh = found.filter((f) => f.ok && f.existing == null).length;
+  const bad = found.filter((f) => !f.ok).length, have = found.length - fresh - bad;
+  $("preview").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Case</th><th>On this hull</th></tr></thead><tbody>${planned.map((p, i) => {
+    const f = found[i], st = states[i];
+    const tag = st ? st
+      : !f.ok ? `<span class="tag err">${esc(f.error)}</span>`
+      : f.existing != null ? `<a class="tag" href="/cases/${f.existing}">#${f.existing}, made already</a>`
+      : `<span class="tag new">new</span>`;
+    return `<tr><td class="what">${esc(caseLabel(p))}</td><td>${tag}</td></tr>`;
+  }).join("")}</tbody></table></div>`;
+  $("counts").innerHTML = [fresh && `<span class="pill queued">${fresh} new</span>`, have && `<span class="pill done">${have} made already</span>`, bad && `<span class="pill failed">${bad} not possible</span>`].filter(Boolean).join("");
+  $("submit").disabled = busy || !fresh;
+  $("submit").textContent = fresh ? `Make ${fresh} case${fresh === 1 ? "" : "s"}` : "Nothing new to make";
+}
+
+let timer = null;
+const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+for (const id of INPUTS) { $(id).addEventListener("input", later); $(id).addEventListener("change", later); }
+
+function chooseHull(id) {
+  hull = hulls.find((h) => h.id === id) || null;
+  $("hullinfo").innerHTML = hull ? `${esc(hullDims(hull.summary))} · <a href="/hulls/${hull.id}">view</a>` : "";
+  const cat = hull && (hull.summary?.hulls || []).length === 1;
+  $("span").disabled = !cat;
+  $("span").placeholder = cat ? "blank: the hull on its own" : "this file holds several hulls";
+  history.replaceState(null, "", hull ? `/cases/new?hull=${hull.id}` : "/cases/new");
+  refresh();
+}
+$("hull").addEventListener("change", () => chooseHull(Number($("hull").value)));
+
+// Made one at a time: each one's statics take a few seconds.
+$("submit").onclick = async () => {
+  busy = true;
+  $("submit").disabled = true;
+  const states = planned.map((_, i) => found[i].ok && found[i].existing == null ? `<span class="tag">waiting</span>` : null);
+  const made = [];
+  const name = planned.length === 1 ? $("name").value.trim() : "";
+  for (let i = 0; i < planned.length; i++) {
+    if (states[i] == null) { if (found[i].existing != null) made.push(found[i].existing); continue; }
+    states[i] = `<span class="tag">computing its statics…</span>`;
+    render(states);
+    try {
+      const r = await api("/api/cases", { json: { hull: hull.id, params: planned[i], name, by: whoami() } });
+      const c = r.case, s = c.statics || {};
+      made.push(r.id);
+      states[i] = c.error
+        ? `<a class="tag err" href="/cases/${r.id}">#${r.id}: ${esc(c.error)}</a>`
+        : `<a class="tag new" href="/cases/${r.id}">#${r.id} · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m · max GZ ${fmt(s.gz?.max_gz, 2)} m</a>`;
+    } catch (e) {
+      states[i] = `<span class="tag err">${esc(e.message)}</span>`;
+    }
+    render(states);
+  }
+  busy = false;
+  $("submit").disabled = true;
+  $("submit").textContent = "Made";
+  if (made.length === 1 && planned.length === 1) { location.href = `/cases/${made[0]}`; return; }
+  $("after").innerHTML = made.length ? `<p style="margin-top:14px"><a class="button primary" href="/studies/new?cases=${made.join(",")}">New studies on ${made.length === 1 ? "it" : `these ${made.length}`}</a> <a class="button" href="/cases?hull=${hull.id}">All of this hull's cases</a></p>` : "";
+};
+
+try {
+  hulls = await api("/api/hulls");
+  $("hull").innerHTML = `<option value="">Choose a hull…</option>` + hulls.map((h) => `<option value="${h.id}">${esc(h.name)} (#${h.id})</option>`).join("");
+  const want = Number(new URLSearchParams(location.search).get("hull"));
+  if (want && hulls.some((h) => h.id === want)) { $("hull").value = String(want); chooseHull(want); }
+  else if (!hulls.length) $("hullinfo").innerHTML = `No hulls yet: <a href="/hulls/new">upload one</a> first.`;
+} catch (e) { status(e.message, true); }
+</script>
+</body>
+</html>

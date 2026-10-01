@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hull · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<style>
+  #name { font-size: 18px; font-weight: 700; border-color: transparent; background: transparent; padding: 2px 4px; margin: -2px -4px; width: 100%; }
+  #name:hover, #name:focus { border-color: var(--line); background: var(--bg); }
+  #notes { width: 100%; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .actions > * { flex: 1; text-align: center; }
+  #cases table { font-size: 12px; }
+  #cases th, #cases td { padding: 5px 8px; }
+  #cases td.what { white-space: normal; }
+  .saved { color: var(--ok); font-size: 12px; }
+  #scaling .row { display: flex; gap: 8px; align-items: end; }
+  #scaling .row > label { flex: 1; }
+  #scaleprev dl { margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <section>
+    <input id="name" type="text" aria-label="Name">
+    <textarea id="notes" rows="2" placeholder="Notes" style="margin-top:8px"></textarea>
+    <div class="saved" id="saved"></div>
+  </section>
+  <section class="actions">
+    <a class="button primary" id="newcases">New case</a>
+    <a class="button" id="reimport" title="Cut the same file another way, as a new hull">Re-import</a>
+    <a class="button" id="download">Download file</a>
+  </section>
+  <section>
+    <h2>Source</h2>
+    <dl id="meta"></dl>
+  </section>
+  <div id="status"></div>
+  <details id="scaling">
+    <summary>Scale into a new hull</summary>
+    <div class="fields" style="margin-top:8px">
+      <label class="wide">Scale
+        <select id="smode">
+          <option value="xyz">the whole hull — length, beam and draft together</option>
+          <option value="yz">beam and draft only — the length kept</option>
+        </select>
+      </label>
+      <label class="wide">To
+        <select id="starget">
+          <option value="length">a waterline length [m]</option>
+          <option value="displacement">a displacement at the waterline [kg]</option>
+        </select>
+      </label>
+      <label class="wide" id="svaluelabel">Waterline length [m]
+        <input id="svalue" type="number" step="any" min="0">
+      </label>
+      <label class="wide">Name
+        <input id="sname" type="text">
+      </label>
+    </div>
+    <div id="scaleprev"></div>
+    <button class="primary" id="scalego" disabled style="width:100%;margin-top:8px">Make the scaled hull</button>
+    <p class="hint">About the design waterline, so the waterline stays where it is: the scaled hull is this file with a scale in its settings, cut and measured afresh. Its cases can scale it again to carry a mass.</p>
+  </details>
+  <section>
+    <h2>Cases <span class="muted" id="casecount" style="text-transform:none;letter-spacing:0;font-weight:400"></span></h2>
+    <div id="cases"></div>
+  </section>
+  <section>
+    <h2>Hydrostatics at the design waterline</h2>
+    <div id="results"></div>
+  </section>
+</aside>
+<main id="view"></main>
+</div>
+
+<script type="module">
+import { $, api, caseLabel, caseName, esc, fmt, fmtTime, hullCards, nav, pathId, status, whoami } from "/static/common.js";
+import { createViewer } from "/static/viewer.js";
+nav("hulls");
+
+const id = pathId();
+const viewer = createViewer($("view"));
+viewer.empty("Loading…");
+let hull;
+
+function renderMeta() {
+  const imp = hull.import || {};
+  const set = (v, unit = "") => v == null ? `<span class="muted">default</span>` : `${esc(v)}${unit}`;
+  $("meta").innerHTML = `
+    <dt>File</dt><dd class="mono">${esc(hull.file_name)}</dd>
+    <dt>Uploaded</dt><dd>${fmtTime(hull.created_at)}${hull.uploaded_by ? ` by ${esc(hull.uploaded_by)}` : ""}</dd>
+    ${hull.parent_id ? `<dt>${imp.scale != null || imp.scale_yz != null ? "Scaled from" : "Re-import of"}</dt><dd><a href="/hulls/${hull.parent_id}">#${hull.parent_id}</a></dd>` : ""}
+    <dt>Waterline z</dt><dd>${set(imp.waterline ?? 0, " m")}</dd>
+    <dt>Centreplane y</dt><dd>${set(imp.centerplane, " m")}</dd>
+    <dt>Stations</dt><dd>${set(imp.stations)}</dd>
+    <dt>Rays</dt><dd>${set(imp.rays)}</dd>
+    ${imp.units != null ? `<dt>Units</dt><dd>× ${esc(imp.units)} m</dd>` : ""}
+    ${imp.scale != null ? `<dt>Scaled</dt><dd>× ${fmt(imp.scale, 4)} (length, beam and draft)</dd>` : ""}
+    ${imp.scale_yz != null ? `<dt>Scaled</dt><dd>× ${fmt(imp.scale_yz, 4)} (beam and draft)</dd>` : ""}
+    <dt>Hull id</dt><dd>#${hull.id}</dd>`;
+}
+
+// This hull's cases: what each carries, how stable it is at rest,
+// and how many studies it has.
+async function renderCases() {
+  const cases = await api(`/api/cases?hull=${id}`);
+  $("casecount").textContent = cases.length ? `· ${cases.length}` : "";
+  if (!cases.length) {
+    $("cases").innerHTML = `<p class="hint">No cases yet. <a href="/cases/new?hull=${id}">Make one</a>.</p>`;
+    return;
+  }
+  $("cases").innerHTML = `<div class="tablewrap"><table><thead><tr><th>Case</th><th class="num">GM<sub>T</sub> [m]</th><th class="num">Studies</th></tr></thead><tbody>
+    ${cases.map((c) => {
+      const s = c.statics || {};
+      const studies = Object.values(c.studies || {}).reduce((a, b) => a + b, 0);
+      return `<tr class="link" data-id="${c.id}">
+        <td class="what"><a href="/cases/${c.id}">${esc(caseName(c))}</a>${c.name ? `<span class="sub">${esc(caseLabel(c.params))}</span>` : ""}${c.error ? `<span class="sub" style="color:var(--err)">${esc(c.error)}</span>` : ""}</td>
+        <td class="num">${fmt(s.roll?.gm_t, 3)}</td>
+        <td class="num">${studies}${c.studies?.done ? `<span class="sub">${c.studies.done} done</span>` : ""}</td></tr>`;
+    }).join("")}</tbody></table></div>`;
+}
+$("cases").addEventListener("click", (e) => {
+  if (e.target.closest("a")) return;
+  const row = e.target.closest("tr.link");
+  if (row) location.href = `/cases/${row.dataset.id}`;
+});
+
+// Scaling into a new hull: xyz to a length or a displacement, yz to a
+// displacement (it keeps the length). A dry run previews the factor.
+const single = () => (hull.summary?.hulls || []).length === 1;
+function scaleBody() {
+  const mode = $("smode").value, target = $("starget").value, v = Number($("svalue").value);
+  return { mode, [target]: v };
+}
+let scaleSeq = 0;
+async function scalePreview() {
+  const mode = $("smode").value, target = $("starget").value;
+  // yz keeps the length: only a displacement can be its target.
+  const lengthOpt = $("starget").querySelector("option[value=length]");
+  lengthOpt.disabled = mode === "yz";
+  if (mode === "yz" && target === "length") { $("starget").value = "displacement"; return scalePreview(); }
+  $("svaluelabel").firstChild.textContent = $("starget").value === "length" ? "Waterline length [m]" : "Displacement at the waterline [kg]";
+  const h0 = hull.summary.hulls[0];
+  $("svalue").placeholder = $("starget").value === "length" ? fmt(h0.length, 3) : fmt(1025.9 * h0.displaced_volume, 1);
+  const my = ++scaleSeq;
+  $("scalego").disabled = true;
+  if (!($("svalue").value.trim() && Number($("svalue").value) > 0)) { $("scaleprev").innerHTML = ""; return; }
+  try {
+    const d = await api(`/api/hulls/${id}/scale`, { json: { ...scaleBody(), dry_run: true } });
+    if (my !== scaleSeq) return;
+    const f = d.from, row = (k, label, unit, dp) => `<dt>${label}</dt><dd>${fmt(f[k], dp)} → <b>${fmt(d[k], dp)}</b> ${unit}</dd>`;
+    $("scaleprev").innerHTML = `<dl>
+      <dt>Factor</dt><dd><b>× ${fmt(d.factor, 4)}</b> ${d.mode === "yz" ? "on beam and draft" : "on every length"}</dd>
+      ${row("length", "Waterline length", "m", 3)}${row("beam", "Beam", "m", 3)}${row("draft", "Draft", "m", 3)}${row("displacement", "Displacement", "kg", 1)}
+    </dl>`;
+    $("sname").placeholder = `${hull.name} scaled to ${$("svalue").value.trim()} ${$("starget").value === "length" ? "m" : "kg"}`;
+    $("scalego").disabled = false;
+  } catch (e) {
+    if (my !== scaleSeq) return;
+    $("scaleprev").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+  }
+}
+for (const k of ["smode", "starget", "svalue"]) { $(k).addEventListener("input", scalePreview); $(k).addEventListener("change", scalePreview); }
+$("scalego").onclick = async () => {
+  $("scalego").disabled = true;
+  status("Cutting the scaled hull…");
+  try {
+    const name = $("sname").value.trim();
+    const r = await api(`/api/hulls/${id}/scale`, { json: { ...scaleBody(), ...(name ? { name } : {}), by: whoami() } });
+    location.href = `/hulls/${r.id}`;
+  } catch (e) { status(e.message, true); $("scalego").disabled = false; }
+};
+
+// Name and notes save when they change.
+async function saveText() {
+  const name = $("name").value.trim(), notes = $("notes").value.trim();
+  if (!name) { $("name").value = hull.name; return; }
+  if (name === hull.name && notes === hull.notes) return;
+  try {
+    hull = await api(`/api/hulls/${id}`, { json: { name, notes } });
+    document.title = `${hull.name} · michell`;
+    $("saved").textContent = "saved";
+    setTimeout(() => { $("saved").textContent = ""; }, 1500);
+  } catch (e) { status(e.message, true); }
+}
+$("name").addEventListener("change", saveText);
+$("name").addEventListener("keydown", (e) => { if (e.key === "Enter") e.target.blur(); });
+$("notes").addEventListener("change", saveText);
+
+try {
+  if (id == null) throw new Error("no hull id in the address");
+  hull = await api(`/api/hulls/${id}`);
+  document.title = `${hull.name} · michell`;
+  $("name").value = hull.name;
+  $("notes").value = hull.notes;
+  $("newcases").href = `/cases/new?hull=${id}`;
+  $("reimport").href = `/hulls/new?from=${id}`;
+  $("download").href = `/api/hulls/${id}/file`;
+  $("download").download = hull.file_name;
+  renderMeta();
+  if (single()) scalePreview(); else $("scaling").hidden = true;
+  // `#scale` opens the scaling section.
+  if (location.hash === "#scale") $("scaling").open = true;
+  renderCases().catch((e) => status(e.message, true));
+  const [geometry, sections] = await Promise.all([
+    api(`/api/hulls/${id}/geometry`), api(`/api/hulls/${id}/sections`),
+  ]);
+  const wl = hull.import?.waterline ?? 0;
+  viewer.geometry(geometry.meshes, wl);
+  viewer.load(sections.hulls, wl);
+  $("results").innerHTML = hullCards(sections.hulls, sections.notes || []);
+} catch (e) {
+  status(e.message, true);
+  viewer.empty(e.message);
+}
+</script>
+</body>
+</html>

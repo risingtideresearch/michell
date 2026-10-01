@@ -16,11 +16,13 @@ mod png;
 mod render;
 mod report;
 mod scene;
+mod seakeeping;
 
 use fleet::{describe, max_beam, LoadSettings};
-pub use formats::parse_units;
-use formats::{parse_pair, parse_range};
+use formats::parse_pair;
+pub use formats::{parse_range, parse_units};
 use michell::{Conditions, Fluid, Placement, WaveOptions, STANDARD_GRAVITY};
+pub use seakeeping::parse_sea;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
@@ -46,6 +48,7 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         Some("resistance") => cmd_resistance(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
         Some("squat") => cmd_squat(&args[1..]),
+        Some("seakeeping") => seakeeping::cmd_seakeeping(&args[1..]),
         Some("sweep") => {
             // A JSON manifest is the preferred sweep interface.
             if let Some(path) = args.get(1).filter(|a| a.ends_with(".json")) {
@@ -70,7 +73,9 @@ pub fn run(args: &[String], report: &mut Reporter) -> Result<(), String> {
         Some("wake") => cmd_wake(&args[1..]),
         Some("field") => cmd_field(&args[1..]),
         Some("render") => cmd_render(&args[1..]),
-        Some("view") => Err("`michell view` was removed; use the web viewer (michell-web)".into()),
+        Some("view") => {
+            Err("`michell view` was removed; use the web front end (boatmath-web)".into())
+        }
         Some("loft") => Err("`michell loft` was removed: every command cuts hulls into \
                              sections straight from the IGES or STL file"
             .into()),
@@ -90,6 +95,7 @@ michell — thin-ship wave resistance (Michell's integral) + ITTC-57 friction
 USAGE
   michell resistance <hull>... --speeds A[:B:STEP] [options]  resistance curve
   michell squat <hull>... --speeds A[:B:STEP] [options]       dynamic sinkage/trim force
+  michell seakeeping <hull>... --froude F [options]           heave/pitch RAOs, added resistance
   michell info <hull>... [options]                            geometry & diagnostics
   michell spectrum <hull>... --speed U [options]              free-wave spectrum
   michell wake <hull>... --speed U [-o wake.png] [options]    Kelvin wake heatmap
@@ -103,6 +109,27 @@ HULL INPUTS (sniffed by header / extension)
   and re-cut at every pose a sweep or equilibrium solve visits.
   *.igs, *.iges     NURBS surfaces (types 128/143/141), clustered into hulls
   *.stl             triangle mesh, binary or ASCII; requires --units
+
+SEAKEEPING
+  michell seakeeping <hull>... (--speed U | --froude F) [--heading DEG]
+      [--lambda A:B:STEP] [--kyy FRAC] [--mass KG] [--lcg X] [--panels N]
+      [--sea hs=H,tp=T[,gamma=G]] [--vcg Z] [--kxx K] [--kzz K]
+      [--roll-damping ZETA]
+  Heave, pitch, sway, roll and yaw RAOs and added resistance by strip
+  theory (Salvesen–Tuck–Faltinsen; Gerritsma–Beukelman and Maruo) over
+  wave lengths λ/L (default 0.5:3:0.125), head seas (180) by default.
+  --vcg is the centre of gravity's height above the waterline (default
+  0), --kxx/--kzz the roll/yaw radii of gyration in metres; GM_T and the
+  natural roll period are printed. Roll damping is potential flow's
+  alone unless --roll-damping adds a fraction of critical (a few percent
+  stands in for the viscous damping of a monohull). Mass defaults to the
+  displacement at the loaded waterline with the LCG over the LCB, and
+  k_yy to 0.25 L. --sea adds significant motions, bow and LCG vertical
+  accelerations and mean added resistance in a Bretschneider (or, with
+  gamma, JONSWAP) sea. Multihulls move as one rigid platform, without
+  hull-to-hull wave interaction. --dynamic first floats the platform at
+  its thin-ship dynamic sinkage and trim at that speed, and takes the
+  motions about that attitude.
 
 MULTIHULLS
   Pass several hulls; each may carry a placement suffix:
@@ -271,7 +298,7 @@ struct Parsed {
 }
 
 // `--sections` is accepted and ignored: every hull is sectional now.
-const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--sections"];
+const SWITCHES: &[&str] = &["--json", "--knots", "--csv", "--sections", "--dynamic"];
 
 fn parse_args(args: &[String]) -> Result<Parsed, String> {
     let mut p = Parsed {
@@ -990,9 +1017,9 @@ fn cmd_report(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_sweep(args: &[String]) -> Result<(), String> {
-    use michell::float::{solve_equilibrium_sectional, LoadCase};
-    use michell::iges::{HullPose, Platform};
-    use michell::source::SourceHull;
+    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
+    use michell_geometry::iges::{HullPose, Platform};
+    use michell_geometry::source::SourceHull;
 
     let p = parse_args(args)?;
     if p.positional.is_empty() {
@@ -1295,7 +1322,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
         }
 
         // Situate (raw) or solve (float).
-        let mut members: Vec<(michell::sectional::SectionalHull, Placement)> = Vec::new();
+        let mut members: Vec<(michell_geometry::SectionalHull, Placement)> = Vec::new();
         let (sinkage, trim_deg, volume, lcb, dry) = if let Some(mass) = weight {
             let f = &files[0];
             let hulls: Vec<SourceHull> = poses[0]
@@ -1344,7 +1371,7 @@ fn cmd_sweep(args: &[String]) -> Result<(), String> {
             let lcb = if volume > 0.0 { moment / volume } else { 0.0 };
             (0.0, 0.0, volume, lcb, dry)
         };
-        let members: Vec<(&michell::sectional::SectionalHull, Placement)> =
+        let members: Vec<(&michell_geometry::SectionalHull, Placement)> =
             members.iter().map(|(h, p)| (h, *p)).collect();
 
         let mut rows = Vec::with_capacity(speeds.len());
@@ -1984,8 +2011,8 @@ fn cmd_render(args: &[String]) -> Result<(), String> {
             .posed_tessellation(
                 m.index,
                 file.waterline_z,
-                &michell::iges::HullPose::default(),
-                &michell::iges::Platform::default(),
+                &michell_geometry::iges::HullPose::default(),
+                &michell_geometry::iges::Platform::default(),
             )
             .map_err(|e| format!("{}: {e}", m.path))?;
         render::add_mesh(&mut scene, &verts, &tris, m.shift.x, m.shift.y);
@@ -2071,7 +2098,7 @@ struct PlaceSpec {
     path: String,
     /// Absolute centerplane (`y=`): rejected, IGES carries none.
     y_abs: Option<f64>,
-    pose: michell::iges::HullPose,
+    pose: michell_geometry::iges::HullPose,
 }
 
 /// Parse `path` or `path@key=V,...` (keys: dx/x, dy, y, dz, trim [deg],
@@ -2084,7 +2111,7 @@ fn parse_place_spec(spec: &str) -> Result<PlaceSpec, String> {
     let mut out = PlaceSpec {
         path: path.to_string(),
         y_abs: None,
-        pose: michell::iges::HullPose::default(),
+        pose: michell_geometry::iges::HullPose::default(),
     };
     for part in rest.split(',').filter(|s| !s.trim().is_empty()) {
         let (k, v) = part
@@ -2117,7 +2144,7 @@ fn parse_place_spec(spec: &str) -> Result<PlaceSpec, String> {
 }
 
 fn cmd_place(args: &[String]) -> Result<(), String> {
-    use michell::iges::{self, Platform};
+    use michell_geometry::iges::{self, Platform};
     let p = parse_args(args)?;
     if p.positional.is_empty() {
         return Err(
@@ -2139,7 +2166,7 @@ fn cmd_place(args: &[String]) -> Result<(), String> {
     // Each input file is parsed once; a spec's pose applies rigidly to every
     // hull the file contains.
     let mut cache: HashMap<String, iges::SourceFleet> = HashMap::new();
-    let mut surfaces: Vec<michell::iges::NurbsSurface3> = Vec::new();
+    let mut surfaces: Vec<michell_geometry::iges::NurbsSurface3> = Vec::new();
     for raw in &p.positional {
         let spec = parse_place_spec(raw)?;
         if spec.y_abs.is_some() {
@@ -2198,8 +2225,8 @@ fn cmd_wigley(args: &[String]) -> Result<(), String> {
     let l = p.f64_flag("length")?.unwrap_or(10.0);
     let b = p.f64_flag("beam")?.unwrap_or(l / 10.0);
     let t = p.f64_flag("draft")?.unwrap_or(b * 0.625);
-    let surfaces = michell::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
-    let text = michell::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
+    let surfaces = michell_geometry::iges::wigley_surfaces(l, b, t).map_err(|e| format!("{e}"))?;
+    let text = michell_geometry::iges::write(&surfaces, "wigley").map_err(|e| format!("{e}"))?;
     match p.flag("output") {
         Some(path) => {
             std::fs::write(path, text).map_err(|e| format!("cannot write {path}: {e}"))?;

@@ -1,0 +1,24 @@
+# boatmath-web as a service: bound to loopback, reached through
+# `tailscale serve` (see deploy/README.md), its store in /var/lib/boatmath.
+[Unit]
+Description=boatmath: hulls, cases and a queue of studies
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=boatmath
+Group=boatmath
+ExecStart=/usr/local/bin/boatmath-web --host 127.0.0.1 --port 8080 --data /var/lib/boatmath
+Restart=on-failure
+RestartSec=5
+# The solver fans out across every core; leave the machine responsive.
+Nice=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/boatmath
+StateDirectory=boatmath
+
+[Install]
+WantedBy=multi-user.target

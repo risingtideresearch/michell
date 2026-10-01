@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New studies · boatmath</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/common.css">
+<style>
+  .split > main.list { background: var(--bg); overflow-y: auto; padding: 16px 20px 40px; }
+  #preview td.what { white-space: normal; }
+  .tag { font-size: 11px; padding: 1px 6px; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.new { color: var(--accent); border-color: var(--accent); }
+  .tag.again { color: var(--warn); border-color: var(--warn); }
+  #submit { width: 100%; margin-top: 10px; }
+  .cfg { margin-bottom: 18px; }
+  .cfg h3 { font-size: 13px; margin: 0 0 6px; }
+  label.check { flex-direction: row; align-items: flex-start; gap: 6px; color: var(--ink); font-size: 13px; }
+  label.check input { margin-top: 3px; }
+  label.check .sub { display: block; color: var(--muted); font-size: 12px; }
+  #cases { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px 10px; margin: 8px 0 0; }
+  fieldset[disabled] { opacity: .5; }
+  legend { font-size: 12px; color: var(--muted); padding: 0 4px; }
+</style>
+</head>
+<body>
+<div class="split">
+<aside>
+  <h1>New studies</h1>
+
+  <section>
+    <label>Hull
+      <select id="hull"><option value="">Loading…</option></select>
+    </label>
+    <h2 style="margin-top:12px">On cases</h2>
+    <div id="cases" class="hint">Choose a hull.</div>
+    <p class="hint"><a id="newcase" href="/cases/new">New case</a></p>
+  </section>
+
+  <section>
+    <h2>Speed</h2>
+    <div class="fields">
+      <label>Speed(s)
+        <input id="speeds" type="text" placeholder="e.g. 6, or 4:8:0.5">
+      </label>
+      <label>Unit
+        <select id="unit">
+          <option value="kn">knots</option>
+          <option value="fn">Froude number</option>
+          <option value="ms">m/s</option>
+        </select>
+      </label>
+      <label class="wide">Attitude
+        <select id="attitude">
+          <option value="dynamic">floated at speed (sinkage and trim solved)</option>
+          <option value="design">held at rest's attitude</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Water</h2>
+    <label class="check"><input type="checkbox" id="calm" checked> Calm water: resistance, pressure and wave pattern</label>
+    <label class="check" style="margin-top:6px"><input type="checkbox" id="waves"> Waves: motions and added resistance</label>
+    <fieldset id="wavefields" disabled>
+      <legend>Waves</legend>
+      <div class="fields">
+        <label>Heading(s) [°]
+          <input id="headings" type="text" value="180" placeholder="180 head, 90 beam">
+        </label>
+        <label>Wavelengths λ/L
+          <input id="lambdas" type="text" placeholder="0.5:3:0.125">
+        </label>
+        <label>Irregular sea
+          <select id="sea">
+            <option value="">none</option>
+            <option value="bretschneider">Bretschneider</option>
+            <option value="jonswap">JONSWAP</option>
+          </select>
+        </label>
+        <label><span>H<sub>s</sub> [m]</span>
+          <input id="hs" type="number" step="any" min="0" placeholder="1">
+        </label>
+        <label><span>T<sub>p</sub> [s]</span>
+          <input id="tp" type="number" step="any" min="0" placeholder="5">
+        </label>
+        <label>γ (JONSWAP)
+          <input id="gamma" type="number" step="any" min="1" max="10" placeholder="3.3">
+        </label>
+      </div>
+      <p class="hint">Each heading is a study, taken about the attitude of the calm-water study at its speed (queued too, if it is not already). 180° is head seas, 90° beam, 0° following.</p>
+    </fieldset>
+  </section>
+
+  <details>
+    <summary>Transom closure and resolution</summary>
+    <div class="fields" style="margin-top:8px">
+      <label>Transom closure
+        <select id="closure">
+          <option value="ballistic">ballistic hollow</option>
+          <option value="fixed">fixed hollow length</option>
+          <option value="off">none</option>
+        </select>
+      </label>
+      <label id="paramlabel">Coefficient
+        <input id="param" type="number" step="any" placeholder="√2">
+      </label>
+      <label class="wide">Free-surface grid columns
+        <input id="grid" type="number" min="40" max="1200" placeholder="640">
+      </label>
+    </div>
+    <p class="hint">The ballistic hollow is L<sub>v</sub> = c·U·√(d<sub>T</sub>/g), c = √2 by default. The grid sets the calm-water wave pattern's resolution only; resistance and attitude do not depend on it.</p>
+  </details>
+
+  <section>
+    <div class="fields">
+      <label class="wide">Priority
+        <select id="priority">
+          <option value="0">normal</option>
+          <option value="10">high — ahead of normal studies</option>
+          <option value="-10">low — after everything else</option>
+        </select>
+      </label>
+    </div>
+    <p class="hint">Speeds and headings take a value, a list (<code>6, 8</code>) or a range (<code>4:8:0.5</code>); every study goes on every case ticked. Studies already asked for are not asked for again.</p>
+    <button class="primary" id="submit" disabled>Queue studies</button>
+  </section>
+  <div id="status"></div>
+</aside>
+<main class="list">
+  <div class="head"><h1>Studies to queue</h1><span class="grow"></span><span class="counts" id="prevcounts"></span></div>
+  <div id="preview"><div class="tablewrap"><div class="empty-state">Choose a hull and a case, and give a speed.</div></div></div>
+</main>
+</div>
+
+<script type="module">
+import { $, G, KN, api, caseLabel, caseName, esc, fmt, lRef, nav, studyLabel, status, values, whoami } from "/static/common.js";
+nav("studies");
+
+let hulls = [], cases = [], hull = null, plan = null, checked = null, seq = 0;
+const INPUTS = ["speeds", "unit", "attitude", "calm", "waves", "headings", "lambdas", "sea", "hs", "tp", "gamma", "closure", "param", "grid"];
+const num = (id) => { const t = $(id).value.trim(); return t ? Number(t) : null; };
+const qs = new URLSearchParams(location.search);
+const ticked = () => [...document.querySelectorAll("#cases input:checked")].map((i) => Number(i.value));
+const byId = (id) => cases.find((c) => c.id === id);
+
+// A speed in the chosen unit as a Froude number on the longest hull.
+function toFroude(v, unit, l) {
+  const u = unit === "kn" ? v * KN : unit === "ms" ? v : null;
+  return u == null ? v : u / Math.sqrt(G * l);
+}
+
+// The studies the form asks for, as the server's params.
+function planned() {
+  if (!hull || !ticked().length) return null;
+  const l = lRef(hull.summary);
+  const speeds = values($("speeds"), null);
+  if (speeds.includes(null)) return null;
+  if (speeds.some((v) => !(v > 0))) throw new Error("Speeds must be positive");
+  const base = { dynamic: $("attitude").value === "dynamic" };
+  const cl = $("closure").value, param = $("param").value.trim();
+  if (cl === "fixed") base.closure = { type: "fixed", length: param ? Number(param) : 0.3 };
+  else if (cl === "off") base.closure = { type: "off" };
+  else if (param) base.closure = { type: "ballistic", coeff: Number(param) };
+  const grid = $("grid").value.trim();
+  if (grid) base.grid = Number(grid);
+  let waves = [];
+  if ($("waves").checked) {
+    const heads = values($("headings"), 180);
+    const lam = $("lambdas").value.trim() ? values($("lambdas"), null) : null;
+    let sea = null;
+    if ($("sea").value) {
+      const hs = num("hs"), tp = num("tp");
+      if (!(hs > 0) || !(tp > 0)) throw new Error("An irregular sea needs Hs and Tp");
+      sea = { type: $("sea").value, hs, tp };
+      if (sea.type === "jonswap" && num("gamma") != null) sea.gamma = num("gamma");
+    }
+    waves = heads.map((heading) => ({ heading, ...(lam ? { lambdas: lam } : {}), ...(sea ? { sea } : {}) }));
+  }
+  if (!$("calm").checked && !waves.length) throw new Error("Ask for calm water, waves, or both");
+  const studies = [];
+  for (const v of speeds) {
+    const p = { ...base, froude: +toFroude(v, $("unit").value, l).toPrecision(12) };
+    if ($("calm").checked) studies.push(p);
+    for (const w of waves) studies.push({ ...p, waves: w });
+  }
+  return { case_ids: ticked(), studies };
+}
+
+// Plan, then ask the server (a dry run) which it already has.
+async function refresh() {
+  const my = ++seq;
+  $("wavefields").disabled = !$("waves").checked;
+  try { plan = planned(); } catch (e) {
+    plan = checked = null;
+    $("preview").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $("prevcounts").innerHTML = "";
+    $("submit").disabled = true;
+    return;
+  }
+  if (!plan) {
+    checked = null;
+    $("preview").innerHTML = `<div class="tablewrap"><div class="empty-state">${!hull ? "Choose a hull." : !ticked().length ? "Tick a case to run on." : "Give a speed, a list of speeds or a range."}</div></div>`;
+    $("prevcounts").innerHTML = "";
+    $("submit").disabled = true;
+    $("submit").textContent = "Queue studies";
+    return;
+  }
+  try {
+    const r = await api("/api/studies", { json: { ...plan, dry_run: true } });
+    if (my !== seq) return;
+    checked = r;
+    render();
+  } catch (e) {
+    if (my !== seq) return;
+    checked = null;
+    $("preview").innerHTML = `<div class="error">${esc(e.message)}</div>`;
+    $("submit").disabled = true;
+  }
+}
+
+function render() {
+  const l = lRef(hull.summary);
+  let fresh = 0, again = 0, have = 0;
+  $("preview").innerHTML = plan.case_ids.map((cid) => {
+    const rows = checked.studies.filter((r) => r.case_id === cid).map((r) => {
+      const e = r.existing;
+      let tag;
+      if (!e) { fresh++; tag = `<span class="tag new">new${r.implied ? " · for the waves" : ""}</span>`; }
+      else if (e.status === "failed" || e.status === "cancelled") { again++; tag = `<span class="tag again">${e.status} before · runs again</span>`; }
+      else { have++; tag = `<a class="tag" href="/studies/${e.id}">#${e.id} ${e.status}${e.stale ? ", stale" : ""}</a>`; }
+      return `<tr><td class="what">${esc(studyLabel(r.params, l))}</td><td>${tag}</td></tr>`;
+    }).join("");
+    const c = byId(cid);
+    return `<div class="cfg"><h3><a href="/cases/${cid}">${esc(caseName(c))}</a></h3>
+      <div class="tablewrap"><table><thead><tr><th>Study</th><th>On this case</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  }).join("");
+  const n = fresh + again;
+  $("prevcounts").innerHTML = [fresh && `<span class="pill queued">${fresh} new</span>`,
+    again && `<span class="pill failed">${again} to run again</span>`,
+    have && `<span class="pill done">${have} already asked for</span>`].filter(Boolean).join("");
+  $("submit").disabled = !n;
+  $("submit").textContent = n ? `Queue ${n} ${n === 1 ? "study" : "studies"}` : "Nothing new to queue";
+}
+
+let timer = null;
+const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+for (const id of INPUTS) { $(id).addEventListener("input", later); $(id).addEventListener("change", later); }
+$("cases").addEventListener("change", () => { keepAddress(); refresh(); });
+
+function updateParam() {
+  const cl = $("closure").value;
+  $("paramlabel").hidden = cl === "off";
+  $("paramlabel").firstChild.textContent = cl === "fixed" ? "Hollow length [m]" : "Coefficient";
+  $("param").placeholder = cl === "fixed" ? "0.3" : "√2";
+}
+$("closure").addEventListener("change", updateParam);
+
+// The hull's cases to tick, with what each is.
+function listCases(want) {
+  const cs = cases.filter((c) => hull && c.hull_id === hull.id);
+  $("newcase").href = hull ? `/cases/new?hull=${hull.id}` : "/cases/new";
+  if (!hull) { $("cases").innerHTML = "Choose a hull."; return; }
+  if (!cs.length) { $("cases").innerHTML = `<span>No cases on ${esc(hull.name)} yet: <a href="/cases/new?hull=${hull.id}">make one</a>.</span>`; return; }
+  const one = cs.length === 1;
+  $("cases").innerHTML = cs.map((c) => {
+    const s = c.statics || {};
+    const on = one || want.has(c.id);
+    return `<label class="check"><input type="checkbox" value="${c.id}"${on ? " checked" : ""}${c.error ? " disabled" : ""}>
+      <span>${esc(caseName(c))}<span class="sub">${c.name ? esc(caseLabel(c.params)) + " · " : ""}${c.error ? `<span style="color:var(--err)">no statics: ${esc(c.error)}</span>` : `${fmt(s.mass, 0)} kg · GM<sub>T</sub> ${fmt(s.roll?.gm_t, 2)} m`}</span></span></label>`;
+  }).join("");
+}
+
+function keepAddress() {
+  const q = new URLSearchParams();
+  if (hull) q.set("hull", hull.id);
+  if (ticked().length) q.set("cases", ticked().join(","));
+  history.replaceState(null, "", `/studies/new${q.size ? `?${q}` : ""}`);
+}
+
+function chooseHull(id, want = new Set()) {
+  hull = hulls.find((h) => h.id === id) || null;
+  listCases(want);
+  keepAddress();
+  refresh();
+}
+$("hull").addEventListener("change", () => chooseHull(Number($("hull").value)));
+
+$("submit").onclick = async () => {
+  if (!plan) return;
+  $("submit").disabled = true;
+  status("Queueing…");
+  try {
+    const r = await api("/api/studies", { json: {
+      ...plan, by: whoami(), priority: Number($("priority").value),
+    } });
+    const asked = r.studies.filter((x) => !x.implied).map((x) => x.id);
+    location.href = `/queue?highlight=${asked.join(",")}`;
+  } catch (e) {
+    status(e.message, true);
+    $("submit").disabled = false;
+  }
+};
+
+// The form's fields can come in the address, to share or repeat a set of
+// studies: `?cases=4,5&speeds=4:8:1&unit=kn` (or `?hull=3`).
+for (const id of [...INPUTS, "priority"]) {
+  if (!qs.has(id)) continue;
+  if ($(id).type === "checkbox") $(id).checked = qs.get(id) !== "0";
+  else $(id).value = qs.get(id);
+}
+
+try {
+  [hulls, cases] = await Promise.all([api("/api/hulls"), api("/api/cases")]);
+  $("hull").innerHTML = `<option value="">Choose a hull…</option>` + hulls.map((h) => `<option value="${h.id}">${esc(h.name)} (#${h.id})</option>`).join("");
+  const want = new Set((qs.get("cases") || qs.get("case") || "").split(",").filter(Boolean).map(Number));
+  let h = Number(qs.get("hull"));
+  const first = cases.find((c) => want.has(c.id));
+  if (first) h = first.hull_id;
+  if (h && hulls.some((x) => x.id === h)) { $("hull").value = String(h); chooseHull(h, want); }
+  else if (!hulls.length) $("cases").innerHTML = `No hulls yet: <a href="/hulls/new">upload one</a> first.`;
+} catch (e) { status(e.message, true); }
+updateParam();
+</script>
+</body>
+</html>
