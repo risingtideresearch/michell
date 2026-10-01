@@ -580,7 +580,8 @@ fn summarise(
     }
     let mut vanishing = None;
     // Unstable upright: no range of positive stability to vanish at.
-    let upright_unstable = gm.is_nan() || gm <= 0.0
+    let upright_unstable = gm.is_nan()
+        || gm <= 0.0
         || points
             .iter()
             .find(|q| q.heel > 0.0)
