@@ -10,7 +10,7 @@ const SOLVER: &[&str] = &[
     "../michell/src",
     "../michell-seakeeping/src",
     "../michell-cli/src",
-    "src/lib.rs",
+    "src",
 ];
 
 fn git(args: &[&str]) -> Option<(bool, String)> {

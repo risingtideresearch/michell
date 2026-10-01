@@ -30,9 +30,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "boatmath"
+version = "0.1.0"
+dependencies = [
+ "michell",
+ "michell-cli",
+ "michell-geometry",
+ "michell-seakeeping",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "boatmath-web"
 version = "0.1.0"
 dependencies = [
+ "boatmath",
  "flate2",
  "michell",
  "michell-cli",

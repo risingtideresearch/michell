@@ -31,12 +31,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The solver version results are stamped with: the last commit to touch
-/// the solver's code (the geometry, thin-ship, seakeeping and CLI crates,
-/// and the web crate's computations), `-dirty` if they have uncommitted
-/// changes. Set by `build.rs`; `BOATMATH_SOLVER_VERSION` at build time
-/// overrides it.
-pub const SOLVER_VERSION: &str = env!("BOATMATH_SOLVER_VERSION");
+pub use boatmath::SOLVER_VERSION;
 
 /// The layout below; bump it when the layout changes.
 const SCHEMA_VERSION: i64 = 3;
