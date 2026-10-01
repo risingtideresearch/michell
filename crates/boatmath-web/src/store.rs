@@ -22,6 +22,7 @@
 //! results record the solver version they were computed with; one from
 //! another version is stale, kept until it is computed again.
 
+use crate::hull_summary;
 use crate::params::{hex, CaseParams, StudyParams};
 use crate::LoftRequest;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -1063,35 +1064,6 @@ pub struct StudyFilter {
     pub limit: Option<i64>,
     /// Most recently finished first, rather than newest.
     pub by_finish: bool,
-}
-
-/// What the hull list shows of a cut: per hull, the principal dimensions and
-/// hydrostatics.
-fn hull_summary(sections: &Value) -> Value {
-    let hulls: Vec<Value> = sections["hulls"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|h| {
-                    let mut s = json!({});
-                    for k in [
-                        "length",
-                        "beam",
-                        "draft",
-                        "displaced_volume",
-                        "wetted_surface",
-                        "lcb_x",
-                        "waterplane_area",
-                    ] {
-                        s[k] = h[k].clone();
-                    }
-                    s["transom"] = json!(!h["transom"].is_null());
-                    s
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    json!({ "hulls": hulls, "notes": sections["notes"] })
 }
 
 /// What lists show of a case's statics: everything but the meshes

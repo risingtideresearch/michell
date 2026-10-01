@@ -270,7 +270,7 @@ pub struct StudyParams {
     pub waves: Option<Waves>,
 }
 
-fn default_grid() -> usize {
+pub fn default_grid() -> usize {
     640
 }
 
