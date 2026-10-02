@@ -209,12 +209,49 @@ pub fn case(
             o.remove("meshes");
             o.remove("body_meshes");
             r["seconds"] = o.remove("seconds").unwrap_or(Value::Null);
+            let rest = (
+                s["at_rest"]["sinkage"].as_f64(),
+                s["at_rest"]["trim_rad"].as_f64(),
+            );
             r["statics"] = s;
+            if let (Some(z), Some(t)) = rest {
+                match sections(store, &r, (z, t)) {
+                    Ok(id) => r["sections"] = json!(id),
+                    Err(e) => eprintln!("boatmath: case {}: sections: {e}", short(&id)),
+                }
+            }
         }
         Err(e) => r["error"] = json!(e),
     }
     store.put(&r)?;
     Ok(r)
+}
+
+/// The sections record of a case cut at `(sinkage [m], trim [rad])`,
+/// made if the store hasn't it; returns its id. The id is that of the case
+/// and the attitude, so a case at rest and the studies held there share one.
+pub fn sections(store: &Store, case: &Value, attitude: (f64, f64)) -> Result<String, String> {
+    let case_id = expect(case, "case")?;
+    let id = id_of(&json!({ "case": case_id, "attitude": [attitude.0, attitude.1] }));
+    if store
+        .get("sections", &id)?
+        .is_some_and(|s| s["solver_version"] == SOLVER_VERSION)
+    {
+        return Ok(id);
+    }
+    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
+    let src = hull_source(&hull)?;
+    let params: CaseParams =
+        serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
+    let mut r =
+        boatmath::sections::sections(&src.file_name, src.bytes, &src.import, &params, attitude)?;
+    let o = r.as_object_mut().expect("an object");
+    o.insert("type".into(), json!("sections"));
+    o.insert("id".into(), json!(id));
+    o.insert("case".into(), json!(case_id));
+    o.insert("solver_version".into(), json!(SOLVER_VERSION));
+    store.put(&r)?;
+    Ok(id)
 }
 
 /// A study on a case: only the request, saved; `run` computes it.

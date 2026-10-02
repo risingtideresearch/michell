@@ -103,7 +103,8 @@ geometry with its control points scaled about the design waterline, and
 
 `params` is `CaseParams`, and `span` makes a catamaran. `statics` is what
 `platform::statics` returns, minus the display meshes. A case whose statics
-fail is still saved, with `error` instead of `statics`.
+fail is still saved, with `error` instead of `statics`. `sections` is the id
+of its hulls cut at rest (see below).
 
 ### study
 
@@ -138,9 +139,52 @@ In waves:
   "field": { "blob": "…" }, "solver_version": "…" }
 ```
 
+A calm-water result's `sections` is the id of its hulls cut at the attitude
+it solved (or held). A result in waves has its calm-water study's.
+
 Each of the `seakeeping.headings.0.points` holds `lambda`, `omega`,
 `omega_e`, the complex RAOs `heave`, `pitch`, `sway`, `roll` and `yaw` as
 `[re, im]`, and the added resistance `raw_gb`.
+
+### sections
+
+A case's hulls as the solver cut them at one attitude: written for every
+equilibrium, by `case` (at rest) and by `run` (each calm-water study at its
+solved or held attitude).
+
+```json
+{ "type": "sections", "id": "…", "case": "<case id>",
+  "attitude": { "sinkage": 0.0085, "trim_rad": 0.0015, "trim_deg": 0.087 },
+  "hulls": [ { "placement": { "x": 0.0, "y": 0.0 }, "transom": true,
+               "stations": [ { "x": 0.18, "z0": 0.0, "beam": 0.186, "depth": 0.0087,
+                               "radii": [1.0, 0.9998, …] }, … ] } ] }
+```
+
+Each station holds its section exactly as the solver integrates it: rays from
+the section's top on the centreplane, at the `n = radii.len()`
+Chebyshev–Lobatto angles below the horizontal
+
+```text
+θ_k = ¼π (1 − cos(πk / (n − 1))),    k = 0 … n−1,
+```
+
+reaching the shell at the scaled distances `radii[k]`. The section is the curve
+
+```text
+y(θ) = beam · R(θ) · cos θ,    z(θ) = z0 + depth · R(θ) · sin θ,
+```
+
+where `y` is the half-breadth from the hull's centreplane, `z` the depth below
+the water, and `R` the polynomial of degree `n − 1` through the radii. It's
+best evaluated by barycentric interpolation, as
+`michell_geometry::iges::PolarSection::point` does. A station with no radii
+lies past the hull's tip. With `transom`, the aft station is a transom. A
+catamaran has both demihulls, each with its own placement.
+
+The id is that of the case and the attitude, so a case at rest and every study
+held there share one record. Sections only go one way: they can't be re-posed
+(that needs the surface above the water), so the hull's `geometry` stays the
+source. For e12 at 121 stations of 33 rays, a record is 83 KB.
 
 ## Commands
 
@@ -182,7 +226,8 @@ saved but not printed.
 - `forces.rt`, `seakeeping.headings.0.points`: keys and array indices.
 - A parent's id is followed into its record, so on a result
   `study.case.params.span` reads the span of the result's case. The keys
-  followed are `hull`, `case`, `study`, `parent` and `calm`.
+  followed are `hull`, `case`, `study`, `parent`, `calm` and `sections`, so
+  `--explode sections.hulls.0.stations` on a result gives a row per station.
 - `|heave|`: the modulus of a complex `[re, im]` pair.
 - `id8`: the record's id, shortened to eight characters.
 
@@ -209,8 +254,9 @@ every point. It takes at most eight series; narrow `--by` beyond that.
   GZ, waves), the calm-water flow and `SOLVER_VERSION`. `boatmath-web`
   re-exports it and keeps the SQLite store, the worker and the pages, so both
   front ends compute the same way.
+- `crates/boatmath/src/sections.rs`: a case cut at an attitude, as JSON.
 - **`crates/boatmath-cli`** (binary `boatmath`): `store.rs`, `records.rs`
-  (hull, case, study), `run.rs`, `path.rs`, `plot.rs`, `list.rs`.
+  (hull, case, study, sections), `run.rs`, `path.rs`, `plot.rs`, `list.rs`.
 - `crates/boatmath/src/native.rs`: geometry as JSON, read from a file or
   re-posed. `boatmath`'s computations take its bytes wherever they take a
   hull file's, so the web app could store it too.

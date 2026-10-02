@@ -1688,6 +1688,58 @@ pub struct SectionalImport {
     /// Each station's x and its sampled outline, `(half-beam, depth)` from
     /// the waterline (or the section's top) round to the keel — for display.
     pub sections: Vec<(f64, Vec<(f64, f64)>)>,
+    /// Each station's section exactly as the quadrature integrates it.
+    pub polar: Vec<PolarSection>,
+}
+
+/// One station's section as the cut takes it: rays from the section's top on
+/// the centreplane, at `n = radii.len()` angles below the horizontal
+/// `θ_k = ¼π (1 − cos(πk/(n−1)))` (Chebyshev–Lobatto points on `[0, ½π]`),
+/// each reaching the shell at scaled distance `radii[k]`. The section is
+/// the curve
+///
+/// ```text
+/// y(θ) = beam · R(θ) · cos θ,     z(θ) = z0 + depth · R(θ) · sin θ,
+/// ```
+///
+/// `y` the half-breadth from the centreplane, `z` the depth below the
+/// water, `R` the polynomial (degree `n − 1`) through the radii — evaluated
+/// by barycentric interpolation. No radii: a station past the hull's tip.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolarSection {
+    pub x: f64,
+    pub z0: f64,
+    pub beam: f64,
+    pub depth: f64,
+    pub radii: Vec<f64>,
+}
+
+impl PolarSection {
+    /// The ray angles `θ_k` the radii are taken at.
+    pub fn angles(&self) -> Vec<f64> {
+        ray_angles(self.radii.len())
+    }
+
+    /// The section point `(y, z)` on the ray at angle `theta`.
+    pub fn point(&self, theta: f64) -> (f64, f64) {
+        let t = self.angles();
+        let r = Lobatto::new(&t, &self.radii).eval(theta);
+        (
+            self.beam * r * theta.cos(),
+            self.z0 + self.depth * r * theta.sin(),
+        )
+    }
+}
+
+/// `n` Chebyshev–Lobatto ray angles on `[0, ½π]`, from the horizontal down.
+fn ray_angles(n: usize) -> Vec<f64> {
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    if n < 2 {
+        return vec![0.0; n];
+    }
+    (0..n)
+        .map(|k| 0.5 * half_pi * (1.0 - (std::f64::consts::PI * k as f64 / (n - 1) as f64).cos()))
+        .collect()
 }
 
 /// Every hull of an IGES file imported by sections: those that could be, and
@@ -1878,11 +1930,8 @@ fn sectional_cluster(
     let (scale, y_c) = (frame.scale, frame.y_c);
     // Which side(s) of the centreplane carry shell.
     let sides = frame_sides(frame.two_sided, frame.mirrored);
-    let half_pi = std::f64::consts::FRAC_PI_2;
     let nr = opts.rays;
-    let thetas: Vec<f64> = (0..nr)
-        .map(|k| 0.5 * half_pi * (1.0 - (std::f64::consts::PI * k as f64 / (nr - 1) as f64).cos()))
-        .collect();
+    let thetas = ray_angles(nr);
 
     let ns = opts.stations;
     // End stations exactly where closed sections stop (see
@@ -1902,6 +1951,7 @@ fn sectional_cluster(
     let mut kept_x = Vec::with_capacity(ns);
     let mut sections = Vec::with_capacity(ns);
     let mut outlines = Vec::with_capacity(ns);
+    let mut polar = Vec::with_capacity(ns);
     // Stations are independent: sample them across cores, then assemble in
     // order (the result does not depend on the thread count).
     let mut sampled_all = crate::parallel::map_indexed(
@@ -1974,6 +2024,13 @@ fn sectional_cluster(
                     |t| interp.eval(t),
                     &opts.quadrature,
                 ));
+                polar.push(PolarSection {
+                    x,
+                    z0,
+                    beam,
+                    depth,
+                    radii: radii.clone(),
+                });
                 outlines.push((
                     x,
                     thetas
@@ -1988,6 +2045,13 @@ fn sectional_cluster(
                 // Past the hull's tip: no section.
                 sections.push(SectionNodes::empty());
                 outlines.push((x, Vec::new()));
+                polar.push(PolarSection {
+                    x,
+                    z0: 0.0,
+                    beam: 0.0,
+                    depth: 0.0,
+                    radii: Vec::new(),
+                });
                 kept_x.push(x);
             }
             None => dropped += 1,
@@ -2032,6 +2096,7 @@ fn sectional_cluster(
             transom,
         },
         sections: outlines,
+        polar,
     })
 }
 

@@ -202,6 +202,15 @@ fn short_field(f: &str) -> String {
     }
 }
 
+/// A failed write to stdout. A reader that stops early (`| head`) closes
+/// the pipe; like any Unix filter, stop quietly then.
+fn stdout_err(e: std::io::Error) -> String {
+    if e.kind() == std::io::ErrorKind::BrokenPipe {
+        std::process::exit(0);
+    }
+    format!("stdout: {e}")
+}
+
 fn csv_cell(s: &str) -> String {
     if s.contains([',', '"', '\n']) {
         format!("\"{}\"", s.replace('"', "\"\""))
@@ -301,9 +310,7 @@ fn go(cli: Cli) -> Result<usize, String> {
     let store = Store::open()?;
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    let mut emit = |r: &Value| -> Result<(), String> {
-        writeln!(out, "{r}").map_err(|e| format!("stdout: {e}"))
-    };
+    let mut emit = |r: &Value| -> Result<(), String> { writeln!(out, "{r}").map_err(stdout_err) };
     let mut failed = 0;
     match cli.command {
         Command::Hull {
@@ -448,7 +455,7 @@ fn go(cli: Cli) -> Result<usize, String> {
         }
         Command::Blob { id } => {
             let bytes = store.blob(&id)?;
-            out.write_all(&bytes).map_err(|e| format!("stdout: {e}"))?;
+            out.write_all(&bytes).map_err(stdout_err)?;
         }
         Command::Get { ids } => {
             for id in &ids {
@@ -485,7 +492,7 @@ fn go(cli: Cli) -> Result<usize, String> {
                 }
             };
             if !no_header {
-                writeln!(out, "{}", line(fields.clone())).map_err(|e| e.to_string())?;
+                writeln!(out, "{}", line(fields.clone())).map_err(stdout_err)?;
             }
             for r in read_records()? {
                 for row in res.rows(&r, explode.as_deref()) {
@@ -493,7 +500,7 @@ fn go(cli: Cli) -> Result<usize, String> {
                         .iter()
                         .map(|f| path::cell(&res.get_in(&row, &r, f)))
                         .collect();
-                    writeln!(out, "{}", line(cells)).map_err(|e| e.to_string())?;
+                    writeln!(out, "{}", line(cells)).map_err(stdout_err)?;
                 }
             }
         }
@@ -551,7 +558,7 @@ fn go(cli: Cli) -> Result<usize, String> {
             })?;
             match o {
                 Some(p) => std::fs::write(&p, svg).map_err(|e| format!("{}: {e}", p.display()))?,
-                None => out.write_all(svg.as_bytes()).map_err(|e| e.to_string())?,
+                None => out.write_all(svg.as_bytes()).map_err(stdout_err)?,
             }
         }
     }

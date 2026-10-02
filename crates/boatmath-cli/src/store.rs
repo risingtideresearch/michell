@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! $BOATMATH_HOME/records/hull/ab/cdef….json
-//! $BOATMATH_HOME/records/case/…  study/…  result/…
+//! $BOATMATH_HOME/records/case/…  study/…  result/…  sections/…
 //! $BOATMATH_HOME/blobs/ab/cdef….gz        results' fields, by SHA-256 of the uncompressed bytes
 //! ```
 //!
@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The record types, in ancestry order.
-pub const TYPES: [&str; 4] = ["hull", "case", "study", "result"];
+pub const TYPES: [&str; 5] = ["hull", "case", "study", "result", "sections"];
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()

@@ -3,7 +3,8 @@
 //! - `forces.rt`, `seakeeping.headings.0.points` — keys and array indices;
 //! - a parent's id is followed into its record, so on a result
 //!   `study.case.params.span` reads the span of the result's case
-//!   (`hull`, `case`, `study`, `parent` and `calm` are followed);
+//!   (`hull`, `case`, `study`, `parent`, `calm` and `sections` are
+//!   followed);
 //! - `|heave|` — the modulus of a complex `[re, im]` pair;
 //! - `id8` — a record's id, shortened to eight characters, as a label.
 
@@ -18,6 +19,7 @@ fn parent_type(key: &str) -> Option<&'static str> {
         "hull" | "parent" => Some("hull"),
         "case" => Some("case"),
         "study" | "calm" => Some("study"),
+        "sections" => Some("sections"),
         _ => None,
     }
 }

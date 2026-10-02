@@ -3,7 +3,7 @@
 //! attitude of the calm-water study at its speed (as the web app's queue
 //! does), so those calm-water studies run first.
 
-use crate::records::{expect, hull_source, study_record};
+use crate::records::{expect, hull_source, sections, study_record};
 use crate::store::{short, Store};
 use boatmath::params::{default_grid, CaseParams, StudyParams};
 use boatmath::SOLVER_VERSION;
@@ -64,7 +64,9 @@ pub fn run(store: &Store, studies: &[Value], opts: &Options) -> Result<usize, St
     let out = Mutex::new(std::io::stdout());
     let emit = |r: &Value| {
         let mut o = out.lock().unwrap();
-        let _ = writeln!(o, "{r}");
+        if writeln!(o, "{r}").is_err_and(|e| e.kind() == std::io::ErrorKind::BrokenPipe) {
+            std::process::exit(0);
+        }
         let _ = o.flush();
     };
     let failed = Mutex::new(0usize);
@@ -185,6 +187,9 @@ fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
                 "seconds": v["seconds"],
                 "forces": v["forces"],
                 "field": store.put_json_blob(&json!({ "hulls": v["hulls"], "surface": v["surface"] }))?,
+                "sections": pair(&v["forces"], "sinkage", "trim_rad")
+                    .map(|a| sections(store, &case, a))
+                    .transpose()?,
             })
         }
         Some(_) => {
@@ -210,6 +215,7 @@ fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
                 "seconds": v["seconds"],
                 "attitude": v["attitude"],
                 "calm": calm_id,
+                "sections": cr["sections"],
                 "peaks": wave_scalars(&v),
                 "seakeeping": v["seakeeping"],
                 "field": store.put_json_blob(&json!({ "hulls": v["hulls"] }))?,
