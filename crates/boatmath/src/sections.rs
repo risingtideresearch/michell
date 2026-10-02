@@ -67,19 +67,35 @@ pub fn meshes(
     cut: &LoftRequest,
     c: &CaseParams,
     attitude: (f64, f64),
-) -> Result<Vec<Mesh>, String> {
+) -> Result<Vec<Posed>, String> {
     let s = setup(name, bytes, cut, c)?;
     let platform = s.platform(attitude.0, attitude.1);
     s.layout
         .iter()
-        .map(|(i, pose)| {
-            s.cut
+        .zip(&s.roles)
+        .map(|((i, pose), (role, _))| {
+            let mesh = s
+                .cut
                 .file
                 .source
                 .posed_tessellation(*i, s.cut.file.waterline_z, pose, &platform)
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            Ok(Posed {
+                role: role.clone(),
+                copy: pose.dy,
+                mesh,
+            })
         })
         .collect()
+}
+
+/// A member's mesh at an attitude, with what it is: a hull, or a drive's
+/// part (`leg`, `pod`), and which copy of the platform it's on (a
+/// catamaran's demihull and its drive share one, their offset across).
+pub struct Posed {
+    pub role: String,
+    pub copy: f64,
+    pub mesh: Mesh,
 }
 
 #[cfg(test)]

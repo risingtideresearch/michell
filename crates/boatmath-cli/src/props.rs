@@ -4,7 +4,7 @@
 //! `motor` is a database entry. See the `propeller` crate for the models.
 
 use crate::cache::Cache;
-use crate::records::{case_params, expect, study_record};
+use crate::records::{expect, study_record};
 use crate::stream::{id_of, short, Stream};
 use boatmath::params::StudyParams;
 use boatmath::SOLVER_VERSION;
@@ -41,6 +41,60 @@ pub fn hull_count(s: &Stream, r: &Value) -> usize {
     }
 }
 
+/// A result's drives, from its case's mount: where each propeller sits at
+/// the result's attitude, the shafts' angle to the flow (their own plus the
+/// running trim), and the drive's own propeller, if it comes with one.
+pub struct Drives {
+    /// Each propeller's centre `(x, y, depth)` at the attitude [m].
+    pub at: Vec<(f64, f64, f64)>,
+    /// The thrust line's angle to the flow [rad].
+    pub angle: f64,
+    pub prop_diameter: Option<f64>,
+    /// The thrust line, as the prop record keeps it.
+    pub record: Value,
+}
+
+pub fn drives_of(s: &Stream, r: &Value) -> Result<Option<Drives>, String> {
+    let case = s.follow(s.follow(r, "study")?, "case")?;
+    let cs = crate::records::case_source(s, case)?;
+    let Some(m) = &cs.mount else { return Ok(None) };
+    let f = &r["forces"];
+    let attitude = (
+        f["sinkage"].as_f64().unwrap_or(0.0),
+        f["trim_rad"].as_f64().unwrap_or(0.0),
+    );
+    let mounts = boatmath::propulsion::mounts(
+        &cs.src.file_name,
+        cs.src.bytes.clone(),
+        &cs.src.import,
+        &cs.params,
+        attitude,
+    )?;
+    let at: Vec<(f64, f64, f64)> = cs
+        .thrusts
+        .iter()
+        .map(|t| {
+            let d = mounts.disc_at(t.x, t.y, t.z, 0.0);
+            (d.x, d.y, d.depth)
+        })
+        .collect();
+    let angle = m.shaft_angle_deg.to_radians() + attitude.1;
+    let record = json!({
+        "mount": m,
+        "drives": at.iter().map(|(x, y, d)| json!({ "x": x, "y": y, "depth": d })).collect::<Vec<_>>(),
+        "angle_deg": angle.to_degrees(),
+        // The cross flow loads the blades cyclically and brings cavitation on
+        // early; the B-series sees only the axial part.
+        "oblique": angle.to_degrees().abs() > 3.0,
+    });
+    Ok(Some(Drives {
+        at,
+        angle,
+        prop_diameter: m.prop_diameter,
+        record,
+    }))
+}
+
 /// The result of the same study at Froude number `froude`: the second
 /// operating point, which must be in the stream.
 pub fn result_at_froude(s: &Stream, r: &Value, froude: f64) -> Result<Value, String> {
@@ -70,10 +124,12 @@ pub fn prop(
     result: Option<&str>,
     power_cap: f64,
     interaction: Option<&Value>,
+    thrust_line: Option<&Value>,
 ) -> Result<Value, String> {
     let id = id_of(&json!({
         "inputs": inputs, "result": result, "power_cap": power_cap,
         "interaction": interaction.map(|i| &i["settings"]),
+        "thrust_line": thrust_line,
     }));
     if let Some(old) = cache.get("prop", &id) {
         return Ok(old);
@@ -103,6 +159,7 @@ pub fn prop(
         "feasible_rpm": { "lo": s.feasLo, "hi": s.feasHi },
         "curve": s.points,
         "interaction": interaction,
+        "thrust_line": thrust_line,
         "solver_version": SOLVER_VERSION,
     });
     cache.put(&r);
@@ -114,7 +171,6 @@ pub fn prop(
 pub struct Auto {
     pub wake: bool,
     pub deduction: bool,
-    pub at: boatmath::propulsion::Position,
 }
 
 /// A result's propeller with its wake fraction and/or thrust deduction
@@ -133,9 +189,8 @@ pub fn auto_prop(
     let result_id = expect(r, "result")?;
     let study = s.follow(r, "study")?;
     let case = s.follow(study, "case")?;
-    let hull = s.follow(case, "hull")?;
-    let src = crate::records::hull_source(hull)?;
-    let cp = case_params(case)?;
+    let cs = crate::records::case_source(s, case)?;
+    let (src, cp) = (cs.src, cs.params);
     let sp: StudyParams = serde_json::from_value(study["params"].clone())
         .map_err(|e| format!("study params: {e}"))?;
     let f = &r["forces"];
@@ -154,14 +209,10 @@ pub fn auto_prop(
         speed,
         sp.closure.transom(),
     )?;
-    let hulls = placed.mounts.hulls.len();
-    let shafts = inputs.shafts as usize;
-    if !shafts.is_multiple_of(hulls) || shafts / hulls > 2 {
-        return Err(format!(
-            "{shafts} shafts on {hulls} hulls: give one or two per hull"
-        ));
-    }
-    let per_hull = shafts / hulls;
+    let drives = drives_of(s, r)?
+        .ok_or("--wake auto and --thrust-deduction auto need a drive: give the case a mount (`boatmath mount`)")?;
+    let thrusts = crate::records::case_source(s, case)?.thrusts;
+    let cos_e = drives.angle.cos();
     let (mut w, mut t) = (
         if auto.wake { 0.0 } else { inputs.wake },
         if auto.deduction {
@@ -176,7 +227,7 @@ pub fn auto_prop(
     for _ in 0..8 {
         inputs.wake = w;
         inputs.thrust_deduction = t;
-        inputs.thrust = rt / (1.0 - t);
+        inputs.thrust = rt / ((1.0 - t) * cos_e);
         let c = Config::new(&inputs);
         let s = sweep(
             &c,
@@ -188,7 +239,7 @@ pub fn auto_prop(
         let best = s
             .best
             .ok_or("no B-series propeller can do it (try a larger --d-max, or --no-cavitation)")?;
-        let discs = placed.mounts.discs(&auto.at, per_hull, 0.5 * best.D);
+        let discs = placed.mounts.mount_discs(&thrusts, 0.5 * best.D);
         let wakes = discs
             .iter()
             .map(|d| placed.interaction.wake(d))
@@ -207,7 +258,7 @@ pub fn auto_prop(
         );
         if !(-0.5..0.9).contains(&w_next) || !(-0.5..0.9).contains(&t_next) {
             return Err(format!(
-                "the propeller's wake {w_next:.3} and thrust deduction {t_next:.3} are                  out of range: is it placed inside the hull? (--prop-x, --prop-y, --depth)"
+                "the propeller's wake {w_next:.3} and thrust deduction {t_next:.3} are out of range: is the mount's propeller inside the hull?"
             ));
         }
         let done = (w_next - w).abs() < 5e-4 && (t_next - t).abs() < 5e-4;
@@ -222,11 +273,11 @@ pub fn auto_prop(
     let (wakes, ded, discs) = last.expect("one step at least");
     inputs.wake = w;
     inputs.thrust_deduction = t;
-    inputs.thrust = rt / (1.0 - t);
+    inputs.thrust = rt / ((1.0 - t) * cos_e);
     let n = wakes.len() as f64;
     let interaction = json!({
         "model": "potential",
-        "settings": { "wake": auto.wake, "thrust_deduction": auto.deduction, "at": auto.at },
+        "settings": { "wake": auto.wake, "thrust_deduction": auto.deduction },
         "w": wakes.iter().map(|k| k.w).sum::<f64>() / n,
         "w_local": wakes.iter().map(|k| k.w_local).sum::<f64>() / n,
         "w_wave": wakes.iter().map(|k| k.w_wave).sum::<f64>() / n,
@@ -234,7 +285,7 @@ pub fn auto_prop(
         "t": ded.t,
         "delta_r": ded.delta_r,
         "u_a": ded.u_a,
-        "discs": discs.iter().map(|d| json!({ "x": d.x, "y": d.y, "depth": d.depth, "radius": d.radius })).collect::<Vec<_>>(),
+        "discs": discs.iter().map(|d| json!({ "x": d.x, "y": d.y, "depth": d.depth, "radius": d.radius, "hub": d.hub })).collect::<Vec<_>>(),
         "steps": steps,
         "converged": converged,
     });
@@ -244,6 +295,7 @@ pub fn auto_prop(
         Some(result_id),
         power_cap,
         Some(&interaction),
+        Some(&drives.record),
     )
 }
 

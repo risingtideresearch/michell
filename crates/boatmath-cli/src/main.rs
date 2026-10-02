@@ -124,6 +124,62 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
     },
+    /// The stream's cases with a drive: a leg (and pod) hung from the hull,
+    /// cut as members of their own, carrying the propeller. A stock drive
+    /// (`boatmath mounts`) gives its dimensions; the flags give or override
+    /// them. Lengths take units (m, mm, in, …).
+    Mount {
+        /// A stock drive by name.
+        #[arg(long)]
+        stock: Option<String>,
+        /// saildrive (a leg through the bottom to a pod), outboard (a leg
+        /// from the transom), or pod (a pod on a short strut).
+        #[arg(long)]
+        kind: Option<String>,
+        /// The leg's mid-chord forward of the hull's aft end; default the
+        /// stock drive's place, or the transom for an outboard.
+        #[arg(long, allow_hyphen_values = true)]
+        x: Option<String>,
+        /// Out from the hull's centreplane.
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        y: String,
+        /// The shaft below the keel (saildrive, pod) or the waterline
+        /// (outboard).
+        #[arg(long)]
+        shaft_depth: Option<String>,
+        /// The leg's chord.
+        #[arg(long)]
+        chord: Option<String>,
+        /// The leg's thickness.
+        #[arg(long)]
+        thickness: Option<String>,
+        #[arg(long)]
+        pod_length: Option<String>,
+        #[arg(long)]
+        pod_diameter: Option<String>,
+        /// The pod's nose ahead of the leg's mid-chord.
+        #[arg(long, allow_hyphen_values = true)]
+        nose_ahead: Option<String>,
+        /// The propeller aft of the pod's nose.
+        #[arg(long, allow_hyphen_values = true)]
+        prop_from_nose: Option<String>,
+        /// No pod: the leg alone.
+        #[arg(long)]
+        no_pod: bool,
+        /// The propeller ahead of the pod, pulling.
+        #[arg(long)]
+        tractor: bool,
+        /// The drive's own propeller; `prop` defaults --d-max to it.
+        #[arg(long)]
+        prop_diameter: Option<String>,
+        /// The shaft's angle, bow up of the baseline [deg].
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        shaft_angle: f64,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// The stock drives `mount --stock` takes, a record per drive.
+    Mounts,
     /// Statics of the stream's hulls (hydrostatics at the design waterline)
     /// and cases (the float at rest, roll stability, the GZ curve).
     Statics,
@@ -162,7 +218,8 @@ enum Command {
         quiet: bool,
     },
     /// The best B-series propeller for each calm-water result in the stream
-    /// (its speed, and the thrust R_t / (1 − t)), or for --speed and --thrust.
+    /// (its speed, and the thrust R_t / ((1 − t) cos ε) along its case's
+    /// drive), or for --speed and --thrust.
     Prop {
         /// Total thrust (N, kN, kgf, lbf), instead of reading results.
         #[arg(long)]
@@ -170,34 +227,30 @@ enum Command {
         /// Ship speed (m/s, kn, mph, km/h), with --thrust.
         #[arg(long)]
         speed: Option<String>,
-        /// Shafts the thrust is split across; default one per hull.
+        /// Shafts the thrust is split across; default the case's drives, or
+        /// one per hull.
         #[arg(long)]
         shafts: Option<u32>,
         /// Wake fraction w: the propeller sees V (1 − w). `auto`: from
-        /// potential flow at the result's attitude.
+        /// potential flow at the result's attitude, on its case's drive.
         #[arg(long, default_value = "0")]
         wake: String,
         /// Thrust deduction t; `auto` as for --wake.
         #[arg(long, default_value = "0")]
         thrust_deduction: String,
-        /// With `auto`: the propeller's centre forward of each hull's aft
-        /// end (negative: astern of it).
-        #[arg(long, default_value = "0", allow_hyphen_values = true)]
-        prop_x: String,
-        /// With `auto`: out from the hull's centreplane.
-        #[arg(long, default_value = "0")]
-        prop_y: String,
-        /// Largest diameter (m, mm, in, …).
+        /// Largest diameter (m, mm, in, …); default the drive's own
+        /// propeller's, if it comes with one.
         #[arg(long)]
-        d_max: String,
+        d_max: Option<String>,
         #[arg(long, default_value = "40mm")]
         d_min: String,
         /// Blade counts to consider; a LIST.
         #[arg(long, default_value = "2,3,4,5,6,7")]
         blades: String,
-        /// Shaft immersion, for cavitation.
-        #[arg(long, default_value = "0.3")]
-        depth: String,
+        /// Shaft immersion, for cavitation; default the drive's. Needed
+        /// without one.
+        #[arg(long)]
+        depth: Option<String>,
         /// Keller's margin k: 0.2 single screw, 0.1 twin, 0 fast.
         #[arg(long, default_value_t = 0.2)]
         keller_k: f64,
@@ -381,16 +434,6 @@ enum Command {
         /// Draw the waves this many times their height.
         #[arg(long, default_value_t = 1.0)]
         wave_scale: f64,
-        /// A prop's discs, when it has no placement of its own: forward of
-        /// each hull's aft end (negative: astern).
-        #[arg(long, allow_hyphen_values = true)]
-        prop_x: Option<String>,
-        /// Out from each hull's centreplane.
-        #[arg(long)]
-        prop_y: Option<String>,
-        /// Shaft depth below the design waterline (default the prop's).
-        #[arg(long)]
-        depth: Option<String>,
     },
 }
 
@@ -524,8 +567,7 @@ fn draw(
                         sec["attitude"]["trim_rad"].as_f64().unwrap_or(0.0),
                     );
                     let case = s.follow(s.follow(r, "study")?, "case")?;
-                    let (hull, params) = records::case_hull(s, case)?;
-                    let src = records::hull_source(hull)?;
+                    let records::CaseSource { params, src, .. } = records::case_source(s, case)?;
                     let meshes = boatmath::sections::meshes(
                         &src.file_name,
                         src.bytes,
@@ -533,7 +575,17 @@ fn draw(
                         &params,
                         attitude,
                     )?;
-                    views::profile(&field, &meshes[0].0, &title, &sub, attitude, scale)?
+                    // The first hull, and the drive's parts on it.
+                    let first = meshes
+                        .iter()
+                        .find(|m| m.role == "hull")
+                        .ok_or("the case has no hull")?;
+                    let parts: Vec<&[[f64; 3]]> = meshes
+                        .iter()
+                        .filter(|m| m.role != "hull" && m.copy == first.copy)
+                        .map(|m| m.mesh.0.as_slice())
+                        .collect();
+                    views::profile(&field, &first.mesh.0, &parts, &title, &sub, attitude, scale)?
                 }
             })
         })();
@@ -796,6 +848,71 @@ fn go(cli: Cli) -> Result<usize, String> {
                 }
             }
         }
+        Command::Mount {
+            stock,
+            kind,
+            x,
+            y,
+            shaft_depth,
+            chord,
+            thickness,
+            pod_length,
+            pod_diameter,
+            nose_ahead,
+            prop_from_nose,
+            no_pod,
+            tractor,
+            prop_diameter,
+            shaft_angle,
+            name,
+        } => {
+            let len = |s: &Option<String>| s.as_deref().map(units::length).transpose();
+            let kind = kind
+                .map(|k| {
+                    serde_json::from_value::<boatmath::mount::Kind>(serde_json::json!(k))
+                        .map_err(|_| format!("--kind {k}: saildrive, outboard or pod"))
+                })
+                .transpose()?;
+            let opts = boatmath::mount::Options {
+                kind,
+                x: len(&x)?,
+                y: units::length(&y)?,
+                shaft_depth: len(&shaft_depth)?,
+                chord: len(&chord)?,
+                thickness: len(&thickness)?,
+                pod_length: len(&pod_length)?,
+                pod_diameter: len(&pod_diameter)?,
+                nose_ahead: len(&nose_ahead)?,
+                prop_from_nose: len(&prop_from_nose)?,
+                no_pod,
+                tractor: tractor.then_some(true),
+                prop_diameter: len(&prop_diameter)?,
+                shaft_angle_deg: shaft_angle,
+            };
+            let mount = boatmath::mount::build(stock.as_deref(), &opts)?;
+            let s = read()?;
+            out.pass(&s)?;
+            for c in s.of_type("case") {
+                match records::mounted_case(c, &mount, name.as_deref()) {
+                    Ok(r) => out.emit(&r)?,
+                    Err(e) => failed += fail("case", c["id"].as_str().unwrap_or(""), e),
+                }
+            }
+        }
+        Command::Mounts => {
+            for m in boatmath::mount::stock_table()["mounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let mut r = m.clone();
+                if let Some(o) = r.as_object_mut() {
+                    o.insert("type".into(), serde_json::json!("stock_mount"));
+                    o.insert("id".into(), m["name"].clone());
+                }
+                out.emit(&r)?;
+            }
+        }
         Command::Statics => {
             let s = read()?;
             out.pass(&s)?;
@@ -868,8 +985,6 @@ fn go(cli: Cli) -> Result<usize, String> {
             shafts,
             wake,
             thrust_deduction,
-            prop_x,
-            prop_y,
             d_max,
             d_min,
             blades,
@@ -908,24 +1023,13 @@ fn go(cli: Cli) -> Result<usize, String> {
                 coefficient(&wake, "wake")?,
                 coefficient(&thrust_deduction, "thrust-deduction")?,
             );
-            let (d_min, d_max, depth) = (
-                units::length(&d_min)?,
-                units::length(&d_max)?,
-                units::length(&depth)?,
-            );
-            let auto = (wake_given.is_none() || ded_given.is_none())
-                .then(|| -> Result<props::Auto, String> {
-                    Ok(props::Auto {
-                        wake: wake_given.is_none(),
-                        deduction: ded_given.is_none(),
-                        at: boatmath::propulsion::Position {
-                            forward_of_aft: units::length(&prop_x)?,
-                            outboard: units::length(&prop_y)?,
-                            depth,
-                        },
-                    })
-                })
-                .transpose()?;
+            let d_min = units::length(&d_min)?;
+            let d_max = d_max.as_deref().map(units::length).transpose()?;
+            let depth = depth.as_deref().map(units::length).transpose()?;
+            let auto = (wake_given.is_none() || ded_given.is_none()).then(|| props::Auto {
+                wake: wake_given.is_none(),
+                deduction: ded_given.is_none(),
+            });
             let (wake, thrust_deduction) = (wake_given.unwrap_or(0.0), ded_given.unwrap_or(0.0));
             let explicit_top = match (&top_speed, &top_thrust) {
                 (Some(s), Some(t)) => Some(propeller::bseries::TopInputs {
@@ -935,21 +1039,23 @@ fn go(cli: Cli) -> Result<usize, String> {
                 (None, None) => None,
                 _ => return Err("--top-speed and --top-thrust go together".into()),
             };
-            let base = |speed: f64, thrust: f64, shafts: u32, top| propeller::bseries::Inputs {
-                speed,
-                thrust,
-                shafts,
-                wake,
-                thrust_deduction,
-                d_min,
-                d_max,
-                blades: blades.clone(),
-                depth,
-                keller_k,
-                cavitation: !no_cavitation,
-                re_correct: !no_re_correct,
-                strict_ear,
-                top,
+            let base = |speed: f64, thrust: f64, shafts: u32, top, d_max: f64, depth: f64| {
+                propeller::bseries::Inputs {
+                    speed,
+                    thrust,
+                    shafts,
+                    wake,
+                    thrust_deduction,
+                    d_min,
+                    d_max,
+                    blades: blades.clone(),
+                    depth,
+                    keller_k,
+                    cavitation: !no_cavitation,
+                    re_correct: !no_re_correct,
+                    strict_ear,
+                    top,
+                }
             };
             let cap = if full_range { f64::INFINITY } else { 1.6 };
             let report = |r: &Value| {
@@ -1024,8 +1130,10 @@ fn go(cli: Cli) -> Result<usize, String> {
                         units::force(t)?,
                         shafts.unwrap_or(1),
                         explicit_top,
+                        d_max.ok_or("give --d-max")?,
+                        depth.ok_or("give --depth (the shaft's immersion)")?,
                     );
-                    let r = props::prop(&cache, &inputs, None, cap, None)?;
+                    let r = props::prop(&cache, &inputs, None, cap, None, None)?;
                     failed += report(&r);
                     out.emit(&r)?;
                 }
@@ -1035,6 +1143,10 @@ fn go(cli: Cli) -> Result<usize, String> {
                     for r in s.of_type("result").filter(|r| r["kind"] == "calm") {
                         let id = r["id"].as_str().unwrap_or("");
                         let one = (|| -> Result<Value, String> {
+                            // The case's drive, if it has one: where the
+                            // propellers sit, and the thrust line's angle.
+                            let drives = props::drives_of(&s, r)?;
+                            let cos_e = drives.as_ref().map_or(1.0, |d| d.angle.cos());
                             let (v, t) = props::operating_point(r, thrust_deduction)?;
                             let top = match top_froude {
                                 Some(f) => {
@@ -1042,16 +1154,38 @@ fn go(cli: Cli) -> Result<usize, String> {
                                     let (vt, tt) = props::operating_point(&o, thrust_deduction)?;
                                     Some(propeller::bseries::TopInputs {
                                         speed: vt,
-                                        thrust: tt,
+                                        thrust: tt / cos_e,
                                     })
                                 }
                                 None => explicit_top,
                             };
-                            let n = shafts.unwrap_or_else(|| props::hull_count(&s, r) as u32);
-                            let inputs = base(v, t, n, top);
+                            let n = shafts.unwrap_or_else(|| match &drives {
+                                Some(d) => d.at.len() as u32,
+                                None => props::hull_count(&s, r) as u32,
+                            });
+                            let d_max = d_max
+                                .or(drives.as_ref().and_then(|d| d.prop_diameter))
+                                .ok_or("give --d-max (the drive has no propeller of its own)")?;
+                            let depth = match (depth, &drives) {
+                                (Some(d), _) => d,
+                                (None, Some(d)) => {
+                                    d.at.iter().map(|a| a.2).sum::<f64>() / d.at.len().max(1) as f64
+                                }
+                                (None, None) => {
+                                    return Err("give --depth, or give the case a mount".into())
+                                }
+                            };
+                            let inputs = base(v, t / cos_e, n, top, d_max, depth);
                             match &auto {
                                 Some(a) => props::auto_prop(&s, &cache, r, inputs, a, cap),
-                                None => props::prop(&cache, &inputs, Some(id), cap, None),
+                                None => props::prop(
+                                    &cache,
+                                    &inputs,
+                                    Some(id),
+                                    cap,
+                                    None,
+                                    drives.as_ref().map(|d| &d.record),
+                                ),
                             }
                         })();
                         match one {
@@ -1259,17 +1393,10 @@ fn go(cli: Cli) -> Result<usize, String> {
             o,
             no_water,
             wave_scale,
-            prop_x,
-            prop_y,
-            depth,
         } => {
-            let len = |s: &Option<String>| s.as_deref().map(units::length).transpose();
             let opts = cad::Options {
                 water: !no_water,
                 wave_scale,
-                prop_x: len(&prop_x)?,
-                prop_y: len(&prop_y)?,
-                depth: len(&depth)?,
             };
             let s = read()?;
             // A prop draws its result too; without props, each result.

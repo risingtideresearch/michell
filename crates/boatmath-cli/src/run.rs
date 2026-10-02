@@ -8,11 +8,13 @@
 //! before it, so the stream stays whole.
 
 use crate::cache::Cache;
-use crate::records::{case_hull, expect, hull_source, sections, study_record};
+use crate::records::{case_source, expect, sections, study_record, CaseSource};
 use crate::stream::{short, Out, Stream};
 use boatmath::params::{default_grid, StudyParams};
 use boatmath::SOLVER_VERSION;
-use boatmath::{flow_with_progress, wave_scalars, waves_with_progress, FlowRequest, Progress};
+use boatmath::{
+    flow_with_progress, wave_scalars, waves_with_progress, FlowRequest, Progress, ThrustLine,
+};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::Stdout;
@@ -211,9 +213,8 @@ fn at_rest(s: &Stream, known: &Mutex<Known>, case: &Value) -> Result<(f64, f64),
     {
         Some(a) => a,
         None => {
-            let (hull, cp) = case_hull(s, case)?;
-            let src = hull_source(hull)?;
-            boatmath::at_rest(&src.file_name, src.bytes, &src.import, &cp)?
+            let CaseSource { params, src, .. } = case_source(s, case)?;
+            boatmath::at_rest(&src.file_name, src.bytes, &src.import, &params)?
         }
     };
     known.lock().unwrap().at_rest.insert(id.to_string(), a);
@@ -231,8 +232,13 @@ fn compute(
     let id = expect(study, "study")?;
     let p = params(study)?;
     let case = s.follow(study, "case")?;
-    let (hull, cp) = case_hull(s, case)?;
-    let src = hull_source(hull)?;
+    let CaseSource {
+        hull,
+        params: cp,
+        src,
+        thrusts,
+        ..
+    } = case_source(s, case)?;
 
     let t0 = Instant::now();
     let label = format!(
@@ -265,12 +271,54 @@ fn compute(
             } else {
                 Some(at_rest(s, known, case)?)
             };
+            // With a drive and floating at speed, the attitude is the
+            // self-propelled one: towed first, for the resistance the
+            // thrust must meet, then with that thrust along the drives'
+            // line. (Held at rest, the attitude is given.)
+            let angle = thrusts.first().map_or(0.0, |t| t.angle);
+            let mut propulsion = None;
+            let thrust = if p.dynamic && !thrusts.is_empty() {
+                let towed = FlowRequest {
+                    cut: src.import,
+                    case: cp.clone(),
+                    study: p.clone(),
+                    warm: None,
+                    hold: None,
+                    thrust: None,
+                    field: false,
+                };
+                let v0 =
+                    flow_with_progress(&src.file_name, src.bytes.clone(), &towed, &mut report)?;
+                let rt0 = v0["forces"]["rt"]
+                    .as_f64()
+                    .ok_or("the towed pass has no R_t")?;
+                let t = rt0 / angle.cos();
+                propulsion = Some(json!({
+                    "thrust": t,
+                    "shaft_angle_deg": angle.to_degrees(),
+                    "drives": thrusts,
+                    "towed": {
+                        "rt": rt0,
+                        "sinkage": v0["forces"]["sinkage"],
+                        "trim_deg": v0["forces"]["trim_deg"],
+                    },
+                }));
+                Some(ThrustLine {
+                    thrust: t,
+                    at: thrusts.iter().map(|d| (d.x, d.z)).collect(),
+                    angle,
+                })
+            } else {
+                None
+            };
             let req = FlowRequest {
                 cut: src.import,
                 case: cp,
                 study: p.clone(),
                 warm: None,
                 hold,
+                thrust,
+                field: true,
             };
             let v = flow_with_progress(&src.file_name, src.bytes, &req, &mut report)?;
             // The meshes are for drawing; the pictures re-pose the hull's
@@ -294,6 +342,7 @@ fn compute(
                 "transverse_wavelength": v["transverse_wavelength"],
                 "seconds": v["seconds"],
                 "forces": v["forces"],
+                "self_propelled": propulsion,
                 "field": id,
                 "sections": sec.as_ref().map(|x| x["id"].clone()),
             });

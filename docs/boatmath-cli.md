@@ -277,7 +277,7 @@ See [Propellers and motors](#propellers-and-motors).
 | `statics` | hull*/case* → + statics*, sections* | each hull's hydrostatics, each case's float at rest and stability |
 | `study --froude LIST [--hold] [--closure C] [--grid N] [--waves LIST --lambdas LIST --sea S]` | case* → + study* | requests for every combination |
 | `run [-j N] [-q]` | study* → + result*, field*, sections* | compute each study |
-| `prop --d-max L [--wake --thrust-deduction --blades LIST --keller-k --top-froude F …]` | result* → + prop* | the best B-series propeller for each result's speed and thrust, on its case's drive |
+| `prop [--d-max L --wake --thrust-deduction --blades LIST --keller-k --top-froude F …]` | result* → + prop* | the best B-series propeller for each result's speed and thrust, on its case's drive |
 | `prop --thrust T --speed V --d-max L --depth D [--shafts N] …` | → prop | the same, for a thrust and speed given outright |
 | `match [--rank-by power\|mass\|price] [--direct-only] [--max-mass --max-od --max-price --vendor --mapped-only …]` | prop* → + drive* | the motors that can drive each prop, ranked |
 | `motors [filters]` | → motor* | the motor database |
@@ -365,8 +365,8 @@ carrying one, a drive per hull (both demihulls of a catamaran):
 
 ```sh
 boatmath mount --stock oceanvolt-sd8 --x 0.9 < cases.jsonl > mounted.jsonl      # a stock mount
-boatmath mount --kind saildrive --x 0.9 --leg-depth 0.45 --chord 0.18 --thickness 0.03 \
-  --pod-length 0.4 --pod-diameter 0.1 < cases.jsonl > mounted.jsonl            # or one described
+boatmath mount --kind saildrive --x 0.9 --shaft-depth 0.45 --chord 0.18 --thickness 0.03 \
+  --pod-length 0.4 --pod-diameter 0.1 --nose-ahead 0.15 < cases.jsonl > mounted.jsonl  # or one described
 ```
 
 The kinds, and where each one's propeller ends up:
@@ -381,9 +381,19 @@ The kinds, and where each one's propeller ends up:
 The first stock mounts are Oceanvolt's saildrives, ePropulsion's outboards
 and Fischer Panda's pod drives; `shaft` comes after the other three.
 
-`--x` places the drive forward of the hull's aft end (an outboard's is
-astern of it, on the transom) and `--y` out from its centreplane; the rest
-of the geometry is the drive's. `--stock NAME` takes a stock mount's
+`--x` places the leg's mid-chord forward of the hull's aft end (an
+outboard's is astern of it, on the transom, so `--x` is negative or zero)
+and `--y` out from its centreplane. `--shaft-depth` is the shaft below the
+hull's keel at the leg (a saildrive or pod), or below the transom's bottom
+(an outboard: its clamp height less the transom's draft). The pod's nose is
+`--nose-ahead` of the leg's mid-chord and the propeller `--prop-from-nose`
+aft of it; `--no-pod` leaves the leg alone (a saildrive's gear housing, the
+propeller just aft of the leg), and `--tractor` puts the propeller ahead.
+`--prop-diameter` is the drive's own propeller, which `prop` takes for
+`--d-max`; `--shaft-angle` tilts the thrust line, bow up. The new cases keep
+the old ones' parameters, and their `parent` is the case without the drive
+(remounting a mounted case replaces its drive). A drive with a value the
+stock table doesn't give (`null`) asks for it, quoting the entry's notes. `--stock NAME` takes a stock mount's
 dimensions from a vendored table, each entry sourced from its maker's
 installation drawings (`boatmath mounts` lists them); any dimension given as
 an option overrides the table's.
@@ -399,14 +409,20 @@ What each step does with a mount:
   reach the surface (a pod, a strut) is cut into sections whose tops lie
   below it. Their viscous drag is each part's own: ITTC-57 friction at its
   own Reynolds number on its wetted area, times a form factor (Hoerner's,
-  for a foil and for a body of revolution), plus a junction allowance where a
-  leg meets the hull. The result reports the drive's share,
-  `forces.r_appendages` (wave and viscous), inside `forces.rt`.
+  for a foil and for a body of revolution); there's no junction allowance
+  yet. The parts' viscous drag is `forces.r_appendages_viscous`; their
+  wave resistance and its interference with the hull's are in `forces.rw`,
+  and both are inside `forces.rt`.
 - **The attitude is self-propelled.** With a mount, `run` solves for the
   attitude with the thrust, `R_t / cos ε` along the drive's thrust line,
   entering the equilibrium with the hull's own forces. A thrust line below
   the centre of gravity, which every drive's is, trims the bow up; an
-  inclined shaft's vertical component `T sin ε` lifts the stern.
+  inclined shaft's vertical component `T sin ε` lifts the stern. The
+  thrust is the towed resistance, from a first pass without it; the
+  result's `self_propelled` keeps it, the drives and the towed attitude.
+  For e12 at Fn 0.3 with an Oceanvolt ServoProp 15 2.5 m forward of the
+  transom, R_t rises from 87.2 N bare to 97.6 N (9.2 N of it the drive's
+  viscous drag), and the thrust trims the bow up 0.011°.
 - **`prop`.** The propeller sits where the drive puts it, at its depth and
   on its axis. Its thrust is what the course needs from it along the shaft,
   `T = R_t / ((1 − t) cos ε)`, ε the thrust line's angle to the flow: the
@@ -483,8 +499,9 @@ the answer.
 singularities at the result's own attitude and speed (`michell::propulsion`):
 
 - **The disc:** where the case's mount puts it, at its depth and on its
-  axis. It's fixed to the hull, so it moves with the hull's sinkage and
-  trim. A disc that breaks the surface or cuts a hull is refused.
+  axis, its hub at least the pod's radius there. It's fixed to the hull,
+  so it moves with the hull's sinkage and trim. A disc that breaks the
+  surface or cuts a hull is refused.
 - **Wake:** the axial perturbation velocity of the hull and its drive's
   parts, averaged over the disc, hub to tip. It's split into the local (potential) wake and the wave wake
   of the hull's own waves. There's no frictional wake.
@@ -512,7 +529,8 @@ isn't represented at all. That's where most of a transom or planing hull's
 thrust deduction comes from. For e12 at Fn 0.3, with a bare disc 0.25 m
 astern, it gave w ≈ 0.013 (nearly all wave wake) and t ≈ 0.001: read t
 there as the beam-change contribution, a lower bound. A drive's leg and pod
-add their own part.
+add their own part: with the ServoProp 15 above, w ≈ −0.010 and t ≈ −0.006,
+the disc being under the run, where the flow is still speeding up.
 
 The design fields keep propcore.js's names. `curve` is the best propeller at
 each of 180 shaft speeds, from the cheapest out to 1.6× its power (or the

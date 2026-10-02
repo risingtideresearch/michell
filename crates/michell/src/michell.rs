@@ -249,6 +249,11 @@ pub(crate) struct OuterParams {
     pub(crate) y_half: f64,
     /// Deepest draft in the fleet.
     pub(crate) t_max: f64,
+    /// An integral the march needn't resolve below: truncation and
+    /// refinement are relative to the larger of it and the integral itself.
+    /// Zero for a fleet on its own; a member's share of a larger fleet (a
+    /// drive's leg, say) is wanted only to the fleet's precision.
+    pub(crate) floor: f64,
 }
 
 /// Marching-panel Gauss–Legendre integration of
@@ -402,7 +407,9 @@ fn integrate_outer<M: MemberWave>(
                 window_sum += panel;
                 window_phase += p.rate * p.dt;
                 if window_phase >= STOP_WINDOW_PHASE {
-                    if window_sum.abs() <= STOP_REL * total.abs() + f64::MIN_POSITIVE {
+                    if window_sum.abs()
+                        <= STOP_REL * total.abs().max(params.floor) + f64::MIN_POSITIVE
+                    {
                         stopped = true;
                         break;
                     }
@@ -486,7 +493,7 @@ pub(crate) fn run_outer<M: MemberWave>(
         let mut evals = 0usize;
         let (refined, th) = integrate_outer(params, frac, &members, Some(theta_stop), &mut evals);
         evals_total += evals;
-        let scale = refined.abs().max(f64::MIN_POSITIVE);
+        let scale = refined.abs().max(params.floor).max(f64::MIN_POSITIVE);
         est_rel = (refined - integral).abs() / scale;
         integral = refined;
         theta_stop = th;
@@ -561,6 +568,7 @@ fn fleet_outer_params(
             .map(|(_, p)| (p.y - y_ref).abs())
             .fold(0.0, f64::max),
         t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
+        floor: 0.0,
     }
 }
 

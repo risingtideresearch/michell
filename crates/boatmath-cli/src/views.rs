@@ -306,8 +306,8 @@ fn open(w: f64, h: f64, title: &str, subtitle: &str) -> String {
     let _ = write!(
         s,
         r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w:.0} {h:.0}" width="{w:.0}" height="{h:.0}" font-family="system-ui, -apple-system, sans-serif" font-size="12">
-<style>:root{{--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--grid:#e4e3df;--hull:#c9c7c0;--water:#dbe8f7;--wave:#2a78d6}}
-@media (prefers-color-scheme: dark){{:root{{--surface:#1a1a19;--ink:#ffffff;--ink2:#c3c2b7;--grid:#3a3a37;--hull:#6b6a64;--water:#1f2f45;--wave:#3987e5}}}}
+<style>:root{{--surface:#fcfcfb;--ink:#0b0b0b;--ink2:#52514e;--grid:#e4e3df;--hull:#c9c7c0;--part:#8f8d86;--water:#dbe8f7;--wave:#2a78d6}}
+@media (prefers-color-scheme: dark){{:root{{--surface:#1a1a19;--ink:#ffffff;--ink2:#c3c2b7;--grid:#3a3a37;--hull:#6b6a64;--part:#9a9890;--water:#1f2f45;--wave:#3987e5}}}}
 text{{fill:var(--ink2)}} .title{{fill:var(--ink);font-size:15px;font-weight:600}}</style>
 <rect width="{w:.0}" height="{h:.0}" fill="var(--surface)"/>
 <text class="title" x="64" y="24">{}</text><text x="64" y="42">{}</text>
@@ -558,6 +558,7 @@ pub fn pressure(field: &Field, title: &str, subtitle: &str, range: Option<f64>) 
 pub fn profile(
     field: &Field,
     verts: &[[f64; 3]],
+    parts: &[&[[f64; 3]]],
     title: &str,
     subtitle: &str,
     attitude: (f64, f64),
@@ -567,26 +568,21 @@ pub fn profile(
     if verts.is_empty() {
         return Err("the hull has no mesh".into());
     }
-    let (xa, xb) = verts
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
-            (a.min(v[0]), b.max(v[0]))
-        });
+    let bins = silhouette(verts, 240);
+    let (xa, xb) = (bins[0].0, bins[bins.len() - 1].0);
     let l = xb - xa;
-    // The silhouette: the highest and lowest point in each slice of x.
-    let nb = 240;
-    let mut lo = vec![f64::INFINITY; nb];
-    let mut hi = vec![f64::NEG_INFINITY; nb];
-    for v in verts {
-        let k = (((v[0] - xa) / l * nb as f64) as usize).min(nb - 1);
-        lo[k] = lo[k].min(v[2]);
-        hi[k] = hi[k].max(v[2]);
-    }
-    let bins: Vec<(f64, f64, f64)> = (0..nb)
-        .filter(|&k| lo[k].is_finite())
-        .map(|k| (xa + (k as f64 + 0.5) / nb as f64 * l, lo[k], hi[k]))
+    // A drive's parts, each its own silhouette: finer, being short.
+    let part_bins: Vec<Vec<(f64, f64, f64)>> = parts
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| silhouette(p, 60))
         .collect();
-    let (x0, x1) = (xa - 0.25 * l, xb + 0.25 * l);
+    let (x0, x1) = part_bins
+        .iter()
+        .flatten()
+        .fold((xa - 0.25 * l, xb + 0.25 * l), |(a, b), p| {
+            (a.min(p.0 - 0.05 * l), b.max(p.0 + 0.05 * l))
+        });
     let wave: Vec<(f64, f64)> = (0..=400)
         .filter_map(|k| {
             let x = x0 + (x1 - x0) * k as f64 / 400.0;
@@ -596,11 +592,13 @@ pub fn profile(
         .collect();
     let zmin = bins
         .iter()
+        .chain(part_bins.iter().flatten())
         .map(|b| b.1)
         .chain(wave.iter().map(|w| w.1))
         .fold(0.0, f64::min);
     let zmax = bins
         .iter()
+        .chain(part_bins.iter().flatten())
         .map(|b| b.2)
         .chain(wave.iter().map(|w| w.1))
         .fold(0.0, f64::max);
@@ -616,16 +614,26 @@ pub fn profile(
         f.pw,
         f.bottom() - f.sy(0.0)
     );
-    let outline: Vec<String> = bins
-        .iter()
-        .map(|b| (b.0, b.2))
-        .chain(bins.iter().rev().map(|b| (b.0, b.1)))
-        .map(|(x, z)| format!("{:.1},{:.1}", f.sx(x), f.sy(z)))
-        .collect();
+    let outline = |bins: &[(f64, f64, f64)]| -> String {
+        bins.iter()
+            .map(|b| (b.0, b.2))
+            .chain(bins.iter().rev().map(|b| (b.0, b.1)))
+            .map(|(x, z)| format!("{:.1},{:.1}", f.sx(x), f.sy(z)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    // The parts first, so the hull covers the leg's root inside it.
+    for p in &part_bins {
+        let _ = writeln!(
+            s,
+            r#"<polygon points="{}" fill="var(--part)" stroke="var(--ink)" stroke-width="1" stroke-linejoin="round"/>"#,
+            outline(p)
+        );
+    }
     let _ = writeln!(
         s,
         r#"<polygon points="{}" fill="var(--hull)" stroke="var(--ink)" stroke-width="1" stroke-linejoin="round"/>"#,
-        outline.join(" ")
+        outline(&bins)
     );
     let _ = writeln!(
         s,
@@ -653,7 +661,7 @@ pub fn profile(
     if wave_scale != 1.0 {
         let _ = write!(note, " · wave ×{}", sig(wave_scale));
     }
-    if field.hulls.len() > 1 {
+    if field.hulls.len() > 1 + parts.len() {
         note.push_str(" · first hull of the platform");
     }
     let _ = writeln!(
@@ -666,6 +674,28 @@ pub fn profile(
     axes(&mut s, &f, "x [m], forward →", "z [m], up");
     s.push_str("</svg>\n");
     Ok(s)
+}
+
+/// A mesh's side view: the highest and lowest point in each of `nb` slices
+/// of x, `(x, z_low, z_high)` for each slice it reaches.
+fn silhouette(verts: &[[f64; 3]], nb: usize) -> Vec<(f64, f64, f64)> {
+    let (xa, xb) = verts
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+            (a.min(v[0]), b.max(v[0]))
+        });
+    let l = (xb - xa).max(1e-9);
+    let mut lo = vec![f64::INFINITY; nb];
+    let mut hi = vec![f64::NEG_INFINITY; nb];
+    for v in verts {
+        let k = (((v[0] - xa) / l * nb as f64) as usize).min(nb - 1);
+        lo[k] = lo[k].min(v[2]);
+        hi[k] = hi[k].max(v[2]);
+    }
+    (0..nb)
+        .filter(|&k| lo[k].is_finite())
+        .map(|k| (xa + (k as f64 + 0.5) / nb as f64 * l, lo[k], hi[k]))
+        .collect()
 }
 
 #[cfg(test)]

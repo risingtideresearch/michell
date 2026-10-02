@@ -1,19 +1,20 @@
 //! A calm-water result (or a prop on one) as an IGES file for CAD: the
-//! hulls at their solved attitude, the free surface, and with a prop its
-//! discs. Each group is on its own level, coloured and labelled:
+//! hulls at their solved attitude with their drives, the free surface, and
+//! with a prop its discs. Each group is on its own level, coloured and
+//! labelled:
 //!
 //! | level | colour | label | what |
 //! |---|---|---|---|
 //! | 1 | white | `HULL1`, `HULL2` | each hull's patches |
 //! | 2 | cyan | `WATER` | the free surface |
 //! | 3 | red | `PROP1`, … | each propeller disc |
+//! | 4 | yellow | `MOUNT1`, … | each drive's leg and pod |
 //!
 //! Frame: x forward, y to port, z up, the still water at z = 0, metres.
 
-use crate::records::{expect, hull_source};
+use crate::records::{case_source, expect, CaseSource};
 use crate::stream::{short, Stream};
 use boatmath::params::CaseParams;
-use boatmath::propulsion::Position;
 use michell::propulsion::Disc;
 use michell_geometry::iges::{write_labelled, Color, Label, NurbsSurface3};
 use serde_json::Value;
@@ -21,12 +22,39 @@ use serde_json::Value;
 pub struct Options {
     pub water: bool,
     pub wave_scale: f64,
-    /// Where a prop without a placement of its own puts its discs: forward
-    /// of each hull's aft end, out from its centreplane, and down (default
-    /// the aft end, on the centreplane, at the prop's shaft depth).
-    pub prop_x: Option<f64>,
-    pub prop_y: Option<f64>,
-    pub depth: Option<f64>,
+}
+
+/// A member's level, colour and label: hulls on 1, a drive's parts on 4.
+fn member_label(role: &str, hull_no: usize, part_no: usize) -> Label {
+    if role == "hull" {
+        Label {
+            level: 1,
+            color: Color::White,
+            name: format!("HULL{hull_no}"),
+        }
+    } else {
+        Label {
+            level: 4,
+            color: Color::Yellow,
+            name: format!("MOUNT{part_no}"),
+        }
+    }
+}
+
+/// Number the members: hulls in order, and parts in order.
+fn labelled<T>(members: &[(String, T)]) -> Vec<Label> {
+    let (mut h, mut p) = (0, 0);
+    members
+        .iter()
+        .map(|(role, _)| {
+            if role == "hull" {
+                h += 1;
+            } else {
+                p += 1;
+            }
+            member_label(role, h, p)
+        })
+        .collect()
 }
 
 /// The IGES file for one record: a calm-water result, or a prop.
@@ -46,9 +74,13 @@ pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
     }
     let study = st.follow(&result, "study")?;
     let case = st.follow(study, "case")?;
-    let hull = st.follow(case, "hull")?;
-    let src = hull_source(hull)?;
-    let cp: CaseParams = crate::records::case_params(case)?;
+    let CaseSource {
+        hull,
+        params: cp,
+        src,
+        thrusts,
+        ..
+    } = case_source(st, case)?;
     let f = &result["forces"];
     let attitude = (
         f["sinkage"].as_f64().unwrap_or(0.0),
@@ -57,21 +89,17 @@ pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
 
     let mut surfaces: Vec<NurbsSurface3> = Vec::new();
     let mut labels: Vec<Label> = Vec::new();
-    let hulls = boatmath::cad::hull_surfaces(
+    let members = boatmath::cad::hull_surfaces(
         &src.file_name,
         src.bytes.clone(),
         &src.import,
         &cp,
         attitude,
     )?;
-    for (k, patches) in hulls.iter().enumerate() {
+    for ((_, patches), label) in members.iter().zip(labelled(&members)) {
         for p in patches {
             surfaces.push(p.clone());
-            labels.push(Label {
-                level: 1,
-                color: Color::White,
-                name: format!("HULL{}", k + 1),
-            });
+            labels.push(label.clone());
         }
     }
 
@@ -101,7 +129,14 @@ pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
     }
 
     if let Some(p) = prop {
-        for (k, d) in discs(&src, &cp, attitude, p, o)?.iter().enumerate() {
+        let ds = discs(&src, &cp, attitude, &thrusts, p)?;
+        if ds.is_empty() {
+            eprintln!(
+                "boatmath: prop {}: its case has no mount, so no disc is drawn (`boatmath mount`)",
+                short(p["id"].as_str().unwrap_or(""))
+            );
+        }
+        for (k, d) in ds.iter().enumerate() {
             surfaces.push(boatmath::cad::disc_surface(d));
             labels.push(Label {
                 level: 3,
@@ -119,13 +154,14 @@ pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
     write_labelled(&surfaces, &labels, &product).map_err(|e| e.to_string())
 }
 
-/// A prop's discs: where its own wake estimate placed them, or at `at`.
+/// A prop's discs: where its wake estimate placed them, else where the
+/// case's mount puts its propellers; none without a mount.
 fn discs(
     src: &crate::records::HullSource,
     cp: &CaseParams,
     attitude: (f64, f64),
+    thrusts: &[boatmath::mount::Thrust],
     p: &Value,
-    o: &Options,
 ) -> Result<Vec<Disc>, String> {
     let radius = 0.5 * p["best"]["D"].as_f64().ok_or("the prop has no propeller")?;
     if let Some(ds) = p["interaction"]["discs"].as_array() {
@@ -136,20 +172,16 @@ fn discs(
                 y: d["y"].as_f64().unwrap_or(0.0),
                 depth: d["depth"].as_f64().unwrap_or(0.0),
                 radius: d["radius"].as_f64().unwrap_or(radius),
-                hub: 0.2,
+                hub: d["hub"].as_f64().unwrap_or(0.2),
             })
             .collect());
     }
-    let at = Position {
-        forward_of_aft: o.prop_x.unwrap_or(0.0),
-        outboard: o.prop_y.unwrap_or(0.0),
-        depth: o.depth.or(p["inputs"]["depth"].as_f64()).unwrap_or(0.3),
-    };
+    if thrusts.is_empty() {
+        return Ok(Vec::new());
+    }
     let m =
         boatmath::propulsion::mounts(&src.file_name, src.bytes.clone(), &src.import, cp, attitude)?;
-    let shafts = p["inputs"]["shafts"].as_u64().unwrap_or(1) as usize;
-    let per_hull = (shafts / m.hulls.len().max(1)).max(1);
-    Ok(m.discs(&at, per_hull, radius))
+    Ok(m.mount_discs(thrusts, radius))
 }
 
 // ------------------------------------------------------------- statics
@@ -207,15 +239,22 @@ pub fn statics_model(st: &Stream, rec: &Value, heels: &[f64]) -> Result<String, 
     if rec.get("error").is_some_and(|e| !e.is_null()) {
         return Err(format!("statics {} failed: {}", short(id), rec["error"]));
     }
-    let (hull, cp, is_case) = match rec.get("case").and_then(|c| c.as_str()) {
+    let (hull, cp, is_case, src) = match rec.get("case").and_then(|c| c.as_str()) {
         Some(_) => {
             let case = st.follow(rec, "case")?;
-            let (h, p) = crate::records::case_hull(st, case)?;
-            (h, p, true)
+            let cs = case_source(st, case)?;
+            (cs.hull, cs.params, true, cs.src)
         }
-        None => (st.follow(rec, "hull")?, CaseParams::default(), false),
+        None => {
+            let h = st.follow(rec, "hull")?;
+            (
+                h,
+                CaseParams::default(),
+                false,
+                crate::records::hull_source(h)?,
+            )
+        }
     };
-    let src = hull_source(hull)?;
     // The hulls in their own axes: the design pose, a catamaran's demihulls
     // at their span.
     let design = boatmath::cad::hull_surfaces(
@@ -284,13 +323,18 @@ pub fn statics_model(st: &Stream, rec: &Value, heels: &[f64]) -> Result<String, 
                 trim: f["trim_rad"].as_f64().unwrap_or(0.0),
                 sinkage: f["sinkage"].as_f64().unwrap_or(0.0),
             };
-            for patches in &design {
+            for (role, patches) in &design {
+                let color = if role == "hull" {
+                    Color::White
+                } else {
+                    Color::Yellow
+                };
                 for p in patches {
                     let mut q = p.clone();
                     for c in q.ctrl.iter_mut() {
                         *c = pose.apply(*c);
                     }
-                    items.push((Entity::Surface(q), label(*level, Color::White, name)));
+                    items.push((Entity::Surface(q), label(*level, color, name)));
                 }
             }
             let cb = point3(&f["cb"]).ok_or("no centre of buoyancy")?;
@@ -310,17 +354,18 @@ pub fn statics_model(st: &Stream, rec: &Value, heels: &[f64]) -> Result<String, 
             ));
         }
     } else {
-        for (k, patches) in design.iter().enumerate() {
+        for ((_, patches), l) in design.iter().zip(labelled(&design)) {
             for p in patches {
-                items.push((
-                    Entity::Surface(p.clone()),
-                    label(1, Color::White, &format!("HULL{}", k + 1)),
-                ));
+                items.push((Entity::Surface(p.clone()), l.clone()));
             }
         }
     }
     let (mut xa, mut xb, mut yb) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
-    for c in design.iter().flatten().flat_map(|p| p.ctrl.iter()) {
+    for c in design
+        .iter()
+        .flat_map(|(_, ps)| ps.iter())
+        .flat_map(|p| p.ctrl.iter())
+    {
         xa = xa.min(c[0]);
         xb = xb.max(c[0]);
         yb = yb.max(c[1].abs());

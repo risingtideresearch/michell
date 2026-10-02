@@ -245,9 +245,91 @@ pub fn study_record(case_id: &str, params: StudyParams) -> Value {
     })
 }
 
-/// The hull a case floats on, and its parameters.
-pub fn case_hull<'a>(s: &'a Stream, case: &Value) -> Result<(&'a Value, CaseParams), String> {
-    Ok((s.follow(case, "hull")?, case_params(case)?))
+/// What the solver needs of a case: its hull, its parameters, and its
+/// geometry — the hull's, with the case's mount (if it has one) appended
+/// as members of their own — and where each drive's propeller sits.
+pub struct CaseSource<'a> {
+    pub hull: &'a Value,
+    pub params: CaseParams,
+    pub src: HullSource,
+    pub mount: Option<boatmath::mount::Mount>,
+    /// Each drive's propeller, in the hull's design frame (one per hull).
+    pub thrusts: Vec<boatmath::mount::Thrust>,
+}
+
+/// A case's mount, if it has one.
+pub fn case_mount(case: &Value) -> Result<Option<boatmath::mount::Mount>, String> {
+    match case["params"].get("mount") {
+        None | Some(Value::Null) => Ok(None),
+        Some(m) => serde_json::from_value(m.clone())
+            .map(Some)
+            .map_err(|e| format!("case mount: {e}")),
+    }
+}
+
+pub fn case_source<'a>(s: &'a Stream, case: &Value) -> Result<CaseSource<'a>, String> {
+    let hull = s.follow(case, "hull")?;
+    let params = case_params(case)?;
+    let mut src = hull_source(hull)?;
+    let mount = case_mount(case)?;
+    let mut thrusts = Vec::new();
+    if let Some(m) = &mount {
+        let bare = loft(&src.file_name, src.bytes.clone(), &src.import)?;
+        let (g, t) = boatmath::mount::mounted(&hull["geometry"], &bare, m)?;
+        src.bytes = serde_json::to_vec(&g).map_err(|e| e.to_string())?;
+        // A catamaran doubles its hull, and the drive goes with each copy.
+        thrusts = match params.span {
+            Some(span) => t
+                .iter()
+                .flat_map(|d| {
+                    let off = m.y;
+                    [0.5 * span, -0.5 * span]
+                        .map(|yc| boatmath::mount::Thrust { y: yc + off, ..*d })
+                })
+                .collect(),
+            None => t,
+        };
+    }
+    Ok(CaseSource {
+        hull,
+        params,
+        src,
+        mount,
+        thrusts,
+    })
+}
+
+/// A case with a drive: the case's own parameters and `mount`, its parent
+/// the bare case (a case already mounted is remounted from its parent).
+pub fn mounted_case(
+    case: &Value,
+    mount: &boatmath::mount::Mount,
+    name: Option<&str>,
+) -> Result<Value, String> {
+    let case_id = expect(case, "case")?;
+    let hull_id = case["hull"].as_str().ok_or("case: no hull")?;
+    let mut p = case["params"].clone();
+    let o = p.as_object_mut().ok_or("case: params not an object")?;
+    let remount = o.contains_key("mount");
+    o.insert(
+        "mount".into(),
+        serde_json::to_value(mount).map_err(|e| e.to_string())?,
+    );
+    let parent = match (remount, case["parent"].as_str()) {
+        (true, Some(pid)) => pid,
+        _ => case_id,
+    };
+    let name = name
+        .map(str::to_string)
+        .unwrap_or_else(|| case["name"].as_str().unwrap_or("").to_string());
+    Ok(json!({
+        "type": "case",
+        "id": id_of(&json!({ "hull": hull_id, "params": p })),
+        "name": name,
+        "hull": hull_id,
+        "params": p,
+        "parent": parent,
+    }))
 }
 
 /// The sections record of a case cut at `(sinkage [m], trim [rad])`. Its id
@@ -268,8 +350,7 @@ pub fn sections(
     {
         return Ok(r);
     }
-    let (hull, params) = case_hull(s, case)?;
-    let src = hull_source(hull)?;
+    let CaseSource { params, src, .. } = case_source(s, case)?;
     let mut r =
         boatmath::sections::sections(&src.file_name, src.bytes, &src.import, &params, attitude)?;
     let o = r.as_object_mut().expect("an object");
@@ -316,8 +397,7 @@ pub fn case_statics(s: &Stream, case: &Value, cache: &Cache) -> Result<Vec<Value
         out.push(r);
         return Ok(out);
     }
-    let (hull, params) = case_hull(s, case)?;
-    let src = hull_source(hull)?;
+    let CaseSource { params, src, .. } = case_source(s, case)?;
     let mut r = json!({ "type": "statics", "id": id, "case": id });
     let mut out = Vec::new();
     match statics(&src.file_name, src.bytes, &src.import, &params) {

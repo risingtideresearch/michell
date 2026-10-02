@@ -178,6 +178,8 @@ impl Worker {
                     study: p.clone(),
                     warm,
                     hold,
+                    thrust: None,
+                    field: true,
                 };
                 let v = flow_with_progress(&c.hull.file_name, bytes, &req, &mut report)?;
                 let mut scalars = v["forces"].clone();

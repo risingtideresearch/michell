@@ -8,26 +8,30 @@ use crate::{setup, LoftRequest};
 use michell::propulsion::Disc;
 use michell_geometry::iges::NurbsSurface3;
 
-/// Each of the case's hulls as its surface patches at `(sinkage [m],
-/// trim [rad])`.
+/// Each of the case's members — its hulls and a drive's parts — as its
+/// role (`hull`, `leg`, `pod`) and surface patches at `(sinkage [m], trim
+/// [rad])`.
 pub fn hull_surfaces(
     name: &str,
     bytes: Vec<u8>,
     cut: &LoftRequest,
     c: &CaseParams,
     attitude: (f64, f64),
-) -> Result<Vec<Vec<NurbsSurface3>>, String> {
+) -> Result<Vec<(String, Vec<NurbsSurface3>)>, String> {
     let s = setup(name, bytes, cut, c)?;
     let platform = s.platform(attitude.0, attitude.1);
     s.layout
         .iter()
-        .map(|(i, pose)| {
-            s.cut
+        .zip(&s.roles)
+        .map(|((i, pose), (role, _))| {
+            let patches = s
+                .cut
                 .file
                 .source
                 .posed_surfaces(*i, s.cut.file.waterline_z, pose, &platform)
                 .ok_or("a mesh hull (from an STL) has no surfaces to write")?
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            Ok((role.clone(), patches))
         })
         .collect()
 }

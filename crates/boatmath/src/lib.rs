@@ -233,6 +233,8 @@ fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
 struct Counted<'a, R> {
     inner: michell::sectional::SectionalDynamic<'a>,
     report: R,
+    /// A load added to every evaluation: the drives' thrust.
+    extra: michell_geometry::float::DynamicLoad,
 }
 
 impl<R> michell_geometry::float::DynamicModel<SectionalHull> for Counted<'_, R>
@@ -243,7 +245,9 @@ where
         &mut self,
         fleet: &michell_geometry::float::FleetState<SectionalHull>,
     ) -> michell::Result<michell_geometry::float::DynamicLoad> {
-        let d = self.inner.load(fleet)?;
+        let mut d = self.inner.load(fleet)?;
+        d.force_up += self.extra.force_up;
+        d.moment_bow_up += self.extra.moment_bow_up;
         let vol: f64 = fleet
             .members
             .iter()
@@ -257,7 +261,14 @@ where
         &mut self,
         fleet: &michell_geometry::float::FleetState<SectionalHull>,
     ) -> Option<michell::Result<michell_geometry::float::DynamicLoad>> {
-        self.inner.probe(fleet)
+        let extra = self.extra;
+        self.inner.probe(fleet).map(|r| {
+            r.map(|mut d| {
+                d.force_up += extra.force_up;
+                d.moment_bow_up += extra.moment_bow_up;
+                d
+            })
+        })
     }
 }
 
@@ -290,6 +301,71 @@ pub struct FlowRequest {
     /// Hold the platform at this `(sinkage [m], trim [rad])` instead of
     /// solving for it: a study at rest's attitude (see [`statics`]).
     pub hold: Option<(f64, f64)>,
+    /// The drives' thrust, for a self-propelled attitude: it enters the
+    /// equilibrium with the hull's own forces.
+    pub thrust: Option<ThrustLine>,
+    /// Compute the hull pressure and the free surface; without, only the
+    /// attitude and the forces.
+    pub field: bool,
+}
+
+/// The drives' thrust on a platform: what a self-propelled attitude adds to
+/// a towed one.
+#[derive(Clone, Debug)]
+pub struct ThrustLine {
+    /// The total thrust along the shafts [N], shared equally.
+    pub thrust: f64,
+    /// Each drive's propeller centre, `(x, z)` in the hull's design frame
+    /// (z up from the design waterline) [m].
+    pub at: Vec<(f64, f64)>,
+    /// The shafts' angle to the baseline, bow up [rad].
+    pub angle: f64,
+}
+
+impl ThrustLine {
+    /// Its vertical force [N] and bow-up moment [N m] about `pivot_x`, with
+    /// the resistance it balances acting along `z_resistance`: the couple of
+    /// the thrust below the resistance trims the bow up; an inclined shaft's
+    /// vertical share lifts where the propeller is.
+    pub fn load(&self, pivot_x: f64, z_resistance: f64) -> michell_geometry::float::DynamicLoad {
+        let n = self.at.len().max(1) as f64;
+        let (s, c) = self.angle.sin_cos();
+        let mut d = michell_geometry::float::DynamicLoad {
+            force_up: 0.0,
+            moment_bow_up: 0.0,
+        };
+        for &(x, z) in &self.at {
+            let t = self.thrust / n;
+            d.force_up += t * s;
+            d.moment_bow_up += t * c * (z_resistance - z) + t * s * (x - pivot_x);
+        }
+        d
+    }
+}
+
+/// The height (z up from the design waterline) the resistance is taken to
+/// act along: the centroid of the hulls' immersed centreplane area.
+fn resistance_line(design: &[(SectionalHull, Placement)], roles: &[(String, Option<f64>)]) -> f64 {
+    let (mut a, mut m) = (0.0, 0.0);
+    for ((h, _), (role, _)) in design.iter().zip(roles) {
+        if role != "hull" {
+            continue;
+        }
+        let st: Vec<(f64, f64)> = h
+            .curves()
+            .map(|(x, c)| (x, c.iter().map(|p| p.1).fold(0.0, f64::max)))
+            .collect();
+        for w in st.windows(2) {
+            let (dx, d) = (w[1].0 - w[0].0, 0.5 * (w[0].1 + w[1].1));
+            a += d * dx;
+            m += -0.5 * d * d * dx;
+        }
+    }
+    if a > 0.0 {
+        m / a
+    } else {
+        0.0
+    }
 }
 
 /// Where a computation has got to.
@@ -384,6 +460,9 @@ pub(crate) struct Setup {
     pub(crate) lcg: f64,
     /// The longest hull's length [m], the Froude number's.
     pub(crate) l_ref: f64,
+    /// Each layout entry's role (`hull`, or a drive's `leg` or `pod`) and,
+    /// for a part, its viscous form factor.
+    pub(crate) roles: Vec<(String, Option<f64>)>,
 }
 
 pub(crate) fn setup(
@@ -392,6 +471,21 @@ pub(crate) fn setup(
     cut_req: &LoftRequest,
     c: &CaseParams,
 ) -> Result<Setup, String> {
+    // The members' roles, by source index: a JSON geometry may carry a
+    // drive's parts as members of their own; a file's are all hulls.
+    let source_roles = if native::is_native(&bytes) {
+        serde_json::from_slice::<Value>(&bytes)
+            .map(|g| mount::roles(&g))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let role_of = |i: usize| -> (String, Option<f64>) {
+        source_roles
+            .get(i)
+            .cloned()
+            .unwrap_or_else(|| ("hull".to_string(), None))
+    };
     let cut = cut(name, bytes, cut_req)?;
     let rho = michell_geometry::Fluid::SEAWATER_15C.density;
     // Each hull in the pose its cut settings give it (a scaled hull's scale).
@@ -399,25 +493,30 @@ pub(crate) fn setup(
     let mut layout: Vec<(usize, HullPose)> = match c.span {
         None => cut.index.iter().map(|&i| (i, base)).collect(),
         Some(span) => {
-            if cut.hulls.len() != 1 {
+            let hulls: Vec<usize> = (0..cut.hulls.len())
+                .filter(|&k| role_of(cut.index[k]).0 == "hull")
+                .collect();
+            if hulls.len() != 1 {
                 return Err(format!(
                     "a catamaran doubles a single hull; this file holds {}",
-                    cut.hulls.len()
+                    hulls.len()
                 ));
             }
-            let (yc, beam) = (
-                cut.hulls[0].placement.y,
-                michell_cli::fleet::max_beam(&cut.hulls[0].hull),
-            );
+            let h = &cut.hulls[hulls[0]];
+            let (yc, beam) = (h.placement.y, michell_cli::fleet::max_beam(&h.hull));
             if span <= beam {
                 return Err(format!(
                     "span {span} m: the demihulls overlap (beam {beam:.3} m)"
                 ));
             }
-            // The pose's `dy` puts the copies' centreplanes at ±span/2.
-            [0.5 * span, -0.5 * span]
-                .map(|y| (cut.index[0], HullPose { dy: y - yc, ..base }))
-                .to_vec()
+            // The pose's `dy` puts the copies' centreplanes at ±span/2, and
+            // a drive's parts go with their hull.
+            cut.index
+                .iter()
+                .flat_map(|&i| {
+                    [0.5 * span, -0.5 * span].map(|y| (i, HullPose { dy: y - yc, ..base }))
+                })
+                .collect()
         }
     };
     let placed = |cut: &Cut, i: usize, pose: &HullPose| {
@@ -473,9 +572,13 @@ pub(crate) fn setup(
         .map(|(h, pl)| h.displaced_volume() * (h.lcb_x() + pl.x))
         .sum::<f64>()
         / vol.max(f64::MIN_POSITIVE);
+    let roles: Vec<(String, Option<f64>)> = layout.iter().map(|(i, _)| role_of(*i)).collect();
+    // The Froude number's length is the hulls', not a drive's parts'.
     let l_ref = design
         .iter()
-        .map(|(h, _)| h.length())
+        .zip(&roles)
+        .filter(|(_, r)| r.0 == "hull")
+        .map(|((h, _), _)| h.length())
         .fold(0.0f64, f64::max);
     Ok(Setup {
         mass: c.mass.unwrap_or(rho * vol),
@@ -484,6 +587,7 @@ pub(crate) fn setup(
         cut,
         layout,
         design,
+        roles,
     })
 }
 
@@ -643,7 +747,19 @@ pub fn flow_with_progress(
                 )
                 .map_err(michell::Error::InvalidInput)
         };
-        let counted = Counted { inner, report };
+        let extra = req
+            .thrust
+            .as_ref()
+            .map(|t| t.load(lcg, resistance_line(&s.design, &s.roles)))
+            .unwrap_or(michell_geometry::float::DynamicLoad {
+                force_up: 0.0,
+                moment_bow_up: 0.0,
+            });
+        let counted = Counted {
+            inner,
+            report,
+            extra,
+        };
         let eq = solve_equilibrium_sectional_dynamic(
             &sources,
             &LoadCase {
@@ -689,7 +805,11 @@ pub fn flow_with_progress(
         ..NearFieldOptions::default()
     };
     track.at(2, 0.0, format!("{} rows deep per hull", nf.depth_rows))?;
-    let pressures = hull_pressure(&members, &cond, &nf).map_err(|e| e.to_string())?;
+    let pressures = if req.field {
+        hull_pressure(&members, &cond, &nf).map_err(|e| e.to_string())?
+    } else {
+        Vec::new()
+    };
 
     // The free surface: from ahead of the bows to ~1.5 lengths astern.
     let (mut xa, mut xb, mut yh) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
@@ -723,62 +843,67 @@ pub fn flow_with_progress(
                     && (o.length() - h.length()).abs() < tol
             })
     });
-    let g = if let Some(span) = req.case.span {
-        // A catamaran's field is its demihull's, twice, shifted by ±span/2
-        // (exact in thin-ship theory): one hull's field on a y-grid whose
-        // spacing divides span/2, summed at offset rows. Both demihulls are
-        // the same cut at the same attitude, and each is symmetric about its
-        // own centreplane, so the sum is symmetric too — half is computed.
-        let dxg = (x1 - x0) / (nx - 1) as f64;
-        let m = ((0.5 * span) / dxg).round().max(1.0) as usize;
-        let dy = 0.5 * span / m as f64;
-        let nh = (yh / dy).ceil() as usize + 1;
-        let (yh, ny) = ((nh - 1) as f64 * dy, 2 * nh - 1);
-        let rows = nh + m;
-        let (h0, p0) = members[0];
-        let one = [(h0, Placement { x: p0.x, y: 0.0 })];
-        let half = free_surface(
-            &one,
-            &cond,
-            &nf,
-            x0,
-            x1,
-            0.0,
-            (rows - 1) as f64 * dy,
-            nx,
-            rows,
-        )
-        .map_err(|e| e.to_string())?;
-        let row = |j: usize| &half.zeta[j * nx..(j + 1) * nx];
-        let mut zeta = Vec::with_capacity(nx * ny);
-        for iy in 0..ny {
-            let k = iy.abs_diff(nh - 1);
-            let (a, b) = (row(k.abs_diff(m)), row(k + m));
-            zeta.extend(a.iter().zip(b).map(|(a, b)| a + b));
-        }
-        michell::WaveGrid {
-            y0: -yh,
-            y1: yh,
-            ny,
-            zeta,
-            ..half
-        }
-    } else if symmetric {
-        let half = free_surface(&members, &cond, &nf, x0, x1, 0.0, yh, nx, nh)
-            .map_err(|e| e.to_string())?;
-        let mut zeta = Vec::with_capacity(nx * ny);
-        for iy in 0..ny {
-            let k = iy.abs_diff(nh - 1);
-            zeta.extend_from_slice(&half.zeta[k * nx..(k + 1) * nx]);
-        }
-        michell::WaveGrid {
-            y0: -yh,
-            ny,
-            zeta,
-            ..half
-        }
+    let g = if !req.field {
+        None
     } else {
-        free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny).map_err(|e| e.to_string())?
+        Some(if let Some(span) = req.case.span {
+            // A catamaran's field is its demihull's, twice, shifted by ±span/2
+            // (exact in thin-ship theory): one hull's field on a y-grid whose
+            // spacing divides span/2, summed at offset rows. Both demihulls are
+            // the same cut at the same attitude, and each is symmetric about its
+            // own centreplane, so the sum is symmetric too — half is computed.
+            let dxg = (x1 - x0) / (nx - 1) as f64;
+            let m = ((0.5 * span) / dxg).round().max(1.0) as usize;
+            let dy = 0.5 * span / m as f64;
+            let nh = (yh / dy).ceil() as usize + 1;
+            let (yh, ny) = ((nh - 1) as f64 * dy, 2 * nh - 1);
+            let rows = nh + m;
+            let (h0, p0) = members[0];
+            let one = [(h0, Placement { x: p0.x, y: 0.0 })];
+            let half = free_surface(
+                &one,
+                &cond,
+                &nf,
+                x0,
+                x1,
+                0.0,
+                (rows - 1) as f64 * dy,
+                nx,
+                rows,
+            )
+            .map_err(|e| e.to_string())?;
+            let row = |j: usize| &half.zeta[j * nx..(j + 1) * nx];
+            let mut zeta = Vec::with_capacity(nx * ny);
+            for iy in 0..ny {
+                let k = iy.abs_diff(nh - 1);
+                let (a, b) = (row(k.abs_diff(m)), row(k + m));
+                zeta.extend(a.iter().zip(b).map(|(a, b)| a + b));
+            }
+            michell::WaveGrid {
+                y0: -yh,
+                y1: yh,
+                ny,
+                zeta,
+                ..half
+            }
+        } else if symmetric {
+            let half = free_surface(&members, &cond, &nf, x0, x1, 0.0, yh, nx, nh)
+                .map_err(|e| e.to_string())?;
+            let mut zeta = Vec::with_capacity(nx * ny);
+            for iy in 0..ny {
+                let k = iy.abs_diff(nh - 1);
+                zeta.extend_from_slice(&half.zeta[k * nx..(k + 1) * nx]);
+            }
+            michell::WaveGrid {
+                y0: -yh,
+                ny,
+                zeta,
+                ..half
+            }
+        } else {
+            free_surface(&members, &cond, &nf, x0, x1, -yh, yh, nx, ny)
+                .map_err(|e| e.to_string())?
+        })
     };
     track.at(
         4,
@@ -854,7 +979,11 @@ pub fn flow_with_progress(
         }
     };
 
-    let meshes = s.meshes(&platform)?;
+    let meshes = if req.field {
+        s.meshes(&platform)?
+    } else {
+        Vec::new()
+    };
     let hulls: Vec<Value> = pressures
         .iter()
         .zip(meshes)
@@ -870,14 +999,39 @@ pub fn flow_with_progress(
             })
         })
         .collect();
+    // A drive's parts are friction on their own lengths, as the hull's
+    // members are, but at their own form factors (Hoerner's, for a foil and
+    // for a body of revolution) rather than the hull's.
+    let k_hull = michell::ViscousOptions::default().form_factor;
+    let (mut rv, mut r_app) = (0.0, 0.0);
+    let parts_known = res.viscous.len() == s.roles.len();
+    for (k, v) in res.viscous.iter().enumerate() {
+        match s.roles.get(k).filter(|_| parts_known) {
+            Some((role, Some(kp))) if role != "hull" => {
+                let r = v.resistance * (1.0 + kp) / (1.0 + k_hull);
+                rv += r;
+                r_app += r;
+            }
+            _ => rv += v.resistance,
+        }
+    }
+    let rt = res.wave.resistance + rv;
+    let q_s = 0.5
+        * rho
+        * cond.speed
+        * cond.speed
+        * members.iter().map(|(h, _)| h.wetted_surface()).sum::<f64>();
     let mut forces = forces;
+    if s.roles.iter().any(|r| r.0 != "hull") {
+        forces["r_appendages_viscous"] = json!(r_app);
+    }
     for (k, v) in [
         ("rw", res.wave.resistance),
-        ("rv", res.viscous_total),
-        ("rt", res.total),
-        ("pe", res.effective_power),
+        ("rv", rv),
+        ("rt", rt),
+        ("pe", rt * cond.speed),
         ("cw", res.cw),
-        ("ct", res.ct),
+        ("ct", rt / q_s.max(f64::MIN_POSITIVE)),
         ("interference", res.interference),
         ("mass", mass),
         ("lcg", lcg),
@@ -899,10 +1053,10 @@ pub fn flow_with_progress(
         "seconds": t0.elapsed().as_secs_f64(),
         "timing": { "attitude": t_attitude, "field": t_field },
         "hulls": hulls,
-        "surface": {
+        "surface": g.as_ref().map(|g| json!({
             "x0": g.x0, "x1": g.x1, "y0": g.y0, "y1": g.y1, "nx": g.nx, "ny": g.ny,
             "zeta": b64(bytemuck_f32(&g.zeta.iter().map(|&z| z as f32).collect::<Vec<_>>())),
-        },
+        })),
         "forces": forces,
     }))
 }
@@ -1230,6 +1384,8 @@ mod tests {
                 .unwrap(),
             warm: None,
             hold: None,
+            thrust: None,
+            field: true,
         }
     }
 

@@ -451,6 +451,20 @@ pub fn multihull_wave_resistance(
     cond: &Conditions,
     opts: &WaveOptions,
 ) -> Result<WaveResistance> {
+    floored_wave_resistance(members, cond, opts, 0.0)
+}
+
+/// [`multihull_wave_resistance`], resolved only to `floor` [N]: the
+/// truncation and refinement are relative to the larger of it and the
+/// result. A member's own resistance, wanted beside a fleet's, needs only
+/// the fleet's precision; a small part's tail (a surface-piercing leg's,
+/// say) otherwise runs to wavelengths far below the theory's reach.
+fn floored_wave_resistance(
+    members: &[(&SectionalHull, Placement)],
+    cond: &Conditions,
+    opts: &WaveOptions,
+    floor: f64,
+) -> Result<WaveResistance> {
     cond.validate()?;
     if members.is_empty() {
         return Err(Error::InvalidConditions("empty fleet".into()));
@@ -460,6 +474,7 @@ pub fn multihull_wave_resistance(
     let n = members.len() as f64;
     let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
     let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
+    let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
     let params = OuterParams {
         nu,
         x_half: members
@@ -471,22 +486,44 @@ pub fn multihull_wave_resistance(
             .map(|(_, p)| (p.y - y_ref).abs())
             .fold(0.0, f64::max),
         t_max: members.iter().map(|(h, _)| h.draft()).fold(0.0, f64::max),
+        floor: floor / coeff,
     };
-    let coeff = 4.0 * cond.fluid.density * g * g / (PI * u * u);
-    // Copies of one hull (a catamaran): the pair's integrand oscillates with
-    // the spacing and needs many λ-nodes, but every copy carries the same
-    // smooth amplitude. Integrate the hull alone (which finds how far in λ
-    // it matters), tabulate its amplitude that far, and let the fleet
-    // integral interpolate the table — exact to the interpolation's ~1e-10.
+    // Copies of members side by side (a catamaran's demihulls, each with
+    // its drive): the fleet's integrand oscillates with the spacing and
+    // needs many λ-nodes, but each copy carries its original's smooth
+    // amplitude. Integrate one copy of each, side by side collapsed (which
+    // finds how far in λ the fleet matters, without the oscillation),
+    // tabulate each original's amplitude that far, and let the fleet
+    // integral interpolate the tables — exact to the interpolation's ~1e-10.
     let tw = twins(members);
-    if members.len() > 1 && tw[1..].iter().all(|t| *t == Some(0)) {
-        let (h0, _) = members[0];
-        let solo = multihull_wave_resistance(&[(h0, Placement::default())], cond, opts)?;
-        let table = AmplitudeTable::new(h0, nu, opts.transom, 1.1 * solo.max_lambda);
+    if tw.iter().any(Option::is_some) && members.iter().any(|(_, p)| p.y != members[0].1.y) {
+        let originals: Vec<usize> = (0..members.len()).filter(|&i| tw[i].is_none()).collect();
+        let collapsed: Vec<(&SectionalHull, Placement)> = originals
+            .iter()
+            .map(|&i| {
+                (
+                    members[i].0,
+                    Placement {
+                        y: 0.0,
+                        ..members[i].1
+                    },
+                )
+            })
+            .collect();
+        let group = floored_wave_resistance(&collapsed, cond, opts, floor)?;
+        let tables: Vec<AmplitudeTable> = originals
+            .iter()
+            .map(|&i| AmplitudeTable::new(members[i].0, nu, opts.transom, 1.1 * group.max_lambda))
+            .collect();
+        let table_of = |i: usize| {
+            let o = tw[i].unwrap_or(i);
+            &tables[originals.iter().position(|&j| j == o).expect("an original")]
+        };
         let mem = members
             .iter()
-            .map(|(h, p)| Tabulated {
-                table: &table,
+            .enumerate()
+            .map(|(i, (h, p))| Tabulated {
+                table: table_of(i),
                 dx: h.x_center() + p.x - cx_ref,
                 dy: p.y - y_ref,
             })
@@ -519,10 +556,15 @@ pub fn multihull_resistance(
     // A copy of an earlier member has its resistance alone.
     let tw = twins(members);
     let mut solo: Vec<f64> = Vec::with_capacity(members.len());
+    // A member's own resistance needn't be resolved finer than a tenth of
+    // the fleet's: that leaves a hull's (always a good share of it) exact,
+    // and stops a small part's (a drive's leg) long before its tail runs
+    // out to wavelengths far below the theory's reach.
+    let floor = 0.1 * wave.resistance.abs();
     for (i, m) in members.iter().enumerate() {
         let r = match tw[i] {
             Some(j) => solo[j],
-            None => multihull_wave_resistance(&[*m], cond, wave_opts)?.resistance,
+            None => floored_wave_resistance(&[*m], cond, wave_opts, floor)?.resistance,
         };
         solo.push(r);
     }
@@ -995,6 +1037,7 @@ mod twin_tests {
         let cx_ref = members.iter().map(|(h, p)| h.x_center() + p.x).sum::<f64>() / n;
         let y_ref = members.iter().map(|(_, p)| p.y).sum::<f64>() / n;
         let params = OuterParams {
+            floor: 0.0,
             nu,
             x_half: members
                 .iter()
@@ -1089,6 +1132,54 @@ mod twin_tests {
                 );
             }
         }
+    }
+
+    /// The same for a catamaran whose demihulls each carry a part of their
+    /// own (a drive's surface-piercing leg, here a small Wigley strut near
+    /// the stern): one table per original, each copy reading its own.
+    #[test]
+    fn a_catamaran_with_parts_from_tabulated_amplitudes_is_exact() {
+        let wigley = |l: f64, b: f64, t: f64| {
+            let surfaces = michell_geometry::iges::wigley_surfaces(l, b, t).unwrap();
+            michell_geometry::iges::source_fleet_from_surfaces(surfaces.to_vec(), 1.0, 0.0)
+                .unwrap()
+                .situate_sectional(
+                    0,
+                    0.0,
+                    &Default::default(),
+                    &Default::default(),
+                    &Default::default(),
+                )
+                .unwrap()
+                .unwrap()
+                .hull
+        };
+        let (hull, strut) = (wigley(10.0, 1.0, 0.625), wigley(0.4, 0.05, 0.5));
+        let cond = Conditions::seawater(0.35 * (9.81f64 * 10.0).sqrt());
+        let opts = WaveOptions::default();
+        let span = 3.0;
+        let fleet: Vec<(&SectionalHull, Placement)> = [0.5 * span, -0.5 * span]
+            .into_iter()
+            .flat_map(|y| {
+                [
+                    (&hull, Placement { x: 0.0, y }),
+                    (&strut, Placement { x: -4.0, y }),
+                ]
+            })
+            .collect();
+        let fast = multihull_wave_resistance(&fleet, &cond, &opts)
+            .unwrap()
+            .resistance;
+        let slow = direct(&fleet, &cond, &opts);
+        assert!(
+            (fast - slow).abs() < 1e-5 * slow,
+            "tabulated {fast} vs direct {slow}"
+        );
+        // The struts are in it: without them the resistance differs.
+        let bare = multihull_wave_resistance(&[fleet[0], fleet[2]], &cond, &opts)
+            .unwrap()
+            .resistance;
+        assert!((fast - bare).abs() > 1e-3 * bare, "{fast} vs {bare}");
     }
 }
 
