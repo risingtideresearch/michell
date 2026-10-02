@@ -210,6 +210,7 @@ source. For e12 at 121 stations of 33 rays, a record is 83 KB.
 | `prop --thrust T --speed V --d-max L …` | → prop | the same, for a thrust and speed given outright |
 | `match [--rank-by power\|mass\|price] [--direct-only] [--max-mass --max-od --max-price --vendor --mapped-only …]` | prop* → drive* | the motors that can drive each prop, ranked |
 | `motors [filters]` | → motor* | the motor database |
+| `cad [-o FILE] [--no-water] [--wave-scale K] [--prop-x --prop-y --depth]` | result*/prop* → IGES | the hulls at their attitude, the water and a prop's discs, for CAD |
 | `get ID…` | → record* | print stored records, by id or a prefix of one |
 | `blob ID` | → bytes | print a stored blob (a result's `field`) |
 
@@ -399,6 +400,38 @@ results on stdin, `-o` is a pattern naming each picture by `{id8}` or
   side: ζ at the waterline half-breadth, and on the centreplane beyond the
   ends. `--wave-scale` exaggerates the wave only, and the picture says so.
 
+### CAD
+
+`cad` writes a calm-water result as an IGES file to open in CAD. Given a prop
+(on a result) instead, it adds the prop's discs.
+
+```sh
+boatmath cad -o e12-fn03.igs < result.json
+boatmath prop --d-max 12in --wake auto --thrust-deduction auto --prop-x=-0.25 < result.json \
+  | boatmath cad -o e12-prop.igs
+```
+
+- **The hulls:** each hull's own B-spline patches, re-posed to the result's
+  attitude, so it's exact rather than a mesh. Cut at the still water, the
+  exported e12 has the solver's displaced volume at that attitude to 3e-8.
+  A hull from an STL has no patches and is refused, for now.
+- **The water:** the free surface as one bicubic B-spline through every point
+  of the result's wave grid, at full resolution. That's about 640 × 300
+  control points, so files run to about 20 MB; `--no-water` leaves it out,
+  and `--wave-scale` exaggerates it.
+- **The discs:** a placeholder for each propeller, a flat annulus from hub
+  (0.2 R) to tip, square to the shaft. They go where the prop's wake estimate
+  put them, or else at `--prop-x`, `--prop-y` and `--depth` from each hull's
+  aft end (default the aft end, on the centreplane, at the prop's shaft
+  depth), moved with the attitude.
+- **Levels:** hulls on level 1 (white, `HULL1`, `HULL2`), the water on 2
+  (cyan, `WATER`), discs on 3 (red, `PROP1`, …), so each can be toggled as a
+  layer.
+
+The frame is the water's: x forward, y to port, z up, the still water at
+z = 0, in metres (the file says so). OpenCASCADE reads the files with every
+face valid.
+
 ## Code
 
 - **`crates/boatmath`** holds what the CLI and the web app share: `params.rs`
@@ -422,6 +455,8 @@ results on stdin, `-o` is a pattern naming each picture by `{id8}` or
 
 - `gz-waves`: quasi-static GZ in a regular wave (`platform::wave_gz`).
 - `show`: open a hull, case or result in the 3-D viewer.
+- STEP output, real propeller blades (propopt's `propgeom.py`), and CAD
+  surfaces for STL hulls.
 - Pictures of results in waves (RAOs are a `plot --explode` away already).
 - propopt's Python-only work: the BEM correction for an extended or scanned
   geometry (`--geometry`), and its own hull models (the hull pipeline

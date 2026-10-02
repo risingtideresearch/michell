@@ -99,6 +99,8 @@ dependencies = [
  "boatmath",
  "clap",
  "flate2",
+ "michell",
+ "michell-geometry",
  "propeller",
  "serde",
  "serde_json",

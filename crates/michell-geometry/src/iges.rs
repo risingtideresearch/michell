@@ -3005,6 +3005,193 @@ impl<'a> Lobatto<'a> {
 ///
 /// `product` names the model in the global section (product ID / file name).
 pub fn write(surfaces: &[NurbsSurface3], product: &str) -> Result<String> {
+    write_labelled(surfaces, &vec![Label::default(); surfaces.len()], product)
+}
+
+/// The bicubic B-spline surface through every point of a grid of heights
+/// `z[iy * nx + ix]` over `[x0, x1] × [y0, y1]`: an interpolant, so it
+/// passes exactly through each sample, as `(x, y, z)` with u along x and v
+/// along y. The knots follow de Boor's averaging rule; the x and y control
+/// coordinates are the Greville abscissae, which makes the surface an exact
+/// graph `z = f(x, y)`. Needs at least 4 × 4 points.
+// `!(x1 > x0)` rejects NaN too.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+#[allow(clippy::too_many_arguments)]
+pub fn graph_surface(
+    x0: f64,
+    x1: f64,
+    nx: usize,
+    y0: f64,
+    y1: f64,
+    ny: usize,
+    z: &[f64],
+) -> Result<NurbsSurface3> {
+    if nx < 4 || ny < 4 || z.len() != nx * ny || !(x1 > x0) || !(y1 > y0) {
+        return Err(Error::InvalidInput(format!(
+            "a grid surface needs at least 4 x 4 heights over a box ({nx} x {ny}, {} given)",
+            z.len()
+        )));
+    }
+    let interp = |n: usize, a: f64, b: f64| -> (Vec<f64>, Vec<f64>, Interp) {
+        let t: Vec<f64> = (0..n)
+            .map(|i| a + (b - a) * i as f64 / (n - 1) as f64)
+            .collect();
+        let mut knots = vec![a; 4];
+        for j in 1..n - 3 {
+            knots.push((t[j] + t[j + 1] + t[j + 2]) / 3.0);
+        }
+        knots.extend([b; 4]);
+        let greville = (0..n)
+            .map(|i| (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0)
+            .collect();
+        let solver = Interp::new(&knots, &t);
+        (knots, greville, solver)
+    };
+    let (ku, gu, su) = interp(nx, x0, x1);
+    let (kv, gv, sv) = interp(ny, y0, y1);
+    // Along x for each row, then along y for each column.
+    let mut r = vec![0.0; nx * ny];
+    for iy in 0..ny {
+        let row = su.solve(&z[iy * nx..(iy + 1) * nx]);
+        for ix in 0..nx {
+            r[ix * ny + iy] = row[ix];
+        }
+    }
+    let mut ctrl = Vec::with_capacity(nx * ny);
+    for ix in 0..nx {
+        let col = sv.solve(&r[ix * ny..(ix + 1) * ny]);
+        for iy in 0..ny {
+            ctrl.push([gu[ix], gv[iy], col[iy]]);
+        }
+    }
+    Ok(NurbsSurface3 {
+        degree_u: 3,
+        degree_v: 3,
+        knots_u: ku,
+        knots_v: kv,
+        n_ctrl_u: nx,
+        n_ctrl_v: ny,
+        weights: vec![1.0; nx * ny],
+        ctrl,
+        trim_uv: None,
+    })
+}
+
+/// Cubic B-spline interpolation at fixed sites: the banded collocation
+/// matrix factored once (no pivoting: it's totally positive).
+struct Interp {
+    n: usize,
+    /// Row i's four nonzero basis values and the column of the first.
+    rows: Vec<([f64; 4], usize)>,
+}
+
+impl Interp {
+    fn new(knots: &[f64], sites: &[f64]) -> Interp {
+        let n = sites.len();
+        let rows = sites
+            .iter()
+            .map(|&t| {
+                // The span with knots[s] <= t < knots[s+1], clamped to the last.
+                let s = (3..n).rev().find(|&s| knots[s] <= t).unwrap_or(3);
+                (cubic_basis(knots, s, t), s - 3)
+            })
+            .collect();
+        Interp { n, rows }
+    }
+
+    /// Solve `A c = rhs` by banded Gaussian elimination.
+    fn solve(&self, rhs: &[f64]) -> Vec<f64> {
+        let n = self.n;
+        // Dense band: columns i-3..=i+3 of row i at offsets 0..7.
+        let mut a = vec![[0.0f64; 7]; n];
+        for (i, (vals, c0)) in self.rows.iter().enumerate() {
+            for (k, &v) in vals.iter().enumerate() {
+                let c = c0 + k;
+                a[i][c + 3 - i] = v;
+            }
+        }
+        let mut b = rhs.to_vec();
+        for i in 0..n {
+            let piv = a[i][3];
+            for r in i + 1..(i + 4).min(n) {
+                let f = a[r][i + 3 - r] / piv;
+                if f == 0.0 {
+                    continue;
+                }
+                for c in i..(i + 4).min(n) {
+                    a[r][c + 3 - r] -= f * a[i][c + 3 - i];
+                }
+                b[r] -= f * b[i];
+            }
+        }
+        let mut x = vec![0.0; n];
+        for i in (0..n).rev() {
+            let mut s = b[i];
+            for c in i + 1..(i + 4).min(n) {
+                s -= a[i][c + 3 - i] * x[c];
+            }
+            x[i] = s / a[i][3];
+        }
+        x
+    }
+}
+
+/// The four cubic basis functions alive on span `s` at `t` (Cox–de Boor).
+fn cubic_basis(knots: &[f64], s: usize, t: f64) -> [f64; 4] {
+    let mut n = [1.0, 0.0, 0.0, 0.0];
+    let (mut left, mut right) = ([0.0; 4], [0.0; 4]);
+    for j in 1..=3 {
+        left[j] = t - knots[s + 1 - j];
+        right[j] = knots[s + j] - t;
+        let mut saved = 0.0;
+        for r in 0..j {
+            let den = right[r + 1] + left[j - r];
+            let tmp = if den != 0.0 { n[r] / den } else { 0.0 };
+            n[r] = saved + right[r + 1] * tmp;
+            saved = left[j - r] * tmp;
+        }
+        n[j] = saved;
+    }
+    n
+}
+
+/// How a surface is filed in CAD: its level (a layer), colour, and entity
+/// label (up to eight characters).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Label {
+    pub level: u32,
+    pub color: Color,
+    pub name: String,
+}
+
+/// IGES's predefined colours (directory-entry colour numbers).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Color {
+    #[default]
+    None = 0,
+    Black = 1,
+    Red = 2,
+    Green = 3,
+    Blue = 4,
+    Yellow = 5,
+    Magenta = 6,
+    Cyan = 7,
+    White = 8,
+}
+
+/// [`write`], each surface with its [`Label`].
+pub fn write_labelled(
+    surfaces: &[NurbsSurface3],
+    labels: &[Label],
+    product: &str,
+) -> Result<String> {
+    if labels.len() != surfaces.len() {
+        return Err(Error::InvalidInput(format!(
+            "{} labels for {} surfaces",
+            labels.len(),
+            surfaces.len()
+        )));
+    }
     if surfaces.is_empty() {
         return Err(Error::InvalidInput("no surfaces to write".into()));
     }
@@ -3118,28 +3305,35 @@ pub fn write(surfaces: &[NurbsSurface3], product: &str) -> Result<String> {
         p_lines.extend(chunk.into_iter().map(|l| (l, de_seq)));
 
         let f = |v: usize| format!("{v:>8}");
+        let lab = &labels[k];
+        let name: String = lab
+            .name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .take(8)
+            .collect();
         d_lines.push(format!(
             "{}{}{}{}{}{}{}{}{:>8}",
             f(128),
             f(pd_ptr),
             f(0),
             f(0),
-            f(0),
+            f(lab.level as usize),
             f(0),
             f(0),
             f(0),
             "00000000"
         ));
         d_lines.push(format!(
-            "{}{}{}{}{}{:8}{:8}{:8}{}",
+            "{}{}{}{}{}{:8}{:8}{:>8}{}",
             f(128),
             f(0),
-            f(0),
+            f(lab.color as usize),
             f(pd_count),
             f(0),
             "",
             "",
-            "",
+            name,
             f(0)
         ));
     }
@@ -3687,5 +3881,55 @@ mod pose_timing {
                 );
             }
         }
+    }
+
+    /// The grid surface passes through every sample, between them follows a
+    /// smooth field closely, and round-trips through the IGES writer with
+    /// its labels.
+    #[test]
+    fn a_grid_surface_through_its_samples() {
+        let (nx, ny) = (41, 17);
+        let (x0, x1, y0, y1) = (-3.0, 5.0, -1.0, 2.0);
+        let f = |x: f64, y: f64| 0.1 * (1.3 * x).sin() * (0.7 * y).cos() + 0.02 * x;
+        let mut z = Vec::new();
+        for iy in 0..ny {
+            for ix in 0..nx {
+                let x = x0 + (x1 - x0) * ix as f64 / (nx - 1) as f64;
+                let y = y0 + (y1 - y0) * iy as f64 / (ny - 1) as f64;
+                z.push(f(x, y));
+            }
+        }
+        let g = graph_surface(x0, x1, nx, y0, y1, ny, &z).unwrap();
+        g.validate().unwrap();
+        let mut worst: f64 = 0.0;
+        for iy in (0..ny).step_by(3) {
+            for ix in (0..nx).step_by(5) {
+                let x = x0 + (x1 - x0) * ix as f64 / (nx - 1) as f64;
+                let y = y0 + (y1 - y0) * iy as f64 / (ny - 1) as f64;
+                let p = g.point(x, y);
+                worst =
+                    worst.max((p[0] - x).abs() + (p[1] - y).abs() + (p[2] - z[iy * nx + ix]).abs());
+            }
+        }
+        assert!(worst < 1e-12, "at the samples: {worst}");
+        let p = g.point(0.37, 0.61);
+        assert!((p[2] - f(p[0], p[1])).abs() < 1e-4, "between: {p:?}");
+
+        let labels = [Label {
+            level: 2,
+            color: Color::Cyan,
+            name: "WATER".into(),
+        }];
+        let text = write_labelled(std::slice::from_ref(&g), &labels, "grid").unwrap();
+        let back = parse(&text).unwrap();
+        assert_eq!(back.surfaces.len(), 1);
+        assert_eq!(back.surfaces[0].ctrl.len(), nx * ny);
+        let d = text
+            .lines()
+            .filter(|l| l.as_bytes().get(72) == Some(&b'D'))
+            .collect::<Vec<_>>();
+        assert_eq!(d[0][32..40].trim(), "2", "level: {}", d[0]);
+        assert_eq!(d[1][16..24].trim(), "7", "colour: {}", d[1]);
+        assert_eq!(d[1][56..64].trim(), "WATER", "label: {}", d[1]);
     }
 }

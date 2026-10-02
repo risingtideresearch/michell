@@ -133,7 +133,7 @@ fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
-fn f32s(v: &Value, what: &str) -> Result<Vec<f32>, String> {
+pub(crate) fn f32s(v: &Value, what: &str) -> Result<Vec<f32>, String> {
     let bytes = b64_decode(v.as_str().ok_or_else(|| format!("field: no {what}"))?)?;
     Ok(bytes
         .chunks_exact(4)

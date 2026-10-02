@@ -157,7 +157,7 @@ pub fn auto_prop(
         speed,
         sp.closure.transom(),
     )?;
-    let hulls = placed.hulls.len();
+    let hulls = placed.mounts.hulls.len();
     let shafts = inputs.shafts as usize;
     if !shafts.is_multiple_of(hulls) || shafts / hulls > 2 {
         return Err(format!(
@@ -191,7 +191,7 @@ pub fn auto_prop(
         let best = s
             .best
             .ok_or("no B-series propeller can do it (try a larger --d-max, or --no-cavitation)")?;
-        let discs = placed.discs(&auto.at, per_hull, 0.5 * best.D);
+        let discs = placed.mounts.discs(&auto.at, per_hull, 0.5 * best.D);
         let wakes = discs
             .iter()
             .map(|d| placed.interaction.wake(d))

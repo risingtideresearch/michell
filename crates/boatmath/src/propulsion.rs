@@ -21,11 +21,43 @@ pub struct Position {
 /// The hulls at an attitude and speed, their singularities placed.
 pub struct Placed {
     pub interaction: Interaction,
+    pub mounts: Mounts,
+}
+
+/// Where propellers go on each hull at an attitude.
+pub struct Mounts {
     /// Each hull's aft end and centreplane at the attitude [m, fleet x, y].
     pub hulls: Vec<(f64, f64)>,
     sinkage: f64,
     trim: f64,
     pivot: f64,
+}
+
+fn mounts_of(members: &[(&SectionalHull, Placement)], attitude: (f64, f64), pivot: f64) -> Mounts {
+    Mounts {
+        hulls: members
+            .iter()
+            .map(|(h, p)| (h.x_range().0 + p.x, p.y))
+            .collect(),
+        sinkage: attitude.0,
+        trim: attitude.1,
+        pivot,
+    }
+}
+
+/// The case's hulls at an attitude, for placing propellers on (no flow).
+pub fn mounts(
+    name: &str,
+    bytes: Vec<u8>,
+    cut: &LoftRequest,
+    c: &CaseParams,
+    attitude: (f64, f64),
+) -> Result<Mounts, String> {
+    let s = setup(name, bytes, cut, c)?;
+    let platform = s.platform(attitude.0, attitude.1);
+    let owned = s.situate(&platform)?;
+    let members: Vec<(&SectionalHull, Placement)> = owned.iter().map(|(h, p)| (h, *p)).collect();
+    Ok(mounts_of(&members, attitude, platform.pivot_x))
 }
 
 pub fn placed(
@@ -49,17 +81,11 @@ pub fn placed(
     let interaction = Interaction::new(&members, &cond, &opts).map_err(|e| e.to_string())?;
     Ok(Placed {
         interaction,
-        hulls: members
-            .iter()
-            .map(|(h, p)| (h.x_range().0 + p.x, p.y))
-            .collect(),
-        sinkage: attitude.0,
-        trim: attitude.1,
-        pivot: platform.pivot_x,
+        mounts: mounts_of(&members, attitude, platform.pivot_x),
     })
 }
 
-impl Placed {
+impl Mounts {
     /// The discs of `per_hull` propellers of `radius` on each hull, moved
     /// with it: its sinkage takes them down, and a bow-up trim takes the
     /// ones aft of the pivot deeper.

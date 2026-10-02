@@ -49,6 +49,19 @@ pub trait HullSource: Send + Sync {
         self.situate_sectional_warm(idx, waterline_z, pose, platform, opts, &mut state)
     }
 
+    /// The hull's surface patches at a pose, in the CAD frame (z up, metres)
+    /// with the water back at `waterline_z` — for exporting a studied
+    /// configuration. `None` for a source without patches (a mesh).
+    fn posed_surfaces(
+        &self,
+        _idx: usize,
+        _waterline_z: f64,
+        _pose: &HullPose,
+        _platform: &Platform,
+    ) -> Option<Result<Vec<crate::iges::NurbsSurface3>>> {
+        None
+    }
+
     /// The whole hull (above water too) as triangles at a pose, for display:
     /// `x` forward, `y` transverse, `z` up from the effective waterline.
     fn posed_tessellation(
@@ -63,6 +76,22 @@ pub trait HullSource: Send + Sync {
 impl HullSource for SourceFleet {
     fn len(&self) -> usize {
         SourceFleet::len(self)
+    }
+
+    fn posed_surfaces(
+        &self,
+        idx: usize,
+        waterline_z: f64,
+        pose: &HullPose,
+        platform: &Platform,
+    ) -> Option<Result<Vec<crate::iges::NurbsSurface3>>> {
+        Some(SourceFleet::posed_surfaces(
+            self,
+            idx,
+            waterline_z,
+            pose,
+            platform,
+        ))
     }
 
     fn x_mid(&self, idx: usize) -> f64 {

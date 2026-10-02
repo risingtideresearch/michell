@@ -12,6 +12,7 @@
 //! Every record is saved in the store (`$BOATMATH_HOME`, default
 //! `~/.boatmath`) and refers to its parents by id. See docs/boatmath-cli.md.
 
+mod cad;
 mod list;
 mod path;
 mod plot;
@@ -293,6 +294,31 @@ enum Command {
     Motors {
         #[command(flatten)]
         filter: MotorFilter,
+    },
+    /// Calm-water results on stdin, or props on them, as IGES for CAD: the
+    /// hulls at their attitude, the free surface, and a prop's discs, each on
+    /// its own level (1 hulls, 2 water, 3 props).
+    Cad {
+        /// Write here; with several records, a pattern naming each by
+        /// `{id8}` or `{froude}`.
+        #[arg(short)]
+        o: Option<String>,
+        /// Leave out the free surface.
+        #[arg(long)]
+        no_water: bool,
+        /// Draw the waves this many times their height.
+        #[arg(long, default_value_t = 1.0)]
+        wave_scale: f64,
+        /// A prop's discs, when it has no placement of its own: forward of
+        /// each hull's aft end (negative: astern).
+        #[arg(long, allow_hyphen_values = true)]
+        prop_x: Option<String>,
+        /// Out from each hull's centreplane.
+        #[arg(long)]
+        prop_y: Option<String>,
+        /// Shaft depth below the design waterline (default the prop's).
+        #[arg(long)]
+        depth: Option<String>,
     },
     /// Print a stored blob (a result's `field`, say) by its id.
     Blob { id: String },
@@ -1056,6 +1082,58 @@ fn go(cli: Cli) -> Result<usize, String> {
             for m in &propeller::motor::Database::vendored().motors {
                 if f.admits(m) {
                     emit(&props::motor_record(m))?;
+                }
+            }
+        }
+        Command::Cad {
+            o,
+            no_water,
+            wave_scale,
+            prop_x,
+            prop_y,
+            depth,
+        } => {
+            let len = |s: &Option<String>| s.as_deref().map(units::length).transpose();
+            let opts = cad::Options {
+                water: !no_water,
+                wave_scale,
+                prop_x: len(&prop_x)?,
+                prop_y: len(&prop_y)?,
+                depth: len(&depth)?,
+            };
+            let records = read_records()?;
+            if records.len() > 1 && !o.as_deref().is_some_and(|p| p.contains('{')) {
+                return Err(format!(
+                    "{} records: give -o a pattern with {{id8}} or {{froude}} to name each file",
+                    records.len()
+                ));
+            }
+            for r in &records {
+                let id = r["id"].as_str().unwrap_or("");
+                match cad::model(&store, r, &opts) {
+                    Ok(text) => match &o {
+                        Some(p) => {
+                            let froude = r["froude"]
+                                .as_f64()
+                                .or_else(|| {
+                                    r["result"]
+                                        .as_str()
+                                        .and_then(|rid| store.get("result", rid).ok().flatten())
+                                        .and_then(|res| res["froude"].as_f64())
+                                })
+                                .unwrap_or(0.0);
+                            let path = p
+                                .replace("{id8}", &id[..8.min(id.len())])
+                                .replace("{froude}", &format!("{froude}"));
+                            std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))?;
+                            eprintln!("boatmath: wrote {path}");
+                        }
+                        None => out.write_all(text.as_bytes()).map_err(stdout_err)?,
+                    },
+                    Err(e) => {
+                        eprintln!("boatmath: {}: {e}", store::short(id));
+                        failed += 1;
+                    }
                 }
             }
         }

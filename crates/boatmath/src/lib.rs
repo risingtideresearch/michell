@@ -16,6 +16,7 @@ use michell_geometry::iges::{HullPose, Platform, SectionalImport};
 use michell_geometry::SectionalHull;
 use serde_json::{json, Value};
 
+pub mod cad;
 pub mod native;
 pub mod params;
 pub mod platform;

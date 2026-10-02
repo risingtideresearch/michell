@@ -12,6 +12,8 @@ path = "src/main.rs"
 [dependencies]
 boatmath = { path = "../boatmath" }
 propeller = { path = "../propeller" }
+michell = { path = "../michell" }
+michell-geometry = { path = "../michell-geometry" }
 clap = { version = "4.6", features = ["derive"] }
 flate2 = "1.1.10"
 serde = { version = "1.0.229", features = ["derive"] }
