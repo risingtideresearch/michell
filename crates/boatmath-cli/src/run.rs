@@ -121,6 +121,17 @@ pub fn run(store: &Store, studies: &[Value], opts: &Options) -> Result<usize, St
     Ok(failed.into_inner().unwrap())
 }
 
+/// Each hull's entry less its display mesh.
+fn without_meshes(hulls: &Value) -> Value {
+    let mut h = hulls.clone();
+    for e in h.as_array_mut().into_iter().flatten() {
+        if let Some(o) = e.as_object_mut() {
+            o.remove("mesh");
+        }
+    }
+    h
+}
+
 /// Compute one study and save its result.
 fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
     let id = study["id"].as_str().unwrap_or("");
@@ -186,7 +197,12 @@ fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
                 "transverse_wavelength": v["transverse_wavelength"],
                 "seconds": v["seconds"],
                 "forces": v["forces"],
-                "field": store.put_json_blob(&json!({ "hulls": v["hulls"], "surface": v["surface"] }))?,
+                // The meshes are for drawing; the views re-pose the hull's
+                // geometry at the attitude instead of keeping them.
+                "field": store.put_json_blob(&json!({
+                    "hulls": without_meshes(&v["hulls"]),
+                    "surface": v["surface"],
+                }))?,
                 "sections": pair(&v["forces"], "sinkage", "trim_rad")
                     .map(|a| sections(store, &case, a))
                     .transpose()?,
@@ -218,7 +234,6 @@ fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
                 "sections": cr["sections"],
                 "peaks": wave_scalars(&v),
                 "seakeeping": v["seakeeping"],
-                "field": store.put_json_blob(&json!({ "hulls": v["hulls"] }))?,
             })
         }
     };

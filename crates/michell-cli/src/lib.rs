@@ -12,7 +12,7 @@ mod formats;
 mod json;
 pub mod manifest;
 mod pdf;
-mod png;
+pub mod png;
 mod render;
 mod report;
 mod scene;

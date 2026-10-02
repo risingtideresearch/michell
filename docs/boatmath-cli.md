@@ -125,8 +125,14 @@ In calm water:
 { "type": "result", "id": "<study id>", "study": "<study id>", "kind": "calm",
   "froude": 0.35, "speed": …, "transverse_wavelength": …, "seconds": 41.0,
   "forces": { "rw": …, "rv": …, "rt": …, "pe": …, "cw": …, "ct": …, "sinkage": …, "trim_deg": …, … },
-  "field": { "blob": "…" }, "solver_version": "…" }
+  "field": { "blob": "…" }, "sections": "<sections id>", "solver_version": "…" }
 ```
+
+`field` holds the free surface (`surface`: a grid `nx × ny` over
+`[x0, x1] × [y0, y1]`, ζ as base64 little-endian f32) and each hull's
+pressure (`hulls`: `x`, `depth`, `half_beam` and `cp` on stations × depths,
+and its centreplane `y`). It keeps no meshes: a picture re-poses the hull's
+geometry at the attitude instead.
 
 In waves:
 
@@ -136,7 +142,7 @@ In waves:
   "calm": "<the calm-water study it is held about>",
   "peaks": { "heave_peak": …, "heave_peak_lambda": …, "sea_accel_bow": …, … },
   "seakeeping": { "gm_t": …, "headings": [ { "heading": 180, "points": [ … ], "sea": … } ], … },
-  "field": { "blob": "…" }, "solver_version": "…" }
+  "sections": "<its calm-water study's>", "solver_version": "…" }
 ```
 
 A calm-water result's `sections` is the id of its hulls cut at the attitude
@@ -197,6 +203,9 @@ source. For e12 at 121 stations of 33 rays, a record is 83 KB.
 | `run [-j N] [--force] [-q]` | study* → result* | compute, or find in the store |
 | `table FIELD… [--explode PATH] [--csv] [--no-header]` | any* → TSV/CSV | a column per field path |
 | `plot -x F -y F… [--by F…] [--explode PATH] [--title --xlabel --ylabel] [-o FILE]` | any* → SVG | line plot, a series per y field and `--by` value |
+| `wake [-o FILE] [--range M] [--title]` | result* → SVG | the free surface from above |
+| `pressure [-o FILE] [--range CP] [--title]` | result* → SVG | the pressure on the hulls from below |
+| `profile [-o FILE] [--wave-scale K] [--title]` | result* → SVG | the hull at its attitude, with the wave along its side |
 | `get ID…` | → record* | print stored records, by id or a prefix of one |
 | `blob ID` | → bytes | print a stored blob (a result's `field`) |
 
@@ -247,6 +256,26 @@ that follow the viewer's colour scheme. It has a legend for two or more
 series, a label at the end of each line for up to four, and a tooltip on
 every point. It takes at most eight series; narrow `--by` beyond that.
 
+### Pictures
+
+`wake`, `pressure` and `profile` draw calm-water results as SVG, in metres
+with x forward, to scale. A picture too thin to read at true scale has its
+short axis stretched, and the axis label says by how much. With several
+results on stdin, `-o` is a pattern naming each picture by `{id8}` or
+`{froude}` (`wake-{froude}.svg`).
+
+- `wake`: ζ(x, y) from above, as a heatmap from trough (blue) to crest (red),
+  neutral at still water, with the hulls' waterlines drawn over it. The
+  colour scale is ±`--range` metres, by default the 99th percentile of |ζ|,
+  so a spike at a bow doesn't wash it out.
+- `pressure`: C_p on each hull's surface from below (port at the bottom),
+  on the pressure solver's grid of stations × depths. The scale is likewise
+  ±`--range`.
+- `profile`: the first hull side-on at its attitude, its geometry re-posed
+  there (topsides and all), with the still waterline and the wave along its
+  side: ζ at the waterline half-breadth, and on the centreplane beyond the
+  ends. `--wave-scale` exaggerates the wave only, and the picture says so.
+
 ## Code
 
 - **`crates/boatmath`** holds what the CLI and the web app share: `params.rs`
@@ -256,7 +285,8 @@ every point. It takes at most eight series; narrow `--by` beyond that.
   front ends compute the same way.
 - `crates/boatmath/src/sections.rs`: a case cut at an attitude, as JSON.
 - **`crates/boatmath-cli`** (binary `boatmath`): `store.rs`, `records.rs`
-  (hull, case, study, sections), `run.rs`, `path.rs`, `plot.rs`, `list.rs`.
+  (hull, case, study, sections), `run.rs`, `path.rs`, `plot.rs`, `views.rs`
+  (wake, pressure, profile), `list.rs`.
 - `crates/boatmath/src/native.rs`: geometry as JSON, read from a file or
   re-posed. `boatmath`'s computations take its bytes wherever they take a
   hull file's, so the web app could store it too.
@@ -266,6 +296,7 @@ every point. It takes at most eight series; narrow `--by` beyond that.
 
 - `gz-waves`: quasi-static GZ in a regular wave (`platform::wave_gz`).
 - `show`: open a hull, case or result in the 3-D viewer.
+- Pictures of results in waves (RAOs are a `plot --explode` away already).
 - Warm starts: the web worker starts each equilibrium from the nearest
   speed already solved. `run` starts every one from scratch.
 - A study in waves is held about the calm-water study at the default grid.

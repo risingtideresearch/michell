@@ -22,6 +22,8 @@ pub mod platform;
 pub mod sections;
 
 pub use michell_cli::parse_units;
+/// The diverging colour map the wake and pressure views share.
+pub use michell_cli::png::diverging;
 use params::{CaseParams, StudyParams};
 pub use platform::{statics, wave_gz, waves_with_progress};
 

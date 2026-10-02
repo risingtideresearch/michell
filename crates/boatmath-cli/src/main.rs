@@ -18,6 +18,7 @@ mod plot;
 mod records;
 mod run;
 mod store;
+mod views;
 
 use boatmath::params::{CaseParams, Closure, Sea, StudyParams, Waves};
 use boatmath::{LoftRequest, MassBy};
@@ -149,6 +150,42 @@ enum Command {
     },
     /// Print stored records by id (or a prefix of one).
     Get { ids: Vec<String> },
+    /// The wake of calm-water results on stdin, from above, as SVG.
+    Wake {
+        /// Write here; with several results, a pattern naming each by
+        /// `{id8}` or `{froude}` (wake-{froude}.svg).
+        #[arg(short)]
+        o: Option<String>,
+        /// Colour scale ±RANGE [m]; default the 99th percentile of |ζ|.
+        #[arg(long)]
+        range: Option<f64>,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// The pressure on the hulls of calm-water results on stdin, from
+    /// below, as SVG.
+    Pressure {
+        /// As for `wake`.
+        #[arg(short)]
+        o: Option<String>,
+        /// Colour scale ±RANGE in C_p; default the 99th percentile of |C_p|.
+        #[arg(long)]
+        range: Option<f64>,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// The hull of calm-water results on stdin in profile at its attitude,
+    /// with the wave along its side, as SVG.
+    Profile {
+        /// As for `wake`.
+        #[arg(short)]
+        o: Option<String>,
+        /// Draw the wave this many times its height.
+        #[arg(long, default_value_t = 1.0)]
+        wave_scale: f64,
+        #[arg(long)]
+        title: Option<String>,
+    },
     /// Print a stored blob (a result's `field`, say) by its id.
     Blob { id: String },
     /// Records on stdin as a table, a column per FIELD path (`forces.rt`,
@@ -191,6 +228,106 @@ enum Command {
         #[arg(short)]
         o: Option<PathBuf>,
     },
+}
+
+/// The views a picture command draws.
+enum View {
+    Wake(Option<f64>),
+    Pressure(Option<f64>),
+    Profile(f64),
+}
+
+/// Draw `view` of each calm-water result on stdin, to `o` (or stdout).
+fn draw(
+    store: &Store,
+    out: &mut impl Write,
+    view: View,
+    o: Option<String>,
+    title: Option<String>,
+) -> Result<usize, String> {
+    let records = read_records()?;
+    if records.len() > 1 && !o.as_deref().is_some_and(|p| p.contains('{')) {
+        return Err(format!(
+            "{} results: give -o a pattern with {{id8}} or {{froude}} to name each picture",
+            records.len()
+        ));
+    }
+    let res = path::Resolver::new(store);
+    let mut failed = 0;
+    for r in &records {
+        let id = records::expect(r, "result")?;
+        let picture = (|| -> Result<String, String> {
+            if r["kind"] != "calm" {
+                return Err("not a calm-water result".into());
+            }
+            let blob = r["field"]["blob"].as_str().ok_or("no field")?;
+            let v: Value =
+                serde_json::from_slice(&store.blob(blob)?).map_err(|e| format!("field: {e}"))?;
+            let field = views::Field::parse(&v)?;
+            let name = path::cell(&res.get(r, "study.case.hull.name"));
+            let froude = r["froude"].as_f64().unwrap_or(0.0);
+            let f = &r["forces"];
+            let num = |k: &str| f[k].as_f64().map_or("?".into(), |v| format!("{v:.1}"));
+            let title = title
+                .clone()
+                .unwrap_or_else(|| format!("{name} · Fn {froude}"));
+            let sub = format!(
+                "R_t {} N · R_w {} N · {}",
+                num("rt"),
+                num("rw"),
+                store::short(id)
+            );
+            Ok(match view {
+                View::Wake(range) => views::wake(&field, &title, &sub, range),
+                View::Pressure(range) => views::pressure(&field, &title, &sub, range),
+                View::Profile(scale) => {
+                    let sec = res
+                        .get(r, "sections.attitude")
+                        .ok_or("no sections at its attitude")?;
+                    let attitude = (
+                        sec["sinkage"].as_f64().unwrap_or(0.0),
+                        sec["trim_rad"].as_f64().unwrap_or(0.0),
+                    );
+                    let case = store.need(
+                        "case",
+                        res.get(r, "study.case.id")
+                            .and_then(|v| v.as_str().map(String::from))
+                            .as_deref()
+                            .unwrap_or(""),
+                    )?;
+                    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
+                    let src = records::hull_source(&hull)?;
+                    let params = serde_json::from_value(case["params"].clone())
+                        .map_err(|e| format!("case params: {e}"))?;
+                    let meshes = boatmath::sections::meshes(
+                        &src.file_name,
+                        src.bytes,
+                        &src.import,
+                        &params,
+                        attitude,
+                    )?;
+                    views::profile(&field, &meshes[0].0, &title, &sub, attitude, scale)?
+                }
+            })
+        })();
+        match picture {
+            Ok(svg) => match &o {
+                Some(p) => {
+                    let froude = r["froude"].as_f64().unwrap_or(0.0);
+                    let path = p
+                        .replace("{id8}", &id[..8.min(id.len())])
+                        .replace("{froude}", &format!("{froude}"));
+                    std::fs::write(&path, svg).map_err(|e| format!("{path}: {e}"))?;
+                }
+                None => out.write_all(svg.as_bytes()).map_err(stdout_err)?,
+            },
+            Err(e) => {
+                eprintln!("boatmath: result {}: {e}", store::short(id));
+                failed += 1;
+            }
+        }
+    }
+    Ok(failed)
 }
 
 /// A field path's last segment, to name a series by: `span` for
@@ -452,6 +589,19 @@ fn go(cli: Cli) -> Result<usize, String> {
                 &read_records()?,
                 &run::Options { jobs, force, quiet },
             )?;
+        }
+        Command::Wake { o, range, title } => {
+            failed += draw(&store, &mut out, View::Wake(range), o, title)?;
+        }
+        Command::Pressure { o, range, title } => {
+            failed += draw(&store, &mut out, View::Pressure(range), o, title)?;
+        }
+        Command::Profile {
+            o,
+            wave_scale,
+            title,
+        } => {
+            failed += draw(&store, &mut out, View::Profile(wave_scale), o, title)?;
         }
         Command::Blob { id } => {
             let bytes = store.blob(&id)?;

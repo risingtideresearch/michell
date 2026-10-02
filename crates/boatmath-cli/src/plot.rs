@@ -30,7 +30,7 @@ pub struct Plot {
 }
 
 /// About `n` round tick values covering `[lo, hi]`.
-fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
+pub(crate) fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
     let span = (hi - lo).max(f64::MIN_POSITIVE);
     let raw = span / n as f64;
     let mag = 10f64.powf(raw.log10().floor());
@@ -45,7 +45,7 @@ fn ticks(lo: f64, hi: f64, n: usize) -> Vec<f64> {
 }
 
 /// A tick label: no more digits than the step needs.
-fn label(v: f64, step: f64) -> String {
+pub(crate) fn label(v: f64, step: f64) -> String {
     let digits = (-step.log10().floor()).max(0.0) as usize;
     let s = format!("{v:.digits$}");
     if s == "-0" {
@@ -56,15 +56,20 @@ fn label(v: f64, step: f64) -> String {
 }
 
 /// A value for a tooltip: four significant figures.
-fn sig(v: f64) -> String {
+pub(crate) fn sig(v: f64) -> String {
     if v == 0.0 || !v.is_finite() {
         return format!("{v}");
     }
     let digits = (3 - v.abs().log10().floor() as i32).max(0) as usize;
-    format!("{v:.digits$}")
+    let s = format!("{v:.digits$}");
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

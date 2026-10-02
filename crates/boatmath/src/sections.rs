@@ -56,6 +56,32 @@ pub fn sections(
     }))
 }
 
+/// Each of the case's hulls whole, topsides included, at `(sinkage [m],
+/// trim [rad])`: its geometry re-posed and tessellated, as vertices (x
+/// forward, y to port, z up from the water) and triangles. For drawing.
+pub type Mesh = (Vec<[f64; 3]>, Vec<[u32; 3]>);
+
+pub fn meshes(
+    name: &str,
+    bytes: Vec<u8>,
+    cut: &LoftRequest,
+    c: &CaseParams,
+    attitude: (f64, f64),
+) -> Result<Vec<Mesh>, String> {
+    let s = setup(name, bytes, cut, c)?;
+    let platform = s.platform(attitude.0, attitude.1);
+    s.layout
+        .iter()
+        .map(|(i, pose)| {
+            s.cut
+                .file
+                .source
+                .posed_tessellation(*i, s.cut.file.waterline_z, pose, &platform)
+                .map_err(|e| e.to_string())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
