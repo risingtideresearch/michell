@@ -70,8 +70,12 @@ pub fn prop(
     inputs: &Inputs,
     result: Option<&str>,
     power_cap: f64,
+    interaction: Option<&Value>,
 ) -> Result<Value, String> {
-    let id = id_of(&json!({ "inputs": inputs, "result": result, "power_cap": power_cap }));
+    let id = id_of(&json!({
+        "inputs": inputs, "result": result, "power_cap": power_cap,
+        "interaction": interaction.map(|i| &i["settings"]),
+    }));
     if let Some(old) = store.get("prop", &id)? {
         if old["solver_version"] == SOLVER_VERSION {
             return Ok(old);
@@ -101,10 +105,149 @@ pub fn prop(
         "window": { "rpm_lo": s.rpmLo, "rpm_hi": s.rpmHi },
         "feasible_rpm": { "lo": s.feasLo, "hi": s.feasHi },
         "curve": s.points,
+        "interaction": interaction,
         "solver_version": SOLVER_VERSION,
     });
     store.put(&r)?;
     Ok(r)
+}
+
+/// Which hull–propeller coefficients to estimate, and where the
+/// propellers sit.
+pub struct Auto {
+    pub wake: bool,
+    pub deduction: bool,
+    pub at: boatmath::propulsion::Position,
+}
+
+/// A result's propeller with its wake fraction and/or thrust deduction
+/// from potential flow (`michell::propulsion`): the propeller found with a
+/// guess, its disc placed on each hull at the result's attitude, w and t
+/// computed there, and the propeller found again, until they settle.
+pub fn auto_prop(
+    store: &Store,
+    r: &Value,
+    mut inputs: Inputs,
+    auto: &Auto,
+    power_cap: f64,
+) -> Result<Value, String> {
+    use boatmath::params::{CaseParams, StudyParams};
+    let result_id = expect(r, "result")?;
+    let study = store.need("study", r["study"].as_str().unwrap_or(""))?;
+    let case = store.need("case", study["case"].as_str().unwrap_or(""))?;
+    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
+    let src = crate::records::hull_source(&hull)?;
+    let cp: CaseParams =
+        serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
+    let sp: StudyParams = serde_json::from_value(study["params"].clone())
+        .map_err(|e| format!("study params: {e}"))?;
+    let f = &r["forces"];
+    let attitude = (
+        f["sinkage"].as_f64().unwrap_or(0.0),
+        f["trim_rad"].as_f64().unwrap_or(0.0),
+    );
+    let speed = r["speed"].as_f64().ok_or("a result without a speed")?;
+    let rt = f["rt"].as_f64().ok_or("a result without R_t")?;
+    let placed = boatmath::propulsion::placed(
+        &src.file_name,
+        src.bytes,
+        &src.import,
+        &cp,
+        attitude,
+        speed,
+        sp.closure.transom(),
+    )?;
+    let hulls = placed.hulls.len();
+    let shafts = inputs.shafts as usize;
+    if !shafts.is_multiple_of(hulls) || shafts / hulls > 2 {
+        return Err(format!(
+            "{shafts} shafts on {hulls} hulls: give one or two per hull"
+        ));
+    }
+    let per_hull = shafts / hulls;
+    let (mut w, mut t) = (
+        if auto.wake { 0.0 } else { inputs.wake },
+        if auto.deduction {
+            0.0
+        } else {
+            inputs.thrust_deduction
+        },
+    );
+    let mut steps = Vec::new();
+    let mut last = None;
+    let mut converged = false;
+    for _ in 0..8 {
+        inputs.wake = w;
+        inputs.thrust_deduction = t;
+        inputs.thrust = rt / (1.0 - t);
+        let c = Config::new(&inputs);
+        let s = sweep(
+            &c,
+            &SweepOptions {
+                power_cap,
+                ..SweepOptions::default()
+            },
+        );
+        let best = s
+            .best
+            .ok_or("no B-series propeller can do it (try a larger --d-max, or --no-cavitation)")?;
+        let discs = placed.discs(&auto.at, per_hull, 0.5 * best.D);
+        let wakes = discs
+            .iter()
+            .map(|d| placed.interaction.wake(d))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        let w_new = wakes.iter().map(|k| k.w).sum::<f64>() / wakes.len() as f64;
+        let v_a = speed * (1.0 - if auto.wake { w_new } else { w });
+        let ded = placed
+            .interaction
+            .thrust_deduction(&discs, inputs.thrust / discs.len() as f64, v_a)
+            .map_err(|e| e.to_string())?;
+        steps.push(json!({ "D": best.D, "w": w_new, "t": ded.t }));
+        let (w_next, t_next) = (
+            if auto.wake { w_new } else { w },
+            if auto.deduction { ded.t } else { t },
+        );
+        if !(-0.5..0.9).contains(&w_next) || !(-0.5..0.9).contains(&t_next) {
+            return Err(format!(
+                "the propeller's wake {w_next:.3} and thrust deduction {t_next:.3} are                  out of range: is it placed inside the hull? (--prop-x, --prop-y, --depth)"
+            ));
+        }
+        let done = (w_next - w).abs() < 5e-4 && (t_next - t).abs() < 5e-4;
+        w = w_next;
+        t = t_next;
+        last = Some((wakes, ded, discs));
+        if done {
+            converged = true;
+            break;
+        }
+    }
+    let (wakes, ded, discs) = last.expect("one step at least");
+    inputs.wake = w;
+    inputs.thrust_deduction = t;
+    inputs.thrust = rt / (1.0 - t);
+    let n = wakes.len() as f64;
+    let interaction = json!({
+        "model": "potential",
+        "settings": { "wake": auto.wake, "thrust_deduction": auto.deduction, "at": auto.at },
+        "w": wakes.iter().map(|k| k.w).sum::<f64>() / n,
+        "w_local": wakes.iter().map(|k| k.w_local).sum::<f64>() / n,
+        "w_wave": wakes.iter().map(|k| k.w_wave).sum::<f64>() / n,
+        "radial": wakes[0].radial,
+        "t": ded.t,
+        "delta_r": ded.delta_r,
+        "u_a": ded.u_a,
+        "discs": discs.iter().map(|d| json!({ "x": d.x, "y": d.y, "depth": d.depth, "radius": d.radius })).collect::<Vec<_>>(),
+        "steps": steps,
+        "converged": converged,
+    });
+    prop(
+        store,
+        &inputs,
+        Some(result_id),
+        power_cap,
+        Some(&interaction),
+    )
 }
 
 // ------------------------------------------------------------- motors

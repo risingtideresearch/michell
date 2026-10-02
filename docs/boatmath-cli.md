@@ -284,7 +284,8 @@ blade-area ratio and blade count, with pitch solved to hold the thrust, under
 Keller's and Burrill's cavitation limits. The cheapest point on that curve is
 the answer.
 
-- `--wake` and `--thrust-deduction` default to 0.
+- `--wake` and `--thrust-deduction` default to 0. Either can be `auto`
+  (below).
 - A second operating point the same propeller must reach comes from
   `--top-froude` (the same study's result at that Froude number, already run)
   or from `--top-speed` and `--top-thrust`. It's a constraint, not an
@@ -307,6 +308,43 @@ the answer.
   "window": { "rpm_lo": …, "rpm_hi": … }, "feasible_rpm": { "lo": …, "hi": … },
   "curve": [ { "rpm": …, "ok": true, "P_shaft": …, "Z": …, "D": …, … }, { "rpm": …, "ok": false } ] }
 ```
+
+**Wake and thrust deduction from potential flow.** With `--wake auto` and/or
+`--thrust-deduction auto`, `prop` works them out from the hull's thin-ship
+singularities at the result's own attitude and speed (`michell::propulsion`):
+
+- **The disc:** it sits `--prop-x` forward of each hull's aft end (negative
+  is astern), `--prop-y` out from its centreplane (two shafts per hull go
+  either side), and `--depth` down. It's fixed to the hull, so it moves
+  with the hull's sinkage and trim. A disc that breaks the surface or cuts
+  a hull is refused.
+- **Wake:** the hull's axial perturbation velocity averaged over the disc,
+  hub to tip. It's split into the local (potential) wake and the wave wake
+  of the hull's own waves. There's no frictional wake.
+- **Thrust deduction:** Dickmann's model. The propeller is an actuator-disc
+  sink of density 2u_a, with u_a from momentum theory, and Lagally's theorem
+  gives the force of its flow on the hull's source sheets,
+  ΔR = ρ∬σ u_p dA, t = ΔR/T. The sink's field is its Rankine pair (φ = 0
+  on the free surface); the waves the propeller itself makes are left out.
+- **Iteration:** the propeller is found, its disc placed, w and t computed,
+  and the propeller found again until they settle (usually two or three
+  steps).
+- **Record:** the prop's `interaction` holds w with its parts, t, ΔR, u_a,
+  the wake by radius, the discs and the steps.
+
+```sh
+boatmath prop --d-max 12in --wake auto --thrust-deduction auto --prop-x=-0.25 < result.json
+```
+
+What thin-ship theory can and can't see: its sources sit on the centreplane,
+with strength set by how fast the beam changes along the length. Behind a
+fine stern that is the whole story (the Wigley test gives t ≈ 0.03 with a
+small propeller close astern). But a flat run ending in a transom carries
+almost no sink strength, and the suction on a flat bottom over the propeller
+isn't represented at all. That's where most of a transom or planing hull's
+thrust deduction comes from. For e12 at Fn 0.3, 0.25 m astern, it gives
+w ≈ 0.013 (nearly all wave wake) and t ≈ 0.001: read t there as the
+beam-change contribution, a lower bound.
 
 The design fields keep propcore.js's names. `curve` is the best propeller at
 each of 180 shaft speeds, from the cheapest out to 1.6× its power (or the
@@ -388,7 +426,9 @@ results on stdin, `-o` is a pattern naming each picture by `{id8}` or
 - propopt's Python-only work: the BEM correction for an extended or scanned
   geometry (`--geometry`), and its own hull models (the hull pipeline
   replaces those).
-- Estimating the wake fraction and thrust deduction from the hull.
+- The rest of the wake and thrust deduction: the frictional wake (a
+  boundary-layer estimate), the propeller's own waves in the thrust
+  deduction, and a bottom-pressure term for flat runs and transoms.
 - Warm starts: the web worker starts each equilibrium from the nearest
   speed already solved. `run` starts every one from scratch.
 - A study in waves is held about the calm-water study at the default grid.

@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 pub mod native;
 pub mod params;
 pub mod platform;
+pub mod propulsion;
 pub mod sections;
 
 pub use michell_cli::parse_units;

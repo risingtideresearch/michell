@@ -94,22 +94,22 @@ pub struct HullPressure {
 
 /// One hull's centreplane sheet: `f` sampled at stations × depth nodes, and
 /// the corner coefficients of its piecewise-constant `σ` cells.
-struct Sheet {
+pub(crate) struct Sheet {
     /// Station x in the fleet frame, increasing.
-    xs: Vec<f64>,
+    pub(crate) xs: Vec<f64>,
     /// Depth nodes, uniform from 0 to the draft.
-    depth: Vec<f64>,
+    pub(crate) depth: Vec<f64>,
     /// Half-beam `[i * nz1 + j]`.
-    f: Vec<f64>,
+    pub(crate) f: Vec<f64>,
     /// `∂_x` Rankine coefficients at each (station, depth node).
     d: Vec<f64>,
     /// Stations `0..real_from` are the closure's virtual appendage.
-    real_from: usize,
-    y: f64,
+    pub(crate) real_from: usize,
+    pub(crate) y: f64,
 }
 
 impl Sheet {
-    fn nz1(&self) -> usize {
+    pub(crate) fn nz1(&self) -> usize {
         self.depth.len()
     }
 }
@@ -135,7 +135,7 @@ fn half_beam_at(curve: &[(f64, f64)], z: f64) -> f64 {
     best
 }
 
-fn build_sheet(
+pub(crate) fn build_sheet(
     hull: &SectionalHull,
     pl: Placement,
     u: f64,
@@ -218,7 +218,7 @@ fn build_sheet(
 
 /// `φ_x` of the Rankine pairs (source minus negative image) of every sheet
 /// at `(x, y, z)`, `z` down.
-fn rankine_phi_x(sheets: &[Sheet], x: f64, y: f64, z: f64) -> f64 {
+pub(crate) fn rankine_phi_x(sheets: &[Sheet], x: f64, y: f64, z: f64) -> f64 {
     let mut total = 0.0;
     for s in sheets {
         let yy = (y - s.y) * (y - s.y);
@@ -244,7 +244,7 @@ fn rankine_phi_x(sheets: &[Sheet], x: f64, y: f64, z: f64) -> f64 {
 
 /// Wavenumber nodes of the wave part: the field is
 /// `Σ_n Σ_m Re(c[n·nm+m]·e^{ik_x(x − cx_m)})·cos(k_y(y − y_m))·e^{−kz}`.
-struct Nodes {
+pub(crate) struct Nodes {
     kx: Vec<f64>,
     ky: Vec<f64>,
     k: Vec<f64>,
@@ -252,15 +252,33 @@ struct Nodes {
     nm: usize,
 }
 
+impl Nodes {
+    /// The wave part of `φ_x` at `(x, y, z)`, `z` down; `cx` and `y` the
+    /// members' x centres and centreplanes.
+    pub(crate) fn phi_x(&self, cx: &[f64], ys: &[f64], x: f64, y: f64, z: f64) -> f64 {
+        let mut total = 0.0;
+        for n in 0..self.k.len() {
+            let mut e = 0.0;
+            for m in 0..self.nm {
+                let c = self.c[n * self.nm + m];
+                let ph = C64::cis(self.kx[n] * (x - cx[m]));
+                e += (c.re * ph.re - c.im * ph.im) * (self.ky[n] * (y - ys[m])).cos();
+            }
+            total += e * (-self.k[n] * z).exp();
+        }
+        total
+    }
+}
+
 #[derive(Clone, Copy)]
-enum Mode {
+pub(crate) enum Mode {
     /// On the hulls: the full range the force integral uses.
     Hull { level: usize },
     /// On a free-surface grid: wavenumbers tapered away above `k_cap`.
     Surface { level: usize, k_cap: f64 },
 }
 
-fn build_nodes(
+pub(crate) fn build_nodes(
     members: &[(&SectionalHull, Placement)],
     cond: &Conditions,
     closure: TransomClosure,
@@ -474,7 +492,7 @@ fn build_nodes(
     nodes
 }
 
-fn check(members: &[(&SectionalHull, Placement)], cond: &Conditions) -> Result<()> {
+pub(crate) fn check(members: &[(&SectionalHull, Placement)], cond: &Conditions) -> Result<()> {
     cond.validate()?;
     if members.is_empty() {
         return Err(Error::InvalidGeometry("empty fleet".into()));

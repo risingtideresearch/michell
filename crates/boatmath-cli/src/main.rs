@@ -200,12 +200,21 @@ enum Command {
         /// Shafts the thrust is split across; default one per hull.
         #[arg(long)]
         shafts: Option<u32>,
-        /// Wake fraction w: the propeller sees V (1 − w).
-        #[arg(long, default_value_t = 0.0)]
-        wake: f64,
-        /// Thrust deduction t.
-        #[arg(long, default_value_t = 0.0)]
-        thrust_deduction: f64,
+        /// Wake fraction w: the propeller sees V (1 − w). `auto`: from
+        /// potential flow at the result's attitude (needs results).
+        #[arg(long, default_value = "0")]
+        wake: String,
+        /// Thrust deduction t; `auto` as for --wake.
+        #[arg(long, default_value = "0")]
+        thrust_deduction: String,
+        /// With `auto`: the propeller's centre forward of each hull's aft
+        /// end (negative: astern of it).
+        #[arg(long, default_value = "0", allow_hyphen_values = true)]
+        prop_x: String,
+        /// With `auto`: out from the hull's centreplane (two propellers per
+        /// hull go either side).
+        #[arg(long, default_value = "0")]
+        prop_y: String,
         /// Largest diameter (m, mm, in, …).
         #[arg(long)]
         d_max: String,
@@ -774,6 +783,8 @@ fn go(cli: Cli) -> Result<usize, String> {
             shafts,
             wake,
             thrust_deduction,
+            prop_x,
+            prop_y,
             d_max,
             d_min,
             blades,
@@ -799,9 +810,29 @@ fn go(cli: Cli) -> Result<usize, String> {
                     }
                 })
                 .collect::<Result<Vec<u32>, String>>()?;
-            if !(0.0..1.0).contains(&wake) || !(0.0..1.0).contains(&thrust_deduction) {
-                return Err("--wake and --thrust-deduction are fractions, 0 to 1".into());
-            }
+            let coefficient = |s: &str, what: &str| -> Result<Option<f64>, String> {
+                if s == "auto" {
+                    return Ok(None);
+                }
+                match s.parse::<f64>() {
+                    Ok(v) if (0.0..1.0).contains(&v) => Ok(Some(v)),
+                    _ => Err(format!("--{what} {s:?}: a fraction, 0 to 1, or auto")),
+                }
+            };
+            let (wake_given, ded_given) = (
+                coefficient(&wake, "wake")?,
+                coefficient(&thrust_deduction, "thrust-deduction")?,
+            );
+            let auto = (wake_given.is_none() || ded_given.is_none()).then(|| props::Auto {
+                wake: wake_given.is_none(),
+                deduction: ded_given.is_none(),
+                at: boatmath::propulsion::Position {
+                    forward_of_aft: 0.0,
+                    outboard: 0.0,
+                    depth: 0.0,
+                },
+            });
+            let (wake, thrust_deduction) = (wake_given.unwrap_or(0.0), ded_given.unwrap_or(0.0));
             let explicit_top = match (&top_speed, &top_thrust) {
                 (Some(s), Some(t)) => Some(propeller::bseries::TopInputs {
                     speed: units::speed(s)?,
@@ -837,6 +868,11 @@ fn go(cli: Cli) -> Result<usize, String> {
                 (Some(t), Some(s)) => {
                     if top_froude.is_some() {
                         return Err("--top-froude needs results on stdin; give --top-speed and --top-thrust".into());
+                    }
+                    if auto.is_some() {
+                        return Err(
+                            "--wake auto and --thrust-deduction auto need results on stdin".into(),
+                        );
                     }
                     cases.push((
                         base(
@@ -878,11 +914,68 @@ fn go(cli: Cli) -> Result<usize, String> {
                 }
                 _ => return Err("--thrust and --speed go together".into()),
             }
+            let auto = auto
+                .map(|mut a| -> Result<props::Auto, String> {
+                    a.at = boatmath::propulsion::Position {
+                        forward_of_aft: units::length(&prop_x)?,
+                        outboard: units::length(&prop_y)?,
+                        depth,
+                    };
+                    Ok(a)
+                })
+                .transpose()?;
             for (mut inputs, result) in cases {
                 inputs.d_min = d_min;
                 inputs.d_max = d_max;
                 inputs.depth = depth;
-                let r = props::prop(&store, &inputs, result.as_deref(), cap)?;
+                let r = match (&auto, &result) {
+                    (Some(a), Some(id)) => {
+                        let rec = store.need("result", id)?;
+                        match props::auto_prop(&store, &rec, inputs, a, cap) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("boatmath: result {}: {e}", store::short(id));
+                                failed += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    _ => props::prop(&store, &inputs, result.as_deref(), cap, None)?,
+                };
+                if let Some(i) = r.get("interaction").filter(|i| !i.is_null()) {
+                    // What was used: a coefficient given outright is not the
+                    // one the interaction computed alongside.
+                    let used = |k: &str| r["inputs"][k].as_f64().unwrap_or(0.0);
+                    let (wa, ta) = (
+                        i["settings"]["wake"] == true,
+                        i["settings"]["thrust_deduction"] == true,
+                    );
+                    let w = if wa {
+                        format!(
+                            "w {:.3} (local {:.3}, wave {:.3})",
+                            used("wake"),
+                            i["w_local"].as_f64().unwrap_or(0.0),
+                            i["w_wave"].as_f64().unwrap_or(0.0)
+                        )
+                    } else {
+                        format!("w {:.3} given", used("wake"))
+                    };
+                    let t = if ta {
+                        format!("t {:.3}", used("thrust_deduction"))
+                    } else {
+                        format!("t {:.3} given", used("thrust_deduction"))
+                    };
+                    eprintln!(
+                        "boatmath: prop {}: {w}, {t}, after {} steps{}",
+                        store::short(r["id"].as_str().unwrap_or("")),
+                        i["steps"].as_array().map_or(0, Vec::len),
+                        if i["converged"] == true {
+                            ""
+                        } else {
+                            " (not converged)"
+                        },
+                    );
+                }
                 let b = &r["best"];
                 if b.is_null() {
                     eprintln!(
