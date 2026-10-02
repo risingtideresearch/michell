@@ -70,6 +70,11 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
     }
 }
 
+/// A patch as the geometry's JSON writes it.
+pub fn patch_value(s: &NurbsSurface3) -> Value {
+    patch_json(s)
+}
+
 fn patch_json(s: &NurbsSurface3) -> Value {
     json!({
         "degree": [s.degree_u, s.degree_v],
@@ -83,6 +88,11 @@ fn patch_json(s: &NurbsSurface3) -> Value {
 
 fn field<T: serde::de::DeserializeOwned>(v: &Value, k: &str, at: &str) -> Result<T, String> {
     serde_json::from_value(v[k].clone()).map_err(|e| format!("{at}: {k}: {e}"))
+}
+
+/// A patch from the geometry's JSON.
+pub fn patch_from_value(v: &Value) -> Result<NurbsSurface3, String> {
+    patch(v, "patch")
 }
 
 fn patch(v: &Value, at: &str) -> Result<NurbsSurface3, String> {

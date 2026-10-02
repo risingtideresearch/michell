@@ -2945,7 +2945,15 @@ fn sample_station(
         let (st, ct) = t.sin_cos();
         let (dy, dz) = (beam * ct, depth * st);
         let phys = dz.atan2(dy);
-        let r = reach(z0, phys, ambiguous, &mut asym)?;
+        let r = match reach(z0, phys, ambiguous, &mut asym) {
+            Some(r) => r,
+            // A section swept from its own shallowest point (one that doesn't
+            // reach the surface: a bulb, a pod) has the shell tangent there,
+            // so the horizontal ray from it grazes the shell at its origin
+            // and may find nothing beyond: its reach is nil.
+            None if wl.is_none() && t == 0.0 => 0.0,
+            None => return None,
+        };
         radii.push(r / dy.hypot(dz));
     }
     Some((z0, beam, depth, radii, asym))
@@ -3072,6 +3080,60 @@ pub fn graph_surface(
         n_ctrl_u: nx,
         n_ctrl_v: ny,
         weights: vec![1.0; nx * ny],
+        ctrl,
+        trim_uv: None,
+    })
+}
+
+/// The bicubic B-spline surface through a grid of points `pts[iu * nv +
+/// iv]`, its parameters uniform in the indices (u along the first index, v
+/// the second): an interpolant, through every point. For shapes built from
+/// samples — a foil swept along its span, a body of revolution. Needs at
+/// least 4 × 4 points.
+pub fn interpolate_grid(nu: usize, nv: usize, pts: &[[f64; 3]]) -> Result<NurbsSurface3> {
+    if nu < 4 || nv < 4 || pts.len() != nu * nv {
+        return Err(Error::InvalidInput(format!(
+            "a point-grid surface needs at least 4 x 4 points ({nu} x {nv}, {} given)",
+            pts.len()
+        )));
+    }
+    let interp = |n: usize| -> (Vec<f64>, Interp) {
+        let t: Vec<f64> = (0..n).map(|i| i as f64 / (n - 1) as f64).collect();
+        let mut knots = vec![0.0; 4];
+        for j in 1..n - 3 {
+            knots.push((t[j] + t[j + 1] + t[j + 2]) / 3.0);
+        }
+        knots.extend([1.0; 4]);
+        let solver = Interp::new(&knots, &t);
+        (knots, solver)
+    };
+    let (ku, su) = interp(nu);
+    let (kv, sv) = interp(nv);
+    let mut ctrl = vec![[0.0; 3]; nu * nv];
+    for k in 0..3 {
+        // Along v for each u row, then along u for each v column.
+        let mut r = vec![0.0; nu * nv];
+        for iu in 0..nu {
+            let row: Vec<f64> = (0..nv).map(|iv| pts[iu * nv + iv][k]).collect();
+            let c = sv.solve(&row);
+            r[iu * nv..(iu + 1) * nv].copy_from_slice(&c);
+        }
+        for iv in 0..nv {
+            let col: Vec<f64> = (0..nu).map(|iu| r[iu * nv + iv]).collect();
+            let c = su.solve(&col);
+            for iu in 0..nu {
+                ctrl[iu * nv + iv][k] = c[iu];
+            }
+        }
+    }
+    Ok(NurbsSurface3 {
+        degree_u: 3,
+        degree_v: 3,
+        knots_u: ku,
+        knots_v: kv,
+        n_ctrl_u: nu,
+        n_ctrl_v: nv,
+        weights: vec![1.0; nu * nv],
         ctrl,
         trim_uv: None,
     })
@@ -3999,5 +4061,67 @@ mod pose_timing {
         assert_eq!(d[0][32..40].trim(), "2", "level: {}", d[0]);
         assert_eq!(d[1][16..24].trim(), "7", "colour: {}", d[1]);
         assert_eq!(d[1][56..64].trim(), "WATER", "label: {}", d[1]);
+    }
+}
+
+#[cfg(test)]
+mod submerged_tests {
+    use super::*;
+
+    fn pod() -> Vec<NurbsSurface3> {
+        let (nu, nv, len, r_max, zc) = (25usize, 9usize, 0.6, 0.07, -0.3);
+        let radius = |s: f64| -> f64 {
+            if s < 0.3 {
+                r_max * (1.0 - (1.0 - s / 0.3).powi(2)).sqrt()
+            } else if s < 0.55 {
+                r_max
+            } else {
+                let u = (s - 0.55) / 0.45;
+                r_max * (1.0 - u * u).max(0.0).sqrt()
+            }
+        };
+        let mut out = Vec::new();
+        for side in [1.0, -1.0] {
+            let mut pts = Vec::new();
+            for iu in 0..nu {
+                let s = 0.5 * (1.0 - (std::f64::consts::PI * iu as f64 / (nu - 1) as f64).cos());
+                let r = radius(s);
+                for iv in 0..nv {
+                    let th = std::f64::consts::PI * iv as f64 / (nv - 1) as f64;
+                    pts.push([-s * len, side * r * th.sin(), zc + r * th.cos()]);
+                }
+            }
+            out.push(interpolate_grid(nu, nv, &pts).unwrap());
+        }
+        out
+    }
+
+    /// A body that doesn't reach the surface (a pod) is cut from each
+    /// section's own top, where the shell is tangent: every section but the
+    /// very tips samples, and the volume is the body's.
+    #[test]
+    fn a_submerged_body_cuts_to_its_volume() {
+        let surfs = pod();
+        let fleet = SourceFleet::from_hulls(vec![surfs]).unwrap();
+        let imp = fleet
+            .situate_sectional(
+                0,
+                0.0,
+                &HullPose::default(),
+                &Platform::default(),
+                &SectionalOptions::default(),
+            )
+            .unwrap()
+            .unwrap();
+        let (n, dropped) = (imp.report.stations, imp.report.dropped_stations);
+        assert!(
+            dropped * 4 < n + dropped,
+            "{dropped} of {} stations dropped",
+            n + dropped
+        );
+        // ∫ π r² dx of the profile the patches interpolate.
+        let exact = 0.006927;
+        let v = imp.hull.displaced_volume();
+        assert!((v - exact).abs() < 0.02 * exact, "{v} vs {exact}");
     }
 }
