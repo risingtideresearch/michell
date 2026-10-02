@@ -1,5 +1,7 @@
-//! `boatmath` — hulls, cases, studies and their results as JSON records,
-//! one per line, made and read by small commands in a pipe:
+//! `boatmath` — Unix-style tools for doing physics on boats. Records are
+//! JSON, one per line; each command reads a stream, writes it through, and
+//! adds what it made, so the stream at the end of a pipeline holds the
+//! whole computation:
 //!
 //! ```sh
 //! boatmath hull guillemot.igs --waterline 0.12 \
@@ -9,35 +11,43 @@
 //!   | boatmath table study.case.params.mass study.params.froude forces.rt
 //! ```
 //!
-//! Every record is saved in the store (`$BOATMATH_HOME`, default
-//! `~/.boatmath`) and refers to its parents by id. See docs/boatmath-cli.md.
+//! See docs/boatmath-cli.md.
 
+mod cache;
 mod cad;
 mod list;
 mod path;
+mod pick;
 mod plot;
 mod props;
 mod records;
 mod run;
-mod store;
+mod stream;
 mod units;
 mod views;
 
 use boatmath::params::{CaseParams, Closure, Sea, StudyParams, Waves};
-use boatmath::{LoftRequest, MassBy};
+use boatmath::LoftRequest;
+use cache::Cache;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
-use store::Store;
+use stream::{short, Out, Stream};
 
 #[derive(Parser)]
 #[command(
     name = "boatmath",
     version,
-    about = "Hulls, cases and studies as JSON records in a pipe"
+    about = "Unix-style tools for doing physics on boats: JSON records in a pipe"
 )]
 struct Cli {
+    /// Memoize expensive steps here (default $BOATMATH_CACHE; none without).
+    #[arg(long, global = true)]
+    cache: Option<PathBuf>,
+    /// Read records from these files instead of stdin; repeat for several.
+    #[arg(long = "input", short = 'i', global = true)]
+    inputs: Vec<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -67,7 +77,7 @@ enum Command {
         #[arg(long)]
         units: Option<String>,
     },
-    /// Hulls made by scaling hulls on stdin, about the design waterline.
+    /// Hulls scaled from the stream's, about the design waterline.
     Scale {
         /// Scale the whole hull by this factor; a LIST.
         #[arg(long)]
@@ -75,21 +85,24 @@ enum Command {
         /// Scale beam and draft only by this factor; a LIST.
         #[arg(long)]
         beam: Option<String>,
+        /// Scale to carry this mass [kg] at the design waterline: uniformly,
+        /// or with --keep-length beam and draft only; a LIST.
+        #[arg(long)]
+        mass: Option<String>,
+        #[arg(long)]
+        keep_length: bool,
         #[arg(long)]
         name: Option<String>,
     },
-    /// Load hulls on stdin into cases, with their statics: a case per hull
-    /// and combination of the LISTs.
+    /// Cases on the stream's hulls: a platform and load, one per hull and
+    /// combination of the LISTs. A definition only; see `statics`.
     Case {
         /// Make a catamaran with this centre span [m]; a LIST.
         #[arg(long)]
         span: Option<String>,
-        /// Load [kg]; default the design displacement; a LIST.
+        /// Load [kg], carried by sinking; default the design displacement; a LIST.
         #[arg(long)]
         mass: Option<String>,
-        /// How a given mass is carried: sinking, scale, or scale_yz.
-        #[arg(long, default_value = "sinking")]
-        mass_by: String,
         /// Longitudinal centre of gravity [m]; default the LCB; a LIST.
         #[arg(long, allow_hyphen_values = true)]
         lcg: Option<String>,
@@ -110,11 +123,11 @@ enum Command {
         roll_damping: Option<String>,
         #[arg(long)]
         name: Option<String>,
-        /// Compute the statics again even if the store has them.
-        #[arg(long)]
-        force: bool,
     },
-    /// Studies on cases on stdin: one per case and combination of the LISTs.
+    /// Statics of the stream's hulls (hydrostatics at the design waterline)
+    /// and cases (the float at rest, roll stability, the GZ curve).
+    Statics,
+    /// Studies on the stream's cases: one per case and combination of the LISTs.
     Study {
         /// Length Froude numbers; a LIST.
         #[arg(long)]
@@ -139,58 +152,17 @@ enum Command {
         #[arg(long)]
         sea: Option<String>,
     },
-    /// Compute studies on stdin; each result is written as it is ready.
+    /// Compute the stream's studies; each result is written as it is ready.
     Run {
         /// Studies at once; default the number of cores.
         #[arg(short, long)]
         jobs: Option<usize>,
-        /// Compute again even if the store has a result.
-        #[arg(long)]
-        force: bool,
         /// No progress on stderr.
         #[arg(short, long)]
         quiet: bool,
     },
-    /// Print stored records by id (or a prefix of one).
-    Get { ids: Vec<String> },
-    /// The wake of calm-water results on stdin, from above, as SVG.
-    Wake {
-        /// Write here; with several results, a pattern naming each by
-        /// `{id8}` or `{froude}` (wake-{froude}.svg).
-        #[arg(short)]
-        o: Option<String>,
-        /// Colour scale ±RANGE [m]; default the 99th percentile of |ζ|.
-        #[arg(long)]
-        range: Option<f64>,
-        #[arg(long)]
-        title: Option<String>,
-    },
-    /// The pressure on the hulls of calm-water results on stdin, from
-    /// below, as SVG.
-    Pressure {
-        /// As for `wake`.
-        #[arg(short)]
-        o: Option<String>,
-        /// Colour scale ±RANGE in C_p; default the 99th percentile of |C_p|.
-        #[arg(long)]
-        range: Option<f64>,
-        #[arg(long)]
-        title: Option<String>,
-    },
-    /// The hull of calm-water results on stdin in profile at its attitude,
-    /// with the wave along its side, as SVG.
-    Profile {
-        /// As for `wake`.
-        #[arg(short)]
-        o: Option<String>,
-        /// Draw the wave this many times its height.
-        #[arg(long, default_value_t = 1.0)]
-        wave_scale: f64,
-        #[arg(long)]
-        title: Option<String>,
-    },
-    /// The best B-series propeller for each calm-water result on stdin (its
-    /// speed, and the thrust R_t / (1 − t)), or for --speed and --thrust.
+    /// The best B-series propeller for each calm-water result in the stream
+    /// (its speed, and the thrust R_t / (1 − t)), or for --speed and --thrust.
     Prop {
         /// Total thrust (N, kN, kgf, lbf), instead of reading results.
         #[arg(long)]
@@ -202,7 +174,7 @@ enum Command {
         #[arg(long)]
         shafts: Option<u32>,
         /// Wake fraction w: the propeller sees V (1 − w). `auto`: from
-        /// potential flow at the result's attitude (needs results).
+        /// potential flow at the result's attitude.
         #[arg(long, default_value = "0")]
         wake: String,
         /// Thrust deduction t; `auto` as for --wake.
@@ -212,8 +184,7 @@ enum Command {
         /// end (negative: astern of it).
         #[arg(long, default_value = "0", allow_hyphen_values = true)]
         prop_x: String,
-        /// With `auto`: out from the hull's centreplane (two propellers per
-        /// hull go either side).
+        /// With `auto`: out from the hull's centreplane.
         #[arg(long, default_value = "0")]
         prop_y: String,
         /// Largest diameter (m, mm, in, …).
@@ -239,8 +210,8 @@ enum Command {
         /// Keep each blade count to the series' own blade-area range.
         #[arg(long)]
         strict_ear: bool,
-        /// A second point the same propeller must reach: the result of the
-        /// same study at this Froude number (already run).
+        /// A second point the same propeller must reach: the same study's
+        /// result at this Froude number, in the stream.
         #[arg(long)]
         top_froude: Option<f64>,
         /// Or the second point's speed and total thrust.
@@ -252,7 +223,7 @@ enum Command {
         #[arg(long)]
         full_range: bool,
     },
-    /// The motors that can drive each prop on stdin, each at its best
+    /// The motors that can drive each prop in the stream, each at its best
     /// reduction and point on the prop's curve, ranked: a drive record each.
     Match {
         /// Rank by electrical power, mass or price.
@@ -295,9 +266,106 @@ enum Command {
         #[command(flatten)]
         filter: MotorFilter,
     },
-    /// Calm-water results on stdin, or props on them, as IGES for CAD: the
-    /// hulls at their attitude, the free surface, and a prop's discs, each on
-    /// its own level (1 hulls, 2 water, 3 props).
+    /// Filter the stream by record, keeping the ancestors of what it keeps.
+    Pick {
+        /// Keep records of this type (and what they refer to).
+        kind: Option<String>,
+        /// Only the first N of them.
+        #[arg(long)]
+        first: Option<usize>,
+        /// Only those where PATH reads VALUE; repeat for several.
+        #[arg(long = "where")]
+        wheres: Vec<String>,
+        /// Leave out records of this type; repeat for several.
+        #[arg(long)]
+        drop: Vec<String>,
+    },
+    /// The stream as a table, a column per FIELD path (`forces.rt`,
+    /// `study.case.params.span`, `|heave|`, ...); tab-separated.
+    Table {
+        #[arg(required = true)]
+        fields: Vec<String>,
+        /// A row per record of this type (default: the type the first field
+        /// reads on).
+        #[arg(long = "type")]
+        kind: Option<String>,
+        /// A row per element of the array at this path, its fields read
+        /// from the element first and then the record.
+        #[arg(long)]
+        explode: Option<String>,
+        /// Comma-separated, quoted where needed.
+        #[arg(long)]
+        csv: bool,
+        /// No header row.
+        #[arg(long)]
+        no_header: bool,
+    },
+    /// The stream as an SVG line plot.
+    Plot {
+        /// The x field.
+        #[arg(short)]
+        x: String,
+        /// A y field; repeat for several.
+        #[arg(short, required = true)]
+        y: Vec<String>,
+        /// A series per value of this field (or fields, repeated).
+        #[arg(long)]
+        by: Vec<String>,
+        /// A point per record of this type (see `table`).
+        #[arg(long = "type")]
+        kind: Option<String>,
+        /// A point per element of the array at this path (see `table`).
+        #[arg(long)]
+        explode: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        xlabel: Option<String>,
+        #[arg(long)]
+        ylabel: Option<String>,
+        /// Write here instead of stdout.
+        #[arg(short)]
+        o: Option<PathBuf>,
+    },
+    /// The wake of the stream's calm-water results, from above, as SVG.
+    Wake {
+        /// Write here; with several results, a pattern naming each by
+        /// `{id8}` or `{froude}` (wake-{froude}.svg).
+        #[arg(short)]
+        o: Option<String>,
+        /// Colour scale ±RANGE [m]; default the 99th percentile of |ζ|.
+        #[arg(long)]
+        range: Option<f64>,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// The pressure on the hulls of the stream's calm-water results, from
+    /// below, as SVG.
+    Pressure {
+        /// As for `wake`.
+        #[arg(short)]
+        o: Option<String>,
+        /// Colour scale ±RANGE in C_p; default the 99th percentile of |C_p|.
+        #[arg(long)]
+        range: Option<f64>,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// The hull of the stream's calm-water results in profile at its
+    /// attitude, with the wave along its side, as SVG.
+    Profile {
+        /// As for `wake`.
+        #[arg(short)]
+        o: Option<String>,
+        /// Draw the wave this many times its height.
+        #[arg(long, default_value_t = 1.0)]
+        wave_scale: f64,
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// The stream's props (or, with none, its calm-water results) as IGES
+    /// for CAD: the hulls at their attitude, the free surface, and a prop's
+    /// discs, each on its own level (1 hulls, 2 water, 3 props).
     Cad {
         /// Write here; with several records, a pattern naming each by
         /// `{id8}` or `{froude}`.
@@ -319,48 +387,6 @@ enum Command {
         /// Shaft depth below the design waterline (default the prop's).
         #[arg(long)]
         depth: Option<String>,
-    },
-    /// Print a stored blob (a result's `field`, say) by its id.
-    Blob { id: String },
-    /// Records on stdin as a table, a column per FIELD path (`forces.rt`,
-    /// `study.case.params.span`, `|heave|`, ...); tab-separated.
-    Table {
-        #[arg(required = true)]
-        fields: Vec<String>,
-        /// A row per element of the array at this path, its fields read
-        /// from the element first and then the record.
-        #[arg(long)]
-        explode: Option<String>,
-        /// Comma-separated, quoted where needed.
-        #[arg(long)]
-        csv: bool,
-        /// No header row.
-        #[arg(long)]
-        no_header: bool,
-    },
-    /// Records on stdin as an SVG line plot.
-    Plot {
-        /// The x field.
-        #[arg(short)]
-        x: String,
-        /// A y field; repeat for several.
-        #[arg(short, required = true)]
-        y: Vec<String>,
-        /// A series per value of this field (or fields, repeated).
-        #[arg(long)]
-        by: Vec<String>,
-        /// A point per element of the array at this path (see `table`).
-        #[arg(long)]
-        explode: Option<String>,
-        #[arg(long)]
-        title: Option<String>,
-        #[arg(long)]
-        xlabel: Option<String>,
-        #[arg(long)]
-        ylabel: Option<String>,
-        /// Write here instead of stdout.
-        #[arg(short)]
-        o: Option<PathBuf>,
     },
 }
 
@@ -437,33 +463,45 @@ enum View {
     Profile(f64),
 }
 
-/// Draw `view` of each calm-water result on stdin, to `o` (or stdout).
+/// A file name from a pattern: `{id8}` and `{froude}` filled in.
+fn named(pattern: &str, id: &str, froude: f64) -> String {
+    pattern
+        .replace("{id8}", &id[..8.min(id.len())])
+        .replace("{froude}", &format!("{froude}"))
+}
+
+/// Several outputs need a pattern to name each.
+fn check_pattern(n: usize, o: &Option<String>, what: &str) -> Result<(), String> {
+    if n > 1 && !o.as_deref().is_some_and(|p| p.contains('{')) {
+        return Err(format!(
+            "{n} {what}: give -o a pattern with {{id8}} or {{froude}} to name each"
+        ));
+    }
+    Ok(())
+}
+
+/// Draw `view` of each calm-water result in the stream, to `o` (or stdout).
 fn draw(
-    store: &Store,
+    s: &Stream,
     out: &mut impl Write,
     view: View,
     o: Option<String>,
     title: Option<String>,
 ) -> Result<usize, String> {
-    let records = read_records()?;
-    if records.len() > 1 && !o.as_deref().is_some_and(|p| p.contains('{')) {
-        return Err(format!(
-            "{} results: give -o a pattern with {{id8}} or {{froude}} to name each picture",
-            records.len()
-        ));
+    let results: Vec<&Value> = s
+        .of_type("result")
+        .filter(|r| r["kind"] == "calm")
+        .collect();
+    if results.is_empty() {
+        return Err("no calm-water results in the stream".into());
     }
-    let res = path::Resolver::new(store);
+    check_pattern(results.len(), &o, "results")?;
+    let res = path::Resolver::new(s);
     let mut failed = 0;
-    for r in &records {
-        let id = records::expect(r, "result")?;
+    for r in results {
+        let id = r["id"].as_str().unwrap_or("");
         let picture = (|| -> Result<String, String> {
-            if r["kind"] != "calm" {
-                return Err("not a calm-water result".into());
-            }
-            let blob = r["field"]["blob"].as_str().ok_or("no field")?;
-            let v: Value =
-                serde_json::from_slice(&store.blob(blob)?).map_err(|e| format!("field: {e}"))?;
-            let field = views::Field::parse(&v)?;
+            let field = views::Field::parse(s.follow(r, "field")?)?;
             let name = path::cell(&res.get(r, "study.case.hull.name"));
             let froude = r["froude"].as_f64().unwrap_or(0.0);
             let f = &r["forces"];
@@ -471,34 +509,19 @@ fn draw(
             let title = title
                 .clone()
                 .unwrap_or_else(|| format!("{name} · Fn {froude}"));
-            let sub = format!(
-                "R_t {} N · R_w {} N · {}",
-                num("rt"),
-                num("rw"),
-                store::short(id)
-            );
+            let sub = format!("R_t {} N · R_w {} N · {}", num("rt"), num("rw"), short(id));
             Ok(match view {
                 View::Wake(range) => views::wake(&field, &title, &sub, range),
                 View::Pressure(range) => views::pressure(&field, &title, &sub, range),
                 View::Profile(scale) => {
-                    let sec = res
-                        .get(r, "sections.attitude")
-                        .ok_or("no sections at its attitude")?;
+                    let sec = s.follow(r, "sections")?;
                     let attitude = (
-                        sec["sinkage"].as_f64().unwrap_or(0.0),
-                        sec["trim_rad"].as_f64().unwrap_or(0.0),
+                        sec["attitude"]["sinkage"].as_f64().unwrap_or(0.0),
+                        sec["attitude"]["trim_rad"].as_f64().unwrap_or(0.0),
                     );
-                    let case = store.need(
-                        "case",
-                        res.get(r, "study.case.id")
-                            .and_then(|v| v.as_str().map(String::from))
-                            .as_deref()
-                            .unwrap_or(""),
-                    )?;
-                    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
-                    let src = records::hull_source(&hull)?;
-                    let params = serde_json::from_value(case["params"].clone())
-                        .map_err(|e| format!("case params: {e}"))?;
+                    let case = s.follow(s.follow(r, "study")?, "case")?;
+                    let (hull, params) = records::case_hull(s, case)?;
+                    let src = records::hull_source(hull)?;
                     let meshes = boatmath::sections::meshes(
                         &src.file_name,
                         src.bytes,
@@ -513,21 +536,46 @@ fn draw(
         match picture {
             Ok(svg) => match &o {
                 Some(p) => {
-                    let froude = r["froude"].as_f64().unwrap_or(0.0);
-                    let path = p
-                        .replace("{id8}", &id[..8.min(id.len())])
-                        .replace("{froude}", &format!("{froude}"));
+                    let path = named(p, id, r["froude"].as_f64().unwrap_or(0.0));
                     std::fs::write(&path, svg).map_err(|e| format!("{path}: {e}"))?;
                 }
                 None => out.write_all(svg.as_bytes()).map_err(stdout_err)?,
             },
             Err(e) => {
-                eprintln!("boatmath: result {}: {e}", store::short(id));
+                eprintln!("boatmath: result {}: {e}", short(id));
                 failed += 1;
             }
         }
     }
     Ok(failed)
+}
+
+/// The records a table or plot has a row for: of `kind`, or else of the
+/// most derived type the first field (or the exploded array) reads on.
+fn rows_of<'a>(
+    s: &'a Stream,
+    kind: &Option<String>,
+    first: &str,
+    explode: Option<&str>,
+) -> Vec<&'a Value> {
+    let first = explode.unwrap_or(first);
+    if let Some(k) = kind {
+        return s.of_type(k).collect();
+    }
+    let res = path::Resolver::new(s);
+    const ORDER: [&str; 10] = [
+        "drive", "prop", "result", "statics", "study", "case", "hull", "motor", "sections", "field",
+    ];
+    for k in ORDER {
+        let rs: Vec<&Value> = s.of_type(k).collect();
+        if rs
+            .iter()
+            .any(|r| res.get(r, first).is_some_and(|v| !v.is_null()))
+        {
+            return rs;
+        }
+    }
+    Vec::new()
 }
 
 /// A field path's last segment, to name a series by: `span` for
@@ -541,7 +589,7 @@ fn short_field(f: &str) -> String {
 
 /// A failed write to stdout. A reader that stops early (`| head`) closes
 /// the pipe; like any Unix filter, stop quietly then.
-fn stdout_err(e: std::io::Error) -> String {
+pub(crate) fn stdout_err(e: std::io::Error) -> String {
     if e.kind() == std::io::ErrorKind::BrokenPipe {
         std::process::exit(0);
     }
@@ -556,27 +604,10 @@ fn csv_cell(s: &str) -> String {
     }
 }
 
-/// Records on stdin: JSON values, one per line or simply one after another.
-fn read_records() -> Result<Vec<Value>, String> {
-    let mut s = String::new();
-    std::io::stdin()
-        .read_to_string(&mut s)
-        .map_err(|e| format!("stdin: {e}"))?;
-    serde_json::Deserializer::from_str(&s)
-        .into_iter::<Value>()
-        .map(|v| v.map_err(|e| format!("stdin: {e}")))
-        .collect()
-}
-
 fn list(s: &Option<String>, what: &str) -> Result<Option<Vec<f64>>, String> {
     s.as_deref()
         .map(|s| list::parse(s).map_err(|e| format!("--{what}: {e}")))
         .transpose()
-}
-
-fn mass_by(s: &str) -> Result<MassBy, String> {
-    serde_json::from_value(Value::String(s.into()))
-        .map_err(|_| format!("--mass-by {s:?}: expected sinking, scale or scale_yz"))
 }
 
 fn closure(s: &str) -> Result<Closure, String> {
@@ -644,11 +675,14 @@ fn main() {
 
 /// Run a command; returns how many of its records failed.
 fn go(cli: Cli) -> Result<usize, String> {
-    let store = Store::open()?;
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-    let mut emit = |r: &Value| -> Result<(), String> { writeln!(out, "{r}").map_err(stdout_err) };
+    let cache = Cache::open(cli.cache.clone());
+    let read = || Stream::read(&cli.inputs);
+    let mut out = Out::new(std::io::stdout());
     let mut failed = 0;
+    let fail = |what: &str, id: &str, e: String| {
+        eprintln!("boatmath: {what} {}: {e}", short(id));
+        1
+    };
     match cli.command {
         Command::Hull {
             files,
@@ -673,8 +707,8 @@ fn go(cli: Cli) -> Result<usize, String> {
                         units,
                         ..LoftRequest::default()
                     };
-                    match records::hull_from_file(&store, f, name.as_deref(), import) {
-                        Ok(r) => emit(&r)?,
+                    match records::hull_from_file(f, name.as_deref(), import) {
+                        Ok(r) => out.emit(&r)?,
                         Err(e) => {
                             eprintln!("boatmath: {e}");
                             failed += 1;
@@ -683,23 +717,44 @@ fn go(cli: Cli) -> Result<usize, String> {
                 }
             }
         }
-        Command::Scale { by, beam, name } => {
-            for h in read_records()? {
-                for k in list::product(&[list(&by, "by")?, list(&beam, "beam")?]) {
-                    emit(&records::scaled_hull(
-                        &store,
-                        &h,
-                        k[0],
-                        k[1],
-                        name.as_deref(),
-                    )?)?;
+        Command::Scale {
+            by,
+            beam,
+            mass,
+            keep_length,
+            name,
+        } => {
+            use records::Scaling;
+            let s = read()?;
+            out.pass(&s)?;
+            let mut how: Vec<Scaling> = Vec::new();
+            for k in list(&by, "by")?.unwrap_or_default() {
+                how.push(Scaling::By(k));
+            }
+            for k in list(&beam, "beam")?.unwrap_or_default() {
+                how.push(Scaling::Beam(k));
+            }
+            for kg in list(&mass, "mass")?.unwrap_or_default() {
+                how.push(Scaling::Mass { kg, keep_length });
+            }
+            if how.is_empty() {
+                return Err("scale: give --by, --beam or --mass".into());
+            }
+            if keep_length && mass.is_none() {
+                return Err("--keep-length goes with --mass".into());
+            }
+            for h in s.of_type("hull") {
+                for &w in &how {
+                    match records::scaled_hull(h, w, name.as_deref()) {
+                        Ok(r) => out.emit(&r)?,
+                        Err(e) => failed += fail("hull", h["id"].as_str().unwrap_or(""), e),
+                    }
                 }
             }
         }
         Command::Case {
             span,
             mass,
-            mass_by: by,
             lcg,
             vcg,
             kxx,
@@ -707,9 +762,9 @@ fn go(cli: Cli) -> Result<usize, String> {
             kzz,
             roll_damping,
             name,
-            force,
         } => {
-            let by = mass_by(&by)?;
+            let s = read()?;
+            out.pass(&s)?;
             let axes = [
                 list(&span, "span")?,
                 list(&mass, "mass")?,
@@ -720,28 +775,44 @@ fn go(cli: Cli) -> Result<usize, String> {
                 list(&kzz, "kzz")?,
                 list(&roll_damping, "roll-damping")?,
             ];
-            for h in read_records()? {
+            for h in s.of_type("hull") {
                 for v in list::product(&axes) {
                     let params = CaseParams {
                         span: v[0],
                         mass: v[1],
-                        mass_by: by,
                         lcg: v[2],
                         vcg: v[3],
                         kxx: v[4],
                         kyy: v[5],
                         kzz: v[6],
                         roll_damping: v[7].unwrap_or(0.0),
+                        ..CaseParams::default()
                     };
-                    let r = records::case(&store, &h, params, name.as_deref(), force)?;
-                    if let Some(e) = r["error"].as_str() {
-                        eprintln!(
-                            "boatmath: case {}: {e}",
-                            store::short(r["id"].as_str().unwrap_or(""))
-                        );
-                        failed += 1;
+                    out.emit(&records::case(h, params, name.as_deref())?)?;
+                }
+            }
+        }
+        Command::Statics => {
+            let s = read()?;
+            out.pass(&s)?;
+            for h in s.of_type("hull") {
+                match records::hull_statics(h, &cache) {
+                    Ok(r) => out.emit(&r)?,
+                    Err(e) => failed += fail("hull", h["id"].as_str().unwrap_or(""), e),
+                }
+            }
+            for c in s.of_type("case") {
+                let id = c["id"].as_str().unwrap_or("");
+                match records::case_statics(&s, c, &cache) {
+                    Ok(rs) => {
+                        for r in &rs {
+                            if let Some(e) = r["error"].as_str() {
+                                failed += fail("case", id, e.to_string());
+                            }
+                            out.emit(r)?;
+                        }
                     }
-                    emit(&r)?;
+                    Err(e) => failed += fail("case", id, e),
                 }
             }
         }
@@ -762,7 +833,9 @@ fn go(cli: Cli) -> Result<usize, String> {
                 return Err("--lambdas and --sea need --waves".into());
             }
             let headings = list(&waves, "waves")?;
-            for c in read_records()? {
+            let s = read()?;
+            out.pass(&s)?;
+            for c in s.of_type("case") {
                 for v in list::product(&[headings.clone(), Some(froudes.clone())]) {
                     let params = StudyParams {
                         froude: v[1].expect("a froude number"),
@@ -775,33 +848,15 @@ fn go(cli: Cli) -> Result<usize, String> {
                             sea,
                         }),
                     };
-                    emit(&records::study(&store, &c, params)?)?;
+                    out.emit(&records::study(c, params)?)?;
                 }
             }
         }
-        Command::Run { jobs, force, quiet } => {
+        Command::Run { jobs, quiet } => {
             let jobs =
                 jobs.unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
-            // The workers write to stdout themselves: let go of its lock.
-            drop(out);
-            failed += run::run(
-                &store,
-                &read_records()?,
-                &run::Options { jobs, force, quiet },
-            )?;
-        }
-        Command::Wake { o, range, title } => {
-            failed += draw(&store, &mut out, View::Wake(range), o, title)?;
-        }
-        Command::Pressure { o, range, title } => {
-            failed += draw(&store, &mut out, View::Pressure(range), o, title)?;
-        }
-        Command::Profile {
-            o,
-            wave_scale,
-            title,
-        } => {
-            failed += draw(&store, &mut out, View::Profile(wave_scale), o, title)?;
+            let s = read()?;
+            failed += run::run(&s, &mut out, &cache, &run::Options { jobs, quiet })?;
         }
         Command::Prop {
             thrust,
@@ -849,15 +904,24 @@ fn go(cli: Cli) -> Result<usize, String> {
                 coefficient(&wake, "wake")?,
                 coefficient(&thrust_deduction, "thrust-deduction")?,
             );
-            let auto = (wake_given.is_none() || ded_given.is_none()).then(|| props::Auto {
-                wake: wake_given.is_none(),
-                deduction: ded_given.is_none(),
-                at: boatmath::propulsion::Position {
-                    forward_of_aft: 0.0,
-                    outboard: 0.0,
-                    depth: 0.0,
-                },
-            });
+            let (d_min, d_max, depth) = (
+                units::length(&d_min)?,
+                units::length(&d_max)?,
+                units::length(&depth)?,
+            );
+            let auto = (wake_given.is_none() || ded_given.is_none())
+                .then(|| -> Result<props::Auto, String> {
+                    Ok(props::Auto {
+                        wake: wake_given.is_none(),
+                        deduction: ded_given.is_none(),
+                        at: boatmath::propulsion::Position {
+                            forward_of_aft: units::length(&prop_x)?,
+                            outboard: units::length(&prop_y)?,
+                            depth,
+                        },
+                    })
+                })
+                .transpose()?;
             let (wake, thrust_deduction) = (wake_given.unwrap_or(0.0), ded_given.unwrap_or(0.0));
             let explicit_top = match (&top_speed, &top_thrust) {
                 (Some(s), Some(t)) => Some(propeller::bseries::TopInputs {
@@ -873,110 +937,24 @@ fn go(cli: Cli) -> Result<usize, String> {
                 shafts,
                 wake,
                 thrust_deduction,
-                d_min: 0.0,
-                d_max: 0.0,
+                d_min,
+                d_max,
                 blades: blades.clone(),
-                depth: 0.0,
+                depth,
                 keller_k,
                 cavitation: !no_cavitation,
                 re_correct: !no_re_correct,
                 strict_ear,
                 top,
             };
-            let (d_min, d_max, depth) = (
-                units::length(&d_min)?,
-                units::length(&d_max)?,
-                units::length(&depth)?,
-            );
             let cap = if full_range { f64::INFINITY } else { 1.6 };
-            let mut cases: Vec<(propeller::bseries::Inputs, Option<String>)> = Vec::new();
-            match (&thrust, &speed) {
-                (Some(t), Some(s)) => {
-                    if top_froude.is_some() {
-                        return Err("--top-froude needs results on stdin; give --top-speed and --top-thrust".into());
-                    }
-                    if auto.is_some() {
-                        return Err(
-                            "--wake auto and --thrust-deduction auto need results on stdin".into(),
-                        );
-                    }
-                    cases.push((
-                        base(
-                            units::speed(s)?,
-                            units::force(t)?,
-                            shafts.unwrap_or(1),
-                            explicit_top,
-                        ),
-                        None,
-                    ));
-                }
-                (None, None) => {
-                    for r in read_records()? {
-                        let one = (|| -> Result<_, String> {
-                            let id = records::expect(&r, "result")?.to_string();
-                            let (v, t) = props::operating_point(&r, thrust_deduction)?;
-                            let top = match top_froude {
-                                Some(f) => {
-                                    let o = props::result_at_froude(&store, &r, f)?;
-                                    let (vt, tt) = props::operating_point(&o, thrust_deduction)?;
-                                    Some(propeller::bseries::TopInputs {
-                                        speed: vt,
-                                        thrust: tt,
-                                    })
-                                }
-                                None => explicit_top,
-                            };
-                            let n = shafts.unwrap_or_else(|| props::hull_count(&store, &r) as u32);
-                            Ok((base(v, t, n, top), Some(id)))
-                        })();
-                        match one {
-                            Ok(c) => cases.push(c),
-                            Err(e) => {
-                                eprintln!("boatmath: {e}");
-                                failed += 1;
-                            }
-                        }
-                    }
-                }
-                _ => return Err("--thrust and --speed go together".into()),
-            }
-            let auto = auto
-                .map(|mut a| -> Result<props::Auto, String> {
-                    a.at = boatmath::propulsion::Position {
-                        forward_of_aft: units::length(&prop_x)?,
-                        outboard: units::length(&prop_y)?,
-                        depth,
-                    };
-                    Ok(a)
-                })
-                .transpose()?;
-            for (mut inputs, result) in cases {
-                inputs.d_min = d_min;
-                inputs.d_max = d_max;
-                inputs.depth = depth;
-                let r = match (&auto, &result) {
-                    (Some(a), Some(id)) => {
-                        let rec = store.need("result", id)?;
-                        match props::auto_prop(&store, &rec, inputs, a, cap) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                eprintln!("boatmath: result {}: {e}", store::short(id));
-                                failed += 1;
-                                continue;
-                            }
-                        }
-                    }
-                    _ => props::prop(&store, &inputs, result.as_deref(), cap, None)?,
-                };
+            let report = |r: &Value| {
+                let id = r["id"].as_str().unwrap_or("");
                 if let Some(i) = r.get("interaction").filter(|i| !i.is_null()) {
                     // What was used: a coefficient given outright is not the
                     // one the interaction computed alongside.
                     let used = |k: &str| r["inputs"][k].as_f64().unwrap_or(0.0);
-                    let (wa, ta) = (
-                        i["settings"]["wake"] == true,
-                        i["settings"]["thrust_deduction"] == true,
-                    );
-                    let w = if wa {
+                    let w = if i["settings"]["wake"] == true {
                         format!(
                             "w {:.3} (local {:.3}, wave {:.3})",
                             used("wake"),
@@ -986,14 +964,14 @@ fn go(cli: Cli) -> Result<usize, String> {
                     } else {
                         format!("w {:.3} given", used("wake"))
                     };
-                    let t = if ta {
+                    let t = if i["settings"]["thrust_deduction"] == true {
                         format!("t {:.3}", used("thrust_deduction"))
                     } else {
                         format!("t {:.3} given", used("thrust_deduction"))
                     };
                     eprintln!(
                         "boatmath: prop {}: {w}, {t}, after {} steps{}",
-                        store::short(r["id"].as_str().unwrap_or("")),
+                        short(id),
                         i["steps"].as_array().map_or(0, Vec::len),
                         if i["converged"] == true {
                             ""
@@ -1006,23 +984,82 @@ fn go(cli: Cli) -> Result<usize, String> {
                 if b.is_null() {
                     eprintln!(
                         "boatmath: prop {}: no B-series propeller can do it (try a larger --d-max, or --no-cavitation)",
-                        store::short(r["id"].as_str().unwrap_or(""))
+                        short(id)
                     );
-                    failed += 1;
-                } else {
-                    eprintln!(
-                        "boatmath: prop {}: {:.0} W at {:.0} rpm, {}-blade, D {:.0} mm, P/D {:.2}, EAR {:.2}, η₀ {:.3}",
-                        store::short(r["id"].as_str().unwrap_or("")),
-                        b["P_shaft"].as_f64().unwrap_or(0.0),
-                        b["rpm"].as_f64().unwrap_or(0.0),
-                        b["Z"].as_f64().unwrap_or(0.0),
-                        1e3 * b["D"].as_f64().unwrap_or(0.0),
-                        b["PD"].as_f64().unwrap_or(0.0),
-                        b["EAR"].as_f64().unwrap_or(0.0),
-                        b["eta0"].as_f64().unwrap_or(0.0),
-                    );
+                    return 1;
                 }
-                emit(&r)?;
+                eprintln!(
+                    "boatmath: prop {}: {:.0} W at {:.0} rpm, {}-blade, D {:.0} mm, P/D {:.2}, EAR {:.2}, η₀ {:.3}",
+                    short(id),
+                    b["P_shaft"].as_f64().unwrap_or(0.0),
+                    b["rpm"].as_f64().unwrap_or(0.0),
+                    b["Z"].as_f64().unwrap_or(0.0),
+                    1e3 * b["D"].as_f64().unwrap_or(0.0),
+                    b["PD"].as_f64().unwrap_or(0.0),
+                    b["EAR"].as_f64().unwrap_or(0.0),
+                    b["eta0"].as_f64().unwrap_or(0.0),
+                );
+                0
+            };
+            match (&thrust, &speed) {
+                (Some(t), Some(v)) => {
+                    if top_froude.is_some() {
+                        return Err(
+                            "--top-froude needs results in the stream; give --top-speed and --top-thrust"
+                                .into(),
+                        );
+                    }
+                    if auto.is_some() {
+                        return Err(
+                            "--wake auto and --thrust-deduction auto need results in the stream"
+                                .into(),
+                        );
+                    }
+                    let inputs = base(
+                        units::speed(v)?,
+                        units::force(t)?,
+                        shafts.unwrap_or(1),
+                        explicit_top,
+                    );
+                    let r = props::prop(&cache, &inputs, None, cap, None)?;
+                    failed += report(&r);
+                    out.emit(&r)?;
+                }
+                (None, None) => {
+                    let s = read()?;
+                    out.pass(&s)?;
+                    for r in s.of_type("result").filter(|r| r["kind"] == "calm") {
+                        let id = r["id"].as_str().unwrap_or("");
+                        let one = (|| -> Result<Value, String> {
+                            let (v, t) = props::operating_point(r, thrust_deduction)?;
+                            let top = match top_froude {
+                                Some(f) => {
+                                    let o = props::result_at_froude(&s, r, f)?;
+                                    let (vt, tt) = props::operating_point(&o, thrust_deduction)?;
+                                    Some(propeller::bseries::TopInputs {
+                                        speed: vt,
+                                        thrust: tt,
+                                    })
+                                }
+                                None => explicit_top,
+                            };
+                            let n = shafts.unwrap_or_else(|| props::hull_count(&s, r) as u32);
+                            let inputs = base(v, t, n, top);
+                            match &auto {
+                                Some(a) => props::auto_prop(&s, &cache, r, inputs, a, cap),
+                                None => props::prop(&cache, &inputs, Some(id), cap, None),
+                            }
+                        })();
+                        match one {
+                            Ok(p) => {
+                                failed += report(&p);
+                                out.emit(&p)?;
+                            }
+                            Err(e) => failed += fail("result", id, e),
+                        }
+                    }
+                }
+                _ => return Err("--thrust and --speed go together".into()),
             }
         }
         Command::Match {
@@ -1064,16 +1101,18 @@ fn go(cli: Cli) -> Result<usize, String> {
                 peak,
                 check_top: !no_top,
             };
-            for p in read_records()? {
-                let (drives, unreachable) = props::drives(&store, db, &p, &o)?;
+            let s = read()?;
+            out.pass(&s)?;
+            for p in s.of_type("prop") {
+                let (drives, unreachable) = props::drives(db, p, &o)?;
                 eprintln!(
                     "boatmath: prop {}: {} motors can drive it, {} can't",
-                    store::short(p["id"].as_str().unwrap_or("")),
+                    short(p["id"].as_str().unwrap_or("")),
                     drives.len(),
                     unreachable.len()
                 );
                 for d in &drives {
-                    emit(d)?;
+                    out.emit(d)?;
                 }
             }
         }
@@ -1081,85 +1120,39 @@ fn go(cli: Cli) -> Result<usize, String> {
             let f = filter.filter()?;
             for m in &propeller::motor::Database::vendored().motors {
                 if f.admits(m) {
-                    emit(&props::motor_record(m))?;
+                    out.emit(&props::motor_record(m))?;
                 }
             }
         }
-        Command::Cad {
-            o,
-            no_water,
-            wave_scale,
-            prop_x,
-            prop_y,
-            depth,
+        Command::Pick {
+            kind,
+            first,
+            wheres,
+            drop,
         } => {
-            let len = |s: &Option<String>| s.as_deref().map(units::length).transpose();
-            let opts = cad::Options {
-                water: !no_water,
-                wave_scale,
-                prop_x: len(&prop_x)?,
-                prop_y: len(&prop_y)?,
-                depth: len(&depth)?,
+            let s = read()?;
+            let p = pick::Pick {
+                kind,
+                first,
+                wheres: wheres
+                    .iter()
+                    .map(|w| pick::parse_where(w))
+                    .collect::<Result<_, _>>()?,
+                drop,
             };
-            let records = read_records()?;
-            if records.len() > 1 && !o.as_deref().is_some_and(|p| p.contains('{')) {
-                return Err(format!(
-                    "{} records: give -o a pattern with {{id8}} or {{froude}} to name each file",
-                    records.len()
-                ));
-            }
-            for r in &records {
-                let id = r["id"].as_str().unwrap_or("");
-                match cad::model(&store, r, &opts) {
-                    Ok(text) => match &o {
-                        Some(p) => {
-                            let froude = r["froude"]
-                                .as_f64()
-                                .or_else(|| {
-                                    r["result"]
-                                        .as_str()
-                                        .and_then(|rid| store.get("result", rid).ok().flatten())
-                                        .and_then(|res| res["froude"].as_f64())
-                                })
-                                .unwrap_or(0.0);
-                            let path = p
-                                .replace("{id8}", &id[..8.min(id.len())])
-                                .replace("{froude}", &format!("{froude}"));
-                            std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))?;
-                            eprintln!("boatmath: wrote {path}");
-                        }
-                        None => out.write_all(text.as_bytes()).map_err(stdout_err)?,
-                    },
-                    Err(e) => {
-                        eprintln!("boatmath: {}: {e}", store::short(id));
-                        failed += 1;
-                    }
-                }
-            }
-        }
-        Command::Blob { id } => {
-            let bytes = store.blob(&id)?;
-            out.write_all(&bytes).map_err(stdout_err)?;
-        }
-        Command::Get { ids } => {
-            for id in &ids {
-                let found = store.find(id)?;
-                if found.is_empty() {
-                    eprintln!("boatmath: no record {id}");
-                    failed += 1;
-                }
-                for r in found {
-                    emit(&r)?;
-                }
+            for i in pick::pick(&s, &p) {
+                out.emit(&s.records[i])?;
             }
         }
         Command::Table {
             fields,
+            kind,
             explode,
             csv,
             no_header,
         } => {
-            let res = path::Resolver::new(&store);
+            let s = read()?;
+            let res = path::Resolver::new(&s);
             let line = |cells: Vec<String>| {
                 if csv {
                     cells
@@ -1175,16 +1168,17 @@ fn go(cli: Cli) -> Result<usize, String> {
                         .join("\t")
                 }
             };
+            let w = out.raw();
             if !no_header {
-                writeln!(out, "{}", line(fields.clone())).map_err(stdout_err)?;
+                writeln!(w, "{}", line(fields.clone())).map_err(stdout_err)?;
             }
-            for r in read_records()? {
-                for row in res.rows(&r, explode.as_deref()) {
+            for r in rows_of(&s, &kind, &fields[0], explode.as_deref()) {
+                for row in res.rows(r, explode.as_deref()) {
                     let cells = fields
                         .iter()
-                        .map(|f| path::cell(&res.get_in(&row, &r, f)))
+                        .map(|f| path::cell(&res.get_in(&row, r, f)))
                         .collect();
-                    writeln!(out, "{}", line(cells)).map_err(stdout_err)?;
+                    writeln!(w, "{}", line(cells)).map_err(stdout_err)?;
                 }
             }
         }
@@ -1192,31 +1186,29 @@ fn go(cli: Cli) -> Result<usize, String> {
             x,
             y,
             by,
+            kind,
             explode,
             title,
             xlabel,
             ylabel,
             o,
         } => {
-            let res = path::Resolver::new(&store);
+            let s = read()?;
+            let res = path::Resolver::new(&s);
             let mut series: Vec<plot::Series> = Vec::new();
-            for r in read_records()? {
-                for row in res.rows(&r, explode.as_deref()) {
-                    let Some(xv) = res.get_in(&row, &r, &x).and_then(|v| v.as_f64()) else {
+            for r in rows_of(&s, &kind, &x, explode.as_deref()) {
+                for row in res.rows(r, explode.as_deref()) {
+                    let Some(xv) = res.get_in(&row, r, &x).and_then(|v| v.as_f64()) else {
                         continue;
                     };
                     let group: Vec<String> = by
                         .iter()
                         .map(|f| {
-                            format!(
-                                "{} {}",
-                                short_field(f),
-                                path::cell(&res.get_in(&row, &r, f))
-                            )
+                            format!("{} {}", short_field(f), path::cell(&res.get_in(&row, r, f)))
                         })
                         .collect();
                     for yf in &y {
-                        let Some(yv) = res.get_in(&row, &r, yf).and_then(|v| v.as_f64()) else {
+                        let Some(yv) = res.get_in(&row, r, yf).and_then(|v| v.as_f64()) else {
                             continue;
                         };
                         let mut name = group.clone();
@@ -1242,7 +1234,76 @@ fn go(cli: Cli) -> Result<usize, String> {
             })?;
             match o {
                 Some(p) => std::fs::write(&p, svg).map_err(|e| format!("{}: {e}", p.display()))?,
-                None => out.write_all(svg.as_bytes()).map_err(stdout_err)?,
+                None => out.raw().write_all(svg.as_bytes()).map_err(stdout_err)?,
+            }
+        }
+        Command::Wake { o, range, title } => {
+            failed += draw(&read()?, out.raw(), View::Wake(range), o, title)?;
+        }
+        Command::Pressure { o, range, title } => {
+            failed += draw(&read()?, out.raw(), View::Pressure(range), o, title)?;
+        }
+        Command::Profile {
+            o,
+            wave_scale,
+            title,
+        } => {
+            failed += draw(&read()?, out.raw(), View::Profile(wave_scale), o, title)?;
+        }
+        Command::Cad {
+            o,
+            no_water,
+            wave_scale,
+            prop_x,
+            prop_y,
+            depth,
+        } => {
+            let len = |s: &Option<String>| s.as_deref().map(units::length).transpose();
+            let opts = cad::Options {
+                water: !no_water,
+                wave_scale,
+                prop_x: len(&prop_x)?,
+                prop_y: len(&prop_y)?,
+                depth: len(&depth)?,
+            };
+            let s = read()?;
+            // A prop draws its result too; without props, each result.
+            let mut targets: Vec<&Value> = s
+                .of_type("prop")
+                .filter(|p| !p["result"].is_null())
+                .collect();
+            if targets.is_empty() {
+                targets = s
+                    .of_type("result")
+                    .filter(|r| r["kind"] == "calm")
+                    .collect();
+            }
+            if targets.is_empty() {
+                return Err("no calm-water results or props on them in the stream".into());
+            }
+            check_pattern(targets.len(), &o, "records")?;
+            for r in targets {
+                let id = r["id"].as_str().unwrap_or("");
+                match cad::model(&s, r, &opts) {
+                    Ok(text) => match &o {
+                        Some(p) => {
+                            let froude = r["froude"]
+                                .as_f64()
+                                .or_else(|| {
+                                    r["result"]
+                                        .as_str()
+                                        .and_then(|rid| s.get("result", rid))
+                                        .and_then(|res| res["froude"].as_f64())
+                                })
+                                .unwrap_or(0.0);
+                            let path = named(p, id, froude);
+                            std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))?;
+                            eprintln!("boatmath: wrote {path}");
+                        }
+                        None => out.raw().write_all(text.as_bytes()).map_err(stdout_err)?,
+                    },
+                    Err(e) => failed += fail(r["type"].as_str().unwrap_or("record"), id, e),
+                }
             }
         }
     }

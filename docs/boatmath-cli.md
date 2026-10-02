@@ -13,7 +13,7 @@ boatmath plot -x study.params.froude -y forces.rt -o rt.svg < calm.jsonl
 ## Principles
 
 - **One record, one JSON object; streams are JSONL.** Commands read records
-  on stdin (or from files named as arguments) and write them on stdout, one
+  on stdin (or from files given with `-i`) and write them on stdout, one
   per line. Progress and errors go to stderr. A command that fails on some
   records carries on with the rest and exits 1.
 - **Every record carries `type` and `id`.** `id` is the SHA-256 of the

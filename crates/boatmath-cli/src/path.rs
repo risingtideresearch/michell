@@ -1,60 +1,33 @@
 //! Field paths into records, as `table` and `plot` name their columns:
 //!
 //! - `forces.rt`, `seakeeping.headings.0.points` — keys and array indices;
-//! - a parent's id is followed into its record, so on a result
-//!   `study.case.params.span` reads the span of the result's case
-//!   (`hull`, `case`, `study`, `parent`, `calm`, `sections`, `result`,
-//!   `prop`, and `motor` into the motor database, are followed);
+//! - a parent's id is followed into its record in the stream, so on a
+//!   result `study.case.params.span` reads the span of the result's case
+//!   (the links of [`crate::stream::LINKS`] are followed, and `motor` into
+//!   the motor database);
 //! - `|heave|` — the modulus of a complex `[re, im]` pair;
 //! - `id8` — a record's id, shortened to eight characters, as a label.
 
-use crate::store::Store;
+use crate::stream::{link_type, Stream};
 use serde_json::{json, Value};
-use std::cell::RefCell;
-use std::collections::HashMap;
-
-/// The record type a key holding an id refers to.
-fn parent_type(key: &str) -> Option<&'static str> {
-    match key {
-        "hull" | "parent" => Some("hull"),
-        "case" => Some("case"),
-        "study" | "calm" => Some("study"),
-        "sections" => Some("sections"),
-        "result" => Some("result"),
-        "prop" => Some("prop"),
-        "motor" => Some("motor"),
-        _ => None,
-    }
-}
 
 pub struct Resolver<'a> {
-    store: &'a Store,
-    cache: RefCell<HashMap<(String, String), Option<Value>>>,
+    stream: &'a Stream,
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(store: &'a Store) -> Self {
-        Resolver {
-            store,
-            cache: RefCell::new(HashMap::new()),
-        }
+    pub fn new(stream: &'a Stream) -> Self {
+        Resolver { stream }
     }
 
     fn load(&self, kind: &str, id: &str) -> Option<Value> {
-        let key = (kind.to_string(), id.to_string());
-        if let Some(v) = self.cache.borrow().get(&key) {
-            return v.clone();
-        }
-        // Motors live in the database, not the store.
-        let v = if kind == "motor" {
-            propeller::motor::Database::vendored()
+        // Motors are the database's, not the stream's.
+        if kind == "motor" {
+            return propeller::motor::Database::vendored()
                 .motor(id)
-                .map(crate::props::motor_record)
-        } else {
-            self.store.get(kind, id).ok().flatten()
-        };
-        self.cache.borrow_mut().insert(key, v.clone());
-        v
+                .map(crate::props::motor_record);
+        }
+        self.stream.get(kind, id).cloned()
     }
 
     /// The value at `path` in `root`, or `None` if there is none.
@@ -73,13 +46,19 @@ impl<'a> Resolver<'a> {
         let mut cur = root.clone();
         let segments: Vec<&str> = path.split('.').collect();
         for (i, seg) in segments.iter().enumerate() {
+            let kind = cur["type"].as_str().unwrap_or("").to_string();
             let next = match &cur {
                 Value::Array(a) => seg.parse::<usize>().ok().and_then(|i| a.get(i).cloned()),
                 Value::Object(o) => o.get(*seg).cloned(),
                 _ => None,
             }?;
             // An id with more path after it is followed into its record.
-            cur = match (&next, parent_type(seg)) {
+            let parent = if *seg == "motor" {
+                Some("motor")
+            } else {
+                link_type(seg, &kind)
+            };
+            cur = match (&next, parent) {
                 (Value::String(id), Some(kind)) if i + 1 < segments.len() => self.load(kind, id)?,
                 _ => next,
             };

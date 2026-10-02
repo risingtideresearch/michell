@@ -11,7 +11,7 @@
 //! Frame: x forward, y to port, z up, the still water at z = 0, metres.
 
 use crate::records::{expect, hull_source};
-use crate::store::{short, Store};
+use crate::stream::{short, Stream};
 use boatmath::params::CaseParams;
 use boatmath::propulsion::Position;
 use michell::propulsion::Disc;
@@ -30,13 +30,13 @@ pub struct Options {
 }
 
 /// The IGES file for one record: a calm-water result, or a prop.
-pub fn model(store: &Store, rec: &Value, o: &Options) -> Result<String, String> {
+pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
     let (result, prop) = match rec["type"].as_str() {
         Some("prop") => {
             let id = rec["result"]
                 .as_str()
                 .ok_or("a prop given outright (no result) has no hull to draw")?;
-            (store.need("result", id)?, Some(rec))
+            (st.need("result", id)?.clone(), Some(rec))
         }
         _ => (rec.clone(), None),
     };
@@ -44,12 +44,11 @@ pub fn model(store: &Store, rec: &Value, o: &Options) -> Result<String, String> 
     if result["kind"] != "calm" {
         return Err(format!("result {}: not a calm-water result", short(rid)));
     }
-    let study = store.need("study", result["study"].as_str().unwrap_or(""))?;
-    let case = store.need("case", study["case"].as_str().unwrap_or(""))?;
-    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
-    let src = hull_source(&hull)?;
-    let cp: CaseParams =
-        serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
+    let study = st.follow(&result, "study")?;
+    let case = st.follow(study, "case")?;
+    let hull = st.follow(case, "hull")?;
+    let src = hull_source(hull)?;
+    let cp: CaseParams = crate::records::case_params(case)?;
     let f = &result["forces"];
     let attitude = (
         f["sinkage"].as_f64().unwrap_or(0.0),
@@ -77,11 +76,7 @@ pub fn model(store: &Store, rec: &Value, o: &Options) -> Result<String, String> 
     }
 
     if o.water {
-        let blob = result["field"]["blob"]
-            .as_str()
-            .ok_or("the result has no field")?;
-        let v: Value =
-            serde_json::from_slice(&store.blob(blob)?).map_err(|e| format!("field: {e}"))?;
+        let v = st.follow(&result, "field")?;
         let s = &v["surface"];
         let n = |k: &str| s[k].as_f64().ok_or_else(|| format!("field: surface {k}"));
         let zeta: Vec<f64> = crate::views::f32s(&s["zeta"], "zeta")?

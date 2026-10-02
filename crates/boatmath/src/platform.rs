@@ -89,6 +89,41 @@ fn whole_sections(s: &Setup) -> Result<Vec<StabilityHull>, String> {
     Ok(out)
 }
 
+/// A case's float at rest, `(sinkage [m], trim [rad])`, and nothing else:
+/// what a study held at rest needs, without the GZ curve.
+pub fn at_rest(
+    name: &str,
+    bytes: Vec<u8>,
+    cut: &LoftRequest,
+    c: &CaseParams,
+) -> Result<(f64, f64), String> {
+    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
+    use michell_geometry::source::SourceHull;
+    let s = setup(name, bytes, cut, c)?;
+    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let sources: Vec<SourceHull> = s
+        .layout
+        .iter()
+        .map(|&(index, pose)| SourceHull {
+            source: s.cut.file.source.as_ref(),
+            index,
+            waterline_z: s.cut.file.waterline_z,
+            pose,
+        })
+        .collect();
+    let eq = solve_equilibrium_sectional(
+        &sources,
+        &LoadCase {
+            mass: s.mass,
+            lcg: Some(s.lcg),
+        },
+        rho,
+        &s.cut.opts,
+    )
+    .map_err(|e| format!("the float at rest: {e}"))?;
+    Ok((eq.sinkage, eq.trim))
+}
+
 /// A case's statics: its float at rest, its hydrostatics there,
 /// its roll stability (GM_T, the natural roll period) and its GZ curve.
 pub fn statics(

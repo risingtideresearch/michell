@@ -3,8 +3,9 @@
 //! motor driving it, at its best reduction and point on that curve; a
 //! `motor` is a database entry. See the `propeller` crate for the models.
 
-use crate::records::{expect, study_record};
-use crate::store::{id_of, short, Store};
+use crate::cache::Cache;
+use crate::records::{case_params, expect, study_record};
+use crate::stream::{id_of, short, Stream};
 use boatmath::params::StudyParams;
 use boatmath::SOLVER_VERSION;
 use propeller::bseries::{sweep, Config, CurvePoint, Inputs, SweepOptions};
@@ -24,49 +25,47 @@ pub fn operating_point(r: &Value, thrust_deduction: f64) -> Result<(f64, f64), S
 }
 
 /// The number of hulls a result's platform floats on: a shaft each.
-pub fn hull_count(store: &Store, r: &Value) -> usize {
-    let case = store
-        .get("study", r["study"].as_str().unwrap_or(""))
-        .ok()
-        .flatten()
-        .and_then(|s| store.get("case", s["case"].as_str()?).ok().flatten());
+pub fn hull_count(s: &Stream, r: &Value) -> usize {
+    let case = s
+        .follow(r, "study")
+        .and_then(|st| s.follow(st, "case"))
+        .ok();
     match case {
         Some(c) if !c["params"]["span"].is_null() => 2,
-        Some(c) => store
-            .get("hull", c["hull"].as_str().unwrap_or(""))
+        Some(c) => s
+            .follow(c, "hull")
             .ok()
-            .flatten()
-            .and_then(|h| h["summary"]["hulls"].as_array().map(Vec::len))
+            .and_then(|h| h["geometry"]["hulls"].as_array().map(Vec::len))
             .unwrap_or(1),
         None => 1,
     }
 }
 
 /// The result of the same study at Froude number `froude`: the second
-/// operating point, which must already be in the store.
-pub fn result_at_froude(store: &Store, r: &Value, froude: f64) -> Result<Value, String> {
-    let study = store.need("study", r["study"].as_str().unwrap_or(""))?;
+/// operating point, which must be in the stream.
+pub fn result_at_froude(s: &Stream, r: &Value, froude: f64) -> Result<Value, String> {
+    let study = s.follow(r, "study")?;
     let mut p: StudyParams = serde_json::from_value(study["params"].clone())
         .map_err(|e| format!("study params: {e}"))?;
     p.froude = froude;
     let other = study_record(study["case"].as_str().unwrap_or(""), p.canonical()?);
     let id = other["id"].as_str().unwrap_or("");
-    store
-        .get("result", id)?
+    s.get("result", id)
         .filter(|r| r["solver_version"] == SOLVER_VERSION)
+        .cloned()
         .ok_or_else(|| {
             format!(
-                "no result at Fn {froude} for case {}: run that study first \
-                 (boatmath study --froude {froude} … | boatmath run)",
+                "no result at Fn {froude} for case {} in the stream: run that study too \
+                 (boatmath study --froude {froude},… | boatmath run)",
                 short(study["case"].as_str().unwrap_or(""))
             )
         })
 }
 
-/// The best propeller for `inputs`, and its curve, as a record (reused from
-/// the store when it's there).
+/// The best propeller for `inputs`, and its curve, as a record (from the
+/// cache when it's there).
 pub fn prop(
-    store: &Store,
+    cache: &Cache,
     inputs: &Inputs,
     result: Option<&str>,
     power_cap: f64,
@@ -76,10 +75,8 @@ pub fn prop(
         "inputs": inputs, "result": result, "power_cap": power_cap,
         "interaction": interaction.map(|i| &i["settings"]),
     }));
-    if let Some(old) = store.get("prop", &id)? {
-        if old["solver_version"] == SOLVER_VERSION {
-            return Ok(old);
-        }
+    if let Some(old) = cache.get("prop", &id) {
+        return Ok(old);
     }
     let c = Config::new(inputs);
     let s = sweep(
@@ -108,7 +105,7 @@ pub fn prop(
         "interaction": interaction,
         "solver_version": SOLVER_VERSION,
     });
-    store.put(&r)?;
+    cache.put(&r);
     Ok(r)
 }
 
@@ -125,20 +122,20 @@ pub struct Auto {
 /// guess, its disc placed on each hull at the result's attitude, w and t
 /// computed there, and the propeller found again, until they settle.
 pub fn auto_prop(
-    store: &Store,
+    s: &Stream,
+    cache: &Cache,
     r: &Value,
     mut inputs: Inputs,
     auto: &Auto,
     power_cap: f64,
 ) -> Result<Value, String> {
-    use boatmath::params::{CaseParams, StudyParams};
+    use boatmath::params::StudyParams;
     let result_id = expect(r, "result")?;
-    let study = store.need("study", r["study"].as_str().unwrap_or(""))?;
-    let case = store.need("case", study["case"].as_str().unwrap_or(""))?;
-    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
-    let src = crate::records::hull_source(&hull)?;
-    let cp: CaseParams =
-        serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
+    let study = s.follow(r, "study")?;
+    let case = s.follow(study, "case")?;
+    let hull = s.follow(case, "hull")?;
+    let src = crate::records::hull_source(hull)?;
+    let cp = case_params(case)?;
     let sp: StudyParams = serde_json::from_value(study["params"].clone())
         .map_err(|e| format!("study params: {e}"))?;
     let f = &r["forces"];
@@ -242,7 +239,7 @@ pub fn auto_prop(
         "converged": converged,
     });
     prop(
-        store,
+        cache,
         &inputs,
         Some(result_id),
         power_cap,
@@ -308,7 +305,6 @@ pub struct MatchOptions {
 /// Every admitted motor at its best point on `prop`'s curve, ranked, as
 /// `drive` records; and the ids of those that can't drive it.
 pub fn drives(
-    store: &Store,
     db: &Database,
     prop: &Value,
     o: &MatchOptions,
@@ -351,7 +347,6 @@ pub fn drives(
     let mut out = Vec::new();
     for (rank, d) in sc.dots.iter().enumerate() {
         let r = drive_record(prop_id, d, rank + 1, &settings);
-        store.put(&r)?;
         out.push(r);
     }
     Ok((out, sc.unreachable.iter().map(|m| m.id.clone()).collect()))

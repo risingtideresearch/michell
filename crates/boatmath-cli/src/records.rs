@@ -1,8 +1,10 @@
-//! Making records: hulls from files (their geometry inline), cases on hulls, studies on cases. Each
-//! is saved in the store as it is made, and its id is that of its inputs,
-//! so making the same thing twice finds the first.
+//! Making records. The definitions — hulls from files, scaled hulls, cases
+//! on hulls, studies on cases — and the statics computed from them. Each
+//! record's id is that of its inputs, so making the same thing twice gives
+//! the same record.
 
-use crate::store::{id_of, sha256, short, Store};
+use crate::cache::Cache;
+use crate::stream::{id_of, sha256, short, Stream};
 use boatmath::params::{CaseParams, StudyParams};
 use boatmath::{hull_summary, loft, statics, LoftRequest, SOLVER_VERSION};
 use serde_json::{json, Value};
@@ -66,15 +68,15 @@ pub fn hull_source(hull: &Value) -> Result<HullSource, String> {
     })
 }
 
+/// A hull record, checked to cut. Its hydrostatics are `statics`'.
 fn hull_record(
-    store: &Store,
     name: &str,
     source: Value,
     geometry: Value,
     cut: CutSettings,
     parent: Option<&str>,
 ) -> Result<Value, String> {
-    let mut r = json!({
+    let r = json!({
         "type": "hull",
         "id": id_of(&json!({ "geometry": geometry, "cut": cut })),
         "name": name,
@@ -82,19 +84,15 @@ fn hull_record(
         "cut": cut,
         "parent": parent,
         "geometry": geometry,
-        "solver_version": SOLVER_VERSION,
     });
     let src = hull_source(&r)?;
-    let sections = loft(&src.file_name, src.bytes, &src.import)?;
-    r["summary"] = hull_summary(&sections);
-    store.put(&r)?;
+    loft(&src.file_name, src.bytes, &src.import)?;
     Ok(r)
 }
 
 /// A hull from a file: its geometry, with the file's import settings
 /// (waterline, units) applied once. `source` records where it came from.
 pub fn hull_from_file(
-    store: &Store,
     path: &Path,
     name: Option<&str>,
     import: LoftRequest,
@@ -122,27 +120,67 @@ pub fn hull_from_file(
         rays: import.rays,
         centerplane: import.centerplane,
     };
-    hull_record(store, name.unwrap_or(&stem), source, geometry, cut, None)
+    hull_record(name.unwrap_or(&stem), source, geometry, cut, None)
 }
 
-/// A hull made by scaling another: wholly by `by`, and/or its beam and
-/// draft by `yz`, about its design waterline. The new geometry is the old
-/// with its control points (or vertices) scaled.
-pub fn scaled_hull(
-    store: &Store,
-    hull: &Value,
-    by: Option<f64>,
-    yz: Option<f64>,
-    name: Option<&str>,
-) -> Result<Value, String> {
+/// How to scale a hull, about its design waterline.
+#[derive(Clone, Copy, Debug)]
+pub enum Scaling {
+    /// The whole hull by this factor.
+    By(f64),
+    /// Beam and draft by this factor, the length kept.
+    Beam(f64),
+    /// To carry this mass [kg] at the design waterline: uniformly, or with
+    /// `keep_length` beam and draft only.
+    Mass { kg: f64, keep_length: bool },
+}
+
+/// A hull's design displacement [kg], in seawater.
+fn design_mass(hull: &Value) -> Result<f64, String> {
+    let src = hull_source(hull)?;
+    let cut = loft(&src.file_name, src.bytes, &src.import)?;
+    let v: f64 = cut["hulls"]
+        .as_array()
+        .ok_or("no hulls")?
+        .iter()
+        .filter_map(|h| h["displaced_volume"].as_f64())
+        .sum();
+    Ok(michell_geometry::Fluid::SEAWATER_15C.density * v)
+}
+
+/// A hull made by scaling another, about its design waterline. The new
+/// geometry is the old with its control points (or vertices) scaled.
+pub fn scaled_hull(hull: &Value, how: Scaling, name: Option<&str>) -> Result<Value, String> {
     let id = expect(hull, "hull")?;
-    for (k, v) in [("--by", by), ("--beam", yz)] {
-        if let Some(x) = v {
-            if !(x > 0.0 && x.is_finite()) {
-                return Err(format!("{k} {x}: expected a positive factor"));
+    let base = hull["name"].as_str().unwrap_or("hull");
+    let positive = |k: f64, what: &str| {
+        if k > 0.0 && k.is_finite() {
+            Ok(k)
+        } else {
+            Err(format!("{what} {k}: expected a positive number"))
+        }
+    };
+    let (by, yz, label) = match how {
+        Scaling::By(k) => (Some(positive(k, "--by")?), None, format!("{base} ×{k}")),
+        Scaling::Beam(k) => (
+            None,
+            Some(positive(k, "--beam")?),
+            format!("{base} ×{k} beam"),
+        ),
+        Scaling::Mass { kg, keep_length } => {
+            let m0 = design_mass(hull)?;
+            let r = positive(kg, "--mass")? / m0;
+            if keep_length {
+                (
+                    None,
+                    Some(r.sqrt()),
+                    format!("{base} at {kg} kg, length kept"),
+                )
+            } else {
+                (Some(r.cbrt()), None, format!("{base} at {kg} kg"))
             }
         }
-    }
+    };
     let pose = LoftRequest {
         scale: by,
         scale_yz: yz,
@@ -152,118 +190,49 @@ pub fn scaled_hull(
     let geometry = boatmath::native::posed(&hull["geometry"], &pose)?;
     let cut: CutSettings =
         serde_json::from_value(hull["cut"].clone()).map_err(|e| format!("hull cut: {e}"))?;
-    let base = hull["name"].as_str().unwrap_or("hull");
-    let default_name = match (by, yz) {
-        (Some(k), None) => format!("{base} ×{k}"),
-        (None, Some(k)) => format!("{base} ×{k} beam"),
-        (Some(k), Some(j)) => format!("{base} ×{k}, ×{j} beam"),
-        (None, None) => base.to_string(),
-    };
     let source = json!({ "scaled": { "by": by, "beam": yz } });
-    hull_record(
-        store,
-        name.unwrap_or(&default_name),
-        source,
-        geometry,
-        cut,
-        Some(id),
-    )
+    hull_record(name.unwrap_or(&label), source, geometry, cut, Some(id))
 }
 
-/// A case on a hull, with its statics. One already in the store, from this
-/// solver, is reused unless `force`.
-pub fn case(
-    store: &Store,
-    hull: &Value,
-    params: CaseParams,
-    name: Option<&str>,
-    force: bool,
-) -> Result<Value, String> {
+/// A case's params as the CLI writes them: the web app's `CaseParams`
+/// without `mass_by` (a CLI case always carries its mass by sinking; to
+/// carry it at the design waterline, scale the hull first).
+fn case_params_json(p: &CaseParams) -> Value {
+    let mut v = serde_json::to_value(p).expect("params serialize");
+    if let Some(o) = v.as_object_mut() {
+        o.remove("mass_by");
+    }
+    v
+}
+
+/// A case's params, for the solver.
+pub fn case_params(case: &Value) -> Result<CaseParams, String> {
+    let mut v = case["params"].clone();
+    if let Some(o) = v.as_object_mut() {
+        o.remove("mount");
+    }
+    serde_json::from_value(v).map_err(|e| format!("case params: {e}"))
+}
+
+/// A case on a hull: a definition only.
+pub fn case(hull: &Value, params: CaseParams, name: Option<&str>) -> Result<Value, String> {
     let hull_id = expect(hull, "hull")?;
     let params = params.canonical()?;
-    let id = id_of(&json!({ "hull": hull_id, "params": params }));
-    if let Some(mut old) = store.get("case", &id)? {
-        if !force && old["solver_version"] == SOLVER_VERSION {
-            if let Some(n) = name {
-                if old["name"] != n {
-                    old["name"] = json!(n);
-                    store.put(&old)?;
-                }
-            }
-            return Ok(old);
-        }
-    }
-    let src = hull_source(hull)?;
-    let mut r = json!({
+    let p = case_params_json(&params);
+    Ok(json!({
         "type": "case",
-        "id": id,
+        "id": id_of(&json!({ "hull": hull_id, "params": p })),
         "name": name.unwrap_or(""),
         "hull": hull_id,
-        "params": params,
-        "solver_version": SOLVER_VERSION,
-    });
-    match statics(&src.file_name, src.bytes, &src.import, &params) {
-        Ok(mut s) => {
-            let o = s.as_object_mut().expect("statics are an object");
-            // The meshes are for drawing; `show` makes them again.
-            o.remove("meshes");
-            o.remove("body_meshes");
-            r["seconds"] = o.remove("seconds").unwrap_or(Value::Null);
-            let rest = (
-                s["at_rest"]["sinkage"].as_f64(),
-                s["at_rest"]["trim_rad"].as_f64(),
-            );
-            r["statics"] = s;
-            if let (Some(z), Some(t)) = rest {
-                match sections(store, &r, (z, t)) {
-                    Ok(id) => r["sections"] = json!(id),
-                    Err(e) => eprintln!("boatmath: case {}: sections: {e}", short(&id)),
-                }
-            }
-        }
-        Err(e) => r["error"] = json!(e),
-    }
-    store.put(&r)?;
-    Ok(r)
+        "params": p,
+        "parent": null,
+    }))
 }
 
-/// The sections record of a case cut at `(sinkage [m], trim [rad])`,
-/// made if the store hasn't it; returns its id. The id is that of the case
-/// and the attitude, so a case at rest and the studies held there share one.
-pub fn sections(store: &Store, case: &Value, attitude: (f64, f64)) -> Result<String, String> {
+/// A study on a case: only the request; `run` computes it.
+pub fn study(case: &Value, params: StudyParams) -> Result<Value, String> {
     let case_id = expect(case, "case")?;
-    let id = id_of(&json!({ "case": case_id, "attitude": [attitude.0, attitude.1] }));
-    if store
-        .get("sections", &id)?
-        .is_some_and(|s| s["solver_version"] == SOLVER_VERSION)
-    {
-        return Ok(id);
-    }
-    let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
-    let src = hull_source(&hull)?;
-    let params: CaseParams =
-        serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
-    let mut r =
-        boatmath::sections::sections(&src.file_name, src.bytes, &src.import, &params, attitude)?;
-    let o = r.as_object_mut().expect("an object");
-    o.insert("type".into(), json!("sections"));
-    o.insert("id".into(), json!(id));
-    o.insert("case".into(), json!(case_id));
-    o.insert("solver_version".into(), json!(SOLVER_VERSION));
-    store.put(&r)?;
-    Ok(id)
-}
-
-/// A study on a case: only the request, saved; `run` computes it.
-pub fn study(store: &Store, case: &Value, params: StudyParams) -> Result<Value, String> {
-    let case_id = expect(case, "case")?;
-    if let Some(e) = case["error"].as_str() {
-        return Err(format!("case {} failed: {e}", short(case_id)));
-    }
-    let params = params.canonical()?;
-    let r = study_record(case_id, params);
-    store.put(&r)?;
-    Ok(r)
+    Ok(study_record(case_id, params.canonical()?))
 }
 
 pub fn study_record(case_id: &str, params: StudyParams) -> Value {
@@ -274,4 +243,112 @@ pub fn study_record(case_id: &str, params: StudyParams) -> Value {
         "kind": params.kind(),
         "params": params,
     })
+}
+
+/// The hull a case floats on, and its parameters.
+pub fn case_hull<'a>(s: &'a Stream, case: &Value) -> Result<(&'a Value, CaseParams), String> {
+    Ok((s.follow(case, "hull")?, case_params(case)?))
+}
+
+/// The sections record of a case cut at `(sinkage [m], trim [rad])`. Its id
+/// is that of the case and the attitude, so a case at rest and the studies
+/// held there share one.
+pub fn sections(
+    s: &Stream,
+    case: &Value,
+    attitude: (f64, f64),
+    cache: &Cache,
+) -> Result<Value, String> {
+    let case_id = expect(case, "case")?;
+    let id = id_of(&json!({ "case": case_id, "attitude": [attitude.0, attitude.1] }));
+    if let Some(r) = s
+        .get("sections", &id)
+        .cloned()
+        .or_else(|| cache.get("sections", &id))
+    {
+        return Ok(r);
+    }
+    let (hull, params) = case_hull(s, case)?;
+    let src = hull_source(hull)?;
+    let mut r =
+        boatmath::sections::sections(&src.file_name, src.bytes, &src.import, &params, attitude)?;
+    let o = r.as_object_mut().expect("an object");
+    o.insert("type".into(), json!("sections"));
+    o.insert("id".into(), json!(id));
+    o.insert("case".into(), json!(case_id));
+    o.insert("solver_version".into(), json!(SOLVER_VERSION));
+    cache.put(&r);
+    Ok(r)
+}
+
+/// A hull's statics: its hydrostatics at the design waterline.
+pub fn hull_statics(hull: &Value, cache: &Cache) -> Result<Value, String> {
+    let id = expect(hull, "hull")?;
+    if let Some(r) = cache.get("statics", id) {
+        return Ok(r);
+    }
+    let src = hull_source(hull)?;
+    let summary = hull_summary(&loft(&src.file_name, src.bytes, &src.import)?);
+    let r = json!({
+        "type": "statics",
+        "id": id,
+        "hull": id,
+        "hulls": summary["hulls"],
+        "notes": summary["notes"],
+        "solver_version": SOLVER_VERSION,
+    });
+    cache.put(&r);
+    Ok(r)
+}
+
+/// A case's statics, and the sections record of its float at rest (first):
+/// the equilibrium, its hydrostatics, roll stability and the GZ curve.
+pub fn case_statics(s: &Stream, case: &Value, cache: &Cache) -> Result<Vec<Value>, String> {
+    let id = expect(case, "case")?;
+    if let Some(r) = cache.get("statics", id) {
+        let mut out = Vec::new();
+        if let Some(sid) = r["sections"].as_str() {
+            match cache.get("sections", sid) {
+                Some(sec) => out.push(sec),
+                None => return case_statics(s, case, &Cache::default()),
+            }
+        }
+        out.push(r);
+        return Ok(out);
+    }
+    let (hull, params) = case_hull(s, case)?;
+    let src = hull_source(hull)?;
+    let mut r = json!({ "type": "statics", "id": id, "case": id });
+    let mut out = Vec::new();
+    match statics(&src.file_name, src.bytes, &src.import, &params) {
+        Ok(v) => {
+            let Value::Object(o) = v else {
+                return Err("statics: not an object".into());
+            };
+            for (k, v) in o {
+                // The meshes are for drawing; a picture re-poses the geometry.
+                if k != "meshes" && k != "body_meshes" {
+                    r[k] = v;
+                }
+            }
+            let rest = (
+                r["at_rest"]["sinkage"].as_f64(),
+                r["at_rest"]["trim_rad"].as_f64(),
+            );
+            if let (Some(z), Some(t)) = rest {
+                match sections(s, case, (z, t), cache) {
+                    Ok(sec) => {
+                        r["sections"] = sec["id"].clone();
+                        out.push(sec);
+                    }
+                    Err(e) => eprintln!("boatmath: case {}: sections: {e}", short(id)),
+                }
+            }
+        }
+        Err(e) => r["error"] = json!(e),
+    }
+    r["solver_version"] = json!(SOLVER_VERSION);
+    cache.put(&r);
+    out.push(r);
+    Ok(out)
 }
