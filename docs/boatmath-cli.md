@@ -206,6 +206,10 @@ source. For e12 at 121 stations of 33 rays, a record is 83 KB.
 | `wake [-o FILE] [--range M] [--title]` | result* → SVG | the free surface from above |
 | `pressure [-o FILE] [--range CP] [--title]` | result* → SVG | the pressure on the hulls from below |
 | `profile [-o FILE] [--wave-scale K] [--title]` | result* → SVG | the hull at its attitude, with the wave along its side |
+| `prop --d-max L [--shafts --wake --thrust-deduction --blades LIST --depth --keller-k --top-froude F …]` | result* → prop* | the best B-series propeller for each result's speed and thrust |
+| `prop --thrust T --speed V --d-max L …` | → prop | the same, for a thrust and speed given outright |
+| `match [--rank-by power\|mass\|price] [--direct-only] [--max-mass --max-od --max-price --vendor --mapped-only …]` | prop* → drive* | the motors that can drive each prop, ranked |
+| `motors [filters]` | → motor* | the motor database |
 | `get ID…` | → record* | print stored records, by id or a prefix of one |
 | `blob ID` | → bytes | print a stored blob (a result's `field`) |
 
@@ -256,6 +260,87 @@ that follow the viewer's colour scheme. It has a legend for two or more
 series, a label at the end of each line for up to four, and a tooltip on
 every point. It takes at most eight series; narrow `--by` beyond that.
 
+### Propellers and motors
+
+`prop` and `match` are a port of propopt's web app (`crates/propeller`, from
+its `web/propcore.js` and `web/motorcore.js`; see that crate's docs for the
+models). Golden tests hold the port to the original's answers.
+
+```sh
+# the hull pipeline's resistance, through to motors
+boatmath study --froude 0.4 < cat.case.json | boatmath run \
+  | boatmath prop --d-max 12in --top-froude 0.5 \
+  | boatmath match --rank-by mass --max-mass 25 \
+  | boatmath table rank motor motor.vendor P_elec ratio motor.mass_kg
+
+# or a thrust and speed outright, as on the web page
+boatmath prop --thrust 1kN --speed 8kn --d-max 16in | boatmath match | head -5
+```
+
+**`prop`** takes each calm-water result's speed and the thrust its resistance
+asks for, T = R_t / (1 − t). It splits that across `--shafts`, by default one
+per hull, so a catamaran has two. For each rpm it finds the best diameter,
+blade-area ratio and blade count, with pitch solved to hold the thrust, under
+Keller's and Burrill's cavitation limits. The cheapest point on that curve is
+the answer.
+
+- `--wake` and `--thrust-deduction` default to 0.
+- A second operating point the same propeller must reach comes from
+  `--top-froude` (the same study's result at that Froude number, already run)
+  or from `--top-speed` and `--top-thrust`. It's a constraint, not an
+  objective.
+- Quantities take units: `16in`, `400mm`, `8kn`, `1kN`, `50kgf`.
+
+```json
+{ "type": "prop", "id": "…", "result": "<result id> | null",
+  "inputs": { "speed": 4.1, "thrust": 630, "shafts": 2, "wake": 0, "thrust_deduction": 0,
+              "d_min": 0.04, "d_max": 0.3048, "blades": [2,3,4,5,6,7], "depth": 0.3,
+              "keller_k": 0.2, "cavitation": true, "re_correct": true, "strict_ear": false,
+              "top": null },
+  "shaft": { "V_A": …, "T": 315, "top_T": null },
+  "boat": { "R_T": …, "P_E": …, "eta_H": 1, "QPC": … },
+  "feasible": true,
+  "best": { "rpm": 1089, "D": 0.305, "PD": 0.87, "EAR": 0.30, "Z": 2, "eta0": 0.778,
+            "P_shaft": 1490, "Q": …, "J": …, "K_T": …, "K_Q": …, "Cth": …, "etaIdeal": …,
+            "sigma": …, "kellerOk": true, "burrillOk": true, "top": …, "perZ": [ … ], … },
+  "best_unconstrained": null,
+  "window": { "rpm_lo": …, "rpm_hi": … }, "feasible_rpm": { "lo": …, "hi": … },
+  "curve": [ { "rpm": …, "ok": true, "P_shaft": …, "Z": …, "D": …, … }, { "rpm": …, "ok": false } ] }
+```
+
+The design fields keep propcore.js's names. `curve` is the best propeller at
+each of 180 shaft speeds, from the cheapest out to 1.6× its power (or the
+whole feasible range with `--full-range`), so `plot --explode curve -x rpm
+-y P_shaft --by Z` draws it.
+
+**`match`** walks each motor along a prop's curve. At each point it picks the
+reduction that costs least at the battery, and keeps the motor's best point.
+Continuous ratings apply at the design point (`--peak` for peak) and peak
+ratings at the second point, through the same gearbox. It writes one
+`drive` per motor that can do the job, best first. By default that's the best
+winding of each family (`--all-windings` for every one), ranked by electrical
+power, or by `--rank-by mass` or `price`, where a motor that doesn't publish
+the figure goes last. The filters (`--vendor`, `--mapped-only`,
+`--single-only`, `--max-mass`, `--max-od`, `--max-price`) are hard limits,
+which a motor not publishing the figure fails.
+
+```json
+{ "type": "drive", "id": "…", "prop": "<prop id>", "motor": "zapi_gsm309_4a_48v", "rank": 1,
+  "rpm": 1055, "P_shaft": 5645,
+  "propeller": { "D": 0.406, "PD": 0.81, "EAR": 0.31, "Z": 2, "eta0": 0.729 },
+  "P_elec": 6125, "eta": …, "etaWithController": …, "etaDrive": 0.922,
+  "ratio": 1, "gearEta": 1, "motorRpm": …, "motorQ": …,
+  "V_bus": 20.4, "I_dc": …, "I_arms": …, "load": …, "extrapolated": false,
+  "top": null, "tier": "B", "settings": { … } }
+```
+
+**Motors** come from propopt's database, vendored unchanged in
+`crates/propeller/data/motors.js`: 159 motors from nine makers, each with a
+`tier` saying where its efficiency comes from (see that directory's README).
+`boatmath motors` lists them as records, and a field path follows `motor`
+into the database, so `motor.mass_kg` works on a drive. `match --motors FILE`
+reads another database, or motor records (`boatmath motors | jq …`).
+
 ### Pictures
 
 `wake`, `pressure` and `profile` draw calm-water results as SVG, in metres
@@ -284,9 +369,12 @@ results on stdin, `-o` is a pattern naming each picture by `{id8}` or
   re-exports it and keeps the SQLite store, the worker and the pages, so both
   front ends compute the same way.
 - `crates/boatmath/src/sections.rs`: a case cut at an attitude, as JSON.
+- **`crates/propeller`**: the B-series propeller search and the motor
+  models, ported from propopt's web cores, with its motor database vendored.
 - **`crates/boatmath-cli`** (binary `boatmath`): `store.rs`, `records.rs`
   (hull, case, study, sections), `run.rs`, `path.rs`, `plot.rs`, `views.rs`
-  (wake, pressure, profile), `list.rs`.
+  (wake, pressure, profile), `props.rs` (prop, drive, motor), `units.rs`,
+  `list.rs`.
 - `crates/boatmath/src/native.rs`: geometry as JSON, read from a file or
   re-posed. `boatmath`'s computations take its bytes wherever they take a
   hull file's, so the web app could store it too.
@@ -297,6 +385,10 @@ results on stdin, `-o` is a pattern naming each picture by `{id8}` or
 - `gz-waves`: quasi-static GZ in a regular wave (`platform::wave_gz`).
 - `show`: open a hull, case or result in the 3-D viewer.
 - Pictures of results in waves (RAOs are a `plot --explode` away already).
+- propopt's Python-only work: the BEM correction for an extended or scanned
+  geometry (`--geometry`), and its own hull models (the hull pipeline
+  replaces those).
+- Estimating the wake fraction and thrust deduction from the hull.
 - Warm starts: the web worker starts each equilibrium from the nearest
   speed already solved. `run` starts every one from scratch.
 - A study in waves is held about the calm-water study at the default grid.

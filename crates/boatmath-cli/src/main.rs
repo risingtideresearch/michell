@@ -15,9 +15,11 @@
 mod list;
 mod path;
 mod plot;
+mod props;
 mod records;
 mod run;
 mod store;
+mod units;
 mod views;
 
 use boatmath::params::{CaseParams, Closure, Sea, StudyParams, Waves};
@@ -186,6 +188,103 @@ enum Command {
         #[arg(long)]
         title: Option<String>,
     },
+    /// The best B-series propeller for each calm-water result on stdin (its
+    /// speed, and the thrust R_t / (1 − t)), or for --speed and --thrust.
+    Prop {
+        /// Total thrust (N, kN, kgf, lbf), instead of reading results.
+        #[arg(long)]
+        thrust: Option<String>,
+        /// Ship speed (m/s, kn, mph, km/h), with --thrust.
+        #[arg(long)]
+        speed: Option<String>,
+        /// Shafts the thrust is split across; default one per hull.
+        #[arg(long)]
+        shafts: Option<u32>,
+        /// Wake fraction w: the propeller sees V (1 − w).
+        #[arg(long, default_value_t = 0.0)]
+        wake: f64,
+        /// Thrust deduction t.
+        #[arg(long, default_value_t = 0.0)]
+        thrust_deduction: f64,
+        /// Largest diameter (m, mm, in, …).
+        #[arg(long)]
+        d_max: String,
+        #[arg(long, default_value = "40mm")]
+        d_min: String,
+        /// Blade counts to consider; a LIST.
+        #[arg(long, default_value = "2,3,4,5,6,7")]
+        blades: String,
+        /// Shaft immersion, for cavitation.
+        #[arg(long, default_value = "0.3")]
+        depth: String,
+        /// Keller's margin k: 0.2 single screw, 0.1 twin, 0 fast.
+        #[arg(long, default_value_t = 0.2)]
+        keller_k: f64,
+        /// Allow cavitating designs.
+        #[arg(long)]
+        no_cavitation: bool,
+        /// Leave the series at its Re = 2e6 fit.
+        #[arg(long)]
+        no_re_correct: bool,
+        /// Keep each blade count to the series' own blade-area range.
+        #[arg(long)]
+        strict_ear: bool,
+        /// A second point the same propeller must reach: the result of the
+        /// same study at this Froude number (already run).
+        #[arg(long)]
+        top_froude: Option<f64>,
+        /// Or the second point's speed and total thrust.
+        #[arg(long)]
+        top_speed: Option<String>,
+        #[arg(long)]
+        top_thrust: Option<String>,
+        /// Keep the whole feasible curve, not just to 1.6× the least power.
+        #[arg(long)]
+        full_range: bool,
+    },
+    /// The motors that can drive each prop on stdin, each at its best
+    /// reduction and point on the prop's curve, ranked: a drive record each.
+    Match {
+        /// Rank by electrical power, mass or price.
+        #[arg(long, default_value = "power")]
+        rank_by: String,
+        /// Every winding, not just the best of each family.
+        #[arg(long)]
+        all_windings: bool,
+        /// Direct drive only (a ratio of 1).
+        #[arg(long)]
+        direct_only: bool,
+        /// A fixed reduction ratio, instead of each motor's best.
+        #[arg(long)]
+        ratio: Option<f64>,
+        /// The largest reduction considered.
+        #[arg(long, default_value_t = 25.0)]
+        ratio_max: f64,
+        /// Efficiency of one reduction stage.
+        #[arg(long, default_value_t = propeller::motor::GEAR_ETA_DEFAULT)]
+        gear_eta: f64,
+        /// Leave out the controller's loss (motor efficiency only).
+        #[arg(long)]
+        no_controller_loss: bool,
+        /// Hold the design point on peak ratings, not continuous.
+        #[arg(long)]
+        peak: bool,
+        /// Don't require the prop's second point.
+        #[arg(long)]
+        no_top: bool,
+        #[command(flatten)]
+        filter: MotorFilter,
+        /// Motors from this file instead of the vendored database: a
+        /// motors.js, its JSON, or motor records (as `boatmath motors`
+        /// writes, filtered with jq, say).
+        #[arg(long)]
+        motors: Option<PathBuf>,
+    },
+    /// The motor database, a record per motor.
+    Motors {
+        #[command(flatten)]
+        filter: MotorFilter,
+    },
     /// Print a stored blob (a result's `field`, say) by its id.
     Blob { id: String },
     /// Records on stdin as a table, a column per FIELD path (`forces.rt`,
@@ -228,6 +327,72 @@ enum Command {
         #[arg(short)]
         o: Option<PathBuf>,
     },
+}
+
+#[derive(clap::Args)]
+struct MotorFilter {
+    /// Only this maker's motors; repeat for several.
+    #[arg(long)]
+    vendor: Vec<String>,
+    /// Only motors with a published efficiency map (tiers A, A-).
+    #[arg(long)]
+    mapped_only: bool,
+    /// No stacked (multi-machine) motors.
+    #[arg(long)]
+    single_only: bool,
+    /// Heaviest motor [kg].
+    #[arg(long)]
+    max_mass: Option<f64>,
+    /// Largest outside diameter (m, mm, in, …).
+    #[arg(long)]
+    max_od: Option<String>,
+    /// Dearest motor [USD].
+    #[arg(long)]
+    max_price: Option<f64>,
+}
+
+impl MotorFilter {
+    fn filter(&self) -> Result<props::Filter, String> {
+        Ok(props::Filter {
+            vendors: self.vendor.clone(),
+            mapped_only: self.mapped_only,
+            single_only: self.single_only,
+            max_mass: self.max_mass,
+            max_od: self
+                .max_od
+                .as_deref()
+                .map(units::length)
+                .transpose()?
+                .map(|m| m * 1e3),
+            max_price: self.max_price,
+        })
+    }
+}
+
+/// A motor database from a file: propopt's motors.js or its JSON, or motor
+/// records (their maps and controller efficiency the vendored database's).
+fn motor_database(path: &PathBuf) -> Result<propeller::motor::Database, String> {
+    use propeller::motor::Database;
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let start = text.find('{').unwrap_or(0);
+    if let Ok(v) = serde_json::from_str::<Value>(text[start..].trim().trim_end_matches(';')) {
+        if v.get("motors").is_some() {
+            return Database::from_value(v);
+        }
+    }
+    if text.trim_start().starts_with("const") || text.contains("MOTOR_DB") {
+        return Database::from_js(&text);
+    }
+    let motors: Vec<Value> = serde_json::Deserializer::from_str(&text)
+        .into_iter::<Value>()
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let base = &Database::vendored().raw;
+    Database::from_value(serde_json::json!({
+        "motors": motors,
+        "maps": base["maps"],
+        "controller_eta": base["controller_eta"],
+    }))
 }
 
 /// The views a picture command draws.
@@ -602,6 +767,204 @@ fn go(cli: Cli) -> Result<usize, String> {
             title,
         } => {
             failed += draw(&store, &mut out, View::Profile(wave_scale), o, title)?;
+        }
+        Command::Prop {
+            thrust,
+            speed,
+            shafts,
+            wake,
+            thrust_deduction,
+            d_max,
+            d_min,
+            blades,
+            depth,
+            keller_k,
+            no_cavitation,
+            no_re_correct,
+            strict_ear,
+            top_froude,
+            top_speed,
+            top_thrust,
+            full_range,
+        } => {
+            let blades = list::parse(&blades)
+                .map_err(|e| format!("--blades: {e}"))?
+                .into_iter()
+                .map(|z| {
+                    let z = z.round();
+                    if (2.0..=7.0).contains(&z) {
+                        Ok(z as u32)
+                    } else {
+                        Err(format!("--blades: {z}: the series has 2 to 7 blades"))
+                    }
+                })
+                .collect::<Result<Vec<u32>, String>>()?;
+            if !(0.0..1.0).contains(&wake) || !(0.0..1.0).contains(&thrust_deduction) {
+                return Err("--wake and --thrust-deduction are fractions, 0 to 1".into());
+            }
+            let explicit_top = match (&top_speed, &top_thrust) {
+                (Some(s), Some(t)) => Some(propeller::bseries::TopInputs {
+                    speed: units::speed(s)?,
+                    thrust: units::force(t)?,
+                }),
+                (None, None) => None,
+                _ => return Err("--top-speed and --top-thrust go together".into()),
+            };
+            let base = |speed: f64, thrust: f64, shafts: u32, top| propeller::bseries::Inputs {
+                speed,
+                thrust,
+                shafts,
+                wake,
+                thrust_deduction,
+                d_min: 0.0,
+                d_max: 0.0,
+                blades: blades.clone(),
+                depth: 0.0,
+                keller_k,
+                cavitation: !no_cavitation,
+                re_correct: !no_re_correct,
+                strict_ear,
+                top,
+            };
+            let (d_min, d_max, depth) = (
+                units::length(&d_min)?,
+                units::length(&d_max)?,
+                units::length(&depth)?,
+            );
+            let cap = if full_range { f64::INFINITY } else { 1.6 };
+            let mut cases: Vec<(propeller::bseries::Inputs, Option<String>)> = Vec::new();
+            match (&thrust, &speed) {
+                (Some(t), Some(s)) => {
+                    if top_froude.is_some() {
+                        return Err("--top-froude needs results on stdin; give --top-speed and --top-thrust".into());
+                    }
+                    cases.push((
+                        base(
+                            units::speed(s)?,
+                            units::force(t)?,
+                            shafts.unwrap_or(1),
+                            explicit_top,
+                        ),
+                        None,
+                    ));
+                }
+                (None, None) => {
+                    for r in read_records()? {
+                        let one = (|| -> Result<_, String> {
+                            let id = records::expect(&r, "result")?.to_string();
+                            let (v, t) = props::operating_point(&r, thrust_deduction)?;
+                            let top = match top_froude {
+                                Some(f) => {
+                                    let o = props::result_at_froude(&store, &r, f)?;
+                                    let (vt, tt) = props::operating_point(&o, thrust_deduction)?;
+                                    Some(propeller::bseries::TopInputs {
+                                        speed: vt,
+                                        thrust: tt,
+                                    })
+                                }
+                                None => explicit_top,
+                            };
+                            let n = shafts.unwrap_or_else(|| props::hull_count(&store, &r) as u32);
+                            Ok((base(v, t, n, top), Some(id)))
+                        })();
+                        match one {
+                            Ok(c) => cases.push(c),
+                            Err(e) => {
+                                eprintln!("boatmath: {e}");
+                                failed += 1;
+                            }
+                        }
+                    }
+                }
+                _ => return Err("--thrust and --speed go together".into()),
+            }
+            for (mut inputs, result) in cases {
+                inputs.d_min = d_min;
+                inputs.d_max = d_max;
+                inputs.depth = depth;
+                let r = props::prop(&store, &inputs, result.as_deref(), cap)?;
+                let b = &r["best"];
+                if b.is_null() {
+                    eprintln!(
+                        "boatmath: prop {}: no B-series propeller can do it (try a larger --d-max, or --no-cavitation)",
+                        store::short(r["id"].as_str().unwrap_or(""))
+                    );
+                    failed += 1;
+                } else {
+                    eprintln!(
+                        "boatmath: prop {}: {:.0} W at {:.0} rpm, {}-blade, D {:.0} mm, P/D {:.2}, EAR {:.2}, η₀ {:.3}",
+                        store::short(r["id"].as_str().unwrap_or("")),
+                        b["P_shaft"].as_f64().unwrap_or(0.0),
+                        b["rpm"].as_f64().unwrap_or(0.0),
+                        b["Z"].as_f64().unwrap_or(0.0),
+                        1e3 * b["D"].as_f64().unwrap_or(0.0),
+                        b["PD"].as_f64().unwrap_or(0.0),
+                        b["EAR"].as_f64().unwrap_or(0.0),
+                        b["eta0"].as_f64().unwrap_or(0.0),
+                    );
+                }
+                emit(&r)?;
+            }
+        }
+        Command::Match {
+            rank_by,
+            all_windings,
+            direct_only,
+            ratio,
+            ratio_max,
+            gear_eta,
+            no_controller_loss,
+            peak,
+            no_top,
+            filter,
+            motors,
+        } => {
+            use propeller::motor::RankBy;
+            let rank_by = match rank_by.as_str() {
+                "power" => RankBy::Power,
+                "mass" => RankBy::Mass,
+                "price" => RankBy::Price,
+                o => return Err(format!("--rank-by {o:?}: expected power, mass or price")),
+            };
+            let owned;
+            let db = match &motors {
+                Some(p) => {
+                    owned = motor_database(p)?;
+                    &owned
+                }
+                None => propeller::motor::Database::vendored(),
+            };
+            let o = props::MatchOptions {
+                filter: filter.filter()?,
+                rank_by,
+                all_windings,
+                ratio: if direct_only { Some(1.0) } else { ratio },
+                ratio_max,
+                gear_eta,
+                controller_loss: !no_controller_loss,
+                peak,
+                check_top: !no_top,
+            };
+            for p in read_records()? {
+                let (drives, unreachable) = props::drives(&store, db, &p, &o)?;
+                eprintln!(
+                    "boatmath: prop {}: {} motors can drive it, {} can't",
+                    store::short(p["id"].as_str().unwrap_or("")),
+                    drives.len(),
+                    unreachable.len()
+                );
+                for d in &drives {
+                    emit(d)?;
+                }
+            }
+        }
+        Command::Motors { filter } => {
+            let f = filter.filter()?;
+            for m in &propeller::motor::Database::vendored().motors {
+                if f.admits(m) {
+                    emit(&props::motor_record(m))?;
+                }
+            }
         }
         Command::Blob { id } => {
             let bytes = store.blob(&id)?;

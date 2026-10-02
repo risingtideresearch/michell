@@ -3,8 +3,8 @@
 //! - `forces.rt`, `seakeeping.headings.0.points` — keys and array indices;
 //! - a parent's id is followed into its record, so on a result
 //!   `study.case.params.span` reads the span of the result's case
-//!   (`hull`, `case`, `study`, `parent`, `calm` and `sections` are
-//!   followed);
+//!   (`hull`, `case`, `study`, `parent`, `calm`, `sections`, `result`,
+//!   `prop`, and `motor` into the motor database, are followed);
 //! - `|heave|` — the modulus of a complex `[re, im]` pair;
 //! - `id8` — a record's id, shortened to eight characters, as a label.
 
@@ -20,6 +20,9 @@ fn parent_type(key: &str) -> Option<&'static str> {
         "case" => Some("case"),
         "study" | "calm" => Some("study"),
         "sections" => Some("sections"),
+        "result" => Some("result"),
+        "prop" => Some("prop"),
+        "motor" => Some("motor"),
         _ => None,
     }
 }
@@ -42,7 +45,14 @@ impl<'a> Resolver<'a> {
         if let Some(v) = self.cache.borrow().get(&key) {
             return v.clone();
         }
-        let v = self.store.get(kind, id).ok().flatten();
+        // Motors live in the database, not the store.
+        let v = if kind == "motor" {
+            propeller::motor::Database::vendored()
+                .motor(id)
+                .map(crate::props::motor_record)
+        } else {
+            self.store.get(kind, id).ok().flatten()
+        };
         self.cache.borrow_mut().insert(key, v.clone());
         v
     }
@@ -104,7 +114,11 @@ pub fn cell(v: &Option<Value>) -> String {
     match v {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
-        Some(Value::Number(n)) => n.to_string(),
+        // A whole number written as a float (a blade count, say) as an integer.
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(x) if n.is_f64() && x.fract() == 0.0 && x.abs() < 1e15 => format!("{}", x as i64),
+            _ => n.to_string(),
+        },
         Some(v) => v.to_string(),
     }
 }

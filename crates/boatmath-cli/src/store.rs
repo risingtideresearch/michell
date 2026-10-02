@@ -19,7 +19,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The record types, in ancestry order.
-pub const TYPES: [&str; 5] = ["hull", "case", "study", "result", "sections"];
+pub const TYPES: [&str; 7] = [
+    "hull", "case", "study", "result", "sections", "prop", "drive",
+];
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()

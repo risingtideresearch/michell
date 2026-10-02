@@ -99,6 +99,7 @@ dependencies = [
  "boatmath",
  "clap",
  "flate2",
+ "propeller",
  "serde",
  "serde_json",
  "sha2",
