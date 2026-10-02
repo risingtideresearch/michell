@@ -3192,10 +3192,46 @@ pub fn write_labelled(
             surfaces.len()
         )));
     }
-    if surfaces.is_empty() {
-        return Err(Error::InvalidInput("no surfaces to write".into()));
+    let items: Vec<(Entity, Label)> = surfaces
+        .iter()
+        .cloned()
+        .map(Entity::Surface)
+        .zip(labels.iter().cloned())
+        .collect();
+    write_entities(&items, product)
+}
+
+/// What an IGES file can hold here: B-spline surfaces (entity 128), points
+/// (116) and lines (110).
+#[derive(Clone, Debug)]
+pub enum Entity {
+    Surface(NurbsSurface3),
+    Point([f64; 3]),
+    Line([f64; 3], [f64; 3]),
+}
+
+/// [`write_labelled`] for surfaces, points and lines together.
+pub fn write_entities(items: &[(Entity, Label)], product: &str) -> Result<String> {
+    if items.is_empty() {
+        return Err(Error::InvalidInput("nothing to write".into()));
     }
-    for (i, s) in surfaces.iter().enumerate() {
+    for (i, (e, _)) in items.iter().enumerate() {
+        let finite = |p: &[f64; 3]| p.iter().all(|v| v.is_finite());
+        let s = match e {
+            Entity::Surface(s) => s,
+            Entity::Point(p) => {
+                if !finite(p) {
+                    return Err(Error::InvalidInput(format!("point {i} is not finite")));
+                }
+                continue;
+            }
+            Entity::Line(a, b) => {
+                if !finite(a) || !finite(b) {
+                    return Err(Error::InvalidInput(format!("line {i} is not finite")));
+                }
+                continue;
+            }
+        };
         let n = s.n_ctrl_u * s.n_ctrl_v;
         if s.ctrl.len() != n
             || s.weights.len() != n
@@ -3226,11 +3262,15 @@ pub fn write_labelled(
         product
     };
     let dt = iges_datetime();
-    let max_coord = surfaces
+    let max_coord = items
         .iter()
-        .flat_map(|s| s.ctrl.iter())
-        .flat_map(|p| p.iter())
-        .fold(1.0f64, |m, &c| m.max(c.abs()));
+        .flat_map(|(e, _)| match e {
+            Entity::Surface(s) => s.ctrl.clone(),
+            Entity::Point(p) => vec![*p],
+            Entity::Line(a, b) => vec![*a, *b],
+        })
+        .flat_map(|p| p.into_iter())
+        .fold(1.0f64, |m, c| m.max(c.abs()));
 
     // Global section (IGES 5.3 field order).
     let holl = |s: &str| format!("{}H{}", s.len(), s);
@@ -3266,7 +3306,65 @@ pub fn write_labelled(
     // Parameter + directory sections.
     let mut p_lines: Vec<(String, usize)> = Vec::new(); // (data, owner DE)
     let mut d_lines: Vec<String> = Vec::new();
-    for (k, s) in surfaces.iter().enumerate() {
+    for (k, (e, lab)) in items.iter().enumerate() {
+        let (kind, t) = match e {
+            Entity::Point(p) => {
+                let mut t = vec!["116".to_string()];
+                t.extend(p.iter().map(|&v| fmt_real(v)));
+                t.push("0".into()); // no display symbol
+                (116, t)
+            }
+            Entity::Line(a, b) => {
+                let mut t = vec!["110".to_string()];
+                t.extend(a.iter().chain(b.iter()).map(|&v| fmt_real(v)));
+                (110, t)
+            }
+            Entity::Surface(s) => (128, surface_tokens(s)),
+        };
+        let de_seq = 2 * k + 1;
+        let pd_ptr = p_lines.len() + 1;
+        let chunk = pack_tokens(&t, 64);
+        let pd_count = chunk.len();
+        p_lines.extend(chunk.into_iter().map(|l| (l, de_seq)));
+
+        let f = |v: usize| format!("{v:>8}");
+        let name: String = lab
+            .name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .take(8)
+            .collect();
+        d_lines.push(format!(
+            "{}{}{}{}{}{}{}{}{:>8}",
+            f(kind),
+            f(pd_ptr),
+            f(0),
+            f(0),
+            f(lab.level as usize),
+            f(0),
+            f(0),
+            f(0),
+            "00000000"
+        ));
+        d_lines.push(format!(
+            "{}{}{}{}{}{:8}{:8}{:>8}{}",
+            f(kind),
+            f(0),
+            f(lab.color as usize),
+            f(pd_count),
+            f(0),
+            "",
+            "",
+            name,
+            f(0)
+        ));
+    }
+    Ok(assemble(&product, &g_lines, &d_lines, &p_lines))
+}
+
+/// A B-spline surface's parameter-data tokens (entity 128).
+fn surface_tokens(s: &NurbsSurface3) -> Vec<String> {
+    {
         let (nu, nv) = (s.n_ctrl_u, s.n_ctrl_v);
         let mut t: Vec<String> = vec![
             "128".into(),
@@ -3297,47 +3395,17 @@ pub fn write_labelled(
         let (u0, u1) = s.u_domain();
         let (v0, v1) = s.v_domain();
         t.extend([u0, u1, v0, v1].iter().map(|&v| fmt_real(v)));
-
-        let de_seq = 2 * k + 1;
-        let pd_ptr = p_lines.len() + 1;
-        let chunk = pack_tokens(&t, 64);
-        let pd_count = chunk.len();
-        p_lines.extend(chunk.into_iter().map(|l| (l, de_seq)));
-
-        let f = |v: usize| format!("{v:>8}");
-        let lab = &labels[k];
-        let name: String = lab
-            .name
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-            .take(8)
-            .collect();
-        d_lines.push(format!(
-            "{}{}{}{}{}{}{}{}{:>8}",
-            f(128),
-            f(pd_ptr),
-            f(0),
-            f(0),
-            f(lab.level as usize),
-            f(0),
-            f(0),
-            f(0),
-            "00000000"
-        ));
-        d_lines.push(format!(
-            "{}{}{}{}{}{:8}{:8}{:>8}{}",
-            f(128),
-            f(0),
-            f(lab.color as usize),
-            f(pd_count),
-            f(0),
-            "",
-            "",
-            name,
-            f(0)
-        ));
+        t
     }
+}
 
+/// The file from its sections.
+fn assemble(
+    product: &str,
+    g_lines: &[String],
+    d_lines: &[String],
+    p_lines: &[(String, usize)],
+) -> String {
     let mut out = String::new();
     let mut line = |data: &str, letter: char, seq: usize| {
         out.push_str(&format!("{data:<72}{letter}{seq:>7}\n"));
@@ -3360,7 +3428,7 @@ pub fn write_labelled(
         p_lines.len()
     );
     line(&totals, 'T', 1);
-    Ok(out)
+    out
 }
 
 /// The Wigley parabolic hull `y = ±(B/2)(1 − (2x/L)²)(1 − (z/T)²)` as its

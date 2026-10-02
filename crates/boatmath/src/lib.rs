@@ -27,7 +27,7 @@ pub use michell_cli::parse_units;
 /// The diverging colour map the wake and pressure views share.
 pub use michell_cli::png::diverging;
 use params::{CaseParams, StudyParams};
-pub use platform::{at_rest, statics, wave_gz, waves_with_progress};
+pub use platform::{at_rest, heeled, statics, wave_gz, waves_with_progress};
 
 /// The solver version results are stamped with: the last commit to touch
 /// the solver's code (the geometry, thin-ship, seakeeping and CLI crates,

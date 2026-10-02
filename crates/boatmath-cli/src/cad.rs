@@ -151,3 +151,190 @@ fn discs(
     let per_hull = (shafts / m.hulls.len().max(1)).max(1);
     Ok(m.discs(&at, per_hull, radius))
 }
+
+// ------------------------------------------------------------- statics
+
+/// A pose of the hull: heel φ about x (lifting +y), trim θ bow up about
+/// x = 0, then down by the sinkage — from the hull's own axes (z up from
+/// the design waterline) to the water's.
+#[derive(Clone, Copy)]
+struct Pose {
+    heel: f64,
+    trim: f64,
+    sinkage: f64,
+}
+
+impl Pose {
+    fn apply(&self, p: [f64; 3]) -> [f64; 3] {
+        let (sf, cf) = self.heel.sin_cos();
+        let (st, ct) = self.trim.sin_cos();
+        let (y1, z1) = (p[1] * cf - p[2] * sf, p[1] * sf + p[2] * cf);
+        [p[0] * ct - z1 * st, y1, p[0] * st + z1 * ct - self.sinkage]
+    }
+}
+
+/// A flat patch of still water over `[x0, x1] × [y0, y1]`.
+fn water_plane(x0: f64, x1: f64, y0: f64, y1: f64) -> NurbsSurface3 {
+    NurbsSurface3 {
+        degree_u: 1,
+        degree_v: 1,
+        knots_u: vec![0.0, 0.0, 1.0, 1.0],
+        knots_v: vec![0.0, 0.0, 1.0, 1.0],
+        n_ctrl_u: 2,
+        n_ctrl_v: 2,
+        ctrl: vec![[x0, y0, 0.0], [x0, y1, 0.0], [x1, y0, 0.0], [x1, y1, 0.0]],
+        weights: vec![1.0; 4],
+        trim_uv: None,
+    }
+}
+
+fn point3(v: &Value) -> Option<[f64; 3]> {
+    let a = v.as_array()?;
+    Some([
+        a.first()?.as_f64()?,
+        a.get(1)?.as_f64()?,
+        a.get(2)?.as_f64()?,
+    ])
+}
+
+/// A statics record as IGES: a case floated at rest, at its maximum GZ, at
+/// its angle of vanishing stability and at each of `heels` [deg], each pose
+/// on its own level with its G, B and righting arm; a hull's statics, the
+/// hull upright at its design waterline. The still water on level 2.
+pub fn statics_model(st: &Stream, rec: &Value, heels: &[f64]) -> Result<String, String> {
+    use michell_geometry::iges::{write_entities, Entity};
+    let id = expect(rec, "statics")?;
+    if rec.get("error").is_some_and(|e| !e.is_null()) {
+        return Err(format!("statics {} failed: {}", short(id), rec["error"]));
+    }
+    let (hull, cp, is_case) = match rec.get("case").and_then(|c| c.as_str()) {
+        Some(_) => {
+            let case = st.follow(rec, "case")?;
+            let (h, p) = crate::records::case_hull(st, case)?;
+            (h, p, true)
+        }
+        None => (st.follow(rec, "hull")?, CaseParams::default(), false),
+    };
+    let src = hull_source(hull)?;
+    // The hulls in their own axes: the design pose, a catamaran's demihulls
+    // at their span.
+    let design = boatmath::cad::hull_surfaces(
+        &src.file_name,
+        src.bytes.clone(),
+        &src.import,
+        &cp,
+        (0.0, 0.0),
+    )?;
+    let label = |level: u32, color: Color, name: &str| Label {
+        level,
+        color,
+        name: name.to_string(),
+    };
+    let mut items: Vec<(Entity, Label)> = Vec::new();
+    if is_case {
+        // The poses: (level, name, heel [deg]).
+        let gz = &rec["gz"];
+        let mut poses: Vec<(u32, String, f64)> = vec![(1, "REST".into(), 0.0)];
+        if let Some(h) = gz["heel_at_max_deg"].as_f64() {
+            poses.push((11, "GZMAX".into(), h));
+        }
+        // A vanishing angle of 0 is a platform with no positive stability;
+        // of 180, one that never loses it: neither is a pose of its own.
+        if let Some(h) = gz["vanishing_deg"]
+            .as_f64()
+            .filter(|h| *h > 0.5 && *h < 179.9)
+        {
+            poses.push((12, "VANISH".into(), h));
+        }
+        for (k, &h) in heels.iter().enumerate() {
+            poses.push((13 + k as u32, format!("HEEL{}", h.round()), h));
+        }
+        let want: Vec<f64> = poses.iter().map(|p| p.2).collect();
+        let floated = boatmath::heeled(&src.file_name, src.bytes.clone(), &src.import, &cp, &want)?;
+        let g = point3(&floated["g"]).ok_or("no centre of gravity")?;
+        let fl = floated["poses"].as_array().ok_or("no poses")?;
+        if fl.len() != poses.len() {
+            return Err(format!(
+                "{} poses asked for, {} floated",
+                poses.len(),
+                fl.len()
+            ));
+        }
+        for ((level, name, _), f) in poses.iter().zip(fl) {
+            if let Some(e) = f["error"].as_str() {
+                eprintln!(
+                    "boatmath: statics {}: {name} at {}°: {e}; left out",
+                    short(id),
+                    f["asked_deg"]
+                );
+                continue;
+            }
+            let (asked, got) = (
+                f["asked_deg"].as_f64().unwrap_or(0.0),
+                f["heel_deg"].as_f64().unwrap_or(0.0),
+            );
+            if (asked - got).abs() > 1e-6 {
+                eprintln!(
+                    "boatmath: statics {}: {name} drawn at {got:.2}°, just short of {asked:.2}° where the float fails",
+                    short(id)
+                );
+            }
+            let pose = Pose {
+                heel: f["heel_deg"].as_f64().unwrap_or(0.0).to_radians(),
+                trim: f["trim_rad"].as_f64().unwrap_or(0.0),
+                sinkage: f["sinkage"].as_f64().unwrap_or(0.0),
+            };
+            for patches in &design {
+                for p in patches {
+                    let mut q = p.clone();
+                    for c in q.ctrl.iter_mut() {
+                        *c = pose.apply(*c);
+                    }
+                    items.push((Entity::Surface(q), label(*level, Color::White, name)));
+                }
+            }
+            let cb = point3(&f["cb"]).ok_or("no centre of buoyancy")?;
+            let (gw, bw) = (pose.apply(g), pose.apply(cb));
+            items.push((
+                Entity::Point(gw),
+                label(*level, Color::Red, &format!("{name}-G")),
+            ));
+            items.push((
+                Entity::Point(bw),
+                label(*level, Color::Blue, &format!("{name}-B")),
+            ));
+            // The righting arm: from G across to the vertical through B.
+            items.push((
+                Entity::Line(gw, [gw[0], bw[1], gw[2]]),
+                label(*level, Color::Yellow, &format!("{name}-A")),
+            ));
+        }
+    } else {
+        for (k, patches) in design.iter().enumerate() {
+            for p in patches {
+                items.push((
+                    Entity::Surface(p.clone()),
+                    label(1, Color::White, &format!("HULL{}", k + 1)),
+                ));
+            }
+        }
+    }
+    let (mut xa, mut xb, mut yb) = (f64::INFINITY, f64::NEG_INFINITY, 0.0f64);
+    for c in design.iter().flatten().flat_map(|p| p.ctrl.iter()) {
+        xa = xa.min(c[0]);
+        xb = xb.max(c[0]);
+        yb = yb.max(c[1].abs());
+    }
+    let (l, pad) = (xb - xa, 0.15 * (xb - xa));
+    items.push((
+        Entity::Surface(water_plane(
+            xa - pad,
+            xb + pad,
+            -(yb + 0.3 * l),
+            yb + 0.3 * l,
+        )),
+        label(2, Color::Cyan, "WATER"),
+    ));
+    let product = format!("{} statics", hull["name"].as_str().unwrap_or("hull"));
+    write_entities(&items, &product).map_err(|e| e.to_string())
+}

@@ -124,6 +124,83 @@ pub fn at_rest(
     Ok((eq.sinkage, eq.trim))
 }
 
+/// A case floated at each of `heels_deg` [deg], its sinkage and trim free
+/// (as the GZ curve's points are): for each, `heel_deg`, `gz` [m],
+/// `sinkage` [m], `trim_rad` and the centre of buoyancy `cb` in the hull's
+/// own axes (x fore, y port, z up from the design waterline); and `g`, the
+/// centre of gravity in the same axes. A pose maps hull axes to the water's
+/// by heel φ about x (lifting +y), trim θ bow up about x = 0, then down by
+/// the sinkage: `Z = x sinθ + cosθ (y sinφ + z cosφ) − s`.
+pub fn heeled(
+    name: &str,
+    bytes: Vec<u8>,
+    cut: &LoftRequest,
+    c: &CaseParams,
+    heels_deg: &[f64],
+) -> Result<Value, String> {
+    let s = setup(name, bytes, cut, c)?;
+    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let vcg = c.vcg.unwrap_or(0.0);
+    let hulls = whole_sections(&s)?;
+    let load = StabilityLoad {
+        mass: s.mass,
+        lcg: s.lcg,
+        vcg,
+    };
+    // Reached as the GZ curve reaches it: heeling over from upright in 2°
+    // steps, each float started from the last, so a large angle is found
+    // from its neighbour rather than from cold.
+    let at = |heel_deg: f64| {
+        let n = (heel_deg.abs() / 2.0).floor() as usize;
+        let mut heels: Vec<f64> = (0..=n)
+            .map(|k| (2.0 * k as f64 * heel_deg.signum()).to_radians())
+            .collect();
+        if (heel_deg.abs() - 2.0 * n as f64).abs() > 1e-9 {
+            heels.push(heel_deg.to_radians());
+        }
+        gz_curve(
+            &hulls,
+            &load,
+            &GzOptions {
+                density: rho,
+                heels,
+                ..GzOptions::default()
+            },
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|g| g.points.into_iter().last().ok_or("no point".to_string()))
+    };
+    // Each pose on its own; at an extreme angle (the angle of vanishing
+    // stability, where a hull is just leaving the water or the deck just
+    // going under) the float can fail, so a little short of it, quarter
+    // degrees at a time, is taken instead and said so.
+    let poses: Vec<Value> = heels_deg
+        .iter()
+        .map(|&h| {
+            let mut err = String::new();
+            for k in 0..=8 {
+                let hk = h - 0.25 * k as f64 * h.signum();
+                match at(hk) {
+                    Ok(p) => {
+                        return json!({
+                            "asked_deg": h,
+                            "heel_deg": p.heel.to_degrees(),
+                            "gz": p.gz,
+                            "sinkage": p.sinkage,
+                            "trim_rad": p.trim,
+                            "cb": p.cb,
+                        })
+                    }
+                    Err(e) if err.is_empty() => err = e,
+                    Err(_) => {}
+                }
+            }
+            json!({ "asked_deg": h, "error": err })
+        })
+        .collect();
+    Ok(json!({ "g": [s.lcg, 0.0, vcg], "poses": poses }))
+}
+
 /// A case's statics: its float at rest, its hydrostatics there,
 /// its roll stability (GM_T, the natural roll period) and its GZ curve.
 pub fn statics(

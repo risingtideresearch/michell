@@ -365,8 +365,12 @@ enum Command {
     },
     /// The stream's props (or, with none, its calm-water results) as IGES
     /// for CAD: the hulls at their attitude, the free surface, and a prop's
-    /// discs, each on its own level (1 hulls, 2 water, 3 props).
+    /// discs, each on its own level (1 hulls, 2 water, 3 props). Its
+    /// statics too: a case at rest and heeled along its GZ curve.
     Cad {
+        /// With statics: also heel to each of these angles [deg]; a LIST.
+        #[arg(long)]
+        heel: Option<String>,
         /// Write here; with several records, a pattern naming each by
         /// `{id8}` or `{froude}`.
         #[arg(short)]
@@ -1251,6 +1255,7 @@ fn go(cli: Cli) -> Result<usize, String> {
             failed += draw(&read()?, out.raw(), View::Profile(wave_scale), o, title)?;
         }
         Command::Cad {
+            heel,
             o,
             no_water,
             wave_scale,
@@ -1278,13 +1283,20 @@ fn go(cli: Cli) -> Result<usize, String> {
                     .filter(|r| r["kind"] == "calm")
                     .collect();
             }
+            let heels = list(&heel, "heel")?.unwrap_or_default();
+            targets.extend(s.of_type("statics"));
             if targets.is_empty() {
-                return Err("no calm-water results or props on them in the stream".into());
+                return Err("no calm-water results, props on them or statics in the stream".into());
             }
             check_pattern(targets.len(), &o, "records")?;
             for r in targets {
                 let id = r["id"].as_str().unwrap_or("");
-                match cad::model(&s, r, &opts) {
+                let model = if r["type"] == "statics" {
+                    cad::statics_model(&s, r, &heels)
+                } else {
+                    cad::model(&s, r, &opts)
+                };
+                match model {
                     Ok(text) => match &o {
                         Some(p) => {
                             let froude = r["froude"]

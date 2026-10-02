@@ -615,7 +615,8 @@ of its own so they can be shown one at a time:
 | 13, 14, … | `HEEL30`, … | each heel of `--heel LIST` [deg] |
 
 At each heel the hull floats freely, its sinkage and trim found afresh for
-that exact angle, as the GZ curve's points are, rather than read off the
+that exact angle, reached as the GZ curve's points are (heeling over from
+upright, each float starting from the last), rather than read off the
 curve's samples. A pose is the hull's patches rotated rigidly (heel about x,
 trim, then sinkage), so it stays exact. Each pose carries, on its level:
 
@@ -623,6 +624,12 @@ trim, then sinkage), so it stays exact. Each pose carries, on its level:
 - its centre of gravity `G` and centre of buoyancy `B`, as points;
 - the righting arm, as a line from `G` across to the vertical through `B`,
   of length GZ.
+
+They're labelled by the pose: `GZMAX` for the hull's patches, `GZMAX-G`,
+`GZMAX-B` and `GZMAX-A` (the arm). The angle of vanishing stability is drawn
+only when it's a pose of its own (not 0°, a platform with no positive
+stability, nor 180°, one that never loses it). A pose that can't be floated
+is left out with a warning.
 
 Level 2 is the still water, a flat surface over the hull's extent, shared by
 all the poses. A hull's statics, with no load, draw the hull upright at its
