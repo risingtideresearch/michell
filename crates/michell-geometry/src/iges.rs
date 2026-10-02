@@ -64,6 +64,58 @@ pub struct NurbsSurface3 {
 }
 
 impl NurbsSurface3 {
+    /// Check the surface is one this crate can evaluate: a clamped,
+    /// polynomial tensor-product B-spline with consistent sizes and finite
+    /// numbers. The IGES reader checks as it parses; a surface from anywhere
+    /// else (a JSON geometry, say) is checked here.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        for (dir, p, n, knots) in [
+            ("u", self.degree_u, self.n_ctrl_u, &self.knots_u),
+            ("v", self.degree_v, self.n_ctrl_v, &self.knots_v),
+        ] {
+            if p < 1 || n < p + 1 {
+                return Err(format!("{dir}: degree {p} with {n} control points"));
+            }
+            if knots.len() != n + p + 1 {
+                return Err(format!(
+                    "{dir}: {} knots, expected {} for degree {p} and {n} control points",
+                    knots.len(),
+                    n + p + 1
+                ));
+            }
+            if knots.iter().any(|k| !k.is_finite()) || knots.windows(2).any(|w| w[1] < w[0]) {
+                return Err(format!("{dir}: knots must be finite and non-decreasing"));
+            }
+            if knots[n] <= knots[p] {
+                return Err(format!("{dir}: an empty parameter domain"));
+            }
+        }
+        let count = self.n_ctrl_u * self.n_ctrl_v;
+        if self.ctrl.len() != count || self.weights.len() != count {
+            return Err(format!(
+                "{} control points and {} weights, expected {count}",
+                self.ctrl.len(),
+                self.weights.len()
+            ));
+        }
+        if self.ctrl.iter().flatten().any(|c| !c.is_finite())
+            || self.weights.iter().any(|w| !(w.is_finite() && *w > 0.0))
+        {
+            return Err("control points and weights must be finite, weights positive".into());
+        }
+        if !self.is_polynomial() {
+            return Err(
+                "rational (unequal weights); only polynomial B-splines are supported".into(),
+            );
+        }
+        if let Some(t) = self.trim_uv {
+            if t.iter().any(|x| !x.is_finite()) || t[1] <= t[0] || t[3] <= t[2] {
+                return Err("trim_uv: expected a finite [u0, u1, v0, v1] box".into());
+            }
+        }
+        Ok(())
+    }
+
     /// True when all weights are equal (the surface is polynomial).
     pub fn is_polynomial(&self) -> bool {
         let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -820,6 +872,32 @@ pub fn source_fleet_from_surfaces(
 }
 
 impl SourceFleet {
+    /// A fleet from patches already split into hulls (CAD frame, z up,
+    /// metres) — as [`SourceFleet::posed_surfaces`] gives them. Nothing is
+    /// clustered again: each list is one hull, in the order given.
+    pub fn from_hulls(hulls: Vec<Vec<NurbsSurface3>>) -> Result<SourceFleet> {
+        if hulls.is_empty() {
+            return Err(Error::InvalidGeometry("no hulls".into()));
+        }
+        for (i, h) in hulls.iter().enumerate() {
+            if h.is_empty() {
+                return Err(Error::InvalidGeometry(format!(
+                    "hull {}: no patches",
+                    i + 1
+                )));
+            }
+            for s in h {
+                s.validate()
+                    .map_err(|e| Error::InvalidGeometry(format!("hull {}: {e}", i + 1)))?;
+            }
+        }
+        Ok(SourceFleet {
+            units_scale: 1.0,
+            meshes: hulls.iter().map(|h| Tessellation::new(h)).collect(),
+            hulls,
+        })
+    }
+
     /// A B-spline half-breadth surface `y = f(x, z')` as source geometry:
     /// its exact mirrored pair of surfaces about `centerplane`, with the
     /// spline's top (z' = 0) at CAD height `top_z`: 0 for a wetted surface,

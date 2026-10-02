@@ -1,8 +1,8 @@
-//! Making records: hulls from files, cases on hulls, studies on cases. Each
+//! Making records: hulls from files (their geometry inline), cases on hulls, studies on cases. Each
 //! is saved in the store as it is made, and its id is that of its inputs,
 //! so making the same thing twice finds the first.
 
-use crate::store::{id_of, short, Store};
+use crate::store::{id_of, sha256, short, Store};
 use boatmath::params::{CaseParams, StudyParams};
 use boatmath::{hull_summary, loft, statics, LoftRequest, SOLVER_VERSION};
 use serde_json::{json, Value};
@@ -27,26 +27,42 @@ fn truncate(v: &Value) -> String {
     }
 }
 
-/// A hull's file and how it is cut.
+/// How a hull is cut into sections: settings of the cut, not of the
+/// geometry, so they stay with the hull record.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CutSettings {
+    /// Stations along the hull.
+    pub stations: Option<usize>,
+    /// Rays across each section.
+    pub rays: Option<usize>,
+    /// Centreplane override [m, y].
+    pub centerplane: Option<f64>,
+}
+
+/// What the solver needs of a hull: its geometry, as the bytes `boatmath`
+/// reads, and how it is cut.
 pub struct HullSource {
     pub file_name: String,
     pub bytes: Vec<u8>,
     pub import: LoftRequest,
 }
 
-pub fn hull_source(store: &Store, hull: &Value) -> Result<HullSource, String> {
-    let import: LoftRequest =
-        serde_json::from_value(hull["import"].clone()).map_err(|e| format!("hull import: {e}"))?;
-    let blob = hull["source"]["blob"]
-        .as_str()
-        .ok_or("hull without a source blob")?;
+pub fn hull_source(hull: &Value) -> Result<HullSource, String> {
+    let cut: CutSettings =
+        serde_json::from_value(hull["cut"].clone()).map_err(|e| format!("hull cut: {e}"))?;
+    if !hull["geometry"].is_object() {
+        return Err("a hull without geometry".into());
+    }
     Ok(HullSource {
-        file_name: hull["source"]["file_name"]
-            .as_str()
-            .unwrap_or("hull")
-            .to_string(),
-        bytes: store.blob(blob)?,
-        import,
+        file_name: "geometry.json".into(),
+        bytes: serde_json::to_vec(&hull["geometry"]).map_err(|e| e.to_string())?,
+        import: LoftRequest {
+            stations: cut.stations,
+            rays: cut.rays,
+            centerplane: cut.centerplane,
+            ..LoftRequest::default()
+        },
     })
 }
 
@@ -54,33 +70,29 @@ fn hull_record(
     store: &Store,
     name: &str,
     source: Value,
-    file_name: &str,
-    bytes: Vec<u8>,
-    import: LoftRequest,
+    geometry: Value,
+    cut: CutSettings,
     parent: Option<&str>,
 ) -> Result<Value, String> {
-    let blob = store.put_blob(&bytes)?;
-    let sections = loft(file_name, bytes, &import).map_err(|e| format!("{file_name}: {e}"))?;
-    let mut source = source;
-    source["blob"] = json!(blob);
-    source["file_name"] = json!(file_name);
-    let id = id_of(&json!({ "file": blob, "import": import }));
-    let r = json!({
+    let mut r = json!({
         "type": "hull",
-        "id": id,
+        "id": id_of(&json!({ "geometry": geometry, "cut": cut })),
         "name": name,
         "source": source,
-        "import": import,
+        "cut": cut,
         "parent": parent,
-        "summary": hull_summary(&sections),
+        "geometry": geometry,
         "solver_version": SOLVER_VERSION,
     });
+    let src = hull_source(&r)?;
+    let sections = loft(&src.file_name, src.bytes, &src.import)?;
+    r["summary"] = hull_summary(&sections);
     store.put(&r)?;
     Ok(r)
 }
 
-/// A hull from a file: its bytes go in the store, so the record stays good
-/// when the file moves or changes.
+/// A hull from a file: its geometry, with the file's import settings
+/// (waterline, units) applied once. `source` records where it came from.
 pub fn hull_from_file(
     store: &Store,
     path: &Path,
@@ -97,19 +109,25 @@ pub fn hull_from_file(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| file_name.clone());
     let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    hull_record(
-        store,
-        name.unwrap_or(&stem),
-        json!({ "path": abs.to_string_lossy() }),
-        &file_name,
-        bytes,
-        import,
-        None,
-    )
+    let source = json!({
+        "path": abs.to_string_lossy(),
+        "sha256": sha256(&bytes),
+        "waterline": import.waterline,
+        "units": import.units,
+    });
+    let geometry = boatmath::native::from_file(&file_name, bytes, &import)
+        .map_err(|e| format!("{file_name}: {e}"))?;
+    let cut = CutSettings {
+        stations: import.stations,
+        rays: import.rays,
+        centerplane: import.centerplane,
+    };
+    hull_record(store, name.unwrap_or(&stem), source, geometry, cut, None)
 }
 
 /// A hull made by scaling another: wholly by `by`, and/or its beam and
-/// draft by `yz`, about its design waterline.
+/// draft by `yz`, about its design waterline. The new geometry is the old
+/// with its control points (or vertices) scaled.
 pub fn scaled_hull(
     store: &Store,
     hull: &Value,
@@ -118,8 +136,6 @@ pub fn scaled_hull(
     name: Option<&str>,
 ) -> Result<Value, String> {
     let id = expect(hull, "hull")?;
-    let src = hull_source(store, hull)?;
-    let mut import = src.import;
     for (k, v) in [("--by", by), ("--beam", yz)] {
         if let Some(x) = v {
             if !(x > 0.0 && x.is_finite()) {
@@ -127,12 +143,15 @@ pub fn scaled_hull(
             }
         }
     }
-    if let Some(k) = by {
-        import.scale = Some(import.scale.unwrap_or(1.0) * k);
+    let pose = LoftRequest {
+        scale: by,
+        scale_yz: yz,
+        ..LoftRequest::default()
     }
-    if let Some(k) = yz {
-        import.scale_yz = Some(import.scale_yz.unwrap_or(1.0) * k);
-    }
+    .pose();
+    let geometry = boatmath::native::posed(&hull["geometry"], &pose)?;
+    let cut: CutSettings =
+        serde_json::from_value(hull["cut"].clone()).map_err(|e| format!("hull cut: {e}"))?;
     let base = hull["name"].as_str().unwrap_or("hull");
     let default_name = match (by, yz) {
         (Some(k), None) => format!("{base} ×{k}"),
@@ -140,13 +159,13 @@ pub fn scaled_hull(
         (Some(k), Some(j)) => format!("{base} ×{k}, ×{j} beam"),
         (None, None) => base.to_string(),
     };
+    let source = json!({ "scaled": { "by": by, "beam": yz } });
     hull_record(
         store,
         name.unwrap_or(&default_name),
-        hull["source"].clone(),
-        &src.file_name,
-        src.bytes,
-        import,
+        source,
+        geometry,
+        cut,
         Some(id),
     )
 }
@@ -174,7 +193,7 @@ pub fn case(
             return Ok(old);
         }
     }
-    let src = hull_source(store, hull)?;
+    let src = hull_source(hull)?;
     let mut r = json!({
         "type": "case",
         "id": id,

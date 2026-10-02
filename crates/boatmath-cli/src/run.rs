@@ -131,7 +131,7 @@ fn compute(store: &Store, study: &Value, quiet: bool) -> Result<Value, String> {
     let hull = store.need("hull", case["hull"].as_str().unwrap_or(""))?;
     let cp: CaseParams =
         serde_json::from_value(case["params"].clone()).map_err(|e| format!("case params: {e}"))?;
-    let src = hull_source(store, &hull)?;
+    let src = hull_source(&hull)?;
 
     let t0 = Instant::now();
     let label = format!(

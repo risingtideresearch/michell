@@ -318,27 +318,70 @@ pub fn mesh_fleet(bytes: &[u8], units_scale: f64, reference_waterline: f64) -> R
         }
     }
     let meshes: Vec<Tessellation> = hulls.iter().map(|h| indexed(h)).collect();
-    let mids = meshes
-        .iter()
-        .map(|m| {
-            let mid = |k: usize| {
-                let (lo, hi) = m
-                    .verts
-                    .iter()
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-                        (lo.min(v[k]), hi.max(v[k]))
-                    });
-                0.5 * (lo + hi)
-            };
-            (mid(0), mid(1))
-        })
-        .collect();
+    let mids = meshes.iter().map(mesh_mids).collect();
     Ok(MeshFleet {
         units_scale,
         hulls,
         meshes,
         mids,
     })
+}
+
+/// A mesh's vertex x and y mids: the default trim and scale pivots.
+fn mesh_mids(m: &Tessellation) -> (f64, f64) {
+    let mid = |k: usize| {
+        let (lo, hi) = m
+            .verts
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v[k]), hi.max(v[k]))
+            });
+        0.5 * (lo + hi)
+    };
+    (mid(0), mid(1))
+}
+
+impl MeshFleet {
+    /// A fleet from meshes already split into hulls (CAD frame, z up,
+    /// metres), each as vertices and triangles — as
+    /// [`MeshFleet::posed_tessellation`] gives them. Nothing is clustered
+    /// again: each mesh is one hull, in the order given.
+    pub fn from_meshes(meshes: Vec<(Vec<[f64; 3]>, Vec<[u32; 3]>)>) -> Result<MeshFleet> {
+        if meshes.is_empty() {
+            return Err(Error::InvalidGeometry("no hulls".into()));
+        }
+        let mut hulls = Vec::with_capacity(meshes.len());
+        let mut tess = Vec::with_capacity(meshes.len());
+        for (i, (verts, tris)) in meshes.into_iter().enumerate() {
+            if tris.is_empty() {
+                return Err(Error::InvalidGeometry(format!(
+                    "hull {}: no triangles",
+                    i + 1
+                )));
+            }
+            let mut soup = Vec::with_capacity(tris.len());
+            for t in &tris {
+                let v = |k: u32| {
+                    verts.get(k as usize).copied().ok_or_else(|| {
+                        Error::InvalidGeometry(format!(
+                            "hull {}: triangle vertex {k} out of range",
+                            i + 1
+                        ))
+                    })
+                };
+                soup.push([v(t[0])?, v(t[1])?, v(t[2])?]);
+            }
+            hulls.push(soup);
+            tess.push(Tessellation::from_mesh(verts, tris));
+        }
+        let mids = tess.iter().map(mesh_mids).collect();
+        Ok(MeshFleet {
+            units_scale: 1.0,
+            hulls,
+            meshes: tess,
+            mids,
+        })
+    }
 }
 
 /// Triangle soup as an indexed mesh: coincident vertices (to ~10 nm, as in

@@ -40,8 +40,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Cut hull files (IGES, STL) into sections: a hull record per file and
-    /// setting.
+    /// Hulls from files (IGES, STL): a hull record per file and setting, its
+    /// geometry inline as JSON (B-spline patches, or triangles from an STL),
+    /// in metres with the design waterline at z = 0.
     Hull {
         files: Vec<PathBuf>,
         #[arg(long)]
@@ -148,6 +149,8 @@ enum Command {
     },
     /// Print stored records by id (or a prefix of one).
     Get { ids: Vec<String> },
+    /// Print a stored blob (a result's `field`, say) by its id.
+    Blob { id: String },
     /// Records on stdin as a table, a column per FIELD path (`forces.rt`,
     /// `study.case.params.span`, `|heave|`, ...); tab-separated.
     Table {
@@ -442,6 +445,10 @@ fn go(cli: Cli) -> Result<usize, String> {
                 &read_records()?,
                 &run::Options { jobs, force, quiet },
             )?;
+        }
+        Command::Blob { id } => {
+            let bytes = store.blob(&id)?;
+            out.write_all(&bytes).map_err(|e| format!("stdout: {e}"))?;
         }
         Command::Get { ids } => {
             for id in &ids {

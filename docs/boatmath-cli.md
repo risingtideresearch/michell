@@ -23,16 +23,17 @@ boatmath plot -x study.params.froude -y forces.rt -o rt.svg < calm.jsonl
   (`"hull": "<id>"`), a study its case, a result its study. Every record a
   command writes is also saved in the store, so a downstream command can look
   its parents up.
-- **The hull file is the geometry.** The solver cuts the hull afresh at every
-  attitude, so a hull record holds its file and import settings, not
-  sections. `hull` copies the file's bytes into the store. The record stays
-  good when the original moves or changes, and the `path` it shows is for
-  reference only.
+- **A hull record holds its geometry.** The solver cuts the hull afresh at
+  every attitude, so a hull record holds what it cuts from: the hull's
+  B-spline patches (from IGES) or its triangles (from STL), inline as JSON,
+  not sections. `hull` reads the file once, applies its import settings
+  (waterline, units) and splits it into hulls. After that the file is not
+  needed: `source` records where the geometry came from, for reference only.
 - **The store.** `$BOATMATH_HOME` (default `~/.boatmath`):
 
   ```text
   records/<type>/ab/cdef….json    every record, by type and id
-  blobs/ab/cdef….gz               hull files, free-surface fields, meshes,
+  blobs/ab/cdef….gz               results' fields (free surface, meshes),
                                   by SHA-256 of the uncompressed bytes
   ```
 
@@ -49,20 +50,43 @@ boatmath plot -x study.params.froude -y forces.rt -o rt.svg < calm.jsonl
 ### hull
 
 ```json
-{ "type": "hull", "id": "…", "name": "wigley",
-  "source": { "file_name": "wigley.igs", "path": "/abs/wigley.igs", "blob": "<sha256>" },
-  "import": { "waterline": null, "centerplane": null, "stations": null, "rays": null, "units": null },
+{ "type": "hull", "id": "…", "name": "e12",
+  "source": { "path": "/abs/e12.igs", "sha256": "…", "waterline": -0.95, "units": null },
+  "cut": { "stations": null, "rays": null, "centerplane": null },
   "parent": null,
-  "summary": { "hulls": [ { "length": 4.0, "beam": 0.4, "draft": 0.25, "displaced_volume": 0.178,
-                            "wetted_surface": 2.38, "lcb_x": 0.0, "waterplane_area": 1.07,
-                            "transom": false } ],
+  "geometry": { "kind": "nurbs", "hulls": [ { "patches": [ … ] } ] },
+  "summary": { "hulls": [ { "length": 8.63, "beam": 0.84, "draft": 0.22, "displaced_volume": 0.707,
+                            "wetted_surface": …, "lcb_x": …, "waterplane_area": 5.58,
+                            "transom": true } ],
                "notes": [] },
   "solver_version": "…" }
 ```
 
-`import` is `LoftRequest`. The id is that of the file's bytes plus `import`.
-A scaled hull (`scale`) is the same file with `import.scale`/`scale_yz` set
-and `parent` the id of the hull it came from.
+`geometry` is in metres, x and y as in the file, z up, with the design
+waterline at z = 0. It comes in two kinds:
+
+```json
+{ "kind": "nurbs",
+  "hulls": [ { "patches": [ { "degree": [3, 3], "n_ctrl": [8, 6],
+                              "knots_u": [ … ], "knots_v": [ … ],
+                              "ctrl": [ [x, y, z], … ], "trim_uv": null } ] } ] }
+{ "kind": "mesh",
+  "hulls": [ { "vertices": [ [x, y, z], … ], "triangles": [ [0, 1, 2], … ] } ] }
+```
+
+Patches are polynomial (clamped, unweighted) B-splines. `ctrl` is row-major
+with v fastest, and `trim_uv` is the `[u0, u1, v0, v1]` box of a bounded
+surface. Each entry of `hulls` is one hull, so a file holding two demihulls
+gives two. The solver re-poses this geometry exactly as it would the file: a
+trim, sinkage or scale maps the control points or vertices. `boatmath::native`
+reads and writes it, and it's checked on reading (knot counts, sizes, finite
+numbers). For e12, the record is 258 KB against the 1.7 MB IGES, and its cases
+and studies come out the same as from the file.
+
+`cut` holds the settings of the cut (stations, rays, a centreplane override).
+The id is that of `geometry` plus `cut`. A scaled hull (`scale`) has the old
+geometry with its control points scaled about the design waterline, and
+`parent` set to the id of the hull it came from.
 
 ### case
 
@@ -130,6 +154,7 @@ Each of the `seakeeping.headings.0.points` holds `lambda`, `omega`,
 | `table FIELD… [--explode PATH] [--csv] [--no-header]` | any* → TSV/CSV | a column per field path |
 | `plot -x F -y F… [--by F…] [--explode PATH] [--title --xlabel --ylabel] [-o FILE]` | any* → SVG | line plot, a series per y field and `--by` value |
 | `get ID…` | → record* | print stored records, by id or a prefix of one |
+| `blob ID` | → bytes | print a stored blob (a result's `field`) |
 
 `LIST` is `a,b,c` or `start:stop:step` (or a mixture). Every option given a
 list makes one record per combination, so a sweep is one pipeline:
@@ -186,6 +211,9 @@ every point. It takes at most eight series; narrow `--by` beyond that.
   front ends compute the same way.
 - **`crates/boatmath-cli`** (binary `boatmath`): `store.rs`, `records.rs`
   (hull, case, study), `run.rs`, `path.rs`, `plot.rs`, `list.rs`.
+- `crates/boatmath/src/native.rs`: geometry as JSON, read from a file or
+  re-posed. `boatmath`'s computations take its bytes wherever they take a
+  hull file's, so the web app could store it too.
 - Platforms are single hulls and catamarans (`span`), as in the web app.
 
 ## Not yet

@@ -4,7 +4,7 @@
 //! ```text
 //! $BOATMATH_HOME/records/hull/ab/cdef….json
 //! $BOATMATH_HOME/records/case/…  study/…  result/…
-//! $BOATMATH_HOME/blobs/ab/cdef….gz        SHA-256 of the uncompressed bytes
+//! $BOATMATH_HOME/blobs/ab/cdef….gz        results' fields, by SHA-256 of the uncompressed bytes
 //! ```
 //!
 //! `$BOATMATH_HOME` defaults to `~/.boatmath`. A result's id is its study's,

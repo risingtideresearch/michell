@@ -16,6 +16,7 @@ use michell_geometry::iges::{HullPose, Platform, SectionalImport};
 use michell_geometry::SectionalHull;
 use serde_json::{json, Value};
 
+pub mod native;
 pub mod params;
 pub mod platform;
 
@@ -129,7 +130,11 @@ pub fn geometry(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, 
         units: req.units,
         ..LoadSettings::default()
     };
-    let file = michell_cli::fleet::open_geometry(name, bytes, &settings)?;
+    let file = if native::is_native(&bytes) {
+        native::open(&bytes)?
+    } else {
+        michell_cli::fleet::open_geometry(name, bytes, &settings)?
+    };
     let wl = req.waterline.unwrap_or(0.0);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut meshes = Vec::new();
@@ -175,7 +180,11 @@ fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
         rays: req.rays.unwrap_or(d.rays),
         units: req.units,
     };
-    let file = open_source_bytes(name, bytes, &settings)?;
+    let file = if native::is_native(&bytes) {
+        native::open(&bytes)?
+    } else {
+        open_source_bytes(name, bytes, &settings)?
+    };
     let opts = settings.sectional(file.waterline_z);
     let mut notes = Vec::new();
     let mut hulls = Vec::new();
