@@ -125,7 +125,8 @@ enum Command {
         name: Option<String>,
     },
     /// The stream's cases with a drive: a leg (and pod) hung from the hull,
-    /// cut as members of their own, carrying the propeller. A stock drive
+    /// or a shaft and its strut, cut as members of their own, carrying the
+    /// propeller. A stock drive
     /// (`boatmath mounts`) gives its dimensions; the flags give or override
     /// them. Lengths take units (m, mm, in, …).
     Mount {
@@ -133,26 +134,37 @@ enum Command {
         #[arg(long)]
         stock: Option<String>,
         /// saildrive (a leg through the bottom to a pod), outboard (a leg
-        /// from the transom), or pod (a pod on a short strut).
+        /// from the transom), pod (a pod on a short strut), or shaft (an
+        /// inclined shaft from the hull bottom, on a P-strut).
         #[arg(long)]
         kind: Option<String>,
-        /// The leg's mid-chord forward of the hull's aft end; default the
-        /// stock drive's place, or the transom for an outboard.
+        /// The leg's mid-chord forward of the hull's aft end (an outboard's
+        /// astern of it, negative); a shaft drive's propeller.
         #[arg(long, allow_hyphen_values = true)]
         x: Option<String>,
         /// Out from the hull's centreplane.
         #[arg(long, default_value = "0", allow_hyphen_values = true)]
         y: String,
-        /// The shaft below the keel (saildrive, pod) or the waterline
-        /// (outboard).
+        /// Two drives on each hull, at ±--y (twin screws).
+        #[arg(long)]
+        pair: bool,
+        /// The shaft below the keel at the leg (saildrive, pod) or at the
+        /// propeller (shaft), or below the transom's bottom (outboard).
         #[arg(long)]
         shaft_depth: Option<String>,
-        /// The leg's chord.
+        /// The leg's (a shaft drive's strut's) chord.
         #[arg(long)]
         chord: Option<String>,
-        /// The leg's thickness.
+        /// The leg's (strut's) thickness.
         #[arg(long)]
         thickness: Option<String>,
+        /// A shaft drive's shaft diameter.
+        #[arg(long)]
+        shaft_diameter: Option<String>,
+        /// A shaft drive's strut, its mid-chord ahead of the propeller;
+        /// default half its chord, 0.1 m and 0.15 of --prop-diameter.
+        #[arg(long)]
+        strut_ahead: Option<String>,
         #[arg(long)]
         pod_length: Option<String>,
         #[arg(long)]
@@ -434,6 +446,12 @@ enum Command {
         /// Draw the waves this many times their height.
         #[arg(long, default_value_t = 1.0)]
         wave_scale: f64,
+        /// Draw a prop's propellers as plain discs, not their blades.
+        #[arg(long)]
+        prop_discs: bool,
+        /// Its propellers turn anticlockwise seen from astern.
+        #[arg(long)]
+        left_handed: bool,
     },
 }
 
@@ -853,9 +871,12 @@ fn go(cli: Cli) -> Result<usize, String> {
             kind,
             x,
             y,
+            pair,
             shaft_depth,
             chord,
             thickness,
+            shaft_diameter,
+            strut_ahead,
             pod_length,
             pod_diameter,
             nose_ahead,
@@ -870,7 +891,7 @@ fn go(cli: Cli) -> Result<usize, String> {
             let kind = kind
                 .map(|k| {
                     serde_json::from_value::<boatmath::mount::Kind>(serde_json::json!(k))
-                        .map_err(|_| format!("--kind {k}: saildrive, outboard or pod"))
+                        .map_err(|_| format!("--kind {k}: saildrive, outboard, pod or shaft"))
                 })
                 .transpose()?;
             let opts = boatmath::mount::Options {
@@ -888,6 +909,9 @@ fn go(cli: Cli) -> Result<usize, String> {
                 tractor: tractor.then_some(true),
                 prop_diameter: len(&prop_diameter)?,
                 shaft_angle_deg: shaft_angle,
+                shaft_diameter: len(&shaft_diameter)?,
+                strut_ahead: len(&strut_ahead)?,
+                pair,
             };
             let mount = boatmath::mount::build(stock.as_deref(), &opts)?;
             let s = read()?;
@@ -1393,10 +1417,14 @@ fn go(cli: Cli) -> Result<usize, String> {
             o,
             no_water,
             wave_scale,
+            prop_discs,
+            left_handed,
         } => {
             let opts = cad::Options {
                 water: !no_water,
                 wave_scale,
+                blades: !prop_discs,
+                right_handed: !left_handed,
             };
             let s = read()?;
             // A prop draws its result too; without props, each result.

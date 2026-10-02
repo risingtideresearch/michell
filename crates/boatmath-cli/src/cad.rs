@@ -7,7 +7,7 @@
 //! |---|---|---|---|
 //! | 1 | white | `HULL1`, `HULL2` | each hull's patches |
 //! | 2 | cyan | `WATER` | the free surface |
-//! | 3 | red | `PROP1`, … | each propeller disc |
+//! | 3 | red | `PROP1`, … | each propeller: its B-series blades and hub (or a disc) |
 //! | 4 | yellow | `MOUNT1`, … | each drive's leg and pod |
 //!
 //! Frame: x forward, y to port, z up, the still water at z = 0, metres.
@@ -22,6 +22,9 @@ use serde_json::Value;
 pub struct Options {
     pub water: bool,
     pub wave_scale: f64,
+    /// A prop's propellers as their blades (else plain discs).
+    pub blades: bool,
+    pub right_handed: bool,
 }
 
 /// A member's level, colour and label: hulls on 1, a drive's parts on 4.
@@ -136,13 +139,43 @@ pub fn model(st: &Stream, rec: &Value, o: &Options) -> Result<String, String> {
                 short(p["id"].as_str().unwrap_or(""))
             );
         }
+        // The shaft's angle to the still water: its own and the trim (the
+        // drive's thrust line keeps both), else the trim.
+        let angle = p["thrust_line"]["angle_deg"]
+            .as_f64()
+            .map_or(attitude.1, f64::to_radians);
+        let b = &p["best"];
+        let chosen = match (
+            b["Z"].as_f64(),
+            b["D"].as_f64(),
+            b["PD"].as_f64(),
+            b["EAR"].as_f64(),
+        ) {
+            (Some(z), Some(dia), Some(pd), Some(ear)) if o.blades => {
+                Some(boatmath::cad::Propeller {
+                    blades: z as usize,
+                    diameter: dia,
+                    pitch_ratio: pd,
+                    area_ratio: ear,
+                    right_handed: o.right_handed,
+                })
+            }
+            _ => None,
+        };
         for (k, d) in ds.iter().enumerate() {
-            surfaces.push(boatmath::cad::disc_surface(d));
-            labels.push(Label {
+            let label = Label {
                 level: 3,
                 color: Color::Red,
                 name: format!("PROP{}", k + 1),
-            });
+            };
+            let parts = match &chosen {
+                Some(prop) => boatmath::cad::propeller_surfaces(d, angle, prop)?,
+                None => vec![boatmath::cad::disc_surface(d)],
+            };
+            for s in parts {
+                surfaces.push(s);
+                labels.push(label.clone());
+            }
         }
     }
 

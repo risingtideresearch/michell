@@ -277,14 +277,15 @@ pub fn case_source<'a>(s: &'a Stream, case: &Value) -> Result<CaseSource<'a>, St
         let bare = loft(&src.file_name, src.bytes.clone(), &src.import)?;
         let (g, t) = boatmath::mount::mounted(&hull["geometry"], &bare, m)?;
         src.bytes = serde_json::to_vec(&g).map_err(|e| e.to_string())?;
-        // A catamaran doubles its hull, and the drive goes with each copy.
+        // A catamaran doubles its hull, and the drives go with each copy,
+        // each as far off its centreplane as on the single hull.
+        let yc = bare["hulls"][0]["placement"]["y"].as_f64().unwrap_or(0.0);
         thrusts = match params.span {
             Some(span) => t
                 .iter()
                 .flat_map(|d| {
-                    let off = m.y;
-                    [0.5 * span, -0.5 * span]
-                        .map(|yc| boatmath::mount::Thrust { y: yc + off, ..*d })
+                    let off = d.y - yc;
+                    [0.5 * span, -0.5 * span].map(|y| boatmath::mount::Thrust { y: y + off, ..*d })
                 })
                 .collect(),
             None => t,

@@ -273,8 +273,8 @@ See [Propellers and motors](#propellers-and-motors).
 | `scale [--by LIST] [--beam LIST] [--mass LIST [--keep-length]] [--name]` | hull* → + hull* | hulls scaled about the design waterline |
 | `case [--span --mass --lcg --vcg --kxx --kyy --kzz --roll-damping (LISTs)] [--name]` | hull* → + case* | a platform and load on each hull |
 | `mount (--stock NAME \| --kind K …)` | case* → + case* | the propulsion drive each case carries: its leg, pod or shaft and strut, and where its propeller sits |
-| `mounts` | → stock* | the stock mounts `mount --stock` knows |
-| `statics` | hull*/case* → + statics*, sections* | each hull's hydrostatics, each case's float at rest and stability |
+| `mounts` | → stock_mount* | the stock mounts `mount --stock` knows |
+| `statics` | hull*/case* → + statics*, sections* | each hull's hydrostatics, each case's float at rest and stability (and, for a case, its sections at rest) |
 | `study --froude LIST [--hold] [--closure C] [--grid N] [--waves LIST --lambdas LIST --sea S]` | case* → + study* | requests for every combination |
 | `run [-j N] [-q]` | study* → + result*, field*, sections* | compute each study |
 | `prop [--d-max L --wake --thrust-deduction --blades LIST --keller-k --top-froude F …]` | result* → + prop* | the best B-series propeller for each result's speed and thrust, on its case's drive |
@@ -287,7 +287,7 @@ See [Propellers and motors](#propellers-and-motors).
 | `wake [-o FILE] [--range M] [--title]` | result* → SVG | the free surface from above |
 | `pressure [-o FILE] [--range CP] [--title]` | result* → SVG | the pressure on the hulls from below |
 | `profile [-o FILE] [--wave-scale K] [--title]` | result* → SVG | the hull at its attitude, with the wave along its side |
-| `cad [-o FILE] [--no-water] [--wave-scale K] [--heel LIST]` | result*/prop*/statics* → IGES | the hulls at their attitude with their drives, the water and a prop's discs; or a case floated at rest and heeled along its GZ curve; for CAD |
+| `cad [-o FILE] [--no-water] [--wave-scale K] [--prop-discs] [--left-handed] [--heel LIST]` | result*/prop*/statics* → IGES | the hulls at their attitude with their drives, the water and a prop's propellers; or a case floated at rest and heeled along its GZ curve; for CAD |
 
 "`+`" marks a command that writes its whole input before what it makes. The
 others (`table`, `plot`, the pictures, `cad`) read a stream and write
@@ -376,10 +376,11 @@ The kinds, and where each one's propeller ends up:
 | `saildrive` | a vertical leg, a symmetric foil of chord × thickness, from the hull bottom down to a pod | on the pod's aft end, its axis horizontal |
 | `outboard` | the same leg and pod, the leg piercing the water from a bracket on the transom | the same |
 | `pod` | a streamlined pod hung close under the hull on a short, deep-chord leg | on the pod's aft end, its axis horizontal |
-| `shaft` | a shaft leaving the hull at `--shaft-angle`, a strut (P or V) holding it near the propeller | on the shaft's end, along its line |
+| `shaft` | a shaft rising forward at `--shaft-angle` from the propeller to where it meets the hull's bottom, a P-strut (a vertical foil of chord × thickness) holding it near the propeller | on the shaft's end, along its line |
 
-The first stock mounts are Oceanvolt's saildrives, ePropulsion's outboards
-and Fischer Panda's pod drives; `shaft` comes after the other three.
+The stock mounts are Oceanvolt's saildrives, ePropulsion's outboards and
+Fischer Panda's pod drives. A shaft drive has no stock entry: it's
+described by its flags.
 
 `--x` places the leg's mid-chord forward of the hull's aft end (an
 outboard's is astern of it, on the transom, so `--x` is negative or zero)
@@ -393,7 +394,33 @@ propeller just aft of the leg), and `--tractor` puts the propeller ahead.
 `--d-max`; `--shaft-angle` tilts the thrust line, bow up. The new cases keep
 the old ones' parameters, and their `parent` is the case without the drive
 (remounting a mounted case replaces its drive). A drive with a value the
-stock table doesn't give (`null`) asks for it, quoting the entry's notes. `--stock NAME` takes a stock mount's
+stock table doesn't give (`null`) asks for it, quoting the entry's notes.
+
+A shaft drive's `--x` is its propeller plane, forward of the hull's aft
+end, and `--shaft-depth` the shaft's centreline there below the hull's
+bottom; the shaft (`--shaft-diameter`) rises forward at `--shaft-angle`
+until it meets the bottom (along the keel line: a shaft well off the
+centreplane, under a bottom with deadrise, is a little long), and runs a
+diameter on into the hull. Its strut stands `--strut-ahead` of the
+propeller (default half its chord, 0.1 m and 0.15 of `--prop-diameter`),
+from the bottom down to the shaft. A level shaft below the keel never
+meets the hull and is refused. `--pair` puts a drive either side of each
+hull's centreplane at ±`--y`, twin screws (any kind):
+
+```sh
+boatmath mount --kind shaft --pair --x 0.5 --y 0.4 --shaft-depth 0.3 --shaft-angle 8 \
+  --shaft-diameter 35mm --chord 0.12 --thickness 0.03 --prop-diameter 0.35 < cases.jsonl
+```
+
+The shaft is a member like the others: its waves and near field are the
+thin-ship model's (an inclined body of revolution's sections are the
+ellipses it cuts at each station), its friction is at a body of
+revolution's form factor, and the flow across it adds Hoerner's cross-flow
+drag, ½ρV² d L C_D sin³α with C_D = 1.1, at α its angle to the flow (its
+own plus the trim). The strut is a foil like a leg. For e12 at Fn 0.3 with
+the twin shafts above, R_t is 99.1 N (bare 87.2 N), the shafts and struts
+11.8 N of it, and the propellers' thrust line runs at 8.1°, which `prop`
+flags as oblique. `--stock NAME` takes a stock mount's
 dimensions from a vendored table, each entry sourced from its maker's
 installation drawings (`boatmath mounts` lists them); any dimension given as
 an option overrides the table's.
@@ -438,7 +465,8 @@ What each step does with a mount:
   in the thrust deduction.
 - **`cad`.** The leg as a ruled foil surface, the pod as a body of
   revolution, the shaft as a cylinder and the strut as a foil, on a level of
-  their own (4, `MOUNT1`, …), and the propeller disc where it sits.
+  their own (4, `MOUNT1`, …), and the propeller where it sits: the one
+  `prop` chose, blade by blade (below), or a disc.
 
 ### Propellers and motors
 
@@ -592,7 +620,7 @@ several results in the stream, `-o` is a pattern naming each picture by
 ### CAD
 
 `cad` writes each calm-water result in a stream as an IGES file to open in
-CAD. For a prop on a result, it adds the prop's discs. For a statics record,
+CAD. For a prop on a result, it adds the prop's propellers. For a statics record,
 it draws the hull floating at rest and heeled (below).
 
 ```sh
@@ -611,10 +639,21 @@ boatmath prop --d-max 12in --wake auto --thrust-deduction auto < result.jsonl \
   and `--wave-scale` exaggerates it.
 - **The drives:** each hull's mount, its leg, pod, shaft and strut, at the
   hull's attitude.
-- **The discs:** a placeholder for each propeller, a flat annulus from hub
-  (0.2 R) to tip, square to the shaft, where the case's mount puts it.
+- **The propellers:** the B-series screw `prop` chose for each drive (its
+  blade count, diameter, P/D and EAR), where the case's mount puts it, on
+  the shaft's line at the result's attitude. Each blade is a surface
+  through its expanded sections wrapped on their pitch helices: the
+  series' outline (chord, and the leading edge's place, by radius), its
+  thickness `t/D = A − B Z` and where it falls, its 15° rake aft, and the
+  four-bladed series' reduced root pitch (Kuiper 1992). The sections are
+  segmental, a flat face and a parabolic back, not the series' tabulated
+  ordinates: it's a drawing of the propeller, true in outline, pitch and
+  thickness, not a definition to cut one to. The hub covers the roots
+  (and the pod it sits on, if larger). They turn clockwise seen from
+  astern; `--left-handed` for the other hand. `--prop-discs` draws a flat
+  annulus, hub to tip, instead.
 - **Levels:** hulls on level 1 (white, `HULL1`, `HULL2`), the water on 2
-  (cyan, `WATER`), discs on 3 (red, `PROP1`, …), drives on 4 (yellow,
+  (cyan, `WATER`), propellers on 3 (red, `PROP1`, …), drives on 4 (yellow,
   `MOUNT1`, …), so each can be toggled as a layer.
 
 The frame is the water's: x forward, y to port, z up, the still water at

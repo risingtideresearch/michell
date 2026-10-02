@@ -463,6 +463,9 @@ pub(crate) struct Setup {
     /// Each layout entry's role (`hull`, or a drive's `leg` or `pod`) and,
     /// for a part, its viscous form factor.
     pub(crate) roles: Vec<(String, Option<f64>)>,
+    /// Each layout entry's cross-flow drag, for an inclined body (a shaft):
+    /// see [`mount::CrossFlow`].
+    pub(crate) cross: Vec<Option<mount::CrossFlow>>,
 }
 
 pub(crate) fn setup(
@@ -473,12 +476,12 @@ pub(crate) fn setup(
 ) -> Result<Setup, String> {
     // The members' roles, by source index: a JSON geometry may carry a
     // drive's parts as members of their own; a file's are all hulls.
-    let source_roles = if native::is_native(&bytes) {
+    let (source_roles, source_cross) = if native::is_native(&bytes) {
         serde_json::from_slice::<Value>(&bytes)
-            .map(|g| mount::roles(&g))
+            .map(|g| (mount::roles(&g), mount::cross_flows(&g)))
             .unwrap_or_default()
     } else {
-        Vec::new()
+        Default::default()
     };
     let role_of = |i: usize| -> (String, Option<f64>) {
         source_roles
@@ -573,6 +576,10 @@ pub(crate) fn setup(
         .sum::<f64>()
         / vol.max(f64::MIN_POSITIVE);
     let roles: Vec<(String, Option<f64>)> = layout.iter().map(|(i, _)| role_of(*i)).collect();
+    let cross: Vec<Option<mount::CrossFlow>> = layout
+        .iter()
+        .map(|(i, _)| source_cross.get(*i).copied().flatten())
+        .collect();
     // The Froude number's length is the hulls', not a drive's parts'.
     let l_ref = design
         .iter()
@@ -588,6 +595,7 @@ pub(crate) fn setup(
         layout,
         design,
         roles,
+        cross,
     })
 }
 
@@ -1001,14 +1009,20 @@ pub fn flow_with_progress(
         .collect();
     // A drive's parts are friction on their own lengths, as the hull's
     // members are, but at their own form factors (Hoerner's, for a foil and
-    // for a body of revolution) rather than the hull's.
+    // for a body of revolution) rather than the hull's; an inclined shaft
+    // adds the drag of the flow across it, at its angle to the flow (its
+    // own plus the trim).
     let k_hull = michell::ViscousOptions::default().form_factor;
     let (mut rv, mut r_app) = (0.0, 0.0);
     let parts_known = res.viscous.len() == s.roles.len();
+    let q = 0.5 * rho * cond.speed * cond.speed;
     for (k, v) in res.viscous.iter().enumerate() {
         match s.roles.get(k).filter(|_| parts_known) {
             Some((role, Some(kp))) if role != "hull" => {
-                let r = v.resistance * (1.0 + kp) / (1.0 + k_hull);
+                let cross = s.cross.get(k).copied().flatten().map_or(0.0, |c| {
+                    q * c.area * c.cd * (c.angle + platform.trim).sin().abs().powi(3)
+                });
+                let r = v.resistance * (1.0 + kp) / (1.0 + k_hull) + cross;
                 rv += r;
                 r_app += r;
             }

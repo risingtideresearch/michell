@@ -1318,6 +1318,7 @@ fn cluster_frame_with(
 ) -> Result<ClusterFrame> {
     // Wetted statistics of this cluster.
     let mut draft = 0.0f64;
+    let mut top = f64::INFINITY;
     let (mut x_min, mut x_max) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut y_lo, mut y_hi) = (f64::INFINITY, f64::NEG_INFINITY);
     let mut y_sum = 0.0f64;
@@ -1325,6 +1326,7 @@ fn cluster_frame_with(
     for q in frame_points(patches, mesh) {
         if q[2] >= -1e-12 {
             draft = draft.max(q[2]);
+            top = top.min(q[2]);
             x_min = x_min.min(q[0]);
             x_max = x_max.max(q[0]);
             y_lo = y_lo.min(q[1]);
@@ -1386,7 +1388,10 @@ fn cluster_frame_with(
     let mut probe_counts: Vec<usize> = Vec::new();
     let mut probe_mids: Vec<f64> = Vec::new();
     {
-        let band = |z: f64| z >= 0.3 * draft && z <= 0.7 * draft;
+        // The middle of the body's depth: from the surface, or for a body
+        // wholly under it (a drive's strut, shaft or pod) from its top.
+        let z0 = if top > 0.05 * draft { top } else { 0.0 };
+        let band = |z: f64| z >= z0 + 0.3 * (draft - z0) && z <= z0 + 0.7 * (draft - z0);
         // Probe points on the shell: the presample's, or — for a bare mesh —
         // triangle centroids (a vertex would put the probe exactly on the
         // facets' edges).
