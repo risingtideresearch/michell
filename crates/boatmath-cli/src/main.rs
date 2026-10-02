@@ -47,10 +47,10 @@ enum Command {
         #[arg(long)]
         name: Option<String>,
         /// Design waterline height in the file's frame [m] (IGES); a LIST.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         waterline: Option<String>,
         /// Centreplane override [m] (IGES).
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         centerplane: Option<f64>,
         /// Stations along the hull (IGES).
         #[arg(long)]
@@ -86,10 +86,10 @@ enum Command {
         #[arg(long, default_value = "sinking")]
         mass_by: String,
         /// Longitudinal centre of gravity [m]; default the LCB; a LIST.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         lcg: Option<String>,
         /// Centre of gravity above the design waterline [m]; a LIST.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         vcg: Option<String>,
         /// Roll radius of gyration [m]; a LIST.
         #[arg(long)]
@@ -124,7 +124,7 @@ enum Command {
         #[arg(long)]
         grid: Option<usize>,
         /// In waves from these headings [deg, 180 head seas]; a LIST.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         waves: Option<String>,
         /// Wavelengths over the length (with --waves); a LIST.
         #[arg(long)]
