@@ -198,8 +198,10 @@ pub fn propeller_surfaces(
         .collect();
     let mut out = Vec::new();
     let mut root_x = (f64::INFINITY, f64::NEG_INFINITY);
+    // The first blade's tip points straight up, toward the hull, so its
+    // clearance reads off the drawing.
     for blade in 0..z {
-        let theta0 = 2.0 * PI * blade as f64 / z as f64;
+        let theta0 = 0.5 * PI + 2.0 * PI * blade as f64 / z as f64;
         let mut pts = Vec::with_capacity(n_r * (2 * n_c - 1));
         for (ir, &r) in radii.iter().enumerate() {
             // The outline closes elliptically over the last tenth.
@@ -336,6 +338,19 @@ mod tests {
                     .sqrt();
                 assert!(off < 1.05 * 0.2 && along.abs() < 0.2, "{q:?}");
             }
+            // The first blade's tip is straight up, square to the shaft.
+            let top = s[0]
+                .ctrl
+                .iter()
+                .max_by(|a, b| a[2].total_cmp(&b[2]))
+                .unwrap();
+            let v = [top[0] - d.x, top[1] - d.y, top[2] + d.depth];
+            let up = [-0.1f64.sin(), 0.0, 0.1f64.cos()];
+            let reach = v[0] * up[0] + v[2] * up[2];
+            assert!(
+                v[1].abs() < 0.01 && (reach - 0.2).abs() < 0.01,
+                "Z {z}: tip {v:?}"
+            );
         }
     }
 }

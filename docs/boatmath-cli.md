@@ -651,8 +651,9 @@ boatmath prop --d-max 12in --wake auto --thrust-deduction auto < result.jsonl \
   segmental, a flat face and a parabolic back, not the series' tabulated
   ordinates: it's a drawing of the propeller, true in outline, pitch and
   thickness, not a definition to cut one to. The hub covers the roots
-  (and the pod it sits on, if larger). They turn clockwise seen from
-  astern; `--left-handed` for the other hand. `--prop-discs` draws a flat
+  (and the pod it sits on, if larger). One blade points straight up, so
+  its tip's clearance from the hull can be measured. They turn clockwise
+  seen from astern; `--left-handed` for the other hand. `--prop-discs` draws a flat
   annulus, hub to tip, instead.
 - **Levels:** hulls on level 1 (white, `HULL1`, `HULL2`), the water on 2
   (cyan, `WATER`), propellers on 3 (red, `PROP1`, …), drives on 4 (yellow,
