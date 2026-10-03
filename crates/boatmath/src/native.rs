@@ -26,6 +26,18 @@ use serde_json::{json, Value};
 
 /// The file's geometry, its import settings applied, as JSON.
 pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, String> {
+    from_file_with(name, bytes, req, None)
+}
+
+/// [`from_file`], keeping only some of an IGES file's surfaces: their
+/// indices among its B-spline surfaces (entity 128), in file order. For a
+/// model of more than the hull: its deck, fittings or appendages left out.
+pub fn from_file_with(
+    name: &str,
+    bytes: Vec<u8>,
+    req: &LoftRequest,
+    surfaces: Option<&[usize]>,
+) -> Result<Value, String> {
     let settings = LoadSettings {
         waterline_z: req.waterline.unwrap_or(0.0),
         units: req.units,
@@ -44,11 +56,36 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
     let wl = settings.waterline_z;
     let pose = req.pose();
     let at_rest = Platform::default();
-    match open_source_bytes(name, bytes.clone(), &settings)?.kind {
+    // Surfaces are picked from an IGES file, whose others needn't import.
+    let kind = match surfaces {
+        Some(_) => Kind::Iges,
+        None => open_source_bytes(name, bytes.clone(), &settings)?.kind,
+    };
+    match kind {
         Kind::Iges => {
             let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-            let fleet =
-                hullgeom::iges::source_fleet(&text, wl).map_err(|e| format!("{name}: {e}"))?;
+            let fleet = match surfaces {
+                None => hullgeom::iges::source_fleet(&text, wl),
+                Some(keep) => {
+                    let file = hullgeom::iges::parse(&text).map_err(|e| format!("{name}: {e}"))?;
+                    let n = file.surfaces.len();
+                    let mut picked = Vec::with_capacity(keep.len());
+                    for &i in keep {
+                        let s = file.surfaces.get(i).ok_or_else(|| {
+                            format!("{name}: no surface {i} (it has {n}, numbered from 0)")
+                        })?;
+                        if !s.is_polynomial() {
+                            return Err(format!(
+                                "{name}: surface {i} is rational (non-uniform weights); \
+                                 boatmath's geometry is polynomial B-splines"
+                            ));
+                        }
+                        picked.push(s.clone());
+                    }
+                    hullgeom::iges::source_fleet_from_surfaces(picked, file.units_scale, wl)
+                }
+            }
+            .map_err(|e| format!("{name}: {e}"))?;
             let hulls = (0..fleet.len())
                 .map(|i| {
                     let mut surfs = fleet

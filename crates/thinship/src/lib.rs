@@ -89,9 +89,9 @@ pub use friction::{
 pub use hullgeom::{
     Conditions, Error, Fluid, Placement, Result, SectionalHull, Transom, C64, STANDARD_GRAVITY,
 };
+pub use michell::{TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF};
 pub use sectional::SectionalWave;
 pub use spectrum::{FreeWaveSpectrum, WaveGrid};
-pub use michell::{TransomClosure, WaveOptions, WaveResistance, BALLISTIC_COEFF};
 
 /// Combined resistance breakdown for a multihull.
 #[derive(Debug, Clone)]

@@ -33,6 +33,8 @@
 //! yet.
 
 use hullgeom::iges::NurbsSurface3;
+
+pub mod fit;
 use serde_json::Value;
 
 type V2 = [f64; 2];

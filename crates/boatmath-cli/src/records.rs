@@ -96,6 +96,7 @@ pub fn hull_from_file(
     path: &Path,
     name: Option<&str>,
     import: LoftRequest,
+    surfaces: Option<&[usize]>,
 ) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let file_name = path
@@ -112,8 +113,9 @@ pub fn hull_from_file(
         "sha256": sha256(&bytes),
         "waterline": import.waterline,
         "units": import.units,
+        "surfaces": surfaces,
     });
-    let geometry = boatmath::native::from_file(&file_name, bytes, &import)
+    let geometry = boatmath::native::from_file_with(&file_name, bytes, &import, surfaces)
         .map_err(|e| format!("{file_name}: {e}"))?;
     let cut = CutSettings {
         stations: import.stations,

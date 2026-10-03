@@ -78,6 +78,11 @@ enum Command {
         /// in, ft, or metres per unit.
         #[arg(long)]
         units: Option<String>,
+        /// Only these of an IGES file's surfaces (its B-spline surfaces,
+        /// numbered in file order from 0): `24,25,64-69`. For a model of
+        /// more than the hull.
+        #[arg(long)]
+        surfaces: Option<String>,
     },
     /// Hulls scaled from the stream's, about the design waterline.
     Scale {
@@ -434,6 +439,28 @@ enum Command {
     /// for CAD: the hulls at their attitude, the free surface, and a prop's
     /// discs, each on its own level (1 hulls, 2 water, 3 props). Its
     /// statics too: a case at rest and heeled along its GZ curve.
+    /// A camber document fitted to each hull in the stream: its sheer plan,
+    /// trim, transom and a few stations, by least squares through camber's
+    /// own sweep, so it opens in camber to edit. How well it fits, and its
+    /// hydrostatics against the hull's, go to stderr.
+    FitCamber {
+        /// Stations along the hull.
+        #[arg(long, default_value_t = 3)]
+        stations: usize,
+        /// Points on each station's section.
+        #[arg(long, default_value_t = 5)]
+        points: usize,
+        /// Control points of the sheer plan.
+        #[arg(long, default_value_t = 4)]
+        plan: usize,
+        /// Points of the sheer trim.
+        #[arg(long, default_value_t = 4)]
+        trim: usize,
+        /// Write here (a JSON document); with several hulls, a pattern
+        /// naming each by `{id8}`.
+        #[arg(short)]
+        o: Option<String>,
+    },
     Cad {
         /// With statics: also heel to each of these angles [deg]; a LIST.
         #[arg(long)]
@@ -768,11 +795,13 @@ fn go(cli: Cli) -> Result<usize, String> {
             stations,
             rays,
             units,
+            surfaces,
         } => {
             if files.is_empty() {
                 return Err("hull: name a hull file".into());
             }
             let units = units.as_deref().map(boatmath::parse_units).transpose()?;
+            let surfaces = surfaces.as_deref().map(parse_indices).transpose()?;
             for f in &files {
                 for w in list::product(&[list(&waterline, "waterline")?]) {
                     let import = LoftRequest {
@@ -783,7 +812,7 @@ fn go(cli: Cli) -> Result<usize, String> {
                         units,
                         ..LoftRequest::default()
                     };
-                    match records::hull_from_file(f, name.as_deref(), import) {
+                    match records::hull_from_file(f, name.as_deref(), import, surfaces.as_deref()) {
                         Ok(r) => out.emit(&r)?,
                         Err(e) => {
                             eprintln!("boatmath: {e}");
@@ -1414,6 +1443,44 @@ fn go(cli: Cli) -> Result<usize, String> {
         } => {
             failed += draw(&read()?, out.raw(), View::Profile(wave_scale), o, title)?;
         }
+        Command::FitCamber {
+            stations,
+            points,
+            plan,
+            trim,
+            o,
+        } => {
+            let s = read()?;
+            let hulls: Vec<&Value> = s.of_type("hull").collect();
+            if hulls.is_empty() {
+                return Err("no hulls in the stream".into());
+            }
+            check_pattern(hulls.len(), &o, "hulls")?;
+            let shape = boatmath::camber::fit::Shape {
+                stations,
+                points,
+                plan,
+                trim,
+            };
+            for h in hulls {
+                let id = h["id"].as_str().unwrap_or("");
+                match fit_camber(h, shape) {
+                    Ok(doc) => {
+                        let text =
+                            serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n";
+                        match &o {
+                            Some(p) => {
+                                let path = named(p, id, 0.0);
+                                std::fs::write(&path, text).map_err(|e| format!("{path}: {e}"))?;
+                                eprintln!("boatmath: wrote {path}");
+                            }
+                            None => out.raw().write_all(text.as_bytes()).map_err(stdout_err)?,
+                        }
+                    }
+                    Err(e) => failed += fail("hull", id, e),
+                }
+            }
+        }
         Command::Cad {
             heel,
             o,
@@ -1477,4 +1544,74 @@ fn go(cli: Cli) -> Result<usize, String> {
         }
     }
     Ok(failed)
+}
+
+/// A camber document fitted to a hull, its fit and hydrostatics reported.
+fn fit_camber(hull: &Value, shape: boatmath::camber::fit::Shape) -> Result<Value, String> {
+    let name = hull["name"].as_str().unwrap_or("hull");
+    let (mut doc, r) = boatmath::camber::fit::fit(&hull["geometry"], shape)?;
+    doc["name"] = name.into();
+    eprintln!(
+        "boatmath: {name}: camber to the hull {:.1} mm RMS ({:.1} max), the hull to camber {:.1} mm RMS ({:.1} max), after {} steps",
+        1e3 * r.rms_to_hull,
+        1e3 * r.max_to_hull,
+        1e3 * r.rms_to_camber,
+        1e3 * r.max_to_camber,
+        r.iterations
+    );
+    eprintln!(
+        "boatmath: {name}: the document's x = 0 is the hull's x = {:.4}, its deck datum {:.4} above the hull's waterline",
+        r.x_origin,
+        doc["waterline"].as_f64().unwrap_or(f64::NAN)
+    );
+    if r.reach > 0.0 {
+        eprintln!(
+            "boatmath: {name}: the stations' last points reached {:.1} mm further inboard to close every section",
+            1e3 * r.reach
+        );
+    }
+    // Both floated at the hull's design waterline.
+    let summary = |g: &Value| -> Result<Value, String> {
+        let bytes = serde_json::to_vec(g).map_err(|e| e.to_string())?;
+        let sections = boatmath::loft("geometry.json", bytes, &boatmath::LoftRequest::default())?;
+        Ok(boatmath::hull_summary(&sections)["hulls"][0].clone())
+    };
+    let parsed = boatmath::camber::Document::parse(&doc)?;
+    let fitted = summary(&boatmath::camber::geometry(&parsed, None, None)?)?;
+    let theirs = summary(&hull["geometry"])?;
+    for (k, shift) in [
+        ("displaced_volume", 0.0),
+        ("length", 0.0),
+        ("beam", 0.0),
+        ("draft", 0.0),
+        ("wetted_surface", 0.0),
+        ("lcb_x", r.x_origin),
+    ] {
+        let (a, b) = (
+            fitted[k].as_f64().unwrap_or(f64::NAN) + shift,
+            theirs[k].as_f64().unwrap_or(f64::NAN),
+        );
+        eprintln!(
+            "boatmath:   {k:<17} {a:>10.4} against {b:>10.4} ({:+.2}%)",
+            100.0 * (a / b - 1.0)
+        );
+    }
+    Ok(doc)
+}
+
+/// Indices and ranges, `24,25,64-69`.
+fn parse_indices(s: &str) -> Result<Vec<usize>, String> {
+    let mut out = Vec::new();
+    for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let num = |t: &str| {
+            t.trim()
+                .parse::<usize>()
+                .map_err(|_| format!("--surfaces: {t:?} is not an index"))
+        };
+        match part.split_once('-') {
+            Some((a, b)) => out.extend(num(a)?..=num(b)?),
+            None => out.push(num(part)?),
+        }
+    }
+    Ok(out)
 }
