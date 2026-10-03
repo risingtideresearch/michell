@@ -69,6 +69,8 @@ stdout.
 
 ## Records
 
+![The record types, their main fields, and the commands that read and write them](boatmath-records.svg)
+
 Each record type below, as a command writes it. Lengths are in metres, speeds
 in m/s, forces in N.
 
