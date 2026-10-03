@@ -5,7 +5,9 @@
 
 use crate::params::StudyParams;
 use crate::store::{status, Claimed, NewResult, Store};
-use crate::{flow_with_progress, waves_with_progress, FlowRequest, Progress, CANCELLED};
+use crate::{
+    flow_with_progress, wave_scalars, waves_with_progress, FlowRequest, Progress, CANCELLED,
+};
 use serde_json::{json, Value};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -176,6 +178,8 @@ impl Worker {
                     study: p.clone(),
                     warm,
                     hold,
+                    thrust: None,
+                    field: true,
                 };
                 let v = flow_with_progress(&c.hull.file_name, bytes, &req, &mut report)?;
                 let mut scalars = v["forces"].clone();
@@ -231,74 +235,6 @@ impl Worker {
 /// was solved for.
 type WarmStart = ((f64, f64), i64);
 
-/// A response measure: its name, and how to read it off a wavelength's point.
-type Measure<'a> = (&'a str, &'a dyn Fn(&Value) -> Option<f64>);
-
-/// What a study in waves is plotted by: each response's peak over the
-/// wavelengths and where it is, the added resistance's, the roll stability
-/// at the attitude, and the irregular sea's statistics.
-fn wave_scalars(v: &Value) -> Value {
-    let sk = &v["seakeeping"];
-    let h = &sk["headings"][0];
-    let pts = h["points"].as_array().cloned().unwrap_or_default();
-    let abs = |z: &Value| {
-        z.as_array().map(|a| {
-            a[0].as_f64()
-                .unwrap_or(0.0)
-                .hypot(a[1].as_f64().unwrap_or(0.0))
-        })
-    };
-    let peak = |f: &dyn Fn(&Value) -> Option<f64>| {
-        pts.iter()
-            .filter_map(|p| Some((f(p)?, p["lambda"].as_f64()?)))
-            .fold(None, |best: Option<(f64, f64)>, (y, l)| match best {
-                Some((b, _)) if b >= y => best,
-                _ => Some((y, l)),
-            })
-    };
-    let mut out = json!({
-        "froude": v["froude"],
-        "speed": v["speed"],
-        "heading": h["heading"],
-        "sinkage": v["attitude"]["sinkage"],
-        "trim_rad": v["attitude"]["trim_rad"],
-        "trim_deg": v["attitude"]["trim_deg"],
-        "gm_t": sk["gm_t"],
-        "roll_period": sk["roll_period"],
-        "failed_points": pts.iter().filter(|p| !p["error"].is_null()).count(),
-    });
-    let heave = |p: &Value| abs(&p["heave"]);
-    let pitch = |p: &Value| abs(&p["pitch"]);
-    let roll = |p: &Value| abs(&p["roll"]);
-    let added = |p: &Value| p["raw_gb"].as_f64();
-    let measures: [Measure; 4] = [
-        ("heave", &heave),
-        ("pitch", &pitch),
-        ("roll", &roll),
-        ("added_resistance", &added),
-    ];
-    for (k, f) in measures {
-        if let Some((y, l)) = peak(f) {
-            out[format!("{k}_peak")] = json!(y);
-            out[format!("{k}_peak_lambda")] = json!(l);
-        }
-    }
-    let sea = &h["sea"];
-    if sea.is_object() && sea["error"].is_null() {
-        for k in [
-            "heave",
-            "pitch_deg",
-            "accel_bow",
-            "accel_lcg",
-            "raw_gb",
-            "raw_far",
-        ] {
-            out[format!("sea_{k}")] = sea[k].clone();
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,8 +259,8 @@ mod tests {
     #[test]
     fn studies_go_through_the_queue_and_are_kept() {
         let store = temp_store("e2e");
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let bytes = michell_geometry::iges::write(&surfaces, "wigley")
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let bytes = hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes();
         let import = LoftRequest::default();

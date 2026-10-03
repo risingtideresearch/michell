@@ -1,0 +1,195 @@
+{
+  "about": "Stock propulsion drives for `boatmath mount --stock NAME`, in metres, kg and kW. Every value is from the maker's own dimension drawing or spec page (see each entry's sources); a value marked 'scaled' in its source was measured off a drawing against a dimension printed in the same view (good to about 3-5 %), the drawings themselves saying not to scale. A null is a value the sources don't give: `mount` asks for it rather than guess. Gathered 2026-10-02.",
+  "url_prefixes": {
+    "EP/": "https://www.epropulsion.com/epsync/products/",
+    "FP/": "https://www.onefischerpanda.com/fileadmin/content/product-information/electric-drives-pod/",
+    "OVDB": "Oceanvolt's 'Dimensional Drawings' folder, linked from https://oceanvolt.com/download-center/ (https://www.dropbox.com/scl/fo/gdwyci2av276eihekf9nv/h?rlkey=2a3hwth8xf1uh1lzx72saryvr)"
+  },
+  "mounts": [
+    {
+      "name": "oceanvolt-sd8", "vendor": "Oceanvolt", "model": "SD8", "kind": "saildrive",
+      "leg": { "chord": 0.167, "thickness": 0.043 }, "shaft_depth": 0.362,
+      "pod": { "length": 0.203, "diameter": 0.095, "nose_ahead": 0.0835 }, "prop_from_nose": 0.298,
+      "tractor": false, "prop_diameter": null, "power_kw": 8, "mass_kg": 42.5,
+      "notes": "No torpedo pod: a gear housing (Ø95) at the leg's foot, modelled as a short pod from the leg's leading edge to its aft face (~203 mm aft of the leading edge, scaled); the propeller at the spline end (~298 mm aft of the leading edge, scaled). Folding propeller sold separately (Gori, Flex-O-Fold): give --prop-diameter or prop --d-max. Shaft depth below the mounting-flange datum.",
+      "sources": [
+        { "field": "leg, shaft_depth, pod diameter, mass", "url": "OVDB Motors/SD/SD6-10_and_flanges.PDF", "where": "side view 167, 0/362/410 datum stack; rear view 43, Ø95; title block 42.50 kg (the SD6-10 drawing)" },
+        { "field": "pod length, prop position", "url": "OVDB Motors/SD/SD6-10_and_flanges.PDF", "where": "scaled: housing aft face ~203, spline end ~298 aft of the leg's leading edge" },
+        { "field": "power, mass", "url": "https://oceanvolt.com/sd-saildrives/", "where": "spec table: continuous 8 kW, motor weight 42.5 kg" }
+      ]
+    },
+    {
+      "name": "oceanvolt-sd10", "vendor": "Oceanvolt", "model": "SD10", "kind": "saildrive",
+      "leg": { "chord": 0.167, "thickness": 0.043 }, "shaft_depth": 0.362,
+      "pod": { "length": 0.203, "diameter": 0.095, "nose_ahead": 0.0835 }, "prop_from_nose": 0.298,
+      "tractor": false, "prop_diameter": null, "power_kw": 10, "mass_kg": 46.5,
+      "notes": "As the SD8 (the same SD6-10 drawing), liquid cooled.",
+      "sources": [
+        { "field": "geometry", "url": "OVDB Motors/SD/SD6-10_and_flanges.PDF", "where": "as SD8" },
+        { "field": "power, mass", "url": "https://oceanvolt.com/sd-saildrives/", "where": "spec table: 10 kW, 46.5 kg" }
+      ]
+    },
+    {
+      "name": "oceanvolt-sd15", "vendor": "Oceanvolt", "model": "SD15", "kind": "saildrive",
+      "leg": { "chord": 0.1667, "thickness": 0.043 }, "shaft_depth": 0.361,
+      "pod": { "length": 0.203, "diameter": 0.095, "nose_ahead": 0.0834 }, "prop_from_nose": 0.298,
+      "tractor": false, "prop_diameter": null, "power_kw": 12, "mass_kg": 46.5,
+      "notes": "The SD15 drawing gives chord and shaft depth but no leg thickness: the Saildrive 2.0 leg's 43 mm is assumed, and the SD6-10 gear housing. 12 kW continuous, 15 peak.",
+      "sources": [
+        { "field": "leg chord, shaft_depth", "url": "OVDB Motors/SD/SD15_Oceanvolt.pdf", "where": "sheet 3 of 7: 166.7, 361" },
+        { "field": "leg thickness (assumed)", "url": "OVDB Motors/SD/Oceanvolt_Saildrive2.PDF", "where": "Saildrive 2.0 leg: 43 thickness" },
+        { "field": "power, mass", "url": "https://oceanvolt.com/sd-saildrives/", "where": "spec table: 12 kW continuous / 15 peak, 46.5 kg" }
+      ]
+    },
+    {
+      "name": "oceanvolt-servoprop-15", "vendor": "Oceanvolt", "model": "ServoProp 10 / 15", "kind": "saildrive",
+      "leg": { "chord": 0.167, "thickness": 0.043 }, "shaft_depth": 0.382,
+      "pod": { "length": 0.565, "diameter": 0.113, "nose_ahead": 0.2325 }, "prop_from_nose": 0.442,
+      "tractor": false, "prop_diameter": 0.381, "power_kw": 12, "mass_kg": 65,
+      "notes": "Controllable-pitch, 3 blades, pusher. Pod length is nose to tail-cone tip; the propeller plane ~442 mm aft of the nose and ~126 mm aft of the leg's trailing edge (scaled), which puts the leg's mid-chord ~233 mm aft of the nose. ServoProp 10 is 10 kW, 15 is 12 kW continuous / 15 peak; the drawing's title block says 73.1 kg.",
+      "sources": [
+        { "field": "leg, shaft_depth, pod diameter, prop diameter", "url": "OVDB Motors/ServoProp/ServoProp dimensions.PDF", "where": "sheet 1: side 167, 0/382/439; rear 43, Ø113, Ø381 [15.0 in], 3 blades" },
+        { "field": "pod length, nose_ahead, prop position", "url": "OVDB Motors/ServoProp/ServoProp dimensions.PDF", "where": "scaled, from 382" },
+        { "field": "power, mass", "url": "https://oceanvolt.com/servoprop-10-15kw/", "where": "spec: 10 / 12 kW continuous, 65 kg" }
+      ]
+    },
+    {
+      "name": "oceanvolt-servoprop-25", "vendor": "Oceanvolt", "model": "ServoProp 25 (HPSP)", "kind": "saildrive",
+      "leg": { "chord": 0.306, "thickness": 0.074 }, "shaft_depth": 0.558,
+      "pod": { "length": 0.614, "diameter": 0.184, "nose_ahead": 0.395 }, "prop_from_nose": 0.674,
+      "tractor": false, "prop_diameter": 0.584, "power_kw": 25, "mass_kg": 190,
+      "notes": "Controllable-pitch, 3 blades, fitted facing aft (it can face forward). Leg chord and thickness, pod length and the propeller plane (~126 mm aft of the leg's trailing edge) scaled; pod diameter 2 × (650 − 558), assuming it concentric (the rear view scales ~174).",
+      "sources": [
+        { "field": "shaft_depth, prop diameter", "url": "OVDB Motors/HPSP/HPSP_dimemsions.pdf", "where": "side view 558, 650, 846; rear view 23 in Ø584, 3 blades" },
+        { "field": "leg, pod length, prop position", "url": "OVDB Motors/HPSP/HPSP_dimemsions.pdf", "where": "scaled, from 558 / 846 / 584" },
+        { "field": "power, mass", "url": "https://oceanvolt.com/servoprop-25/", "where": "spec: 25 kW continuous / 30 peak, 190 kg" }
+      ]
+    },
+    {
+      "name": "epropulsion-spirit-1-evo", "vendor": "ePropulsion", "model": "Spirit 1.0 Evo", "kind": "outboard",
+      "leg": { "chord": 0.0994, "thickness": 0.032 }, "shaft_depth": null,
+      "pod": { "length": 0.200, "diameter": 0.108, "nose_ahead": 0.100 }, "prop_from_nose": 0.221,
+      "tractor": false, "prop_diameter": 0.280, "power_kw": 1.0, "mass_kg": 11.3,
+      "notes": "Pusher, 2 blades, 11 x 5.8 in. The drawing gives the shaft centreline 625 mm (short) or 750 mm (long) below the top of the transom clamp, not below the transom's bottom: give --shaft-depth for the boat (clamp-to-shaft less the transom's height). Pod nose 100 mm ahead of the leg's centreline (stated); pod length and the propeller plane (~121 mm aft of the leg) scaled; pod diameter the Plus drawing's Ø108 (the same lower unit).",
+      "sources": [
+        { "field": "leg, lower unit", "url": "EP/Techinical-Drawing_Spirit-1.0-Evo.pdf", "where": "side view 99.4, L750/S625, 163, 254, 154; rear view 32, Ø280" },
+        { "field": "pod diameter", "url": "EP/Techinical-Drawing_Spirit-1.0-Plus.pdf", "where": "rear Ø108" },
+        { "field": "prop, mass, power", "url": "https://www.epropulsion.com/products/electric-outboards/spirit-1", "where": "spec table" }
+      ]
+    },
+    {
+      "name": "epropulsion-spirit-1-plus", "vendor": "ePropulsion", "model": "Spirit 1.0 Plus", "kind": "outboard",
+      "leg": { "chord": 0.1004, "thickness": 0.036 }, "shaft_depth": null,
+      "pod": { "length": 0.200, "diameter": 0.108, "nose_ahead": 0.100 }, "prop_from_nose": 0.221,
+      "tractor": false, "prop_diameter": 0.280, "power_kw": 1.0, "mass_kg": 10.6,
+      "notes": "The Evo's lower unit. Clamp top to shaft centreline 525 (XS) / 625 (S) / 750 (L) mm: give --shaft-depth below the transom's bottom.",
+      "sources": [
+        { "field": "geometry", "url": "EP/Techinical-Drawing_Spirit-1.0-Plus.pdf", "where": "side 100.4, XS/S/L, 254, 154, 163; rear 36, Ø108, Ø280" },
+        { "field": "mass, prop, power", "url": "https://www.epropulsion.com/products/electric-outboards/spirit-1", "where": "spec table" }
+      ]
+    },
+    {
+      "name": "epropulsion-navy-3-evo", "vendor": "ePropulsion", "model": "Navy 3.0 Evo", "kind": "outboard",
+      "leg": { "chord": 0.117, "thickness": 0.048 }, "shaft_depth": null,
+      "pod": { "length": 0.232, "diameter": 0.101, "nose_ahead": 0.139 }, "prop_from_nose": 0.232,
+      "tractor": false, "prop_diameter": 0.259, "power_kw": 3, "mass_kg": 24.3,
+      "notes": "Pusher, 2 blades, 10.2 x 6.7 in. Lower unit 298.7 nose to aft end, the leg's centreline 159.7 from the aft end, the propeller 66.3 from it (stated). Leg and pod diameter scaled. Clamp top to shaft centreline 634 (S) / 759 (L) mm: give --shaft-depth below the transom's bottom.",
+      "sources": [
+        { "field": "lower unit, prop diameter", "url": "EP/Techinical-Drawing_Navy-3.0-Evo.pdf", "where": "right view S634/L759; side 298.7, 159.7, 66.3; rear Ø259" },
+        { "field": "leg, pod diameter", "url": "EP/Techinical-Drawing_Navy-3.0-Evo.pdf", "where": "scaled" },
+        { "field": "prop, mass, power", "url": "https://www.epropulsion.com/products/electric-outboards/navy-evo", "where": "spec" }
+      ]
+    },
+    {
+      "name": "epropulsion-navy-6-evo", "vendor": "ePropulsion", "model": "Navy 6.0 Evo", "kind": "outboard",
+      "leg": { "chord": 0.140, "thickness": 0.058 }, "shaft_depth": null,
+      "pod": { "length": 0.383, "diameter": 0.135, "nose_ahead": 0.1743 }, "prop_from_nose": 0.383,
+      "tractor": false, "prop_diameter": 0.320, "power_kw": 6, "mass_kg": 28.5,
+      "notes": "Pusher, 3 blades. Lower unit 448.2 nose to aft end, the leg's centreline 273.9 from it, the hub's front 65.1 from it (stated). Leg and pod diameter scaled. Clamp top to shaft centreline 634 (S) / 759 (L) mm: give --shaft-depth below the transom's bottom.",
+      "sources": [
+        { "field": "lower unit, prop diameter", "url": "EP/Techinical-Drawing_Navy-6.0-Evo.pdf", "where": "side 448.2, 273.9, 65.1, 189.8; rear Ø320" },
+        { "field": "leg, pod diameter", "url": "EP/Techinical-Drawing_Navy-6.0-Evo.pdf", "where": "scaled" },
+        { "field": "mass, power", "url": "https://www.epropulsion.com/products/electric-outboards/navy-evo", "where": "spec" }
+      ]
+    },
+    {
+      "name": "epropulsion-x12", "vendor": "ePropulsion", "model": "X12", "kind": "outboard",
+      "leg": { "chord": 0.198, "thickness": 0.071 }, "shaft_depth": 0.193,
+      "pod": { "length": 0.448, "diameter": 0.120, "nose_ahead": null }, "prop_from_nose": 0.448,
+      "tractor": false, "prop_diameter": 0.300, "power_kw": 12, "mass_kg": 48,
+      "notes": "Shaft centreline ~193 mm below the anti-ventilation plate (scaled), taken as level with the transom's bottom. The drawings don't place the leg along the lower unit: give --nose-ahead. Leg, pod and lower-unit length scaled.",
+      "sources": [
+        { "field": "geometry", "url": "EP/x12_2d_technical_drawing.pdf", "where": "side L508/S381, 155; rest scaled" },
+        { "field": "mass, power, prop", "url": "https://www.epropulsion.com/products/electric-outboards/x-series", "where": "spec" }
+      ]
+    },
+    {
+      "name": "epropulsion-x20", "vendor": "ePropulsion", "model": "X20", "kind": "outboard",
+      "leg": { "chord": 0.251, "thickness": 0.080 }, "shaft_depth": 0.224,
+      "pod": { "length": 0.443, "diameter": 0.150, "nose_ahead": null }, "prop_from_nose": 0.494,
+      "tractor": false, "prop_diameter": 0.381, "power_kw": 20, "mass_kg": 79,
+      "notes": "Shaft centreline ~224 mm below the anti-ventilation plate (scaled). Lower unit 594.2 nose to hub tip (stated). The drawings don't place the leg along the lower unit: give --nose-ahead.",
+      "sources": [
+        { "field": "geometry", "url": "EP/x20_2d_technical_drawing.pdf", "where": "side and rear views; rest scaled" },
+        { "field": "mass, power", "url": "https://www.epropulsion.com/products/electric-outboards/x-series", "where": "spec" }
+      ]
+    },
+    {
+      "name": "epropulsion-pod-1-evo", "vendor": "ePropulsion", "model": "Pod Drive 1.0 Evo", "kind": "pod",
+      "leg": { "chord": 0.101, "thickness": null }, "shaft_depth": 0.197,
+      "pod": { "length": 0.199, "diameter": 0.088, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": true, "prop_diameter": 0.280, "power_kw": 1, "mass_kg": 6.2,
+      "notes": "Tractor: the propeller ahead of the pod. Overall 253.1 including the propeller (stated). The leg's thickness and its place along the pod aren't given: give --thickness and --nose-ahead.",
+      "sources": [
+        { "field": "geometry", "url": "EP/pod_drive_10_evo.pdf", "where": "side 253.1, 53.9, 472.6; rear Ø280; rest scaled" },
+        { "field": "mass, power, prop", "url": "https://www.epropulsion.com/products/pod-drives/pod-drive-evo", "where": "spec" }
+      ]
+    },
+    {
+      "name": "epropulsion-pod-6-evo", "vendor": "ePropulsion", "model": "Pod Drive 6.0 Evo", "kind": "pod",
+      "leg": { "chord": 0.142, "thickness": null }, "shaft_depth": 0.232,
+      "pod": { "length": 0.390, "diameter": 0.138, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": true, "prop_diameter": 0.320, "power_kw": 6, "mass_kg": 31,
+      "notes": "Tractor. Overall 495 including the propeller (stated). The leg's thickness and its place along the pod aren't given: give --thickness and --nose-ahead.",
+      "sources": [
+        { "field": "geometry", "url": "EP/pod_drive_60_evo.pdf", "where": "side 495, 105, 670; rear Ø320; rest scaled" },
+        { "field": "mass, power, prop", "url": "https://www.epropulsion.com/products/pod-drives/pod-drive-evo", "where": "spec" }
+      ]
+    },
+    {
+      "name": "fischer-panda-10kw-600", "vendor": "Fischer Panda", "model": "10 kW 48 V 600 rpm Pod (B00-150-8-AZ)", "kind": "pod",
+      "leg": { "chord": null, "thickness": null }, "shaft_depth": 0.150,
+      "pod": { "length": 0.570, "diameter": 0.210, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": false, "prop_diameter": null, "power_kw": 10, "mass_kg": 76,
+      "notes": "A bare pod motor: no leg (it bolts to the customer's strut or rudder by a flange on its top), and no propeller. Give the strut (--chord, --thickness, --nose-ahead). Shaft centreline 150 mm below the flange's top; body length 714 overall less the 144 mm shaft stub.",
+      "sources": [ { "field": "all", "url": "FP/datasheet_fischer_panda_emotor_pod_10kw_600rpm.pdf", "where": "p1 drawing and spec block" } ]
+    },
+    {
+      "name": "fischer-panda-20kw-600", "vendor": "Fischer Panda", "model": "20 kW 48 V 600 rpm Pod (B00-300-8-AZ)", "kind": "pod",
+      "leg": { "chord": null, "thickness": null }, "shaft_depth": 0.145,
+      "pod": { "length": 0.799, "diameter": 0.210, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": false, "prop_diameter": null, "power_kw": 20, "mass_kg": 120,
+      "notes": "A bare pod motor: give the strut (--chord, --thickness, --nose-ahead). Shaft centreline 145 mm below the flange's top; body 979 overall less the 180 mm stub.",
+      "sources": [ { "field": "all", "url": "FP/datasheet_fischer_panda_emotor_pod_20kw_600rpm.pdf", "where": "p1" } ]
+    },
+    {
+      "name": "fischer-panda-10kw-1200", "vendor": "Fischer Panda", "model": "10 kW 48 V 1200 rpm Pod (A50-160-6-AZ)", "kind": "pod",
+      "leg": { "chord": null, "thickness": null }, "shaft_depth": 0.112,
+      "pod": { "length": 0.610, "diameter": 0.159, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": false, "prop_diameter": null, "power_kw": 10, "mass_kg": 50,
+      "notes": "A bare pod motor: give the strut. Shaft centreline 112 mm below the flange's top; body 744 overall less the 134 mm stub. A Kort-nozzle variant (Ø430 nozzle) also exists; the flyer gives 93 kg for it, against the datasheet's 50.",
+      "sources": [
+        { "field": "all", "url": "FP/datasheet_fischer_panda_emotor_pod_10kw_1200rpm.pdf", "where": "p1" },
+        { "field": "nozzle variant", "url": "FP/ePanda_10-1200-POD.pdf", "where": "Dimensions block" }
+      ]
+    },
+    {
+      "name": "fischer-panda-20kw-1200", "vendor": "Fischer Panda", "model": "20 kW 48 V 1200 rpm Pod", "kind": "pod",
+      "leg": { "chord": null, "thickness": null }, "shaft_depth": 0.150,
+      "pod": { "length": 0.570, "diameter": 0.210, "nose_ahead": null }, "prop_from_nose": null,
+      "tractor": false, "prop_diameter": null, "power_kw": 20, "mass_kg": 76,
+      "notes": "The 10 kW / 600 rpm unit's body (the same drawing). A bare pod motor: give the strut.",
+      "sources": [ { "field": "all", "url": "FP/datasheet_fischer_panda_emotor_pod_20kw_1200rpm.pdf", "where": "p1" } ]
+    }
+  ]
+}

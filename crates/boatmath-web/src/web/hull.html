@@ -188,7 +188,7 @@ async function saveText() {
   if (name === hull.name && notes === hull.notes) return;
   try {
     hull = await api(`/api/hulls/${id}`, { json: { name, notes } });
-    document.title = `${hull.name} · michell`;
+    document.title = `${hull.name} · boatmath`;
     $("saved").textContent = "saved";
     setTimeout(() => { $("saved").textContent = ""; }, 1500);
   } catch (e) { status(e.message, true); }
@@ -200,7 +200,7 @@ $("notes").addEventListener("change", saveText);
 try {
   if (id == null) throw new Error("no hull id in the address");
   hull = await api(`/api/hulls/${id}`);
-  document.title = `${hull.name} · michell`;
+  document.title = `${hull.name} · boatmath`;
   $("name").value = hull.name;
   $("notes").value = hull.notes;
   $("newcases").href = `/cases/new?hull=${id}`;

@@ -1,10 +1,18 @@
-# Seakeeping in `michell`: what was built, how it validates, and what it is good for
+# Seakeeping: what was built, how it validates, and what it is good for
 
 A record of the work of 26–27 September 2026: the split of the workspace into
 geometry, thin-ship and seakeeping crates, the strip-theory seakeeping built on
 top, and every comparison made against published data. Numbers here are the
 ones the code produced at the time; the regression tests named below hold the
 important ones.
+
+> **Renamed since (2 October 2026).** The repository is now boatmath, and its
+> crates were renamed: `michell-geometry` is `hullgeom`, `michell` is
+> `thinship` (with the Michell integral in `thinship::michell`), and
+> `michell-seakeeping` is `seakeeping`. The `michell` command and its crate
+> `michell-cli` were retired. The same computations run as `boatmath study
+> --waves … | boatmath run` (see `docs/boatmath-cli.md`). The text below keeps
+> the names of the time; the commands under "Reproducing" are current.
 
 ## 1. Summary
 
@@ -294,12 +302,12 @@ quantity's scale.
 
 ```sh
 # Wigley comparison (data: 0909-DUT-92.zip, unzipped)
-cargo run --release -p michell-seakeeping --example journee_wigley -- /path/to/wigley
+cargo run --release -p seakeeping --example journee_wigley -- /path/to/wigley
 # Vugts cylinders (report 1213 PDF; pip install pymupdf)
 cd python/tools/vugts && python digitize.py 9 10 11 12 13 14 15 16
-cargo run --release -p michell-seakeeping --example vugts > ours.tsv && python compare_vugts.py
+cargo run --release -p seakeeping --example vugts > ours.tsv && python compare_vugts.py
 # tests
-cargo test --release -p michell-seakeeping
+cargo test --release -p seakeeping
 ```
 
 ## 9. Sources

@@ -1,0 +1,21 @@
+[package]
+name = "boatmath-cli"
+version = "0.1.0"
+edition = "2021"
+description = "boatmath on the command line: hulls, cases, studies and results as JSON records in a pipe"
+license = "MIT"
+
+[[bin]]
+name = "boatmath"
+path = "src/main.rs"
+
+[dependencies]
+boatmath = { path = "../boatmath" }
+propeller = { path = "../propeller" }
+thinship = { path = "../thinship" }
+hullgeom = { path = "../hullgeom" }
+clap = { version = "4.6", features = ["derive"] }
+flate2 = "1.1.10"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.11.0"

@@ -11,7 +11,7 @@ The report is freely distributed by its author; an archived copy is at
 ```sh
 pip install pymupdf
 python digitize.py 9 10 11 12 13 14 15 16          # -> vugts_digitised.json
-cargo run --release -p michell-seakeeping --example vugts > ours.tsv
+cargo run --release -p seakeeping --example vugts > ours.tsv
 python compare_vugts.py
 ```
 

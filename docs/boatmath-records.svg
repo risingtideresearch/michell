@@ -1,0 +1,210 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1980 880" width="1980" height="880" role="img">
+<title>boatmath records, their main fields, and the commands between them</title>
+<style>
+.card { fill: #ffffff; stroke: #1d2528; stroke-width: 1.3; }
+.hdr { fill: #eef1ee; }
+.ht { font: 600 14px Menlo, monospace; fill: #1d2528; }
+.hs { font: 11px Helvetica, Arial, sans-serif; fill: #7b8682; }
+.f { font: 11px Menlo, monospace; fill: #33403c; }
+.f.link { fill: #1f6f8b; }
+.src { fill: #e7eef0; stroke: #1f6f8b; stroke-width: 1.3; stroke-dasharray: 5 3; }
+.sink { fill: #f6ece1; stroke: #9a5b1e; stroke-width: 1.3; }
+.nt { font: 600 15px Menlo, monospace; fill: #1d2528; text-anchor: middle; }
+.nt.sink { fill: #9a5b1e; }
+.ns { font: 11px Helvetica, Arial, sans-serif; fill: #7b8682; text-anchor: middle; }
+.e { stroke: #1d2528; stroke-width: 1.4; fill: none; }
+.e.ref { stroke: #7b8682; stroke-dasharray: 4 4; }
+.e.sink { stroke: #9a5b1e; stroke-dasharray: 2 3; }
+.e.par { stroke: #1f6f8b; }
+.lbl { font: 12px Menlo, monospace; fill: #1d2528; text-anchor: middle; paint-order: stroke; stroke: #f6f7f4; stroke-width: 5px; stroke-linejoin: round; }
+.lbl.ref { fill: #7b8682; }
+.lbl.par { fill: #1f6f8b; font-weight: 600; }
+.lbl.small { font: 10px Helvetica, Arial, sans-serif; fill: #1f6f8b; }
+.lbl.end { text-anchor: end; }
+.grp { fill: #eef1ee; stroke: #5d6b66; stroke-width: 1.2; stroke-dasharray: 6 4; }
+.gcap { font: 11px Helvetica, Arial, sans-serif; fill: #5d6b66; text-anchor: middle; }
+.leg { font: 12px Helvetica, Arial, sans-serif; fill: #5d6b66; }
+.start { fill: #1d2528; }
+</style>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#1d2528"/></marker><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#7b8682"/></marker><marker id="as" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#9a5b1e"/></marker><marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#1f6f8b"/></marker></defs>
+<rect x="0" y="0" width="1980" height="880" fill="#f6f7f4"/>
+<rect class="grp" x="990" y="214" width="372" height="300" rx="12"/>
+<text class="gcap" x="1176" y="504">written together by run</text>
+<rect class="grp" x="190" y="440" width="486" height="160" rx="12"/>
+<text class="gcap" x="433" y="590">written together by statics (sections: for a case)</text>
+<line class="e" x1="140" y1="289.0" x2="197" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="170.0" y="279.0">hull</text>
+<line class="e" x1="410" y1="289.0" x2="467" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="440.0" y="279.0">case</text>
+<line class="e" x1="680" y1="289.0" x2="737" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="710.0" y="279.0">study</text>
+<line class="e" x1="940" y1="289.0" x2="987" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="965.0" y="279.0">run</text>
+<line class="e" x1="1362" y1="289.0" x2="1417" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="1391.0" y="279.0">prop</text>
+<line class="e" x1="1670" y1="289.0" x2="1727" y2="289.0" marker-end="url(#a)"/>
+<text class="lbl" x="1700.0" y="279.0">match</text>
+<line class="e" x1="1050" y1="92" x2="955" y2="92" marker-end="url(#a)"/>
+<text class="lbl" x="1002" y="82">mounts</text>
+<circle class="start" cx="1056" cy="92" r="5"/>
+<line class="e ref" x1="770" y1="146" x2="620" y2="226" marker-end="url(#ar)"/>
+<text class="lbl ref" x="720" y="196">mount --stock</text>
+<line class="e" x1="1680" y1="92" x2="1727" y2="92" marker-end="url(#a)"/>
+<text class="lbl" x="1704" y="82">motors</text>
+<circle class="start" cx="1674" cy="92" r="5"/>
+<line class="e ref" x1="1840" y1="152" x2="1840" y2="227" marker-end="url(#ar)"/>
+<text class="lbl ref" x="1890" y="196">match uses</text>
+<line class="e" x1="1545" y1="166" x2="1545" y2="227" marker-end="url(#a)"/>
+<text class="lbl" x="1600" y="200">prop --thrust</text>
+<circle class="start" cx="1545" cy="160" r="5"/>
+<path class="e par" d="M270,230 C260,168 342,168 332,227" marker-end="url(#ap)"/>
+<text class="lbl par" x="301" y="174">scale</text>
+<text class="lbl small" x="301" y="188">parent →</text>
+<path class="e par" d="M540,230 C530,168 612,168 602,227" marker-end="url(#ap)"/>
+<text class="lbl par" x="571" y="174">mount</text>
+<text class="lbl small" x="571" y="188">parent →</text>
+<line class="e" x1="305" y1="364" x2="330" y2="437" marker-end="url(#a)"/>
+<text class="lbl" x="292" y="410">statics</text>
+<line class="e" x1="575" y1="348" x2="550" y2="437" marker-end="url(#a)"/>
+<text class="lbl" x="590" y="400">statics</text>
+<line class="e sink" x1="676" y1="560" x2="987" y2="754" marker-end="url(#as)"/>
+<text class="lbl" x="840" y="640">cad --heel</text>
+<line class="e sink" x1="1090" y1="514" x2="1090" y2="727" marker-end="url(#as)"/>
+<text class="lbl" x="1110" y="640">cad</text>
+<line class="e sink" x1="1510" y1="348" x2="1180" y2="727" marker-end="url(#as)"/>
+<text class="lbl" x="1310" y="640">cad (blades)</text>
+<line class="e sink" x1="1362" y1="470" x2="1480" y2="615" marker-end="url(#as)"/>
+<text class="lbl" x="1580" y="600">wake · pressure · profile</text>
+<line class="e sink" x1="1840" y1="348" x2="1840" y2="437" marker-end="url(#as)"/>
+<text class="lbl end" x="1832" y="400">table · plot (any stream)</text>
+<rect class="src" x="20" y="265.0" width="120" height="48" rx="24"/>
+<text class="nt" x="80" y="287.0">IGES · STL</text>
+<text class="ns" x="80" y="303.0">file</text>
+<rect class="card" x="200" y="230" width="210" height="134" rx="8"/>
+<path class="hdr" d="M201,256 V238 a7,7 0 0 1 7,-7 H402 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="200" y1="256" x2="410" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="210" y="248">hull</text>
+<text class="f link" x="210" y="272" xml:space="preserve">→ parent (scaled from)</text>
+<text class="f" x="210" y="287" xml:space="preserve">name</text>
+<text class="f" x="210" y="302" xml:space="preserve">source: path sha256</text>
+<text class="f" x="210" y="317" xml:space="preserve">  waterline units</text>
+<text class="f" x="210" y="332" xml:space="preserve">cut: stations rays</text>
+<text class="f" x="210" y="347" xml:space="preserve">geometry: patches (JSON)</text>
+<rect class="card" x="470" y="230" width="210" height="118" rx="8"/>
+<path class="hdr" d="M471,256 V238 a7,7 0 0 1 7,-7 H672 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="470" y1="256" x2="680" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="480" y="248">case</text>
+<text class="f link" x="480" y="272" xml:space="preserve">→ hull  → parent</text>
+<text class="f" x="480" y="287" xml:space="preserve">name</text>
+<text class="f" x="480" y="302" xml:space="preserve">params: span mass lcg vcg</text>
+<text class="f" x="480" y="317" xml:space="preserve">  kxx kyy kzz roll_damping</text>
+<text class="f" x="480" y="332" xml:space="preserve">  mount: kind leg pod …</text>
+<rect class="card" x="740" y="230" width="200" height="118" rx="8"/>
+<path class="hdr" d="M741,256 V238 a7,7 0 0 1 7,-7 H932 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="740" y1="256" x2="940" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="750" y="248">study</text>
+<text class="f link" x="750" y="272" xml:space="preserve">→ case</text>
+<text class="f" x="750" y="287" xml:space="preserve">kind: calm | waves</text>
+<text class="f" x="750" y="302" xml:space="preserve">params: froude dynamic</text>
+<text class="f" x="750" y="317" xml:space="preserve">  closure grid waves</text>
+<rect class="card" x="1005" y="230" width="342" height="118" rx="8"/>
+<path class="hdr" d="M1006,256 V238 a7,7 0 0 1 7,-7 H1339 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="1005" y1="256" x2="1347" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1015" y="248">result</text>
+<text class="f link" x="1015" y="272" xml:space="preserve">→ study  → field  → sections</text>
+<text class="f" x="1015" y="287" xml:space="preserve">kind froude speed</text>
+<text class="f" x="1015" y="302" xml:space="preserve">forces: rt rw rv pe ct</text>
+<text class="f" x="1015" y="317" xml:space="preserve">  sinkage trim_deg r_appendages…</text>
+<text class="f" x="1015" y="332" xml:space="preserve">self_propelled: thrust drives</text>
+<rect class="card" x="1005" y="366" width="166" height="112" rx="8"/>
+<path class="hdr" d="M1006,392 V374 a7,7 0 0 1 7,-7 H1163 a7,7 0 0 1 7,7 V392 Z"/>
+<line x1="1005" y1="392" x2="1171" y2="392" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1015" y="384">field</text>
+<text class="f link" x="1015" y="408" xml:space="preserve">→ study</text>
+<text class="f" x="1015" y="423" xml:space="preserve">surface: x0 x1 nx</text>
+<text class="f" x="1015" y="438" xml:space="preserve">  y0 y1 ny zeta</text>
+<text class="f" x="1015" y="453" xml:space="preserve">hulls[]: x depth cp</text>
+<rect class="card" x="1181" y="366" width="166" height="112" rx="8"/>
+<path class="hdr" d="M1182,392 V374 a7,7 0 0 1 7,-7 H1339 a7,7 0 0 1 7,7 V392 Z"/>
+<line x1="1181" y1="392" x2="1347" y2="392" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1191" y="384">sections</text>
+<text class="hs" x="1337" y="384" text-anchor="end">at speed</text>
+<text class="f link" x="1191" y="408" xml:space="preserve">→ case</text>
+<text class="f" x="1191" y="423" xml:space="preserve">attitude: sinkage</text>
+<text class="f" x="1191" y="438" xml:space="preserve">  trim_deg</text>
+<text class="f" x="1191" y="453" xml:space="preserve">hulls[]: stations</text>
+<text class="f" x="1191" y="468" xml:space="preserve">  (exact polar)</text>
+<rect class="card" x="1420" y="230" width="250" height="118" rx="8"/>
+<path class="hdr" d="M1421,256 V238 a7,7 0 0 1 7,-7 H1662 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="1420" y1="256" x2="1670" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1430" y="248">prop</text>
+<text class="f link" x="1430" y="272" xml:space="preserve">→ result (or none)</text>
+<text class="f" x="1430" y="287" xml:space="preserve">inputs: speed thrust shafts</text>
+<text class="f" x="1430" y="302" xml:space="preserve">  wake thrust_deduction d_max</text>
+<text class="f" x="1430" y="317" xml:space="preserve">best: rpm Z D PD EAR eta0</text>
+<text class="f" x="1430" y="332" xml:space="preserve">curve[] interaction thrust_line</text>
+<rect class="card" x="1730" y="230" width="220" height="118" rx="8"/>
+<path class="hdr" d="M1731,256 V238 a7,7 0 0 1 7,-7 H1942 a7,7 0 0 1 7,7 V256 Z"/>
+<line x1="1730" y1="256" x2="1950" y2="256" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1740" y="248">drive</text>
+<text class="f link" x="1740" y="272" xml:space="preserve">→ prop  → motor</text>
+<text class="f" x="1740" y="287" xml:space="preserve">rank ratio rpm</text>
+<text class="f" x="1740" y="302" xml:space="preserve">P_elec P_shaft eta</text>
+<text class="f" x="1740" y="317" xml:space="preserve">I_dc V_bus</text>
+<text class="f" x="1740" y="332" xml:space="preserve">propeller: Z D PD</text>
+<rect class="card" x="745" y="40" width="210" height="94" rx="8"/>
+<path class="hdr" d="M746,66 V48 a7,7 0 0 1 7,-7 H947 a7,7 0 0 1 7,7 V66 Z"/>
+<line x1="745" y1="66" x2="955" y2="66" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="755" y="58">stock_mount</text>
+<text class="f" x="755" y="82" xml:space="preserve">vendor model kind</text>
+<text class="f" x="755" y="97" xml:space="preserve">leg pod shaft_depth</text>
+<text class="f" x="755" y="112" xml:space="preserve">prop_diameter power_kw</text>
+<text class="f" x="755" y="127" xml:space="preserve">sources[]</text>
+<rect class="card" x="1730" y="40" width="220" height="94" rx="8"/>
+<path class="hdr" d="M1731,66 V48 a7,7 0 0 1 7,-7 H1942 a7,7 0 0 1 7,7 V66 Z"/>
+<line x1="1730" y1="66" x2="1950" y2="66" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="1740" y="58">motor</text>
+<text class="f" x="1740" y="82" xml:space="preserve">vendor family variant</text>
+<text class="f" x="1740" y="97" xml:space="preserve">kv kt pole_pairs</text>
+<text class="f" x="1740" y="112" xml:space="preserve">p_cont_kw tq_cont_nm</text>
+<text class="f" x="1740" y="127" xml:space="preserve">mass_kg rpm_max eff</text>
+<rect class="card" x="206" y="456" width="240" height="110" rx="8"/>
+<path class="hdr" d="M207,482 V464 a7,7 0 0 1 7,-7 H438 a7,7 0 0 1 7,7 V482 Z"/>
+<line x1="206" y1="482" x2="446" y2="482" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="216" y="474">statics</text>
+<text class="f link" x="216" y="498" xml:space="preserve">→ hull | → case</text>
+<text class="f" x="216" y="513" xml:space="preserve">hydrostatics: volume lcb …</text>
+<text class="f" x="216" y="528" xml:space="preserve">at_rest: sinkage trim_deg</text>
+<text class="f" x="216" y="543" xml:space="preserve">roll: gm_t period</text>
+<text class="f" x="216" y="558" xml:space="preserve">gz: gz[] max_gz vanishing_deg</text>
+<rect class="card" x="460" y="456" width="200" height="110" rx="8"/>
+<path class="hdr" d="M461,482 V464 a7,7 0 0 1 7,-7 H652 a7,7 0 0 1 7,7 V482 Z"/>
+<line x1="460" y1="482" x2="660" y2="482" stroke="#1d2528" stroke-width="0.8"/>
+<text class="ht" x="470" y="474">sections</text>
+<text class="hs" x="650" y="474" text-anchor="end">at rest</text>
+<text class="f link" x="470" y="498" xml:space="preserve">→ case</text>
+<text class="f" x="470" y="513" xml:space="preserve">attitude: sinkage trim_deg</text>
+<text class="f" x="470" y="528" xml:space="preserve">hulls[]: stations</text>
+<text class="f" x="470" y="543" xml:space="preserve">  (exact polar)</text>
+<rect class="sink" x="990" y="730" width="200" height="48" rx="3"/>
+<text class="nt sink" x="1090.0" y="752">IGES</text>
+<text class="ns" x="1090.0" y="768">for CAD</text>
+<rect class="sink" x="1460" y="618" width="150" height="48" rx="3"/>
+<text class="nt sink" x="1535.0" y="640">SVG</text>
+<text class="ns" x="1535.0" y="656">pictures</text>
+<rect class="sink" x="1765" y="440" width="150" height="48" rx="3"/>
+<text class="nt sink" x="1840.0" y="462">TSV · SVG</text>
+<text class="ns" x="1840.0" y="478">table · plot</text>
+<line class="e" x1="20" y1="845" x2="54" y2="845" marker-end="url(#a)"/>
+<text class="leg" x="62" y="849">a command: reads → writes (every command passes its input through)</text>
+<line class="e sink" x1="540" y1="845" x2="574" y2="845" marker-end="url(#as)"/>
+<text class="leg" x="582" y="849">to a file that isn't a stream</text>
+<line class="e ref" x1="790" y1="845" x2="824" y2="845" marker-end="url(#ar)"/>
+<text class="leg" x="832" y="849">reference data a command reads</text>
+<rect class="grp" x="1060" y="836" width="34" height="18" rx="5"/>
+<text class="leg" x="1102" y="849">records one command writes together</text>
+<circle class="start" cx="1346" cy="845" r="5"/>
+<text class="leg" x="1358" y="849">no input needed</text>
+<text class="f link" x="1500" y="849">→ id</text>
+<text class="leg" x="1542" y="849">a parent, by id (every record also has type and id)</text>
+</svg>

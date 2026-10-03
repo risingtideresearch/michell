@@ -3,7 +3,7 @@
 export const $ = (id) => document.getElementById(id);
 export const G = 9.81;
 export const KN = 0.514444;
-// The solver's fluid: salt water at 15 °C (michell::Fluid::SEAWATER_15C).
+// The solver's fluid: salt water at 15 °C (hullgeom::Fluid::SEAWATER_15C).
 export const RHO = 1025.9;
 
 export const fmt = (v, d = 3) => v == null || !Number.isFinite(Number(v)) ? "—" : Number(v).toFixed(d);

@@ -243,7 +243,7 @@ async function load() {
     hull = hull || await api(`/api/hulls/${study.hull_id}`);
     const l = lRef(hull.summary);
     const cfg = { name: study.case_name, params: study.case };
-    document.title = `Study ${id} · michell`;
+    document.title = `Study ${id} · boatmath`;
     $("crumbs").innerHTML = `<a href="/hulls/${hull.id}">${esc(hull.name)}</a> › <a href="/cases/${study.case_id}">${esc(caseName(cfg))}</a> › study #${id}`;
     $("title").textContent = studyLabel(study.params, l);
     $("sub").textContent = study.case_name ? caseLabel(study.case) : "";

@@ -1,857 +1,116 @@
-# `michell` — thin-ship wave resistance from B-spline hulls
+# boatmath
 
-A pure-Rust, zero-dependency library computing **wave resistance by Michell's
-integral** and **viscous resistance by the ITTC-57 line** for hulls described
-as clamped, polynomial (non-rational) tensor-product **B-spline half-breadth
-surfaces**. Companion to [`resistance`](../resistance) (Holtrop–Mennen /
-Savitsky blend), which deliberately excludes shape-sensitive wave methods —
-this crate is that missing shape diagnostic.
+Physics on boats, in Rust. Hulls from CAD (IGES, STL) or from
+[camber](https://github.com/risingtideresearch/camber) are cut into
+sections, then floated, heeled, run through calm water and through waves,
+and fitted with propellers and motors. The work is done by command-line
+tools that pass JSON records down a pipe (`boatmath`), and by a web app
+with a queue (`boatmath-web`). Both compute through the same library
+(`boatmath`).
 
-```rust
-use michell::{hulls, Conditions};
-
-let hull = hulls::wigley(10.0, 1.0, 0.625)?;   // L, B, T [m]
-let cond = Conditions::seawater(3.0);          // U [m/s]
-let r = michell::resistance(&hull, &cond)?;
-println!("Rw = {:.1} N, Rv = {:.1} N, Cw = {:.4e}",
-         r.wave.resistance, r.viscous.resistance, r.cw);
+```sh
+boatmath hull e12.igs --waterline -0.95 \
+  | boatmath case --span 3.0 \
+  | boatmath study --froude 0.3:0.7:0.05 \
+  | boatmath run \
+  | boatmath plot -x speed -y forces.rt -o rt.svg
 ```
 
-## Workspace layout
+## Workspace
 
 | crate | what it holds | depends on |
 |---|---|---|
-| `michell-geometry` | IGES/STL import, hulls cut into sections (`SectionalHull`), hydrostatics, hydrostatic/dynamic equilibrium (`float`), B-splines, closed-form moments, `Conditions` | — |
-| `michell` | thin-ship theory: Michell wave resistance, squat (dynamic sinkage/trim), near field, far-field spectrum, ITTC-57 friction | `michell-geometry` |
-| `michell-seakeeping` | linear strip-theory seakeeping: heave/pitch RAOs, added resistance, irregular seas (see [Seakeeping](#seakeeping)) | `michell-geometry` |
-| `michell-cli`, `boatmath-web` | front ends | all of the above |
+| `hullgeom` | hulls cut from IGES/STL patches or triangles into sections (`SectionalHull`), hydrostatics, hydrostatic and dynamic equilibrium (`float`), GZ curves (`stability`), B-splines, closed-form moments, `Conditions` | — |
+| `thinship` | thin-ship theory: wave resistance by Michell's integral (`thinship::michell`), the near field and dynamic sinkage and trim (`squat`), the far-field wave spectrum, the propeller's wake and thrust deduction (`propulsion`), ITTC-57 friction | `hullgeom` |
+| `seakeeping` | linear strip-theory seakeeping: the five rigid-body modes, added resistance, irregular seas | `hullgeom` |
+| `propeller` | B-series propeller search and motor matching (a port of propopt's web cores, with its motor database) | — |
+| `boatmath` | what the CLI and the web app share: hulls, cases and studies; the calm-water and wave computations on a platform; native JSON geometry; camber documents (`boatmath::camber`); drives on mounts; CAD export | all of the above |
+| `boatmath-cli` | the `boatmath` command: Unix-style tools on JSON-lines streams | `boatmath`, `propeller` |
+| `boatmath-web` | the browser front end, a store and a queue of studies | `boatmath` |
 
-The geometry crate knows no flow theory. `michell` hands the equilibrium
+The geometry crate knows no flow theory. `thinship` gives the equilibrium
 solver its speed-dependent load through `float::DynamicModel`
-(`michell::sectional::dynamic_load_closure`); the seakeeping crate builds
-on the sectional hull's transforms (`SectionalHull::x_transform`) without
-going through `michell` at all.
-
-## Geometry contract
-
-The hull is port/starboard symmetric, given by its half-beam
-`y = f(x, z) ≥ 0` as a B-spline surface:
-
-- `x` runs along the hull (arbitrary origin), **`z` runs vertically downward**
-  from the undisturbed waterline; domain `z ∈ [0, T]`. SI units throughout.
-- Knot vectors must be **clamped** (end knots repeated degree+1 times);
-  interior knots may repeat up to the degree — a multiplicity-`degree` knot in
-  `z` is how you represent a **chine** exactly.
-- **Polynomial only** (all NURBS weights = 1). This is a deliberate contract:
-  polynomial spans are what allow the Michell inner integrals to be evaluated
-  in closed form (below). CAD hull surfaces are almost always unit-weight.
-- The control net must be non-negative (sufficient for `f ≥ 0` by the
-  convex-hull property).
-
-## Theory and numerics
-
-With `ν = g/U²` and half-beam `f` (Tuck 1989; Dambrine–Pierre–Rousseaux 2016):
-
-```
-R_w = (4 ρ g²)/(π U²) ∫₁^∞ (I² + J²) λ²/√(λ² − 1) dλ
-I(λ) + i J(λ) = ∬ (∂f/∂x) · exp(−ν λ² z) · exp(i ν λ x) dx dz
-```
-
-The numerical strategy exploits the spline structure end to end:
-
-1. On every knot span, `∂f/∂x` is an exact local polynomial (extracted once
-   per hull via corner Taylor data). The inner integrals then reduce to
-   closed-form moments `∫ tᵃ e^{ikt} dt` and `∫ tᵇ e^{−κt} dt` (series for
-   small argument to avoid cancellation, stable recurrences otherwise) — **I
-   and J carry no quadrature error at all**.
-2. The outer integral is transformed by `λ = sec θ`, removing the `λ = 1`
-   singularity. It is integrated by 16-point Gauss–Legendre panels sized to
-   the local oscillation rate, truncated only when a full multi-period window
-   of accumulated phase contributes negligibly, and refined (panel halving)
-   until a requested relative tolerance is met, with the achieved estimate
-   reported in the result.
-
-Viscous resistance follows the ITTC-78 shape on the thin-ship wetted surface
-`S = 2∬√(1 + fx² + fz²) dx dz`:
-
-```text
-C_V = (1 + k)·C_F(Re) + ΔC_F,      C_F = 0.075/(log₁₀Re − 2)²
-```
-
-The **form factor** `k` multiplies flat-plate friction — it is a property of
-the *shape* (streamline curvature speeds the flow over most of the hull, and
-the stern boundary layer costs a viscous pressure defect). The **roughness
-allowance** `ΔC_F` is added *outside* it, because surface finish is a property
-of the *skin*. They are kept apart deliberately: they come from different
-places (one from geometry, one from the paint), and on a small hull the
-roughness term can be the larger of the two, so folding it into `k` hides it.
-Both default to zero, which is the bare flat plate.
-
-`ΔC_F` can be given directly (`--roughness cf=4e-4`, which is also where
-ITTC-78's correlation allowance `C_A` goes) or estimated from an equivalent
-sand-grain height (`--roughness ks=150um`). The estimate is the textbook Moody
-construction — the excess of Prandtl–Schlichting fully-rough friction over the
-smooth line, floored at zero — so it returns **exactly** zero while the surface
-is hydraulically smooth at that Reynolds number, and grows with speed as the
-smooth line falls away beneath the Re-independent rough one. It reports the
-roughness Reynolds number `k_s⁺ = k_s·u_τ/ν` with it, because that is what says
-whether the finish matters at all (`≲ 5` smooth, `≳ 70` fully rough) and how
-far to trust the number: the transitional band between is *bridged by the
-crossover*, not fitted, so it reads high in there. Published ship correlations
-are no help at this size — on an 8 m hull at `Re ≈ 9×10⁶`, Bowden–Davison
-returns about 60% of `C_F` and Townsin returns a negative number.
-
-**Multihulls**: thin-ship far-field amplitudes superpose, so hull `j` placed
-at longitudinal offset `Δx_j` and transverse position `y_j` contributes
-`F_j(λ)·exp(iν(λΔx_j + λ√(λ²−1) y_j))` and the resistance uses `|Σ_j …|²` —
-wave interference is exact within the theory (for a catamaran this reduces to
-the classical `4cos²(½νsλ√(λ²−1))` factor). Viscous resistance sums per
-member. `multihull_resistance` also reports the interference factor
-(combined R_w / Σ standalone R_w).
-
-Performance: a full 21-speed Wigley resistance curve at the default 1e-5
-tolerance runs in ~20 ms (release build). The outer quadrature and the
-near-field (sinkage/trim) integrals fan their independent nodes out across
-the machine's cores with `std::thread::scope` (still no dependencies); the
-reduction order is the serial one, so the answer is bit-for-bit independent
-of the thread count. The worker budget is per thread (`michell_geometry::parallel`),
-so a caller that already runs jobs in parallel can hand each job a share of
-the cores — the manifest sweep does — and `MICHELL_THREADS=1` in the
-environment disables threading altogether.
-
-### Transom sterns
-
-Michell's integral is over a **closed** body — `∬(∂f/∂x)…` assumes the
-half-breadth reaches zero at both ends. A transom leaves a step there, and
-taking that step at face value models a hull that shuts instantaneously, which
-radiates far too much. A real ventilated transom instead lets the flow leave
-the edge cleanly and close in a hollow some way downstream.
-
-A **virtual appendage** supplies that hollow: running aft from the transom over
-a length `L_v`, the half-beam decays as `f_v(x, z) = f_T(z)·φ(s)` with
-`s = (x_T − x)/L_v` and the smoothstep `φ(s) = (1 − s)²(1 + 2s)`, which is flat
-at both ends so `f` stays continuous at the transom and closes tangentially.
-Substituting `x = x_T − s·L_v` separates the amplitude completely:
-
-```text
-F_v = −e^{iνλx_T} · ∫ f_T(z) e^{−κz} dz · ∫₀¹ φ'(s) e^{−iνλ L_v s} ds
-```
-
-The transom section `f_T` is a piecewise polynomial on the hull's own z-spans,
-so the first factor is the *same* per-span z-moments the hull uses and the
-second is a three-term oscillatory moment — the closure is exact too, at the
-cost of one dot product per λ, and `L_v → 0` reproduces the bare step
-analytically.
-
-The hollow length defaults to the **ballistic** estimate `L_v = √2·U·√(d_T/g)`
-— water leaving the transom horizontally at `U` falls the transom depth `d_T`
-under gravity — and is tunable (`--transom ballistic=C`, or `hollow=METRES`
-for a fixed length; `off` restores classical Michell). `Hull::transom()`
-reports the transom's immersed area, waterline beam, and equivalent-rectangle
-depth, and `michell info` prints `A_T/A_X` so a wet transom is never silent.
-**For a hull that closes aft the whole mechanism is inert**, bit for bit.
-
-Two caveats. The hollow length is a modelling choice, not a derived quantity,
-so transom results inherit that uncertainty — sweep `ballistic=C` to see how
-much it matters. And a lofted half-breadth cannot hold the transom's sharp
-lower edge: the fit smears it downward and overstates `A_T` (by ~38% on a test
-case), which feeds straight into `f_T`.
-
-### Dynamic sinkage and trim
-
-Every hydrostatic result above holds the hull at its still-water attitude.
-`michell::squat` adds the missing piece: the steady near-field pressure's
-**vertical force and pitch moment**, so a sweep can float the platform at its
-*dynamic* attitude at speed rather than its at-rest one.
-
-Write the Kelvin source in 2-D Fourier form. With the stream toward −x and `z`
-down, the free-surface condition fixes the image amplitude
-`A(k_x, k) = (k_x² + νk)/(k_x² − νk)` — rigid-wall (−1) for long modes,
-free-surface (+1) for short ones, with the steady-wave dispersion curve
-`k = k_x²/ν` the pole between them. Integrating the linearised pressure over
-the hull and reducing by parts along `x` gives the force and moment as
-wavenumber integrals of the **same per-span transforms** the wave integral
-already evaluates exactly — one extra transform of `f` itself alongside
-`∂f/∂x`, contracted against the existing z-moments (`InnerIntegral::contract_z`
-/ `transforms_at`), so a hull with hundreds of spans stays affordable. Two
-structural facts do the rest: the radiation condition's half-residue is odd in
-`k_x` and so drops out of the force (even integrand) but survives in the
-moment — **sinkage is a local-field effect, trim is mostly a wave effect** —
-and the unbounded-fluid part of the source (`−1/r`) contributes no force at
-all (d'Alembert), only a Munk-type moment for a fore-aft asymmetric hull.
-
-```text
-F_up  = −(ρU²/2π²) PV∬ d²k [ A·Re(q̄q) − ((A−1)/k)·Re(w̄q) ]
-M_res = −(4ρU²ν/π) ∫₁^∞ dλ λ/√(λ²−1) · Im[ νλ² r̄q − r̄_wl q ]   on k = k_x²/ν
-```
-
-Validated three ways: an independent from-scratch derivation panel checked the
-formulation (Rankine/wave-term split, radiation condition, low-Froude sign)
-against Havelock (1939), Yeung (1972), and the Wigley sinkage/trim literature;
-an independent NumPy oracle implementing the same integrals with adaptive
-quadrature agrees with this crate's evaluation to **<0.05% on force** and
-**~0.1% on moment** across Fn 0.05–0.45; and on the Wigley hull the sign,
-Fn²-scaling (`s/L/Fn² ≈ 0.021`–`0.032`, bracketing Havelock's rigid-wall
-ellipsoid limit and the Neumann–Michell/experimental range), and the trim
-sign-reversal near Fn ≈ 0.34–0.36 all reproduce the published pattern.
-
-`squat::multihull_dynamic_force` gives the force/moment for a fleet directly
-(demihull interaction included, through the same placement phase the wave
-superposition uses); `squat::dynamic_load_closure` adapts it to
-`float::solve_equilibrium_dynamic_with` / `solve_equilibrium_bodies_dynamic`,
-which balance it against buoyancy in the same Newton loop as the hydrostatic
-solver (`DynamicLoad`/`DynamicEquilibrium` — bit-for-bit the hydrostatic
-solver when the dynamic load is zero). `michell squat <hull>...` reports the
-force, moment, lift fraction, and first-order equivalent sinkage/trim
-directly; `options.dynamic: true` in a sweep manifest re-solves equilibrium at
-**every speed** (attitude now depends on `U`), warm-started from the previous
-speed's solution.
-
-Two things to know before using it. It does not yet compose with the transom
-closure's own appendage moment contribution beyond what the hollow's
-transforms already carry — that is scoped out for now. And thin-ship theory overstates
-sinkage/trim by the same 20–40% it overstates wave resistance by, at the same
-Fn 0.3–0.4 range, against surface-panel (Neumann–Michell) linear theory; the
-linearisation itself expires once the dynamic force is a real share of the
-weight (`DynamicForce::lift_fraction`/`DynamicEquilibrium::lift_fraction`
-report exactly that, so the boundary is visible rather than silent). The
-near-field quadrature is also markedly more expensive than the wave integral
-— tens of thousands of transform evaluations per force/moment call on a
-finely-lofted hull — so a dynamic sweep costs real wall-clock time per point;
-budget accordingly, especially before a large speed × load grid.
-
-## Validation
-
-## Validation
-
-`cargo test` checks, among others:
-
-- B-spline evaluation, derivatives, and per-span polynomial extraction against
-  closed forms (single- and multi-span, with chine knots);
-- moment integrals against brute-force quadrature across both branches;
-- `I(λ), J(λ)` against the **analytic Wigley-hull expressions** to ~1e-10;
-- total `R_w` against an independent 2-million-point Simpson reference;
-- Wigley displaced volume against the exact `4BLT/9`, wetted surface against a
-  dense reference, and the Cw(Fn) curve for the expected humps and hollows.
-
-## Assumptions and limitations
-
-- Michell linearisation: slender hull (`|∂f/∂x| ≪ 1`), no breaking, deep
-  water, infinite domain, monohull. Sinkage and trim are hydrostatic by
-  default (the still-water attitude); `michell::squat` / `options.dynamic`
-  (see below) solve the speed-dependent attitude instead, at real
-  computational cost and only up to the same linearisation.
-- Half-breadth should close at the bow. A **transom stern** is closed by a
-  virtual appendage (`--transom`, `TransomClosure`); its hollow length is a
-  modelling choice, so transom-sterned results carry that uncertainty.
-- Viscous model is a flat-plate correlation plus two allowances you supply:
-  a form factor `k` and a roughness `ΔC_F` (see above). Neither is derived
-  from the hull — `k` from a regression such as Holtrop–Mennen or a
-  double-body solve, `ΔC_F` from the finish. Do **not** back `k` out of a
-  measured `C_T` using this crate's `C_W`: thin-ship theory overstates `C_W`,
-  and a fit would quietly absorb that error into `k`.
-
-## Input front-ends
-
-Every front-end reduces to the same intermediate representation
-(`grid::SampleGrid`): a station × waterline grid of half-beam samples,
-optionally augmented with `∂f/∂x`/`∂f/∂z` channels (`NaN` = unknown at that
-sample) and per-sample weights (`0` excludes a sample — e.g. a failed CAD
-inversion, which is *unknown* geometry rather than zero beam). The grid is
-lofted to the spline by `fit::fit_grid`: weighted tensor-product least
-squares over every channel present (quantile knot placement, banded
-Cholesky, per-channel residuals reported so you can judge fit quality). Derivative observations
-are scaled by the local sample spacing so slopes and values are
-commensurate, and a slope that predicts more change across one sample cell
-than the half-beam anywhere on its stencil is skipped — it describes
-geometry (a bilge wall, the keel fold) that no loft at that sampling can
-resolve, and fitting it would only distort the values.
-`FitOptions::derivative_weight` tunes or disables the channels.
-
-**Loft resolution matters, and is cheap.** The normal equations of a
-tensor-product loft are *banded* — a sample's basis row reaches only
-`degree` control points in each direction, so `A[i][j]` vanishes beyond
-`|i − j| > degree_x·n_ctrl_z + degree_z` — and factoring the band rather than
-the full matrix turns the solve from `O(n³)` into `O(n·b²)`. A 160×30 net
-lofts in ~0.14 s instead of ~14 s, so there is no longer a reason to run a
-control net too coarse to hold the hull. That matters more than it sounds:
-a least-squares fit that cannot reach its samples removes exactly the
-short-scale content of `∂f/∂x` that feeds the **diverging** end of the
-free-wave spectrum, and the first thing it biases is `R_w` at low Froude
-number. On a real CAD import the previous 20×12 default overstated `R_w` by
-**more than 3×** at Fn 0.15 and 2.5× at Fn 0.25, converging only around
-80×24 — which is now the import default (with a 301×61 sample grid).
-`FitReport::under_resolved` flags a fit whose RMS residual is still more
-than 2% of the hull's own half-beam scale, and the CLI prints that as a
-warning rather than letting it pass into a resistance curve.
-
-A finer net does cost time downstream — every inner integral is linear in the
-**span** count — so the kernel stops walking z-spans once `e^{−κ z₀}` falls
-below `1e-20`. At large `λ` the decay `κ = νλ²` confines the integrand to a
-sliver under the waterline, which is exactly where the outer quadrature spends
-most of its evaluations, and the dropped terms are four orders below double
-epsilon: on a real import this halves a resistance sweep with bit-identical
-output. Net effect of resolving the geometry properly: a 31-speed sweep on an
-8 m IGES hull goes from 9 s to 56 s, and stops being wrong by 3x. The residual is
-a proxy for what actually matters (error in `∂f/∂x`, not in `f`), so treat it
-as a floor on the problem, not a measure of it; where a grid carries observed
-slopes, `FitReport::fx_residual` is the sharper signal.
-
-**Resolution is not fairness, though.** The half-beam is identically zero
-below the keel, so `f(x, z)` is *creased* along the keel/profile line — and
-wherever that line runs diagonally across the (x, z) grid (the rockered
-forefoot and run of almost every hull), no knot line can follow it. Plain
-least squares then approximates the crease the way a Fourier series does a
-step: a Gibbs-like checkerboard of ridges at the knot spacing, spreading up
-the topsides from the keel, which a denser net only narrows. On the
-`ama.igs` and `e12.igs` imports the samples are fair (curvature changes sign
-~20 times over the whole 301×61 grid) and the plain loft is not (~1,200 and
-~1,500). `FitOptions::fairing` (`--fit-fairing λ`) adds the thin-plate
-bending energy `λ·∬(f_uu² + 2f_uv² + f_vv²)` over the domain normalised to
-the unit square — assembled exactly from 1-D Gram matrices of the basis
-derivatives, inside the band the data term already occupies, so it costs
-nothing — and makes the loft *round* the crease instead of ringing around
-it. At `λ = 1e-7` the ringing goes (inflections down ~4×, to about one per
-line where the section turns into the keel), the RMS residual is no worse,
-because fewer negative controls get floored, and ama's `R_w` falls 8% at Fn
-0.2 (the ridges were spurious short-scale `∂f/∂x`). Larger `λ` rounds the
-keel visibly; `1e-5` costs ~3% RMS. It defaults to `0` for now.
-
-**Sectional import (experimental).** A loft is a graph `y = f(x, z)` over
-the centreplane, and at a rockered keel that graph is creased along a line no
-knot can follow and closes like a square root on a round bilge — which is
-what the fairing, trimming and resolution notes above are all working
-around. `iges::import_sectional` (and `SourceFleet::situate_sectional`)
-skips the loft entirely: it cuts the CAD patches at stations and sweeps each
-section with rays from its top centreplane point, fanned in the section's own
-proportions, so the reach `R(θ)` is smooth right into the keel. Each
-station's depth integral `Z(κ) = ∬ e^{−κz} dA` is then an area integral in
-polar form whose radial part is closed form, and `sectional::SectionalHull`
-interpolates it along `x` and hands it to the same closed-form x-moments the
-lofted kernel uses — so the near-field quadrature keeps its
-once-per-`κ`/many-`k_x` structure (per `k_x` it costs the same; per `κ`
-about 2×). `sectional::wave_resistance` and `sectional::dynamic_force` run
-the existing integrals on it. Checks: a Wigley written out as patches and
-cut back into sections reproduces the exact hull's `R_w`, sinkage force and
-trim moment to ~1e-10 and its volume to 1e-11; on the `ama.igs` and
-`e12.igs` imports `R_w` settles to 3–4 digits by 121 stations × 33 rays,
-where the lofted hulls sit 2–15% away below Fn 0.4 in a direction that
-depends on fairing. Ends are found by bisection on where closed sections
-stop (a transom is kept as a section; bare skins aft of a recessed transom
-are not hull). Not yet carried: the transom closure and multihull
-placement.
-
-- **Offsets**: `fit::fit_offsets(stations, waterlines, half_beams, opts)` —
-  the human-authorable path: a station × waterline table of half-beams
-  (a value-only grid).
-- **STL**: `stl::mesh_fleet(bytes, units_scale, waterline)` — binary or ASCII
-  triangle meshes. Half-beams are extracted by transverse **ray casting**
-  (exact, no Newton iteration; empty results are the footprint), hulls
-  cluster by shared vertices + wetted proximity, and everything downstream
-  (folding, bodies, sweeps) is shared with IGES. STL has no units field, so
-  `--units mm|cm|m|in|ft` is required. Quality tracks the export's chord
-  tolerance: fine CAD tessellations match IGES; decimated meshes add
-  geometry noise that wave resistance is sensitive to.
-- **IGES**: `iges::import_hull(text, opts)` — reads **one or many untrimmed**
-  NURBS patches (entity 128, unit weights; 124 transforms and unit conversion
-  handled; naturally-bounded 143/141 wrappers, as produced by SubD → NURBS
-  exports, are tolerated). Patches are mapped to the hull frame
-  (`waterline_z` picks the DWL), the hull **centerplane is auto-detected** —
-  a full both-sided shell is folded about the midplane of its shell
-  intersections, a half hull measures from y = 0, and `centerplane` overrides
-  either — then the wetted region is sampled by per-patch Newton inversion
-  (outermost fold wins) and lofted; the surface slopes `∂y/∂x`, `∂y/∂z` come
-  for free from the converged Newton Jacobian (implicit function theorem)
-  and join the loft as derivative observations. Genuinely trimmed surfaces
-  (142/144) and rational weights are rejected with specific messages; fold
-  asymmetry, ambiguous samples, failed inversions, slope gaps, and loft
-  residuals (with the location of the worst one) are reported so a bad
-  import is visible. Handles both the
-  "export selected surface" workflow and multi-patch SubD hull exports,
-  including hulls modelled off-centre (e.g. an ama in position).
-
-## CLI
-
-The `michell-cli` crate builds a `michell` binary (`cargo build --release`,
-binary at `target/release/michell`):
-
-```text
-michell wigley -o wigley.hull                       # reference hull
-michell info wigley.hull                            # geometry & diagnostics
-michell resistance wigley.hull --froude 0.2:0.5:0.05
-michell resistance hull.igs --waterline 2.6 --speeds 4:9:0.5 --knots --json
-michell resistance vaka.hull ama.igs@y=1.9 ama.igs@y=-1.9 --speeds 3:8:0.5
-michell loft table.offsets -o hull.hull             # offsets -> control net
-michell place ama.igs@dy=1.7,dz=0.05 ama.igs@dy=-1.7 -o boat.igs  # posed CAD geometry
-michell spectrum wigley.hull --speed 3              # free-wave spectrum (CSV)
-michell wake boat-*.hull --speed 8 --knots -o wake.png   # Kelvin wake heatmap
-michell render boat-*.hull --speed 8 --knots -o shot.png # 3D shot in the wake
-michell view boat-*.hull --speed 8                       # interactive fleet viewer
-```
-
-**Wave field** (`spectrum`, `wake`, `render`; one speed via `--speed` or `--froude`):
-the far-field wave pattern is reconstructed from the same exactly-evaluated
-amplitude function `F = I + iJ` the resistance uses. `spectrum` tabulates the
-free-wave spectrum by propagation angle θ — elevation amplitude density |A(θ)|
-[m/rad], phase, and the angular resistance density dR_w/dθ, whose integral
-reproduces R_w (cross-checked on stderr) — showing where the wave energy goes
-(transverse θ ≈ 0 vs diverging θ → ±90°) and which angles a multihull's
-interference cancels. `wake` evaluates the Kelvin pattern
-
-```text
-ζ(x, y) = Re ∫ A(θ) e^{iν secθ (x + y tanθ)} dθ,   A = −(2ν/π) sec³θ conj(F)
-```
-
-on a grid and renders a PNG heatmap (blue trough / red crest, hull
-waterplanes in gray), or emits CSV/JSON for other tooling. `render` puts the
-hulls in that wave field as a 3D shot (zero-dependency software rasterizer;
-`--camera AZ:EL[:DIST]` to move the view, `--z-scale` to exaggerate the
-waves). Conventions: the ship advances toward +x, so the wake trails toward
-−x; the reconstruction is the far-field free-wave part of the linear
-solution, physical astern of each hull (not on or ahead of it) — both PNGs
-fade the water where that caveat bites, and `render` shows hulls at the
-static waterline (no dynamic sinkage or trim). Grids too coarse for the
-shortest diverging waves are smoothly band-limited and flagged. The magnitude of A is pinned by
-the deep-water free-wave resistance identity R_w = ½πρU² ∫|A|²cos³θ dθ; the
-phase follows Tuck, Scullen & Lazauskas mapped to these conventions.
-
-**Interactive viewer** (`michell view <hull>... --speed U`): serves a local
-web page (default `http://127.0.0.1:8737`, `--port` to change) where the fleet
-wave field is shown live and hulls can be **dragged** to reposition them
-relative to one another. This exploits the superposition structure directly:
-the fleet field is the exact sum of each hull's *standalone* field translated
-to its placement (thin-ship amplitudes superpose, each carrying only a
-placement phase), so each hull's field is computed once on a local grid, native
-and parallel, and the browser recomposites the fleet by translate-and-sum as
-you drag — no physics re-run, so dragging is instant. Re-running the solver is
-reserved for the explicit controls (each an on-release action with a spinner):
-**speed** rebuilds the per-hull fields (ν changes; a fraction of a second,
-parallelised across hulls and row-bands), while **displacement** and
-**ama immersion** re-float the assembly (full-band bodies; an IGES fleet is
-decomposed to bodies once on load) and re-loft the wetted hulls. Wave and total
-resistance, the interference factor, and effective power update live. Same
-physicality caveat as `wake`: the field is faded ahead
-of the aft-most stern. The server is dependency-free, in the spirit of the rest
-of the crate. Build with `--release`; a debug build runs the integrals ~40×
-slower and the viewer warns about it.
-
-**Sweeps** (`michell sweep study.json`): long-form CSV/JSON over the
-Cartesian product of axes — every varying quantity (speed, hull loads,
-waterline, hull poses) is an axis, with fixed values as single-valued axes.
-Each hull carries its own **load** — `mass` [kg] and a centre of gravity
-(`lcg` longitudinal, `vcg` metres above the design floatplane) in the hull's
-own frame — plus any number of discrete **point loads** (`points`: batteries,
-crew, ballast), each a `mass` at an offset from the hull's centerpoint
-(`dx` forward, `dz` **down**). The **fleet CG is never set
-directly**: it is always the mass-weighted sum of every hull load and point
-load, carried through each hull's pose, so mounting a hull moves its weight
-with it (`dx`/`dz` translate each CG, design `trim` rotates it) and the
-platform CG tracks the geometry automatically. An unspecified `lcg` defaults
-to the hull's midship.
-
-When the fleet carries mass it runs in **equilibrium mode**: each point's
-platform sinkage (and pitch, from the derived LCG) is solved by a Newton
-iteration whose Jacobian comes from the waterplane properties, so
-counterfactuals like "what if this hull were heavier / its CG further forward"
-are swept at physically consistent attitudes. Every such record carries the
-solved state, displacement, LCB, the **derived** fleet CG (`mass`, `lcg`,
-`vcg`), dry-hull count, and the resistance breakdown.
-All poses are hydrostatic (no speed-dependent squat).
-
-```json
-{
-  "name": "ama placement study",
-  "fluid": "seawater",
-  "hulls": [
-    { "id": "vaka",  "file": "boat-center.hull",
-      "load": { "mass": 1800, "lcg": -5.8, "vcg": 1.1 },
-      "points": [
-        { "id": "battery", "mass": 200, "dx": 1.0, "dz": 0.6 },
-        { "id": "crew",    "mass": 160, "dx": -2.0, "dz": -0.4 }
-      ] },
-    { "id": "ama_s", "file": "boat-starboard.hull",
-      "load": { "mass": 120, "vcg": 0.4 } },
-    { "id": "ama_p", "file": "boat-port.hull", "pose": { "trim": 0.5 },
-      "load": { "mass": 120, "vcg": 0.4 } }
-  ],
-  "sweep": [
-    { "target": "speed", "unit": "knots", "range": [4, 10], "step": 0.5 },
-    { "target": "vaka", "param": "mass", "range": [0, 800], "step": 200 },
-    { "target": "battery", "param": "dz", "values": [0.0, 0.6, 1.2] },
-    { "target": ["ama_s", "ama_p"], "param": "spread", "range": [1.5, 2.5] },
-    { "target": "ama_s", "param": "trim", "values": [-2, 0, 2] },
-    { "target": "vaka", "param": "scale", "values": [0.9, 1.0, 1.1] }
-  ],
-  "output": { "format": "csv", "file": "study.csv" },
-  "options": { "rel_tol": 1e-5, "form_factor": 0.05, "transom": "ballistic=1.4" }
-}
-```
-
-`options.transom` picks the transom-stern closure — `off`,
-`ballistic[=COEFF]` (default, `COEFF = √2`), or `hollow=METRES` — matching the
-`--transom` flag; it is inert on a hull whose half-breadth closes aft.
-
-`options.dynamic: true` switches from hydrostatic to **dynamic** sinkage/trim
-(see [Dynamic sinkage and trim](#dynamic-sinkage-and-trim) above): equilibrium
-is re-solved at every speed rather than once per point, adding `fz` (dynamic
-force, N) and `lift_pct` (as a fraction of the weight, %) columns; `sinkage`/
-`trim_deg`/`volume`/`lcb` become the dynamic-attitude values. Requires a
-`weight` axis, and cannot combine with a `vcg` axis. Real cost: the
-near-field quadrature is far more expensive than the wave integral it reuses
-parts of, and equilibrium calls it every Newton iteration at every speed —
-about 10 s per speed on a CAD monohull, so prefer a handful of speed values
-over a fine grid until you know how much resolution you need.
-`options.squat_tol` overrides the closure's own quadrature tolerance
-(default `2e-3` on the pass-to-pass change, which leaves the force within
-~1e-4 of the converged value; each tighter pass costs 4×).
-
-Two situations hand the dynamic Newton solver a state that was converged
-*somewhere else* rather than validated against what it is about to evaluate:
-the coarse-to-fine handoff (a deliberately coarsened control net for early
-iterations, full resolution for the polish — a coarsened loft cannot resolve
-fine stern detail, a transom or a chine, the way the full-resolution one
-does, so the same `(sinkage, trim)` can loft to a visibly different fleet),
-and a sweep's speed-to-speed warm start (seeded from a *different* speed's
-converged solution, whose dynamic force can be a different scale entirely).
-Either can perturb the dynamic force enough that an undamped first Newton
-step overshoots correcting for what is really a model or operating-point
-shift, not a residual to chase — so that first step is damped whenever the
-dynamic load is genuinely nonzero (inert, bit for bit, when it is zero or
-absent); ordinary within-phase oscillation detection recovers full speed
-within a couple more iterations regardless.
-
-That damping alone isn't the whole story once a hull's transom is
-substantial (a large `lift_pct`, order 15–20% of the weight, is the warning
-sign): the near-field force can have genuine local curvature there — its own
-hollow length depends on the current transom depth, which depends on
-attitude — that the Newton core's analytic Jacobian (purely hydrostatic
-waterplane properties) has no way to see, since it treats the dynamic load as
-a *constant* added to the residual. Confirmed on the motivating case by
-comparing loose- and tight-quadrature force evaluations across the operating
-range: they agreed to <1%, ruling out quadrature noise, while the force
-itself showed a real sign change in local slope — a genuine Jacobian
-mismatch, not roughness. So on every phase but the initial, cold, from-scratch
-one (i.e. exactly where the handoff damping above applies), the solver also
-takes two extra finite-difference evaluations per iteration — perturbing
-sinkage, then trim — and folds the dynamic load's own local sensitivity into
-the Newton Jacobian alongside the hydrostatic terms. Deliberately **not**
-applied during the initial coarse phase: that phase already converges
-reliably on the hydrostatic Jacobian alone, and probing a finite difference
-from a wild, far-from-solution starting guess turned out to be actively
-harmful there (found by testing it unscoped: it sent a cold solve to a
-multi-metre "sinkage" and a trim past the 20° abort limit). Real cost: this
-roughly triples the per-iteration evaluation count on top of the near-field
-quadrature's own expense, so a `dynamic: true` sweep on a transom-heavy hull
-is priced in minutes per point, not seconds — but it is what took a case that
-previously failed outright (a 3-speed sweep erroring at the last point,
-residual 24× tolerance) to a clean converged solve at every speed. A hull
-that closes cleanly aft (no `Transom` reported by `michell info`) never
-exercises any of this — the Jacobian addition is `None`, bit for bit,
-whenever the dynamic load has no local sensitivity to add.
-
-Axis values: `range: [start, stop]` with optional `step` (default: a fifth
-of the span), `values: [...]`, or scalar `value`. Speed axes take `unit`
-(`ms` | `knots` | `froude`). Axis targets name hull ids or point-load ids
-(all ids are unique) and **offset the base value** (a `scale` axis instead
-*multiplies* the base) — for a **hull**, pose: `dx`, `dy`, `dz` (+down),
-`spread` (outboard, sign follows each hull's side), `trim` (degrees, + raises
-the +x end), `scale` (uniform size factor, `> 0`; grows or shrinks the hull in
-place — length, beam, and draft all scale together — about its design waterline
-and centre, so `1.0` leaves it unchanged and displacement goes as the cube),
-and load: `mass`, `lcg`, `vcg`; for a **point load**, `mass`, `dx`, `dz`
-(relative to the hull centerpoint). A target list moves several targets as one
-coupled axis (e.g. sweep both amas' `mass` together, or two symmetric ballast
-points), but must be all hulls or all points. A `scale` in a hull's base `pose`
-sets its built size. Hull files load relative to the manifest. A flag-based
-sweep over raw IGES (`--axis`, `--float`) remains for one-liners.
-
-**Heel was removed.** michell no longer models heel or GZ stability. A manifest
-that still carries an `options.heel` block, or a point load with a `dy`
-offset (base value or swept axis), fails with a message saying so rather than
-being silently ignored; delete those keys. `vcg` and a point's `dz` stay: under
-a design-pose trim a raised CG shifts the derived LCG.
-
-**Output formats**: `output.format` is `csv` (default), `json`, or `binary`.
-The `csv`/`json` forms carry the row columns only. The `binary` form writes a
-single self-contained `.msw` archive that bundles the whole study — the
-manifest, the referenced hull files verbatim, and, **per row**, the swept
-parameter values, the scalar metrics, and the **free-wave spectrum** `A(θ)` (with its
-`dR_w/dθ` density). Because the spectrum is the exact quantity `R_w` integrates,
-storing it is essentially free at compute time, and a stored sweep is enough to
-regenerate a wake elevation field at any resolution without re-running:
-
-```json
-  "output": {
-    "format": "binary",
-    "file": "study.msw",
-    "spectrum": { "points": 721 }
-  }
-```
-
-`spectrum.points` (default 721) sets the θ-sampling of the stored spectrum. If
-`file` is omitted the
-archive is written next to the manifest as `<stem>.msw`. The container is a
-hand-rolled, little-endian, length-prefixed blob stream (magic `MSWP`, a `META`
-JSON naming the columns, then a `ROWS` blob) — see
-`crates/michell-cli/src/archive.rs` for the byte layout. The companion Python
-package reads it with `pymichell.read_sweep("study.msw")`.
-
-**Bodies**: sweep manifests reference **full-band** `.hull` files — the
-half-breadth spline over the hull's band from keel to above the design
-waterline, written by `michell loft`:
-
-```text
-michell loft boat.igs --waterline 0.42 -o boat
-  -> boat-port.hull  boat-center.hull  boat-starboard.hull
-```
-
-Each body records `waterline` (design WL depth below its band top) and
-`centerplane` (detected transverse position, its default placement); hulls
-are named by role when the layout is recognizable. The band reaches
-`--band` metres above the design WL (default: half the design draft) — decks
-are deliberately excluded, since a deck is a cliff for a height-field loft;
-poses that rise past the band are reported per record (`band_exceeded`).
-Re-situating a body needs no Newton inversion (pitch rotation of a height
-field is an exact domain reparametrization), so equilibrium points run
-seconds-fast; the loft itself defaults to a dense net (28x32 at 241x97)
-because wave resistance is sensitive to loft resolution near the keel
-rocker and the body is fit once, reused thousands of times.
-
-**Export back to CAD** (`michell place`): once a sweep has found a good
-configuration — amas at a chosen `dx`/`dy`/`dz`, a solved sinkage and trim —
-`place` writes that posed geometry as a new IGES file to import back into
-CAD:
-
-```text
-michell place ama.igs@dy=3.9,dz=-0.008 ama.igs@dy=-0.1,dz=-0.008 \
-  --waterline 0 --sinkage -0.008 -o boat.igs
-```
-
-Each spec's pose (`dx`/`x`, `dy`, `y` absolute centerplane, `dz` immersion,
-`trim` degrees about `pivot`) applies rigidly to every hull in that file, and
-`--sinkage`/`--platform-trim`/`--pivot-x` apply the whole-platform state an
-equilibrium (floated-load) row reports. IGES inputs pass their surfaces
-through **exactly** (untrimmed 128 patches, unit weights, metres; bounded
-143/141 bases are written as full surfaces with the parameter range
-restricted to the bounded box). `.hull` control nets and full-band bodies
-convert **exactly** too: the half-breadth graph `y = ±f(x, z)` is a B-spline
-surface whose control net sits on the graph's coordinate lines (linear
-precision at the Greville abscissae), emitted as the mirrored port/starboard
-pair. Platform sinkage is re-expressed as the hulls moving down, so the water
-surface stays at `--waterline` in the output frame. The written file
-round-trips through the importer: re-importing the reconstructed boat above
-reproduces the study's resistance to within the loft tolerance.
-
-Hydrostatics on every hull: displaced volume, LCB, KB, waterplane area and
-moments (longitudinal and transverse), LCF — exact spline integrals.
-
-Multihulls: list several hulls, each with an optional placement suffix —
-`@y=Y` places a (single-hull file's) centerplane absolutely, `@dy=S` shifts
-transversely, `@x=DX`/`@dx=DX` shifts longitudinally. An IGES file holding a
-whole multihull imports as a fleet automatically: hulls are detected by
-clustering wetted patches, each at its detected centerplane, and dry
-structure (beams, decks) is dropped. The `IF` column / `interference` JSON
-field reports combined R_w over the sum of standalone R_w.
-
-All input kinds are accepted everywhere (sniffed by header/extension):
-the canonical `.hull` control net, a `michell-offsets v1` station × waterline
-table (lofted on load), a `*.grid.json` sample grid, and IGES (sampled +
-lofted; `--waterline` sets the DWL). `--json` gives machine-readable output;
-`--fluid`, `--rho`, `--nu`, `--form-factor`, `--rel-tol` control the physics.
-Conversion diagnostics (loft residuals, mirroring, failed inversions) are
-always printed so a bad import can't pass silently.
-
-`--dump-grid PATH` writes the sample grid a load produced — stations,
-waterlines, half-beams, slope channels, weights — as `*.grid.json`
-(multihull files get `-0`, `-1`, ... suffixes), so you can inspect or diff
-exactly what the importer sampled, and re-loft it later without the source
-CAD file. `--fit-deriv-weight W` scales the slope observations (0 = fit
-values only); `--fit-fairing λ` fairs the loft (see *Input front-ends*).
-
-**`.hull` format** (canonical, SI, `#` comments): `michell-hull v1`,
-`degree-x/z`, `knots-x/z`, then one `row` of control values per x index.
-**Offsets format**: `michell-offsets v1`, a `waterlines` line (z downward
-from DWL, starting 0), then `station <x> <half-beams...>` lines.
-**Grid format**: JSON with `"michell": "sample-grid"`, `stations`,
-`waterlines`, row-major `half_beams` (waterline index fastest), optional
-`dfdx`/`dfdz` (JSON `null` = unknown at that sample), optional `weights`,
-optional `centerplane`.
-
-## Seakeeping
-
-`michell-seakeeping` computes heave and pitch in waves by **strip theory**
-(Salvesen, Tuck & Faltinsen 1970) on the same sectional hulls. Each
-station's section curve is solved in two dimensions by Frank's close-fit
-source method — added mass, damping, radiated waves, and the diffraction
-force through the Haskind relation — at the encounter frequency; the
-hull's coefficients are their integrals along the length with the
-forward-speed and transom terms. The Froude–Krylov force comes in closed
-form from the hull's depth integrals. Mean added resistance uses
-Gerritsma & Beukelman's radiated energy; irregular-sea statistics use
-Bretschneider or JONSWAP spectra. Multihulls move as one rigid platform
-(no hull-to-hull wave interaction).
-
-```text
-michell seakeeping e12.igs --waterline -0.95 --froude 0.4 --lambda 0.6:2.4:0.3 --sea hs=0.5,tp=4
-michell seakeeping e12.igs@y=1.4 e12.igs@y=-1.4 --waterline -0.95 --froude 0.4 --heading 150 --dynamic
-```
-
-`--dynamic` floats the platform at its thin-ship dynamic sinkage and trim
-(above) before taking the motions about that attitude — the one place the
-two theories meet. Mass defaults to the displacement at the loaded
-waterline (LCG over the LCB), the pitch radius of gyration to 0.25 L;
-`--csv` gives a machine-readable table.
-
-What has been checked: the 2-D source against quadrature of its
-principal-value integral; section damping against the energy its far field
-carries; the Haskind diffraction force against the solved diffraction
-problem; the exact infinite-frequency added mass of a semicircle; long-wave
-limits of the full response (heave → 1, pitch → wave slope); far-apart twin
-hulls moving exactly like one.
-
-Against experiment — Journée's four Wigley hulls in head waves (Delft
-report 0909, 1992; the data are freely distributed by the author, see the
-`journee_wigley` example): heave added mass and damping agree to ~10–15%
-over the mid frequencies, the wave force and moment on the restrained hull
-to ~5–15%, and heave in head waves closely, resonance peaks included;
-zero-speed pitch is 10–20% low. At speed, strip theory's pitch added inertia
-is ~30% low and its pitch damping grows with U² where the tank shows none,
-so the computed pitch resonance falls at shorter waves than measured, and
-added resistance — which goes with the square of the motions — peaks early
-and about twice too high at Fn 0.3–0.4 (Wigley III, Fn 0.3: ≈ 49 at
-λ/L = 1.05 computed, ≈ 20 at 1.25 measured). Journée found the same
-discrepancies with his own strip codes. Trust heave; treat pitch at speed
-and added resistance near resonance as indicative. There is no short-wave
-added-resistance correction.
-
-Added resistance is reported two ways. Gerritsma–Beukelman sums each
-strip's radiated energy; Maruo's far-field method takes the momentum of the
-whole wave pattern, built as a Kochin function from the stations' sources,
-so the sections' waves interfere and the forward-scattered wave counts for
-nothing. On the Wigley hulls the far field is within a factor of two of the
-measured peaks at Fn 0.3–0.4 (where GB is two to six times high: Wigley I,
-Fn 0.4, ≈ 26 against ≈ 15 measured and 92 by GB), but about half the
-measurements at Fn 0.2 and on the beamy L/B 5 hulls, where GB is closer.
-Neither ranks the four hulls reliably; read them as a bracket.
-
-The section solver closes each section's interior waterplane with a rigid
-lid of sources (Ohmatsu), which removes the irregular frequencies of the
-plain source method — their spurious interior modes would otherwise leak
-into the Kochin function.
-
-**Sway, roll and yaw** come from the same strip solve: each section also
-solves its antisymmetric (sway and roll) problems, and the platform's five
-modes are assembled from each station's kinematics — hull offset and the
-centre of gravity's height included — so a catamaran's roll comes out of
-its demihulls' heave, and an asymmetric platform (a proa) couples roll to
-heave and pitch by itself. `--vcg`, `--kxx`, `--kzz` set the centre of
-gravity's height above the waterline and the roll and yaw radii of
-gyration; GM_T and the natural roll period are printed. Potential flow
-leaves a monohull's roll nearly undamped — a demihull of e12 in beam seas
-reaches a roll RAO of about 19 at resonance, about 7 with `--roll-damping
-0.05` (5% of critical) standing in for the viscous damping that really
-sets it; off resonance the two agree. The lateral modes are checked by
-long-wave limits, reciprocity and mirror symmetry, and section by section
-against Vugts' (1970) horizontal cylinders in beam waves (a circle and
-rectangles of B/d 2, 4 and 8, as plotted in Journée's SEAWAY validation
-report; `python/tools/vugts/` digitises its figures): the sway, heave and
-roll coefficients and wave loads match SEAWAY's curves to about 1–6% and
-the experiments to about 1–12%, roll's small added mass and damping (where
-viscosity matters) to 15–40%; phases match SEAWAY to a few degrees under
-the report's conventions. The three-dimensional lateral response has no
-experimental check yet. The same assembly carries two transom end terms (`(U²/ω²)a_A`
-in A₃₅, `(U²/ω²)b_A` in B₃₅) that the earlier heave–pitch table lacked;
-they change e12's heave by about 2% at Fn 0.4 and hulls without a transom
-not at all.
-
-## Web front end: boatmath
-
-The `boatmath-web` crate is **boatmath**, a browser front end with the michell
-physics server-side, so it has every core. It keeps a permanent record at three
-levels and works through a queue:
-
-- **Hulls** (`/hulls`): an uploaded IGES or STL file with how it is cut —
-  its design waterline, stations and rays, units — shown in 3D with its
-  sections and hydrostatics. The same file cut another way is another hull.
-- **Cases** (`/cases`): a platform on a hull and its load — the hull on its
-  own or doubled into a catamaran at a span, its mass (carried by sinking, or
-  by scaling the hull), LCG, VCG, radii of gyration and roll damping. Its
-  statics are computed when it is made: the float at rest, GM_T and the roll
-  period, and the **GZ curve** (whole sections clipped at each heel, free
-  trim; `michell_geometry::stability`) with its peak, angle of vanishing
-  stability and areas.
-- **Studies** (`/studies`): a speed on a case, in **calm water** (the
-  near-field pressure, the free surface, resistance, sinkage and trim at
-  speed) or in **waves** from one heading (responses over a wavelength sweep,
-  added resistance, an optional irregular sea; an animated seaway). A study in
-  waves is taken about the attitude of the calm-water study at its speed,
-  which it waits for.
-
-Each list has its **New** page: a new case takes values, lists or ranges of
-span, mass, LCG and VCG (every combination a case); new studies go on cases
-already made (speeds, headings, sea), saying which already exist. **Queue**
-(`/queue`) shows the running study's progress and what waits; **Plot**
-(`/plot`) filters finished studies, plots any result against any parameter
-and exports CSV. Every result records the solver version it was computed with
-(the last commit to touch the solver's code); one from another version is
-marked stale and can be run again.
+(`thinship::sectional::dynamic_load_closure`). The seakeeping crate builds
+on the sectional hull's transforms without going through `thinship`.
+
+## Where to read more
+
+- **The CLI:** [`docs/boatmath-cli.md`](docs/boatmath-cli.md) covers every
+  record and command, mounts and drives, propellers, CAD export and camber
+  import.
+- **The theory:** each crate's module docs (`cargo doc --open`). `thinship`'s
+  docs have the Michell integral and how it's evaluated on sections;
+  [`docs/michell-calculation.tex`](docs/michell-calculation.tex) has
+  derivation notes, written for the earlier tensor-product B-spline hulls. [`docs/dynamic-squat-derivation.md`](docs/dynamic-squat-derivation.md)
+  derives the dynamic sinkage and trim.
+- **Seakeeping:** [`docs/seakeeping-findings.md`](docs/seakeeping-findings.md)
+  covers what was built and how it validates against Journée's Wigley hulls
+  and Vugts' cylinders.
+- **Deployment:** [`deploy/README.md`](deploy/README.md) runs the web app as
+  a service.
+
+## What to trust
+
+- **Calm water** is thin-ship (Michell) theory: a slender hull
+  (`|∂f/∂x| ≪ 1`), no wave-breaking, deep water, an infinite fluid.
+  Multihulls interfere exactly within that theory. A transom stern is
+  closed by a virtual appendage (`TransomClosure`) whose hollow length is
+  a modelling choice, so transom-sterned results carry that uncertainty.
+  Thin-ship theory overstates `C_W` on full hulls.
+- **Viscous resistance** is the ITTC-57 line on each hull's wetted area,
+  times a form factor, plus a roughness allowance. Neither is derived from
+  the hull. Don't back the form factor out of a measured `C_T` using this
+  `C_W`: the fit would absorb thin-ship theory's error.
+- **Seakeeping** is strip theory: trust heave; treat pitch at speed and
+  added resistance near resonance as indicative (see the findings doc).
+  There's no hull-to-hull wave interaction in waves.
+- **Wake and thrust deduction** come from the thin-ship singularities, so
+  they miss the frictional wake and the suction on a flat run or transom.
+  Behind a transom, read `t` as a lower bound.
+
+## Web front end
+
+`boatmath-web` keeps a permanent record at three levels and works through a
+queue:
+
+- **Hulls** (`/hulls`): an uploaded IGES or STL file with how it is cut (its
+  design waterline, stations and rays, units), shown in 3D with its
+  sections and hydrostatics.
+- **Cases** (`/cases`): a platform on a hull and its load: the hull on its
+  own or doubled into a catamaran at a span, its mass (carried by sinking,
+  or by scaling the hull), LCG, VCG, radii of gyration and roll damping. Its
+  statics are computed when it's made: the float at rest, GM_T and the roll
+  period, and the GZ curve with its peak, angle of vanishing stability and
+  areas.
+- **Studies** (`/studies`): a speed on a case, in calm water (the near-field
+  pressure, the free surface, resistance, sinkage and trim at speed) or in
+  waves from one heading (responses over a wavelength sweep, added
+  resistance, an optional irregular sea, an animated seaway).
+
+**Queue** (`/queue`) shows the running study and what waits; **Plot**
+(`/plot`) plots any result against any parameter and exports CSV. Every
+result records the solver version it was computed with (the last commit to
+touch the solver's code). A result from another version is marked stale
+and can be run again.
 
 ```text
 cargo run --release -p boatmath-web -- --data boatmath-data   # http://127.0.0.1:8080/
 BOATMATH_WEB_DIR=crates/boatmath-web/src/web boatmath-web     # pages read from disk, to edit them live
 ```
 
-`deploy/README.md` has running it as a service behind `tailscale serve`.
-
-## API sketch
-
-- `BSplineSurface::new(degree_x, degree_z, knots_x, knots_z, control)` —
-  validated surface (control row-major, z fastest).
-- `Hull::new(surface)` — validates hull semantics, precomputes span
-  polynomials, wetted surface, displaced volume.
-- `Conditions::seawater(u)` / `::freshwater(u)` / custom `Fluid`.
-- `wave_resistance[_with]`, `viscous_resistance[_with]`,
-  `resistance[_with]` → forces, effective power P_E = R_t·U, coefficients,
-  quadrature diagnostics.
-- `multihull_resistance[_with]`, `multihull_wave_resistance[_with]`,
-  `Placement` — fleets with exact wave interference.
-- `iges::import_fleet` — every hull in a file, with detected placements;
-  `iges::import_hull` — exactly one (errors on multihull files).
-- `iges::write` — serialize surfaces to an IGES 5.3 file (untrimmed 128
-  patches, metres); `iges::halfbreadth_surfaces` — the exact mirrored
-  surface pair of a half-breadth spline; `iges::apply_pose` /
-  `SourceFleet::posed_surfaces` — pose CAD geometry for re-export.
-- `iges::source_fleet` + `SourceFleet::situate[_one](waterline, poses,
-  platform)` — re-situate hulls repeatedly (immersion, mount trim, position).
-- `body::Body` — full-band half-breadth spline; `situate` via exact
-  reparametrization (no Newton), fast enough for solver inner loops.
-- `float::solve_equilibrium[_bodies|_with]` — hydrostatic sinkage/pitch
-  balance for a mass + LCG load case, over IGES fleets, body assemblies, or
-  any custom situate closure.
-- `inner_integrals(hull, cond, λ)` — free-wave amplitude functions.
-- `FreeWaveSpectrum::new(&members, &cond)` — far-field spectrum of a fleet:
-  `amplitude(θ)`, `resistance_density(θ)` (dR_w/dθ), and Kelvin-wake
-  reconstruction via `elevation_at(x, y)` / `elevation_grid(...)`.
-- `hulls::wigley(l, b, t)` — exact reference hull.
-
-## Roadmap
-
-1. STEP reader feeding the same sample-and-loft pipeline; OBJ via the mesh
-   path.
-2. Python bindings.
-3. Longitudinal wave cuts against published Wigley measurements; wake
-   animation over a speed range.
-
 ## References
 
+- J. H. Michell, *The wave resistance of a ship*, Phil. Mag. 45 (1898).
 - E. O. Tuck, *The wave resistance formula of J.H. Michell (1898) and its
   significance to recent research in ship hydrodynamics*, J. Austral. Math.
   Soc. B 30 (1989).
 - E. O. Tuck, D. C. Scullen & L. Lazauskas, *Ship-wave patterns in the
-  spirit of Michell*, IUTAM Symposium (2001); *Wave patterns and minimum
-  wave resistance for high-speed vessels*, 24th Symp. Naval Hydrodynamics
-  (2002) — far-field free-wave spectrum and wave-pattern evaluation.
+  spirit of Michell*, IUTAM Symposium (2001).
 - J. Dambrine, M. Pierre, G. Rousseaux, *A theoretical and numerical
   determination of optimal ship forms based on Michell's wave resistance*,
   ESAIM: COCV (2016), arXiv:1410.2800.
-- ITTC — Recommended Procedures: *1957 ITTC Performance Prediction Method*.
+- N. Salvesen, E. O. Tuck & O. Faltinsen, *Ship motions and sea loads*,
+  Trans. SNAME 78 (1970).
+- J. M. J. Journée, *Experiments and calculations on four Wigley hullforms*,
+  Delft report 0909 (1992).
+- ITTC Recommended Procedures: *1957 ITTC Performance Prediction Method*.

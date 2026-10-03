@@ -346,7 +346,7 @@ async function saveText() {
   if (name === cfg.name && notes === cfg.notes) return;
   try {
     cfg = await api(`/api/cases/${id}`, { json: { name, notes } });
-    document.title = `${caseName(cfg)} · michell`;
+    document.title = `${caseName(cfg)} · boatmath`;
     $("saved").textContent = "saved";
     setTimeout(() => { $("saved").textContent = ""; }, 1500);
   } catch (e) { status(e.message, true); }
@@ -359,7 +359,7 @@ try {
   if (id == null) throw new Error("no case id in the address");
   cfg = await api(`/api/cases/${id}`);
   hull = await api(`/api/hulls/${cfg.hull_id}`);
-  document.title = `${caseName(cfg)} · michell`;
+  document.title = `${caseName(cfg)} · boatmath`;
   $("hulllink").textContent = hull.name;
   $("hulllink").href = `/hulls/${hull.id}`;
   $("name").value = cfg.name;

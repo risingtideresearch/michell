@@ -22,6 +22,7 @@
 //! results record the solver version they were computed with; one from
 //! another version is stale, kept until it is computed again.
 
+use crate::hull_summary;
 use crate::params::{hex, CaseParams, StudyParams};
 use crate::LoftRequest;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -31,12 +32,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The solver version results are stamped with: the last commit to touch
-/// the solver's code (the geometry, thin-ship, seakeeping and CLI crates,
-/// and the web crate's computations), `-dirty` if they have uncommitted
-/// changes. Set by `build.rs`; `BOATMATH_SOLVER_VERSION` at build time
-/// overrides it.
-pub const SOLVER_VERSION: &str = env!("BOATMATH_SOLVER_VERSION");
+pub use boatmath::SOLVER_VERSION;
 
 /// The layout below; bump it when the layout changes.
 const SCHEMA_VERSION: i64 = 3;
@@ -1068,35 +1064,6 @@ pub struct StudyFilter {
     pub limit: Option<i64>,
     /// Most recently finished first, rather than newest.
     pub by_finish: bool,
-}
-
-/// What the hull list shows of a cut: per hull, the principal dimensions and
-/// hydrostatics.
-fn hull_summary(sections: &Value) -> Value {
-    let hulls: Vec<Value> = sections["hulls"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|h| {
-                    let mut s = json!({});
-                    for k in [
-                        "length",
-                        "beam",
-                        "draft",
-                        "displaced_volume",
-                        "wetted_surface",
-                        "lcb_x",
-                        "waterplane_area",
-                    ] {
-                        s[k] = h[k].clone();
-                    }
-                    s["transom"] = json!(!h["transom"].is_null());
-                    s
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    json!({ "hulls": hulls, "notes": sections["notes"] })
 }
 
 /// What lists show of a case's statics: everything but the meshes
