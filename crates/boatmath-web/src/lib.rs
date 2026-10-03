@@ -1,4 +1,4 @@
-//! `boatmath-web` — a browser front end for the `michell` tools.
+//! `boatmath-web` — a browser front end for the `boatmath` tools.
 //!
 //! Upload a hull and see it the way the physics sees it: cut into sections,
 //! then load it into cases and queue studies on them. The computations are

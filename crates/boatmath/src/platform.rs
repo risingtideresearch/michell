@@ -8,13 +8,13 @@
 
 use crate::params::{default_lambdas, CaseParams, StudyParams};
 use crate::{setup, LoftRequest, Progress, Setup, Tracker, CANCELLED};
-use michell_geometry::iges::Platform;
-use michell_geometry::stability::{
+use hullgeom::iges::Platform;
+use hullgeom::stability::{
     gz_curve, FullSection, GzCurve, GzOptions, StabilityHull, StabilityLoad, Wave,
 };
-use michell_geometry::{Conditions, Placement, SectionalHull, STANDARD_GRAVITY};
-use michell_seakeeping::platform::{self as sk, Loading};
-use michell_seakeeping::strip::StripOptions;
+use hullgeom::{Conditions, Placement, SectionalHull, STANDARD_GRAVITY};
+use seakeeping::platform::{self as sk, Loading};
+use seakeeping::strip::StripOptions;
 use serde_json::{json, Value};
 
 /// The platform's mass properties at an attitude sinking it by `sinkage`.
@@ -23,11 +23,11 @@ fn loading(
     c: &CaseParams,
     members: &[(&SectionalHull, Placement)],
     sinkage: f64,
-) -> michell_seakeeping::strip::MassProperties {
+) -> seakeeping::strip::MassProperties {
     let l = sk::length(members);
     sk::mass_properties(
         members,
-        michell_geometry::Fluid::SEAWATER_15C.density,
+        hullgeom::Fluid::SEAWATER_15C.density,
         &Loading {
             mass: Some(s.mass),
             lcg: Some(s.lcg),
@@ -40,7 +40,7 @@ fn loading(
 }
 
 fn strip_options(c: &CaseParams) -> StripOptions {
-    let fluid = michell_geometry::Fluid::SEAWATER_15C;
+    let fluid = hullgeom::Fluid::SEAWATER_15C;
     StripOptions {
         density: fluid.density,
         gravity: STANDARD_GRAVITY,
@@ -97,10 +97,10 @@ pub fn at_rest(
     cut: &LoftRequest,
     c: &CaseParams,
 ) -> Result<(f64, f64), String> {
-    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
-    use michell_geometry::source::SourceHull;
+    use hullgeom::float::{solve_equilibrium_sectional, LoadCase};
+    use hullgeom::source::SourceHull;
     let s = setup(name, bytes, cut, c)?;
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     let sources: Vec<SourceHull> = s
         .layout
         .iter()
@@ -139,7 +139,7 @@ pub fn heeled(
     heels_deg: &[f64],
 ) -> Result<Value, String> {
     let s = setup(name, bytes, cut, c)?;
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     let vcg = c.vcg.unwrap_or(0.0);
     let hulls = whole_sections(&s)?;
     let load = StabilityLoad {
@@ -209,11 +209,11 @@ pub fn statics(
     cut: &LoftRequest,
     c: &CaseParams,
 ) -> Result<Value, String> {
-    use michell_geometry::float::{solve_equilibrium_sectional, LoadCase};
-    use michell_geometry::source::SourceHull;
+    use hullgeom::float::{solve_equilibrium_sectional, LoadCase};
+    use hullgeom::source::SourceHull;
     let t0 = std::time::Instant::now();
     let s = setup(name, bytes, cut, c)?;
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     let sources: Vec<SourceHull> = s
         .layout
         .iter()
@@ -327,7 +327,7 @@ pub fn statics(
 
 /// A case's GZ curves in a regular wave of length `length` and height
 /// `height` held still around it (quasi-static: see
-/// [`michell_geometry::stability::Wave`]), beam, stern quartering and bow
+/// [`hullgeom::stability::Wave`]), beam, stern quartering and bow
 /// quartering, with the crest at eight places along a wavelength and
 /// under each hull; for each heading the worst of them — the lowest peak
 /// arm — and in beam seas the crest under the windward and under the lee
@@ -355,7 +355,7 @@ pub fn wave_gz(
     let t0 = std::time::Instant::now();
     let s = setup(name, bytes, cut, c)?;
     let hulls = whole_sections(&s)?;
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     let load = StabilityLoad {
         mass: s.mass,
         lcg: s.lcg,
@@ -462,7 +462,7 @@ pub fn wave_gz(
             ));
         }
     }
-    let curves = michell_geometry::parallel::map_indexed(
+    let curves = hullgeom::parallel::map_indexed(
         jobs.len(),
         || (),
         |_, i| {
@@ -548,7 +548,7 @@ pub fn waves_with_progress(
     hold: (f64, f64),
     report: &mut dyn FnMut(&Progress) -> bool,
 ) -> Result<Value, String> {
-    use michell_seakeeping::sea::sea_response_fleet;
+    use seakeeping::sea::sea_response_fleet;
     let w = study.waves.as_ref().ok_or("not a study in waves")?;
     let lambdas = w.lambdas.clone().unwrap_or_else(default_lambdas);
     let t0 = std::time::Instant::now();
@@ -579,7 +579,7 @@ pub fn waves_with_progress(
     // The far field's sections carry only the symmetric part of the
     // diffraction problem: head and following seas only.
     let far = |v: f64| (deg.to_radians().sin().abs() < 0.1).then_some(v);
-    let c64 = |z: michell_geometry::C64| json!([z.re, z.im]);
+    let c64 = |z: hullgeom::C64| json!([z.re, z.im]);
     let mut stopped = false;
     let points = sk::rao_sweep(
         &members,

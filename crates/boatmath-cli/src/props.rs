@@ -174,7 +174,7 @@ pub struct Auto {
 }
 
 /// A result's propeller with its wake fraction and/or thrust deduction
-/// from potential flow (`michell::propulsion`): the propeller found with a
+/// from potential flow (`thinship::propulsion`): the propeller found with a
 /// guess, its disc placed on each hull at the result's attitude, w and t
 /// computed there, and the propeller found again, until they settle.
 pub fn auto_prop(

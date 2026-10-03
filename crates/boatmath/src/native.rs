@@ -18,10 +18,10 @@
 //! sinkage or another scale maps the control points (or vertices) exactly,
 //! so the solver re-poses this as it would the file.
 
+use crate::files::{open_source_bytes, Kind, LoadSettings, SourceFile};
 use crate::LoftRequest;
-use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings, SourceFile};
-use michell_geometry::iges::{HullPose, NurbsSurface3, Platform, SourceFleet};
-use michell_geometry::stl::MeshFleet;
+use hullgeom::iges::{HullPose, NurbsSurface3, Platform, SourceFleet};
+use hullgeom::stl::MeshFleet;
 use serde_json::{json, Value};
 
 /// The file's geometry, its import settings applied, as JSON.
@@ -47,8 +47,8 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
     match open_source_bytes(name, bytes.clone(), &settings)?.kind {
         Kind::Iges => {
             let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
-            let fleet = michell_geometry::iges::source_fleet(&text, wl)
-                .map_err(|e| format!("{name}: {e}"))?;
+            let fleet =
+                hullgeom::iges::source_fleet(&text, wl).map_err(|e| format!("{name}: {e}"))?;
             let hulls = (0..fleet.len())
                 .map(|i| {
                     let mut surfs = fleet
@@ -64,8 +64,8 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
         }
         Kind::Stl => {
             let units = req.units.ok_or("an STL needs its units")?;
-            let fleet = michell_geometry::stl::mesh_fleet(&bytes, units, wl)
-                .map_err(|e| format!("{name}: {e}"))?;
+            let fleet =
+                hullgeom::stl::mesh_fleet(&bytes, units, wl).map_err(|e| format!("{name}: {e}"))?;
             let hulls = (0..fleet.len())
                 .map(|i| {
                     // Posed about the waterline, z up from it.
@@ -227,7 +227,7 @@ pub fn posed(v: &Value, pose: &HullPose) -> Result<Value, String> {
 }
 
 pub fn open_value(v: &Value) -> Result<SourceFile, String> {
-    let (kind, source): (Kind, Box<dyn michell_geometry::source::HullSource>) = match fleet(v)? {
+    let (kind, source): (Kind, Box<dyn hullgeom::source::HullSource>) = match fleet(v)? {
         Fleet::Nurbs(f) => (Kind::Iges, Box::new(f)),
         Fleet::Mesh(f) => (Kind::Stl, Box::new(f)),
     };
@@ -245,11 +245,11 @@ mod tests {
 
     /// A Wigley hull as IGES, its design waterline at CAD height `wl`.
     fn wigley(wl: f64) -> Vec<u8> {
-        let mut surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let mut surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
         for p in surfaces.iter_mut().flat_map(|s| s.ctrl.iter_mut()) {
             p[2] += wl;
         }
-        michell_geometry::iges::write(&surfaces, "wigley")
+        hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes()
     }
@@ -285,7 +285,7 @@ mod tests {
 
     /// The Wigley as an ASCII STL in millimetres, its waterline at `wl` [m].
     fn wigley_stl(wl: f64) -> Vec<u8> {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
         let fleet = SourceFleet::from_hulls(vec![surfaces.to_vec()]).unwrap();
         let (v, t) = fleet
             .posed_tessellation(0, 0.0, &HullPose::default(), &Platform::default())

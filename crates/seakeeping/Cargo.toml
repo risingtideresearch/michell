@@ -1,0 +1,9 @@
+[package]
+name = "seakeeping"
+version = "0.1.0"
+edition = "2021"
+description = "Linear strip-theory seakeeping (heave and pitch) for sectional hulls"
+license = "MIT"
+
+[dependencies]
+hullgeom = { path = "../hullgeom" }

@@ -1,9 +1,0 @@
-[package]
-name = "michell"
-version = "0.1.0"
-edition = "2021"
-description = "Thin-ship wave resistance (Michell's integral), squat and ITTC-57 viscous resistance for sectional hulls"
-license = "MIT"
-
-[dependencies]
-michell-geometry = { path = "../michell-geometry" }

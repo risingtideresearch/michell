@@ -220,8 +220,7 @@ fn leg_patches(
                 ]);
             }
         }
-        let s =
-            michell_geometry::iges::interpolate_grid(nu, nv, &pts).map_err(|e| e.to_string())?;
+        let s = hullgeom::iges::interpolate_grid(nu, nv, &pts).map_err(|e| e.to_string())?;
         out.push(crate::native::patch_value(&s));
     }
     Ok(out)
@@ -282,8 +281,7 @@ fn body_patches(
                 ]);
             }
         }
-        let s =
-            michell_geometry::iges::interpolate_grid(nu, nv, &pts).map_err(|e| e.to_string())?;
+        let s = hullgeom::iges::interpolate_grid(nu, nv, &pts).map_err(|e| e.to_string())?;
         out.push(crate::native::patch_value(&s));
     }
     Ok(out)
@@ -684,8 +682,8 @@ mod tests {
     use crate::LoftRequest;
 
     fn wigley() -> Value {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = hullgeom::iges::write(&surfaces, "wigley").unwrap();
         crate::native::from_file("w.igs", text.into_bytes(), &LoftRequest::default()).unwrap()
     }
 
@@ -913,8 +911,8 @@ mod tests {
     #[test]
     #[ignore]
     fn wave_integral_cost() {
-        use michell::sectional::multihull_wave_resistance;
-        use michell::{Conditions, WaveOptions};
+        use thinship::sectional::multihull_wave_resistance;
+        use thinship::{Conditions, WaveOptions};
         let (g, req) = match std::env::var("BOATMATH_E12") {
             Ok(path) => {
                 let req = LoftRequest {

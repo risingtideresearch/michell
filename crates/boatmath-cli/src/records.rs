@@ -145,7 +145,7 @@ fn design_mass(hull: &Value) -> Result<f64, String> {
         .iter()
         .filter_map(|h| h["displaced_volume"].as_f64())
         .sum();
-    Ok(michell_geometry::Fluid::SEAWATER_15C.density * v)
+    Ok(hullgeom::Fluid::SEAWATER_15C.density * v)
 }
 
 /// A hull made by scaling another, about its design waterline. The new

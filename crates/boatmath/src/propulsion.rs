@@ -1,12 +1,12 @@
 //! A case's hulls at an attitude, ready to say what wake a propeller sits
-//! in and what thrust deduction it costs (see `michell::propulsion`).
+//! in and what thrust deduction it costs (see `thinship::propulsion`).
 
 use crate::params::CaseParams;
 use crate::{setup, LoftRequest};
-use michell::nearfield::NearFieldOptions;
-use michell::propulsion::{Disc, Interaction};
-use michell::TransomClosure;
-use michell_geometry::{Conditions, Placement, SectionalHull};
+use hullgeom::{Conditions, Placement, SectionalHull};
+use thinship::nearfield::NearFieldOptions;
+use thinship::propulsion::{Disc, Interaction};
+use thinship::TransomClosure;
 
 /// The hulls at an attitude and speed, their singularities placed.
 pub struct Placed {

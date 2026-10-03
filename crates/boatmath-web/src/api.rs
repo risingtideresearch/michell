@@ -344,7 +344,7 @@ fn scale_hull(app: &App, id: i64, v: &Value, who: Option<&Who>) -> Result<Reply,
         (Some(l), Some(b), Some(t), Some(vol)) => (l, b, t, vol),
         _ => return Err(bad("this hull's dimensions are unknown")),
     };
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     let d0 = rho * v0;
     let target = |k: &str| v[k].as_f64().filter(|x| x.is_finite());
     let yz = match v["mode"].as_str().unwrap_or("xyz") {

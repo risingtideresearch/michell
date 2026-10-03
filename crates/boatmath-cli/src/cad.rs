@@ -15,9 +15,9 @@
 use crate::records::{case_source, expect, CaseSource};
 use crate::stream::{short, Stream};
 use boatmath::params::CaseParams;
-use michell::propulsion::Disc;
-use michell_geometry::iges::{write_labelled, Color, Label, NurbsSurface3};
+use hullgeom::iges::{write_labelled, Color, Label, NurbsSurface3};
 use serde_json::Value;
+use thinship::propulsion::Disc;
 
 pub struct Options {
     pub water: bool,
@@ -267,7 +267,7 @@ fn point3(v: &Value) -> Option<[f64; 3]> {
 /// on its own level with its G, B and righting arm; a hull's statics, the
 /// hull upright at its design waterline. The still water on level 2.
 pub fn statics_model(st: &Stream, rec: &Value, heels: &[f64]) -> Result<String, String> {
-    use michell_geometry::iges::{write_entities, Entity};
+    use hullgeom::iges::{write_entities, Entity};
     let id = expect(rec, "statics")?;
     if rec.get("error").is_some_and(|e| !e.is_null()) {
         return Err(format!("statics {} failed: {}", short(id), rec["error"]));

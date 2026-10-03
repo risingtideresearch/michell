@@ -83,13 +83,12 @@ dependencies = [
 name = "boatmath"
 version = "0.1.0"
 dependencies = [
- "michell",
- "michell-cli",
- "michell-geometry",
- "michell-seakeeping",
+ "hullgeom",
+ "seakeeping",
  "serde",
  "serde_json",
  "sha2",
+ "thinship",
 ]
 
 [[package]]
@@ -99,12 +98,12 @@ dependencies = [
  "boatmath",
  "clap",
  "flate2",
- "michell",
- "michell-geometry",
+ "hullgeom",
  "propeller",
  "serde",
  "serde_json",
  "sha2",
+ "thinship",
 ]
 
 [[package]]
@@ -113,14 +112,13 @@ version = "0.1.0"
 dependencies = [
  "boatmath",
  "flate2",
- "michell",
- "michell-cli",
- "michell-geometry",
- "michell-seakeeping",
+ "hullgeom",
  "rusqlite",
+ "seakeeping",
  "serde",
  "serde_json",
  "sha2",
+ "thinship",
  "tiny_http",
 ]
 
@@ -317,6 +315,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
+name = "hullgeom"
+version = "0.1.0"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -375,33 +377,6 @@ name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
-
-[[package]]
-name = "michell"
-version = "0.1.0"
-dependencies = [
- "michell-geometry",
-]
-
-[[package]]
-name = "michell-cli"
-version = "0.1.0"
-dependencies = [
- "michell",
- "michell-geometry",
- "michell-seakeeping",
-]
-
-[[package]]
-name = "michell-geometry"
-version = "0.1.0"
-
-[[package]]
-name = "michell-seakeeping"
-version = "0.1.0"
-dependencies = [
- "michell-geometry",
-]
 
 [[package]]
 name = "miniz_oxide"
@@ -487,6 +462,13 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "seakeeping"
+version = "0.1.0"
+dependencies = [
+ "hullgeom",
+]
 
 [[package]]
 name = "serde"
@@ -587,6 +569,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "thinship"
+version = "0.1.0"
+dependencies = [
+ "hullgeom",
 ]
 
 [[package]]

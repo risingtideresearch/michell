@@ -1,0 +1,9 @@
+[package]
+name = "thinship"
+version = "0.1.0"
+edition = "2021"
+description = "Thin-ship theory for sectional hulls: wave resistance by Michell's integral, the near field, squat, the propeller's wake, and ITTC-57 viscous resistance"
+license = "MIT"
+
+[dependencies]
+hullgeom = { path = "../hullgeom" }

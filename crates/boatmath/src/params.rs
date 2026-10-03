@@ -15,9 +15,9 @@
 //! two requests that mean the same computation serialize — and hash — alike.
 
 use crate::MassBy;
-use michell::TransomClosure;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use thinship::TransomClosure;
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -65,7 +65,7 @@ pub struct CaseParams {
     #[serde(default)]
     pub vcg: Option<f64>,
     /// Radii of gyration: roll `k_xx` [m], pitch `k_yy` as a fraction of the
-    /// length, yaw `k_zz` [m]; defaults as `michell_seakeeping::platform`.
+    /// length, yaw `k_zz` [m]; defaults as `seakeeping::platform`.
     #[serde(default)]
     pub kxx: Option<f64>,
     #[serde(default)]
@@ -196,8 +196,8 @@ pub enum Sea {
 }
 
 impl Sea {
-    pub fn spectrum(self) -> michell_seakeeping::sea::Spectrum {
-        use michell_seakeeping::sea::Spectrum;
+    pub fn spectrum(self) -> seakeeping::sea::Spectrum {
+        use seakeeping::sea::Spectrum;
         match self {
             Sea::Bretschneider { hs, tp } => Spectrum::Bretschneider { hs, tp },
             Sea::Jonswap { hs, tp, gamma } => Spectrum::Jonswap {

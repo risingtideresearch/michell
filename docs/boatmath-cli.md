@@ -299,7 +299,7 @@ y(θ) = beam · R(θ) · cos θ,    z(θ) = z0 + depth · R(θ) · sin θ,
 where `y` is the half-breadth from the hull's centreplane, `z` the depth below
 the water, and `R` the polynomial of degree `n − 1` through the radii. It's
 best evaluated by barycentric interpolation, as
-`michell_geometry::iges::PolarSection::point` does. A station with no radii
+`hullgeom::iges::PolarSection::point` does. A station with no radii
 lies past the hull's tip. With `transom`, the aft station is a transom. A
 catamaran has both demihulls, each with its own placement.
 
@@ -571,7 +571,7 @@ the answer.
 
 **Wake and thrust deduction from potential flow.** With `--wake auto` and/or
 `--thrust-deduction auto`, `prop` works them out from the hull's thin-ship
-singularities at the result's own attitude and speed (`michell::propulsion`):
+singularities at the result's own attitude and speed (`thinship::propulsion`):
 
 - **The disc:** where the case's mount puts it, at its depth and on its
   axis, its hub at least the pod's radius there. It's fixed to the hull,

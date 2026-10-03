@@ -32,7 +32,7 @@
 //! keel knuckle (`keelK`) is not read, as camber's own sweep doesn't read it
 //! yet.
 
-use michell_geometry::iges::NurbsSurface3;
+use hullgeom::iges::NurbsSurface3;
 use serde_json::Value;
 
 type V2 = [f64; 2];

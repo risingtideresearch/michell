@@ -6,8 +6,8 @@
 
 use crate::params::CaseParams;
 use crate::{setup, LoftRequest};
-use michell::propulsion::Disc;
-use michell_geometry::iges::NurbsSurface3;
+use hullgeom::iges::NurbsSurface3;
+use thinship::propulsion::Disc;
 
 /// Each of the case's members — its hulls and a drive's parts — as its
 /// role (`hull`, `leg`, `pod`) and surface patches at `(sinkage [m], trim
@@ -50,7 +50,7 @@ pub fn water_surface(
     scale: f64,
 ) -> Result<NurbsSurface3, String> {
     let z: Vec<f64> = zeta.iter().map(|v| scale * v).collect();
-    michell_geometry::iges::graph_surface(x0, x1, nx, y0, y1, ny, &z).map_err(|e| e.to_string())
+    hullgeom::iges::graph_surface(x0, x1, nx, y0, y1, ny, &z).map_err(|e| e.to_string())
 }
 
 /// A propeller disc as a flat annulus, hub to tip, square to the shaft:
@@ -247,8 +247,7 @@ pub fn propeller_surfaces(
             }
         }
         out.push(
-            michell_geometry::iges::interpolate_grid(n_r, 2 * n_c - 1, &pts)
-                .map_err(|e| e.to_string())?,
+            hullgeom::iges::interpolate_grid(n_r, 2 * n_c - 1, &pts).map_err(|e| e.to_string())?,
         );
     }
 
@@ -274,7 +273,7 @@ pub fn propeller_surfaces(
             pts.push(place(ax, r * th.cos(), r * th.sin()));
         }
     }
-    out.push(michell_geometry::iges::interpolate_grid(n_u, n_v, &pts).map_err(|e| e.to_string())?);
+    out.push(hullgeom::iges::interpolate_grid(n_u, n_v, &pts).map_err(|e| e.to_string())?);
     Ok(out)
 }
 

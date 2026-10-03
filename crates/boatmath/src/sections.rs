@@ -1,6 +1,6 @@
 //! A case's hulls cut into sections at one attitude, as JSON: each station
 //! exactly as the solver integrates it (see
-//! [`michell_geometry::iges::PolarSection`]).
+//! [`hullgeom::iges::PolarSection`]).
 //!
 //! ```json
 //! { "attitude": { "sinkage": 0.008, "trim_rad": 0.0015, "trim_deg": 0.087 },
@@ -17,7 +17,7 @@
 
 use crate::params::CaseParams;
 use crate::{setup, LoftRequest};
-use michell_geometry::iges::PolarSection;
+use hullgeom::iges::PolarSection;
 use serde_json::{json, Value};
 
 fn station(p: &PolarSection) -> Value {
@@ -103,8 +103,8 @@ mod tests {
     use super::*;
 
     fn wigley() -> Vec<u8> {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        michell_geometry::iges::write(&surfaces, "wigley")
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes()
     }

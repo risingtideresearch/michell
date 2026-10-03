@@ -2,14 +2,13 @@
 name = "boatmath"
 version = "0.1.0"
 edition = "2021"
-description = "boatmath: hulls, cases and studies on the michell solvers, shared by the web app and the CLI"
+description = "boatmath: hulls, cases and studies on the thin-ship and seakeeping solvers, shared by the web app and the CLI"
 license = "MIT"
 
 [dependencies]
-michell = { path = "../michell" }
-michell-geometry = { path = "../michell-geometry" }
-michell-cli = { path = "../michell-cli" }
-michell-seakeeping = { path = "../michell-seakeeping" }
+thinship = { path = "../thinship" }
+hullgeom = { path = "../hullgeom" }
+seakeeping = { path = "../seakeeping" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11.0"

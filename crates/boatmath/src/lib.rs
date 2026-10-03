@@ -1,23 +1,24 @@
-//! `boatmath` — hulls, cases and studies on the `michell` solvers: the
+//! `boatmath` — hulls, cases and studies on the `thinship`, `seakeeping` and `hullgeom` solvers: the
 //! computations the web app (`boatmath-web`) and the CLI share.
 //!
 //! A hull is seen the way the physics sees it: cut into sections.
 //! IGES and STL hulls are cut straight from their patches or triangles —
-//! the same loader the CLI uses ([`michell_cli::fleet`]). The page is sent each
+//! read by [`files`]. The page is sent each
 //! station's section curve (what the depth integral integrates), the CAD
 //! ray hits it was interpolated from, the
 //! depth-integral curve the kernel interpolates along x, the hydrostatics,
 //! and the transom with what the closure needs to draw its virtual appendage
 //! at any speed.
 
-use michell::{Conditions, Placement, WaveOptions, STANDARD_GRAVITY};
-use michell_cli::fleet::{open_source_bytes, Kind, LoadSettings};
-use michell_geometry::iges::{HullPose, Platform, SectionalImport};
-use michell_geometry::SectionalHull;
+use crate::files::{open_source_bytes, Kind, LoadSettings};
+use hullgeom::iges::{HullPose, Platform, SectionalImport};
+use hullgeom::SectionalHull;
 use serde_json::{json, Value};
+use thinship::{Conditions, Placement, WaveOptions, STANDARD_GRAVITY};
 
 pub mod cad;
 pub mod camber;
+pub mod files;
 pub mod mount;
 pub mod native;
 pub mod params;
@@ -25,9 +26,9 @@ pub mod platform;
 pub mod propulsion;
 pub mod sections;
 
-pub use michell_cli::parse_units;
 /// The diverging colour map the wake and pressure views share.
-pub use michell_cli::png::diverging;
+pub use files::diverging;
+pub use files::parse_units;
 use params::{CaseParams, StudyParams};
 pub use platform::{at_rest, heeled, statics, wave_gz, waves_with_progress};
 
@@ -99,7 +100,7 @@ impl LoftRequest {
                 "centerplane" => r.centerplane = Some(num(k, v)?),
                 "stations" => r.stations = Some(count(k, v, 8)?),
                 "rays" => r.rays = Some(count(k, v, 5)?),
-                "units" => r.units = Some(michell_cli::parse_units(v.trim())?),
+                "units" => r.units = Some(files::parse_units(v.trim())?),
                 "scale" => r.scale = Some(num(k, v)?).filter(|&k| k != 1.0),
                 "scale_yz" => r.scale_yz = Some(num(k, v)?).filter(|&k| k != 1.0),
                 _ => {}
@@ -140,7 +141,7 @@ pub fn geometry(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, 
     let file = if native::is_native(&bytes) {
         native::open(&bytes)?
     } else {
-        michell_cli::fleet::open_geometry(name, bytes, &settings)?
+        files::open_geometry(name, bytes, &settings)?
     };
     let wl = req.waterline.unwrap_or(0.0);
     let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -170,11 +171,11 @@ pub fn geometry(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value, 
 /// its hulls can be re-cut at another attitude.
 struct Cut {
     kind: Kind,
-    file: michell_cli::fleet::SourceFile,
+    file: files::SourceFile,
     /// Each cut hull's index in the file.
     index: Vec<usize>,
     hulls: Vec<SectionalImport>,
-    opts: michell_geometry::iges::SectionalOptions,
+    opts: hullgeom::iges::SectionalOptions,
     notes: Vec<String>,
 }
 
@@ -232,20 +233,20 @@ fn cut(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Cut, String> {
 /// evaluation (the solver's cheap slope probes pass straight through), so a
 /// cancelled request also stops the Newton loop.
 struct Counted<'a, R> {
-    inner: michell::sectional::SectionalDynamic<'a>,
+    inner: thinship::sectional::SectionalDynamic<'a>,
     report: R,
     /// A load added to every evaluation: the drives' thrust.
-    extra: michell_geometry::float::DynamicLoad,
+    extra: hullgeom::float::DynamicLoad,
 }
 
-impl<R> michell_geometry::float::DynamicModel<SectionalHull> for Counted<'_, R>
+impl<R> hullgeom::float::DynamicModel<SectionalHull> for Counted<'_, R>
 where
-    R: FnMut(&michell_geometry::float::DynamicLoad, f64) -> michell::Result<()>,
+    R: FnMut(&hullgeom::float::DynamicLoad, f64) -> thinship::Result<()>,
 {
     fn load(
         &mut self,
-        fleet: &michell_geometry::float::FleetState<SectionalHull>,
-    ) -> michell::Result<michell_geometry::float::DynamicLoad> {
+        fleet: &hullgeom::float::FleetState<SectionalHull>,
+    ) -> thinship::Result<hullgeom::float::DynamicLoad> {
         let mut d = self.inner.load(fleet)?;
         d.force_up += self.extra.force_up;
         d.moment_bow_up += self.extra.moment_bow_up;
@@ -260,8 +261,8 @@ where
 
     fn probe(
         &mut self,
-        fleet: &michell_geometry::float::FleetState<SectionalHull>,
-    ) -> Option<michell::Result<michell_geometry::float::DynamicLoad>> {
+        fleet: &hullgeom::float::FleetState<SectionalHull>,
+    ) -> Option<thinship::Result<hullgeom::float::DynamicLoad>> {
         let extra = self.extra;
         self.inner.probe(fleet).map(|r| {
             r.map(|mut d| {
@@ -328,10 +329,10 @@ impl ThrustLine {
     /// the resistance it balances acting along `z_resistance`: the couple of
     /// the thrust below the resistance trims the bow up; an inclined shaft's
     /// vertical share lifts where the propeller is.
-    pub fn load(&self, pivot_x: f64, z_resistance: f64) -> michell_geometry::float::DynamicLoad {
+    pub fn load(&self, pivot_x: f64, z_resistance: f64) -> hullgeom::float::DynamicLoad {
         let n = self.at.len().max(1) as f64;
         let (s, c) = self.angle.sin_cos();
-        let mut d = michell_geometry::float::DynamicLoad {
+        let mut d = hullgeom::float::DynamicLoad {
             force_up: 0.0,
             moment_bow_up: 0.0,
         };
@@ -491,7 +492,7 @@ pub(crate) fn setup(
             .unwrap_or_else(|| ("hull".to_string(), None))
     };
     let cut = cut(name, bytes, cut_req)?;
-    let rho = michell_geometry::Fluid::SEAWATER_15C.density;
+    let rho = hullgeom::Fluid::SEAWATER_15C.density;
     // Each hull in the pose its cut settings give it (a scaled hull's scale).
     let base = cut_req.pose();
     let mut layout: Vec<(usize, HullPose)> = match c.span {
@@ -507,7 +508,7 @@ pub(crate) fn setup(
                 ));
             }
             let h = &cut.hulls[hulls[0]];
-            let (yc, beam) = (h.placement.y, michell_cli::fleet::max_beam(&h.hull));
+            let (yc, beam) = (h.placement.y, files::max_beam(&h.hull));
             if span <= beam {
                 return Err(format!(
                     "span {span} m: the demihulls overlap (beam {beam:.3} m)"
@@ -681,9 +682,9 @@ pub fn flow_with_progress(
     req: &FlowRequest,
     report: &mut dyn FnMut(&Progress) -> bool,
 ) -> Result<Value, String> {
-    use michell::nearfield::{free_surface, hull_pressure, NearFieldOptions};
-    use michell_geometry::float::{solve_equilibrium_sectional_dynamic, LoadCase};
-    use michell_geometry::source::SourceHull;
+    use hullgeom::float::{solve_equilibrium_sectional_dynamic, LoadCase};
+    use hullgeom::source::SourceHull;
+    use thinship::nearfield::{free_surface, hull_pressure, NearFieldOptions};
     let study = &req.study;
     let t0 = std::time::Instant::now();
     let mut track = Tracker {
@@ -709,7 +710,7 @@ pub fn flow_with_progress(
         transom: closure,
         ..WaveOptions::default()
     };
-    let squat = michell::squat::SquatOptions {
+    let squat = thinship::squat::SquatOptions {
         wave,
         ..Default::default()
     };
@@ -737,11 +738,11 @@ pub fn flow_with_progress(
         // Count the solve's force evaluations (each is most of an
         // iteration's cost) and report the latest lift; the count is open
         // ended, so the stage's share fills asymptotically.
-        let inner = michell::sectional::dynamic_load_closure(&cond, lcg, &squat);
+        let inner = thinship::sectional::dynamic_load_closure(&cond, lcg, &squat);
         let mut evaluations = 0usize;
         let weight = mass * cond.gravity;
         let track_ref = &mut track;
-        let report = move |d: &michell_geometry::float::DynamicLoad, vol: f64| {
+        let report = move |d: &hullgeom::float::DynamicLoad, vol: f64| {
             evaluations += 1;
             track_ref
                 .at(
@@ -754,13 +755,13 @@ pub fn flow_with_progress(
                         100.0 * rho * vol / mass,
                     ),
                 )
-                .map_err(michell::Error::InvalidInput)
+                .map_err(thinship::Error::InvalidInput)
         };
         let extra = req
             .thrust
             .as_ref()
             .map(|t| t.load(lcg, resistance_line(&s.design, &s.roles)))
-            .unwrap_or(michell_geometry::float::DynamicLoad {
+            .unwrap_or(hullgeom::float::DynamicLoad {
                 force_up: 0.0,
                 moment_bow_up: 0.0,
             });
@@ -826,7 +827,7 @@ pub fn flow_with_progress(
         let (a, b) = h.x_range();
         xa = xa.min(a + pl.x);
         xb = xb.max(b + pl.x);
-        yh = yh.max(pl.y.abs() + 0.5 * michell_cli::fleet::max_beam(h));
+        yh = yh.max(pl.y.abs() + 0.5 * files::max_beam(h));
     }
     let (x0, x1) = (xa - 1.5 * l_ref, xb + 0.4 * l_ref);
     let yh = (yh + 0.45 * l_ref).max(0.3 * (x1 - x0));
@@ -888,7 +889,7 @@ pub fn flow_with_progress(
                 let (a, b) = (row(k.abs_diff(m)), row(k + m));
                 zeta.extend(a.iter().zip(b).map(|(a, b)| a + b));
             }
-            michell::WaveGrid {
+            thinship::WaveGrid {
                 y0: -yh,
                 y1: yh,
                 ny,
@@ -903,7 +904,7 @@ pub fn flow_with_progress(
                 let k = iy.abs_diff(nh - 1);
                 zeta.extend_from_slice(&half.zeta[k * nx..(k + 1) * nx]);
             }
-            michell::WaveGrid {
+            thinship::WaveGrid {
                 y0: -yh,
                 ny,
                 zeta,
@@ -925,11 +926,11 @@ pub fn flow_with_progress(
     )?;
     let t_field = t0.elapsed().as_secs_f64() - t_attitude;
 
-    let res = michell::sectional::multihull_resistance(
+    let res = thinship::sectional::multihull_resistance(
         &members,
         &cond,
         &wave,
-        &michell::ViscousOptions::default(),
+        &thinship::ViscousOptions::default(),
     )
     .map_err(|e| e.to_string())?;
 
@@ -949,7 +950,7 @@ pub fn flow_with_progress(
             "solved": true,
         }),
         (None, Some((sinkage, trim))) => {
-            let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcg, &squat)
+            let d = thinship::sectional::multihull_dynamic_force(&members, &cond, lcg, &squat)
                 .map_err(|e| e.to_string())?;
             json!({
                 "fz": d.force_up,
@@ -975,7 +976,7 @@ pub fn flow_with_progress(
             }
             let lcf = mw / aw.max(f64::MIN_POSITIVE);
             let i_l = iw - mw * mw / aw.max(f64::MIN_POSITIVE);
-            let d = michell::sectional::multihull_dynamic_force(&members, &cond, lcf, &squat)
+            let d = thinship::sectional::multihull_dynamic_force(&members, &cond, lcf, &squat)
                 .map_err(|e| e.to_string())?;
             json!({
                 "fz": d.force_up,
@@ -1013,7 +1014,7 @@ pub fn flow_with_progress(
     // for a body of revolution) rather than the hull's; an inclined shaft
     // adds the drag of the flow across it, at its angle to the flow (its
     // own plus the trim).
-    let k_hull = michell::ViscousOptions::default().form_factor;
+    let k_hull = thinship::ViscousOptions::default().form_factor;
     let (mut rv, mut r_app) = (0.0, 0.0);
     let parts_known = res.viscous.len() == s.roles.len();
     let q = 0.5 * rho * cond.speed * cond.speed;
@@ -1366,8 +1367,8 @@ mod tests {
     /// The exact Wigley as IGES, shown by sections.
     #[test]
     fn a_wigley_is_shown_in_sections() {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let text = michell_geometry::iges::write(&surfaces, "wigley").unwrap();
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let text = hullgeom::iges::write(&surfaces, "wigley").unwrap();
         let v = loft("w.igs", text.into_bytes(), &LoftRequest::default()).unwrap();
         let h = &v["hulls"][0];
         let vol = h["displaced_volume"].as_f64().unwrap();
@@ -1379,8 +1380,8 @@ mod tests {
     }
 
     fn wigley() -> Vec<u8> {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        michell_geometry::iges::write(&surfaces, "wigley")
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes()
     }
@@ -1472,7 +1473,7 @@ mod tests {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
             .collect();
         // The same two hulls, directly, on the same grid.
-        let hull = michell_geometry::iges::source_fleet(&text, 0.0)
+        let hull = hullgeom::iges::source_fleet(&text, 0.0)
             .unwrap()
             .situate_sectional(
                 0,
@@ -1489,7 +1490,7 @@ mod tests {
             (&hull, Placement { x: 0.0, y: -1.55 }),
         ];
         let cond = Conditions::seawater(0.35 * (STANDARD_GRAVITY * hull.length()).sqrt());
-        let direct = michell::nearfield::free_surface(
+        let direct = thinship::nearfield::free_surface(
             &fleet,
             &cond,
             &Default::default(),
@@ -1564,8 +1565,8 @@ mod tests {
     /// is put below it.
     #[test]
     fn a_case_has_its_statics() {
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 1.0).unwrap();
-        let deep = michell_geometry::iges::write(&surfaces, "wigley")
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 1.0).unwrap();
+        let deep = hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes();
         let cut = LoftRequest {

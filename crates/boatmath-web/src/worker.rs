@@ -259,8 +259,8 @@ mod tests {
     #[test]
     fn studies_go_through_the_queue_and_are_kept() {
         let store = temp_store("e2e");
-        let surfaces = michell_geometry::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
-        let bytes = michell_geometry::iges::write(&surfaces, "wigley")
+        let surfaces = hullgeom::iges::wigley_surfaces(10.0, 1.0, 0.625).unwrap();
+        let bytes = hullgeom::iges::write(&surfaces, "wigley")
             .unwrap()
             .into_bytes();
         let import = LoftRequest::default();

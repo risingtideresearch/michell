@@ -6,10 +6,9 @@
 use std::process::Command;
 
 const SOLVER: &[&str] = &[
-    "../michell-geometry/src",
-    "../michell/src",
-    "../michell-seakeeping/src",
-    "../michell-cli/src",
+    "../hullgeom/src",
+    "../thinship/src",
+    "../seakeeping/src",
     "src",
 ];
 
