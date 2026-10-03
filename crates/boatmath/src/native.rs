@@ -31,6 +31,16 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
         units: req.units,
         ..LoadSettings::default()
     };
+    if let Some(doc) = camber_document(&bytes) {
+        let doc = crate::camber::Document::parse(&doc?).map_err(|e| format!("{name}: {e}"))?;
+        let g = crate::camber::geometry(&doc, req.waterline, req.units)?;
+        let pose = req.pose();
+        return if pose.scale == 1.0 && pose.scale_yz == 1.0 {
+            Ok(g)
+        } else {
+            posed(&g, &pose)
+        };
+    }
     let wl = settings.waterline_z;
     let pose = req.pose();
     let at_rest = Platform::default();
@@ -67,6 +77,19 @@ pub fn from_file(name: &str, bytes: Vec<u8>, req: &LoftRequest) -> Result<Value,
                 .collect::<Result<Vec<_>, String>>()?;
             Ok(json!({ "kind": "mesh", "hulls": hulls }))
         }
+    }
+}
+
+/// A camber hull document, if these bytes are one (a JSON object with a
+/// sheer plan).
+fn camber_document(bytes: &[u8]) -> Option<Result<Value, String>> {
+    if !is_native(bytes) {
+        return None;
+    }
+    match serde_json::from_slice::<Value>(bytes) {
+        Ok(v) if crate::camber::is_document(&v) => Some(Ok(v)),
+        Ok(_) => None,
+        Err(e) => Some(Err(format!("not JSON: {e}"))),
     }
 }
 

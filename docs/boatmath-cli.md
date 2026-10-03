@@ -38,8 +38,8 @@ boatmath plot -x study.params.froude -y forces.rt -o rt.svg < calm.jsonl
   its own that refer back to what they computed from.
 - **A hull record holds its geometry.** The solver cuts the hull afresh at
   every attitude, so a hull record holds what it cuts from: the hull's
-  B-spline patches (from IGES) or its triangles (from STL), inline as JSON,
-  not sections. `hull` reads the file once, applies its import settings
+  B-spline patches (from IGES or a camber document) or its triangles (from
+  STL), inline as JSON, not sections. `hull` reads the file once, applies its import settings
   (waterline, units) and splits it into hulls. After that the input file is
   not needed: `source` records where the geometry came from, for reference
   only.
@@ -104,6 +104,51 @@ trim, sinkage or scale maps the control points or vertices. `boatmath::native`
 reads and writes it, and it's checked on reading (knot counts, sizes, finite
 numbers). For e12, the record is 258 KB against the 1.7 MB IGES, and its cases
 and studies come out the same as from the file.
+
+#### camber documents
+
+`hull` also reads the JSON that [camber](https://github.com/risingtideresearch/camber)
+saves (format version 2; a version 1 document is refused, and camber
+converts one when it opens it). `boatmath::camber` ports camber's sweep (the
+sheer plan, the lofted stations, the knuckled sections and the three trims),
+held to camber's own output by golden tests: every trimmed section of four
+documents to 1e-6 of their unit. The swept hull is sampled and interpolated
+into patches, as camber's STEP export does (creased at the knuckle rows),
+but laid out so that every patch is a fair surface on one side of the
+centreplane, each starboard patch mirrored to port:
+
+- a patch over the sections that close on the centreline;
+- behind a raked transom, where the sections end on the transom rather than
+  the keel, another;
+- the transom (or the open end where the sheer plan starts) as a ruled face
+  across from its starboard edge to the centreline. Raked more than ~18° it
+  is shell to the solver, the bottom of the sections it cuts; nearer upright
+  it is an end cap, as an IGES transom is.
+
+The halves meet at the keel without a common tangent, so a V keel stays a
+V. And the solver finds a hull's centreplane from the patches either side
+of it, one crossing per patch, so a patch spanning it would read as one
+side of a hull: a single hull still floats (its centreplane defaults to
+y = 0), but a catamaran's demihulls, off at ±span/2, can't be cut.
+
+The document's unit, design waterline and deck trim are applied: the hull
+is floated at the deck trim, with its waterline at z = 0, in metres.
+`--waterline` overrides the document's, as a height [m] in its frame (deck
+datum at 0), and `--units` its unit. x runs forward from the sheer plan's
+start. At the document's own waterline, two 8.6 m hulls with transoms
+displace what camber says, converged, to within 0.07%. camber's own default
+sampling reads up to 0.2% low. A plan's open end (no transom cutting the
+hull) fans: the station planes there are normal to the sheer, so the end is
+a shallow V, which the solver's sections, square to x, end with a whole
+section near its point. On camber's 1 m flat-bottom example, that's 0.3%
+of its volume. The sections are spaced closer toward each patch's ends, so
+a near-vertical stem doesn't overshoot past the bow. camber's
+keel knuckle (`keelK`) isn't read, because camber's sweep doesn't read it
+yet either.
+
+```sh
+boatmath hull my-hull.json | boatmath case --span 3 | boatmath statics
+```
 
 `cut` holds the settings of the cut (stations, rays, a centreplane override).
 The id is that of `geometry` plus `cut`. `hull` checks that each hull cuts,
@@ -271,7 +316,7 @@ See [Propellers and motors](#propellers-and-motors).
 
 | command | in → out | does |
 |---|---|---|
-| `hull FILE… [--waterline LIST --stations --rays --units --centerplane --name]` | files → hull* | cut each file and summarise it |
+| `hull FILE… [--waterline LIST --stations --rays --units --centerplane --name]` | files → hull* | read each file (IGES, STL, a camber document) and check it cuts |
 | `scale [--by LIST] [--beam LIST] [--mass LIST [--keep-length]] [--name]` | hull* → + hull* | hulls scaled about the design waterline |
 | `case [--span --mass --lcg --vcg --kxx --kyy --kzz --roll-damping (LISTs)] [--name]` | hull* → + case* | a platform and load on each hull |
 | `mount (--stock NAME \| --kind K …)` | case* → + case* | the propulsion drive each case carries: its leg, pod or shaft and strut, and where its propeller sits |
@@ -707,6 +752,8 @@ boatmath statics < g150.jsonl | boatmath cad --heel 15,45 -o g150-gz.igs
   re-exports it and keeps the SQLite store, the worker and the pages, so both
   front ends compute the same way.
 - `crates/boatmath/src/sections.rs`: a case cut at an attitude, as JSON.
+- `crates/boatmath/src/camber.rs`: camber's sweep, and its documents as
+  patches; `tests/camber/make.mts` makes its golden data from camber.
 - `crates/boatmath/src/native.rs`: geometry as JSON, read from a file or
   re-posed. `boatmath`'s computations take its bytes wherever they take a
   hull file's, so the web app could store it too.

@@ -54,14 +54,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Hulls from files (IGES, STL): a hull record per file and setting, its
-    /// geometry inline as JSON (B-spline patches, or triangles from an STL),
-    /// in metres with the design waterline at z = 0.
+    /// Hulls from files (IGES, STL, camber's JSON): a hull record per file and
+    /// setting, its geometry inline as JSON (B-spline patches, or triangles
+    /// from an STL), in metres with the design waterline at z = 0.
     Hull {
         files: Vec<PathBuf>,
         #[arg(long)]
         name: Option<String>,
-        /// Design waterline height in the file's frame [m] (IGES); a LIST.
+        /// Design waterline height in the file's frame [m] (IGES; a camber
+        /// document has its own); a LIST.
         #[arg(long, allow_hyphen_values = true)]
         waterline: Option<String>,
         /// Centreplane override [m] (IGES).
@@ -73,7 +74,8 @@ enum Command {
         /// Rays across each section (IGES).
         #[arg(long)]
         rays: Option<usize>,
-        /// Units of an STL: mm, cm, m, in, ft, or metres per unit.
+        /// Units of an STL (or in place of a camber document's): mm, cm, m,
+        /// in, ft, or metres per unit.
         #[arg(long)]
         units: Option<String>,
     },

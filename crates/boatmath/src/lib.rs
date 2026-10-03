@@ -17,6 +17,7 @@ use michell_geometry::SectionalHull;
 use serde_json::{json, Value};
 
 pub mod cad;
+pub mod camber;
 pub mod mount;
 pub mod native;
 pub mod params;
